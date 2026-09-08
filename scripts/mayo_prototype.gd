@@ -69,12 +69,20 @@ class MayoDroplet:
 @export_range(0.05, 0.5, 0.01, "suffix:s") var landing_transition_time := 0.16
 @export_range(0.1, 2.0, 0.05, "suffix:s") var droplet_lifetime := 0.55
 
-@export_group("Third-person Camera")
-@export_range(2.0, 10.0, 0.1, "suffix:m") var camera_distance := 6.2
-@export_range(10.0, 70.0, 1.0, "suffix:°") var camera_pitch_degrees := 34.0
-@export_range(-180.0, 180.0, 1.0, "suffix:°") var camera_yaw_degrees := 0.0
-@export_range(0.2, 2.0, 0.05, "suffix:m") var camera_look_height := 0.65
-@export_range(35.0, 90.0, 1.0, "suffix:°") var camera_fov := 58.0
+@export_group("Aim")
+@export_range(0.01, 1.0, 0.01, "suffix:°/px") var mouse_sensitivity := 0.12
+@export_range(60.0, 89.0, 1.0, "suffix:°") var pitch_limit_degrees := 85.0
+
+@export_group("Camera")
+@export var start_in_first_person := true
+@export_range(35.0, 90.0, 1.0, "suffix:°") var camera_fov := 74.0
+@export_range(0.2, 2.0, 0.01, "suffix:m") var eye_height := 0.52
+@export_range(-1.5, 1.5, 0.01, "suffix:m") var shoulder_offset_right := 0.42
+@export_range(-1.0, 1.5, 0.01, "suffix:m") var shoulder_offset_up := 0.16
+@export_range(0.5, 5.0, 0.05, "suffix:m") var shoulder_distance := 1.75
+## Points nearer than this to the camera are dropped from the ribbon so the
+## strand root does not fill the screen in first person. 0 disables it.
+@export_range(0.0, 1.0, 0.01, "suffix:m") var strand_near_cull_distance := 0.34
 
 var _points: Array[MayoPoint] = []
 var _emit_distance := 0.0
@@ -82,6 +90,8 @@ var _attack_direction := Vector3.FORWARD
 var _rng := RandomNumberGenerator.new()
 var _player: MayoPlayer
 var _muzzle: Marker3D
+var _aim_pivot: Node3D
+var _body_mesh: MeshInstance3D
 var _camera: Camera3D
 var _floor: FloorContamination
 var _walls: Array[ContaminableObject] = []
@@ -97,6 +107,9 @@ var _droplet_buffer_dirty := false
 var _droplet_cursor := 0
 var _next_collision_slot := 0
 var _was_firing := false
+var _aim_yaw := 0.0
+var _aim_pitch := 0.0
+var _first_person := true
 var debug_profile_enabled := false
 var debug_profile_frames := 0
 var debug_raycast_count := 0
@@ -112,7 +125,10 @@ var debug_timings_us := {
 
 func _ready() -> void:
 	_rng.seed = 0x4d41594f
+	_ensure_input_actions()
 	_build_world()
+	set_first_person(start_in_first_person)
+	_capture_mouse()
 	_floor.configure(grid_cell_size, landing_brush_radius_cells)
 	for wall in _walls:
 		wall.configure(grid_cell_size, landing_brush_radius_cells)
@@ -165,6 +181,44 @@ func _process(_delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
 		get_tree().quit()
+		return
+	if event.is_action_pressed("toggle_camera_mode"):
+		set_first_person(not _first_person)
+		return
+	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		apply_look((event as InputEventMouseMotion).relative)
+
+
+## Mouse-look. Both camera modes feed the same yaw/pitch, so aiming is
+## identical in first and third person; only the camera placement differs.
+func apply_look(relative: Vector2) -> void:
+	var radians_per_pixel := deg_to_rad(mouse_sensitivity)
+	_aim_yaw = wrapf(_aim_yaw - relative.x * radians_per_pixel, -PI, PI)
+	var limit := deg_to_rad(pitch_limit_degrees)
+	_aim_pitch = clampf(_aim_pitch - relative.y * radians_per_pixel, -limit, limit)
+
+
+func set_first_person(enabled: bool) -> void:
+	_first_person = enabled
+	if is_instance_valid(_body_mesh):
+		_body_mesh.visible = not enabled
+	_update_camera()
+
+
+func _ensure_input_actions() -> void:
+	# Registered in code so the toggle works without editing the input map.
+	if InputMap.has_action("toggle_camera_mode"):
+		return
+	InputMap.add_action("toggle_camera_mode")
+	var event := InputEventKey.new()
+	event.physical_keycode = KEY_F1
+	InputMap.action_add_event("toggle_camera_mode", event)
+
+
+func _capture_mouse() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 func _build_world() -> void:
@@ -251,17 +305,24 @@ func _build_player_body() -> void:
 	collision.shape = capsule_shape
 	_player.add_child(collision)
 
-	var body := MeshInstance3D.new()
-	body.name = "CapsuleBody"
+	_body_mesh = MeshInstance3D.new()
+	_body_mesh.name = "CapsuleBody"
 	var capsule_mesh := CapsuleMesh.new()
 	capsule_mesh.radius = 0.32
 	capsule_mesh.height = 1.28
-	body.mesh = capsule_mesh
+	_body_mesh.mesh = capsule_mesh
 	var body_material := StandardMaterial3D.new()
 	body_material.albedo_color = Color("33495b")
 	body_material.roughness = 0.75
-	body.material_override = body_material
-	_player.add_child(body)
+	_body_mesh.material_override = body_material
+	_player.add_child(_body_mesh)
+
+	# The pivot carries the pitch so the nozzle and muzzle follow vertical aim.
+	# The player body itself only yaws.
+	_aim_pivot = Node3D.new()
+	_aim_pivot.name = "AimPivot"
+	_aim_pivot.position = Vector3(0.0, eye_height, 0.0)
+	_player.add_child(_aim_pivot)
 
 	var nozzle := MeshInstance3D.new()
 	nozzle.name = "Nozzle"
@@ -271,17 +332,17 @@ func _build_player_body() -> void:
 	nozzle_mesh.height = 0.28
 	nozzle.mesh = nozzle_mesh
 	nozzle.rotation_degrees.x = 90.0
-	nozzle.position = Vector3(0.0, 0.19, -0.44)
+	nozzle.position = Vector3(0.0, -0.06, -0.30)
 	var nozzle_material := StandardMaterial3D.new()
 	nozzle_material.albedo_color = Color("d9e2e8")
 	nozzle_material.roughness = 0.38
 	nozzle.material_override = nozzle_material
-	_player.add_child(nozzle)
+	_aim_pivot.add_child(nozzle)
 
 	_muzzle = Marker3D.new()
 	_muzzle.name = "Muzzle"
-	_muzzle.position = Vector3(0.0, 0.19, -0.58)
-	_player.add_child(_muzzle)
+	_muzzle.position = Vector3(0.0, -0.06, -0.44)
+	_aim_pivot.add_child(_muzzle)
 
 
 func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3, color: Color) -> void:
@@ -304,42 +365,66 @@ func _make_stream_visual(visual_name: String, material: Material) -> StreamVisua
 	return visual
 
 
+## Orientation of the aim, shared by the camera and the strand direction.
+func _aim_basis() -> Basis:
+	return Basis.from_euler(Vector3(_aim_pitch, _aim_yaw, 0.0))
+
+
 func _update_camera() -> void:
 	if not is_instance_valid(_camera) or not is_instance_valid(_player):
 		return
 	_camera.fov = camera_fov
-	var yaw := deg_to_rad(camera_yaw_degrees)
-	var pitch := deg_to_rad(camera_pitch_degrees)
-	var horizontal := cos(pitch) * camera_distance
-	var offset := Vector3(sin(yaw) * horizontal, sin(pitch) * camera_distance, cos(yaw) * horizontal)
-	var target := _player.global_position + Vector3.UP * camera_look_height
-	_camera.global_position = target + offset
-	_camera.look_at(target, Vector3.UP)
+	var aim_basis := _aim_basis()
+	var eye := _player.global_position + Vector3.UP * eye_height
+	if _first_person:
+		_camera.global_transform = Transform3D(aim_basis, eye)
+		return
+	# Over-the-shoulder: the camera keeps the aim orientation and is offset
+	# behind and to the side, so the strand leaves toward the screen centre
+	# rather than converging on a fixed point.
+	var offset := aim_basis.x * shoulder_offset_right \
+		+ aim_basis.y * shoulder_offset_up \
+		+ aim_basis.z * shoulder_distance
+	_camera.global_transform = Transform3D(aim_basis, eye + offset)
 
 
 func _update_aim() -> void:
-	if not is_instance_valid(_camera):
+	if not is_instance_valid(_player):
 		return
-	var mouse := get_viewport().get_mouse_position()
-	var ray_origin := _camera.project_ray_origin(mouse)
-	var ray_direction := _camera.project_ray_normal(mouse)
-	if absf(ray_direction.y) > 0.0001:
-		var distance := (0.0 - ray_origin.y) / ray_direction.y
-		if distance > 0.0:
-			var target := ray_origin + ray_direction * distance
-			var flat := target - _player.global_position
-			flat.y = 0.0
-			if flat.length_squared() > 0.04:
-				_attack_direction = flat.normalized()
-	var desired_yaw := atan2(-_attack_direction.x, -_attack_direction.z)
-	_player.rotation.y = desired_yaw
+	# The body yaws, the weapon pivot pitches, and the strand always leaves
+	# along the camera forward axis.
+	_player.rotation.y = _aim_yaw
+	_aim_pivot.rotation.x = _aim_pitch
+	_attack_direction = -_aim_basis().z
+
+
+## Aims at an explicit yaw/pitch in degrees. Used by the headless checks, which
+## have no mouse to move.
+func debug_set_aim(yaw_degrees: float, pitch_degrees: float) -> void:
+	var limit := deg_to_rad(pitch_limit_degrees)
+	_aim_yaw = deg_to_rad(yaw_degrees)
+	_aim_pitch = clampf(deg_to_rad(pitch_degrees), -limit, limit)
+	_update_aim()
+	_update_camera()
+
+
+## Aims from the weapon pivot at a world position.
+func debug_aim_at(target: Vector3) -> void:
+	var to_target := target - _aim_pivot.global_position
+	if to_target.length_squared() < 0.000001:
+		return
+	to_target = to_target.normalized()
+	debug_set_aim(rad_to_deg(atan2(-to_target.x, -to_target.z)), rad_to_deg(asin(to_target.y)))
 
 
 func _emit_point() -> void:
 	var point := MayoPoint.new()
+	# Both jitters use the aim's own axes rather than the world up axis, which
+	# degenerates to a zero vector when aiming straight up or down.
+	var aim_basis := _aim_basis()
 	var angle := _rng.randf_range(-yaw_angle_jitter, yaw_angle_jitter)
-	var direction := _attack_direction.rotated(Vector3.UP, angle).normalized()
-	var lateral := Vector3.UP.cross(direction).normalized()
+	var direction := _attack_direction.rotated(aim_basis.y, angle).normalized()
+	var lateral := aim_basis.x
 	var jitter := _rng.randf_range(-lateral_position_jitter, lateral_position_jitter)
 	point.position = _muzzle.global_position + direction * muzzle_forward_offset + lateral * jitter
 	point.last_collision_position = point.position
@@ -492,24 +577,34 @@ func _trim_safety_cap() -> void:
 
 
 func _update_visuals() -> void:
-	var air_segments := _segments_for_phase(PointPhase.AIR)
-	var wall_segments := _segments_for_phase(PointPhase.WALL_FIXED)
-	var landing_segments := _segments_for_phase(PointPhase.LANDING)
-	var shadow_segments := _shadow_segments()
 	var camera_position := _camera.global_position
+	var camera_forward := -_camera.global_basis.z
+	var air_segments := _segments_for_phase(PointPhase.AIR, camera_position)
+	var wall_segments := _segments_for_phase(PointPhase.WALL_FIXED, camera_position)
+	var landing_segments := _segments_for_phase(PointPhase.LANDING, camera_position)
+	var shadow_segments := _shadow_segments(camera_position)
 	var mayo_tint := Color("fff0a8")
-	_air_visual.update_ribbon(air_segments, camera_position, strand_thickness, mayo_tint)
-	_wall_visual.update_ribbon(wall_segments, camera_position, strand_thickness, mayo_tint)
-	_landing_visual.update_ribbon(landing_segments, camera_position, strand_thickness, mayo_tint, 0.004)
-	_shadow_visual.update_ribbon(shadow_segments, camera_position, strand_thickness * 0.72,
+	_air_visual.update_ribbon(air_segments, camera_position, camera_forward, strand_thickness, mayo_tint)
+	_wall_visual.update_ribbon(wall_segments, camera_position, camera_forward, strand_thickness, mayo_tint)
+	_landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, strand_thickness, mayo_tint, 0.004)
+	_shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward, strand_thickness * 0.72,
 		Color(0.08, 0.07, 0.055, 0.18), 0.012)
 
 
-func _segments_for_phase(phase: PointPhase) -> Array:
+## True for points sitting on top of the camera, which in first person would
+## otherwise fill the screen with the strand root.
+func _is_near_camera(point: MayoPoint, camera_position: Vector3) -> bool:
+	if strand_near_cull_distance <= 0.0:
+		return false
+	return point.position.distance_squared_to(camera_position) \
+		< strand_near_cull_distance * strand_near_cull_distance
+
+
+func _segments_for_phase(phase: PointPhase, camera_position: Vector3) -> Array:
 	var result: Array = []
 	var current: Array = []
 	for point in _points:
-		if point.phase == phase:
+		if point.phase == phase and not _is_near_camera(point, camera_position):
 			var visual_point := RibbonPoint.new()
 			visual_point.position = point.position
 			if phase == PointPhase.LANDING:
@@ -526,11 +621,11 @@ func _segments_for_phase(phase: PointPhase) -> Array:
 	return result
 
 
-func _shadow_segments() -> Array:
+func _shadow_segments(camera_position: Vector3) -> Array:
 	var result: Array = []
 	var current: Array = []
 	for point in _points:
-		if point.phase == PointPhase.WALL_FIXED:
+		if point.phase == PointPhase.WALL_FIXED or _is_near_camera(point, camera_position):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []

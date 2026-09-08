@@ -32,7 +32,8 @@ func _run() -> void:
 	muzzle_flat.y = 0.0
 	var seen := {}
 	var release_frame := 180
-	Input.warp_mouse(Vector2(640.0, 360.0))
+	# Aim straight down -Z, level. There is no cursor to warp any more.
+	scene.debug_set_aim(0.0, 0.0)
 	Input.action_press("fire_mayo")
 	for frame in 420:
 		if frame == release_frame:

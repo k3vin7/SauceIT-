@@ -30,8 +30,8 @@ func _run() -> void:
 	await process_frame
 	await physics_frame
 
-	# The mouse is centred so the normal project input path fires toward -Z.
-	Input.warp_mouse(Vector2(640.0, 360.0))
+	# Aim straight down -Z, level. There is no cursor to warp any more.
+	scene.debug_set_aim(0.0, 0.0)
 	Input.action_press("fire_mayo")
 	for _frame in 55:
 		await physics_frame
@@ -86,10 +86,7 @@ func _run() -> void:
 	_check(scene._floor.debug_texture_uploads == 1, "grid writes were not batched to one frame upload")
 
 	# Isolate and run the wall route with the same per-point physics code.
-	var wall_target := Vector3(2.35, scene._muzzle.global_position.y, -0.72)
-	var wall_direction: Vector3 = wall_target - scene._muzzle.global_position
-	wall_direction.y = 0.0
-	scene._attack_direction = wall_direction.normalized()
+	scene.debug_aim_at(Vector3(2.35, 1.1, -0.72))
 	var accumulator := 0.0
 	for _frame in 70:
 		accumulator += scene.extend_speed / 60.0

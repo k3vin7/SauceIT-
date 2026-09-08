@@ -12,6 +12,9 @@ var _vertex_cache := PackedVector3Array()
 var _max_vertices := 0
 var _used_vertices := 0
 var _previous_used_vertices := 0
+## Below this distance the point-to-camera vector swings violently between
+## frames and twists the ribbon, so the fixed view axis is used instead.
+var min_view_distance := 0.5
 
 
 func setup(material: Material, maximum_points: int = 192) -> void:
@@ -44,6 +47,7 @@ func setup(material: Material, maximum_points: int = 192) -> void:
 func update_ribbon(
 		segments: Array,
 		camera_position: Vector3,
+		camera_forward: Vector3,
 		base_width: float,
 		_tint: Color,
 		y_offset: float = 0.0
@@ -53,7 +57,7 @@ func update_ribbon(
 		var segment: Array = raw_segment
 		if segment.is_empty():
 			continue
-		_append_strip(segment, camera_position, base_width, y_offset)
+		_append_strip(segment, camera_position, camera_forward, base_width, y_offset)
 
 	if _used_vertices == 0:
 		visible = false
@@ -71,9 +75,9 @@ func update_ribbon(
 	visible = true
 
 
-func _append_strip(points: Array, camera_position: Vector3, base_width: float, y_offset: float) -> void:
+func _append_strip(points: Array, camera_position: Vector3, camera_forward: Vector3, base_width: float, y_offset: float) -> void:
 	if points.size() == 1:
-		_append_round_cap(points[0], Vector3.RIGHT, camera_position, base_width, y_offset)
+		_append_round_cap(points[0], Vector3.RIGHT, camera_position, camera_forward, base_width, y_offset)
 		return
 
 	var sides: Array[Vector3] = []
@@ -85,7 +89,7 @@ func _append_strip(points: Array, camera_position: Vector3, base_width: float, y
 		var tangent := (following - previous).normalized()
 		if tangent.length_squared() < 0.000001:
 			tangent = Vector3.FORWARD
-		var to_camera := (camera_position - position).normalized()
+		var to_camera := _view_vector(position, camera_position, camera_forward)
 		var side := tangent.cross(to_camera)
 		if side.length_squared() < 0.000001:
 			side = tangent.cross(Vector3.UP)
@@ -112,13 +116,13 @@ func _append_strip(points: Array, camera_position: Vector3, base_width: float, y
 		_append_triangle(left_a, left_b, right_a)
 		_append_triangle(right_a, left_b, right_b)
 
-	_append_round_cap(points[0], sides[0], camera_position, base_width, y_offset)
-	_append_round_cap(points[-1], sides[-1], camera_position, base_width, y_offset)
+	_append_round_cap(points[0], sides[0], camera_position, camera_forward, base_width, y_offset)
+	_append_round_cap(points[-1], sides[-1], camera_position, camera_forward, base_width, y_offset)
 
 
-func _append_round_cap(point, side_hint: Vector3, camera_position: Vector3, base_width: float, y_offset: float) -> void:
+func _append_round_cap(point, side_hint: Vector3, camera_position: Vector3, camera_forward: Vector3, base_width: float, y_offset: float) -> void:
 	var center: Vector3 = point.position + Vector3.UP * y_offset
-	var face := (camera_position - center).normalized()
+	var face := _view_vector(center, camera_position, camera_forward)
 	if face.length_squared() < 0.000001:
 		face = Vector3.UP
 	var side := side_hint.normalized()
@@ -134,6 +138,14 @@ func _append_round_cap(point, side_hint: Vector3, camera_position: Vector3, base
 		var edge_a := center + (side * cos(angle_a) + up * sin(angle_a)) * radius
 		var edge_b := center + (side * cos(angle_b) + up * sin(angle_b)) * radius
 		_append_triangle(center, edge_a, edge_b)
+
+
+## Direction from `position` toward the viewer, stabilised near the camera.
+func _view_vector(position: Vector3, camera_position: Vector3, camera_forward: Vector3) -> Vector3:
+	var offset := camera_position - position
+	if offset.length_squared() < min_view_distance * min_view_distance:
+		return -camera_forward
+	return offset.normalized()
 
 
 func _append_triangle(a: Vector3, b: Vector3, c: Vector3) -> void:

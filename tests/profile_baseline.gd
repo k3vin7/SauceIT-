@@ -10,7 +10,8 @@ func _run() -> void:
 	root.add_child(scene)
 	await process_frame
 	await physics_frame
-	Input.warp_mouse(Vector2(640.0, 360.0))
+	# Aim straight down -Z, level. There is no cursor to warp any more.
+	scene.debug_set_aim(0.0, 0.0)
 
 	# Warm up allocations and physics before collecting the sample window.
 	Input.action_press("fire_mayo")

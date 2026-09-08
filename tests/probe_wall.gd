@@ -13,17 +13,15 @@ func _run() -> void:
 	await process_frame
 	await physics_frame
 	var wall: ContaminableObject = scene.get_node("ImpactWall")
-	var wall_target := Vector3(2.35, scene._muzzle.global_position.y, -0.72)
-	var direction: Vector3 = wall_target - scene._muzzle.global_position
-	direction.y = 0.0
-	direction = direction.normalized()
+	# Aim at the wall through the normal aim path, so _update_aim keeps
+	# reproducing this direction every physics frame.
+	scene.debug_aim_at(Vector3(2.35, 1.1, -0.72))
 	print("wall_fixed_hold_time=%.2f s  raycast_frame_stride=%d  emit_rate=%.1f pts/s" % [
 		scene.wall_fixed_hold_time, scene.raycast_frame_stride,
 		scene.extend_speed / scene.point_spacing])
 
 	var accumulator := 0.0
 	for frame in 600:
-		scene._attack_direction = direction
 		var firing := frame < 300
 		if firing:
 			accumulator += scene.extend_speed / 60.0

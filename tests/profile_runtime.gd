@@ -31,7 +31,8 @@ func _run() -> void:
 		scene.set_physics_process(false)
 		scene.set_process(false)
 
-	Input.warp_mouse(Vector2(640.0, 360.0))
+	# Aim straight down -Z, level. There is no cursor to warp any more.
+	scene.debug_set_aim(0.0, 0.0)
 	Input.action_press("fire_mayo")
 	for _f in 120:
 		await physics_frame
