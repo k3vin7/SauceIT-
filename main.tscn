@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://dnign016f57q7"]
+
+[ext_resource type="Script" uid="uid://ba4avomp7tm3r" path="res://scripts/mayo_prototype.gd" id="1_main"]
+
+[node name="MayoPrototype" type="Node3D"]
+script = ExtResource("1_main")
