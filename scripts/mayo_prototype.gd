@@ -34,12 +34,12 @@ class MayoDroplet:
 	var expires_at := 0.0
 
 @export_group("Mayo Stream — Reference Values")
-@export_range(0.2, 6.0, 0.01, "suffix:m") var stream_range := 1.96
+@export_range(0.2, 6.0, 0.01, "suffix:m") var stream_range := 2.94
 @export_range(0.5, 15.0, 0.1, "suffix:m/s") var extend_speed := 7.0
 @export_range(0.025, 0.25, 0.005, "suffix:m") var point_spacing := 0.09
 @export_range(0.02, 0.2, 0.001, "suffix:m") var strand_thickness := 0.093
 @export_range(0.0, 0.5, 0.01, "suffix:m") var muzzle_forward_offset := 0.15
-@export_range(0.02, 1.5, 0.01, "suffix:s") var point_time_lifetime := 0.28
+@export_range(0.02, 1.5, 0.01, "suffix:s") var point_time_lifetime := 0.42
 @export var use_time_lifetime := true
 @export var use_distance_lifetime := true
 @export_range(0.0, 30.0, 0.1, "suffix:m/s²") var gravity_acceleration := 9.8

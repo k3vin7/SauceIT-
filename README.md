@@ -15,7 +15,9 @@ The mouse is captured and there is no on-screen cursor: aiming accumulates yaw a
 
 Select the root `MayoPrototype` node in `main.tscn`. Its Inspector groups expose the reference stream values, per-point time/distance lifetime switches, gravity, inertial bend, grid bridge settings, and third-person camera angle/distance.
 
-All requested baseline values are under **Mayo Stream — Reference Values** and **Landing and Grid**. The generated `FloorContamination` node and each `ContaminableObject` wall expose the same cell/brush settings, and `MayoPrototype` pushes its `Landing and Grid` values into all of them on ready.
+All requested baseline values are under **Mayo Stream — Reference Values** and **Landing and Grid**.
+
+`Stream Range` and `Point Time Lifetime` both cut the stream's powered phase, and whichever comes first wins, so they are kept matched at `extend_speed`: 2.94 m and 0.42 s at 7 m/s. Changing one alone does nothing — the other still cuts at the old distance. The generated `FloorContamination` node and each `ContaminableObject` wall expose the same cell/brush settings, and `MayoPrototype` pushes its `Landing and Grid` values into all of them on ready.
 
 **Weapon Hold** places the sauce bottle: right, up and forward offsets from the eye, plus its radius and length. The bottle is a first-person viewmodel — in third person it would sit inside the capsule, so it is hidden. `Aim Convergence Distance` is the distance along the view axis where the strand crosses the crosshair; without it an off-centre nozzle fires parallel to the view and misses the reticle by the full hold offset (measured: 0.267 m).
 
