@@ -18,6 +18,8 @@ All requested baseline values are under **Mayo Stream — Reference Values** and
 
 **Weapon Hold** places the sauce bottle: right, up and forward offsets from the eye, plus its radius and length. The bottle is a first-person viewmodel — in third person it would sit inside the capsule, so it is hidden. `Aim Convergence Distance` is the distance along the view axis where the strand crosses the crosshair; without it an off-centre nozzle fires parallel to the view and misses the reticle by the full hold offset (measured: 0.267 m).
 
+Each trigger press starts a new **burst**. `_points` stays one array, but every point carries the index of the burst that emitted it, and array-adjacent points from different bursts are never treated as one strand. `Strand Break Spacing` catches ruptures *inside* a burst: adjacent points further apart than that many `point_spacing`s also break. A released strand stretches on its own as its leading points fall faster — measured, the largest adjacent gap grows to about 5.7x spacing before it lands — so the default of 6.0 sits above normal stretch and only cuts genuinely torn sauce. The burst index is what separates two presses regardless of how short the pause was.
+
 **Aim** holds `Mouse Sensitivity` (degrees per pixel) and `Pitch Limit Degrees` (85° up and down). **Camera** holds the eye height used by both modes plus the third-person shoulder offset — right, up, and distance behind. The strand always leaves along the camera forward axis, vertical aim included.
 
 **Emission Shape** carries two independent jitters: `Yaw Angle Jitter` fans the strand across its axis, while `Speed Magnitude Jitter` (±10%) varies each point's launch speed so points run out of pressure at different distances and land along the axis instead of stacking on one spot.
@@ -39,6 +41,7 @@ godot --headless --path . --script res://tests/profile_runtime.gd -- full      #
 godot --headless --path . --script res://tests/profile_runtime.gd -- noscript  # engine-only floor
 godot --headless --path . --script res://tests/profile_runtime.gd -- stride1
 godot --headless --path . --script res://tests/probe_aim.gd                    # aim, camera modes, jitter axes
+godot --headless --path . --script res://tests/probe_burst.gd                  # burst separation, drag, per-burst bend
 godot --headless --path . --script res://tests/probe_wall.gd                   # wall stain outlives its points
 godot --headless --path . --script res://tests/probe_landing.gd -- full        # landing spread and release retract
 godot --headless --path . --script res://tests/probe_landing.gd -- nojitter    # controls: jitter off
@@ -57,10 +60,12 @@ The runtime profiler reports the per-stage CPU time, raycast count, grid paint/u
 - Each wall packs its six face grids into one atlas image on a custom box `ArrayMesh`, so a wall still costs one draw call.
 - Every cast covers the full path accumulated since that point's previous cast.
 - The seven landing droplets use one fixed 512-instance `MultiMesh` pool instead of creating particle nodes and materials per landing.
+- Strand continuity is decided per adjacent pair, by burst index and by gap. The spacing constraint, the ribbon builders, the inertial bend and the release pressure loss all honour it, so a burst still falling from an earlier press is never joined to, dragged by, or re-decayed alongside the one being fired.
+- The inertial bend and the release pressure loss weight each point by its position *within its own burst*. Measured against the whole array instead, a new burst fired while an older one is still falling bows only 0.066 m instead of 0.266 m, because every new point lands at the high end of the weighting.
 - Emission jitter is taken from the aim's own axes, not the world up axis, which collapses near vertical aim: at 85° of pitch the world-axis version shrinks the fan from 1.03° to 0.09°.
 - Two guards keep the strand root from breaking up close to the camera in first person: points within `Strand Near Cull Distance` are dropped from the ribbon, and inside `min_view_distance` the billboard uses the fixed view axis instead of the point-to-camera vector, which swings violently there. With the current rig neither engages — the root stays 0.73 m from the eye — so they are insurance against a closer muzzle, not active work.
 
-Measured headless on an M-series MacBook Air (`/usr/bin/time`, 618 physics ticks, Godot 4.7.1, interleaved runs per mode), the whole prototype costs a median **2.59 ms of CPU per physics tick** against a 16.67 ms budget, of which 0.55 ms is the empty-scene engine floor. Run-to-run spread is wider than most changes worth making here, so compare medians of interleaved runs, not single runs — neither the speed jitter nor the release pressure loss moved the number measurably. `ribbon_update` is ~50% of the script time and is the only real hot spot; the raycasts are not.
+Measured headless on an M-series MacBook Air (`/usr/bin/time`, 618 physics ticks, Godot 4.7.1, interleaved runs per mode), the whole prototype costs roughly **3 ms of CPU per physics tick** against a 16.67 ms budget, of which about 0.6 ms is the empty-scene engine floor. Absolute numbers drift by 30% or more between sessions on this machine, so treat them as an order of magnitude and compare versions only by interleaving them in one run: on that basis the burst-boundary work costs a median +0.34 ms per tick, split between the per-pair continuity check and the extra ribbon end caps that separate strands necessarily need. Run-to-run spread is wider than most changes worth making here, so compare medians of interleaved runs, not single runs — neither the speed jitter nor the release pressure loss moved the number measurably. `ribbon_update` is ~50% of the script time and is the only real hot spot; the raycasts are not.
 
 Note that the debugger's *Frame Time* reads ~16.6 ms even with the scene entirely disabled — that is the fixed 60 Hz tick period, not a cost.
 

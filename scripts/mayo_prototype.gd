@@ -20,6 +20,7 @@ class MayoPoint:
 	var landing_age := 0.0
 	var fixed_age := 0.0
 	var collision_slot := 0
+	var burst_index := 0
 
 class RibbonPoint:
 	var position := Vector3.ZERO
@@ -49,6 +50,9 @@ class MayoDroplet:
 @export_range(0.0, 0.5, 0.01) var speed_magnitude_jitter := 0.10
 @export_range(0.0, 1.0, 0.01) var inherited_player_velocity := 0.22
 @export_range(32, 512, 1) var maximum_point_count := 192
+## Adjacent points further apart than this many point_spacings are treated as
+## separate strands: the ribbon breaks there and no spacing correction is applied.
+@export_range(1.5, 12.0, 0.1) var strand_break_spacing := 6.0
 
 @export_group("Collision Budget")
 @export_range(1, 4, 1) var raycast_frame_stride := 1
@@ -121,6 +125,7 @@ var _droplet_buffer_dirty := false
 var _droplet_cursor := 0
 var _next_collision_slot := 0
 var _was_firing := false
+var _burst_index := 0
 var _aim_yaw := 0.0
 var _aim_pitch := 0.0
 var _first_person := true
@@ -155,6 +160,8 @@ func _physics_process(delta: float) -> void:
 	_update_aim()
 	var firing := Input.is_action_pressed("fire_mayo")
 	if firing:
+		if not _was_firing:
+			_burst_index += 1
 		_apply_inertial_follow(_player.frame_movement)
 		_emit_distance += extend_speed * delta
 		while _emit_distance >= point_spacing:
@@ -506,21 +513,51 @@ func _emit_point() -> void:
 	point.velocity = direction * speed + Vector3(_player.velocity.x, 0.0, _player.velocity.z) * inherited_player_velocity
 	point.launch_direction = direction
 	point.collision_slot = _next_collision_slot
+	point.burst_index = _burst_index
 	_next_collision_slot = (_next_collision_slot + 1) % maxi(raycast_frame_stride, 1)
 	_points.push_back(point)
+
+
+## Two array-adjacent points are one continuous strand only if they came from
+## the same trigger press and have not been pulled apart into separate blobs.
+func _points_connected(front: MayoPoint, back: MayoPoint) -> bool:
+	return front.burst_index == back.burst_index \
+		and front.position.distance_squared_to(back.position) <= _break_distance_squared()
+
+
+func _break_distance_squared() -> float:
+	var break_distance := point_spacing * strand_break_spacing
+	return break_distance * break_distance
+
+
+## Index range [start, end] of the burst the point at `start` belongs to.
+func _burst_end(start: int) -> int:
+	var burst: int = _points[start].burst_index
+	var last := start
+	while last + 1 < _points.size() and _points[last + 1].burst_index == burst:
+		last += 1
+	return last
 
 
 func _apply_inertial_follow(player_movement: Vector3) -> void:
 	if player_movement.length_squared() <= 0.00000001 or _points.is_empty():
 		return
-	var denominator := maxf(float(_points.size() - 1), 1.0)
-	for i in _points.size():
-		var point := _points[i]
-		if point.phase != PointPhase.AIR:
-			continue
-		var t := float(i) / denominator
-		var follow := lerpf(front_follow, 1.0, pow(t, follow_curve_power))
-		point.position += player_movement * follow
+	# t is the point's position inside its own burst. Measuring it against the
+	# whole array skews the bend of the strand being extended whenever an
+	# earlier burst is still falling. Only the burst still attached to the
+	# muzzle follows the player; detached ones are on their own.
+	var index := 0
+	while index < _points.size():
+		var last := _burst_end(index)
+		if _points[index].burst_index == _burst_index:
+			var denominator := maxf(float(last - index), 1.0)
+			for i in range(index, last + 1):
+				var point := _points[i]
+				if point.phase != PointPhase.AIR:
+					continue
+				var t := float(i - index) / denominator
+				point.position += player_movement * lerpf(front_follow, 1.0, pow(t, follow_curve_power))
+		index = last + 1
 
 
 ## Releasing the trigger drops the line pressure. The front of the strand is
@@ -530,16 +567,24 @@ func _apply_inertial_follow(player_movement: Vector3) -> void:
 func _apply_release_pressure_loss() -> void:
 	if release_pressure_loss <= 0.0 or _points.is_empty():
 		return
-	var denominator := maxf(float(_points.size() - 1), 1.0)
-	for i in _points.size():
-		var point := _points[i]
-		if point.phase != PointPhase.AIR:
-			continue
-		# Index 0 is the front tip; the last index is the muzzle.
-		var t := float(i) / denominator
-		point.velocity *= 1.0 - release_pressure_loss * pow(t, release_pressure_curve)
-		# Nothing is being pushed any more, so gravity takes over immediately.
-		point.powered = false
+	# Only the burst that was being fired loses pressure, and t is measured
+	# inside it: an earlier burst is already coasting and must not be decayed
+	# a second time.
+	var start := 0
+	while start < _points.size():
+		var last := _burst_end(start)
+		if _points[start].burst_index == _burst_index:
+			var denominator := maxf(float(last - start), 1.0)
+			for i in range(start, last + 1):
+				var point := _points[i]
+				if point.phase != PointPhase.AIR:
+					continue
+				# The burst's index 0 is its front tip; its last index is the muzzle.
+				var t := float(i - start) / denominator
+				point.velocity *= 1.0 - release_pressure_loss * pow(t, release_pressure_curve)
+				# Nothing is being pushed any more, so gravity takes over immediately.
+				point.powered = false
+		start = last + 1
 
 
 func _simulate_points(delta: float) -> void:
@@ -620,10 +665,16 @@ func _begin_landing(point: MayoPoint, hit_position: Vector3) -> void:
 func _enforce_spacing_constraint() -> void:
 	if _points.size() < 2:
 		return
+	var break_distance_squared := _break_distance_squared()
 	for _pass in spacing_constraint_passes:
 		for i in _points.size() - 1:
 			var front := _points[i]
 			var back := _points[i + 1]
+			# Inlined _points_connected: this runs once per pair per pass.
+			if front.burst_index != _burst_index \
+					or front.burst_index != back.burst_index \
+					or front.position.distance_squared_to(back.position) > break_distance_squared:
+				continue
 			var direction := (front.launch_direction + back.launch_direction).normalized()
 			if direction.length_squared() < 0.000001:
 				direction = _attack_direction
@@ -674,19 +725,30 @@ func _is_near_camera(point: MayoPoint, camera_position: Vector3) -> bool:
 func _segments_for_phase(phase: PointPhase, camera_position: Vector3) -> Array:
 	var result: Array = []
 	var current: Array = []
+	# Points skipped here are not array-adjacent to the next kept one, so the
+	# run breaks and `previous` is cleared; within a run adjacency holds.
+	var previous: MayoPoint = null
+	var break_distance_squared := _break_distance_squared()
 	for point in _points:
-		if point.phase == phase and not _is_near_camera(point, camera_position):
-			var visual_point := RibbonPoint.new()
-			visual_point.position = point.position
-			if phase == PointPhase.LANDING:
-				var progress := clampf(point.landing_age / landing_transition_time, 0.0, 1.0)
-				visual_point.opacity = 1.0 - progress
-				visual_point.width_scale = 1.0 - progress
-			current.push_back(visual_point)
-		else:
+		if point.phase != phase or _is_near_camera(point, camera_position):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []
+			previous = null
+			continue
+		if previous != null and (previous.burst_index != point.burst_index \
+				or previous.position.distance_squared_to(point.position) > break_distance_squared):
+			if not current.is_empty():
+				result.push_back(current)
+				current = []
+		var visual_point := RibbonPoint.new()
+		visual_point.position = point.position
+		if phase == PointPhase.LANDING:
+			var progress := clampf(point.landing_age / landing_transition_time, 0.0, 1.0)
+			visual_point.opacity = 1.0 - progress
+			visual_point.width_scale = 1.0 - progress
+		current.push_back(visual_point)
+		previous = point
 	if not current.is_empty():
 		result.push_back(current)
 	return result
@@ -695,12 +757,21 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3) -> Array:
 func _shadow_segments(camera_position: Vector3) -> Array:
 	var result: Array = []
 	var current: Array = []
+	var previous: MayoPoint = null
+	var break_distance_squared := _break_distance_squared()
 	for point in _points:
 		if point.phase == PointPhase.WALL_FIXED or _is_near_camera(point, camera_position):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []
+			previous = null
 			continue
+		if previous != null and (previous.burst_index != point.burst_index \
+				or previous.position.distance_squared_to(point.position) > break_distance_squared):
+			if not current.is_empty():
+				result.push_back(current)
+				current = []
+		previous = point
 		var visual_point := RibbonPoint.new()
 		visual_point.position = Vector3(point.position.x, 0.0, point.position.z)
 		if point.phase == PointPhase.LANDING:
