@@ -31,7 +31,7 @@ The mask stores one byte per cell and `contamination.gdshader` samples it with b
 
 Measured: the 0.5 crossing sits on the cell boundary to within 0.000000 m, and over 160,000 floor samples the drawn coverage and `is_mayo_at` disagree on 0.595% of them, all within 0.02 m of a cell edge — the corner bevels that marching squares exists to make.
 
-Each trigger press starts a new **burst**. `_points` stays one array, but every point carries the index of the burst that emitted it, and array-adjacent points from different bursts are never treated as one strand. `Strand Break Spacing` catches ruptures *inside* a burst: adjacent points further apart than that many `point_spacing`s also break. A released strand stretches on its own as its leading points fall faster — measured, the largest adjacent gap grows to about 5.7x spacing before it lands — so the default of 6.0 sits above normal stretch and only cuts genuinely torn sauce. The burst index is what separates two presses regardless of how short the pause was.
+Each trigger press starts a new **burst**. `_points` stays one array, but every point carries the index of the burst that emitted it, and array-adjacent points from different bursts are never treated as one strand. `Strand Break Spacing` catches ruptures *inside* a burst: adjacent points further apart than that many `point_spacing`s also break. It does not apply to the burst still leaving the nozzle, which is continuous sauce by construction. Whipping the aim fans consecutive points sideways, and the spacing constraint only corrects the gap projected *along* the strand, so it cannot close a lateral fan — at an ordinary 480 deg/s flick the gap crosses the threshold, and because the same check also disables the constraint for that pair, the tear could never close again. A released strand stretches on its own as its leading points fall faster — measured, the largest adjacent gap grows to about 5.7x spacing before it lands — so the default of 6.0 sits above normal stretch and only cuts genuinely torn sauce. The burst index is what separates two presses regardless of how short the pause was.
 
 **Aim** holds `Mouse Sensitivity` (degrees per pixel) and `Pitch Limit Degrees` (85° up and down). **Camera** holds the eye height used by both modes plus the third-person shoulder offset — right, up, and distance behind. The strand always leaves along the camera forward axis, vertical aim included.
 
@@ -54,6 +54,7 @@ godot --headless --path . --script res://tests/profile_runtime.gd -- full      #
 godot --headless --path . --script res://tests/profile_runtime.gd -- noscript  # engine-only floor
 godot --headless --path . --script res://tests/profile_runtime.gd -- stride1
 godot --headless --path . --script res://tests/probe_aim.gd                    # aim, camera modes, jitter axes
+godot --headless --path . --script res://tests/probe_whip.gd                   # fast turns must not tear the strand
 godot --headless --path . --script res://tests/probe_slip.gd                   # walk/run, fall timings, lockout, immunity
 godot --headless --path . --script res://tests/probe_grid.gd                   # shader cut, boundary vs slip test
 godot --headless --path . --script res://tests/probe_burst.gd                  # burst separation, drag, per-burst bend
