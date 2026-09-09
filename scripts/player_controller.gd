@@ -4,7 +4,7 @@ extends CharacterBody3D
 ## Walk/run movement plus the slip-and-fall state machine. Falling and standing
 ## up lock out movement and firing; the prototype reads `is_incapacitated()`.
 
-enum State { NORMAL, FALLING, STANDING_UP }
+enum State { NORMAL, FALLING, DOWN, STANDING_UP }
 
 @export_group("Movement")
 @export_range(0.5, 12.0, 0.1, "suffix:m/s") var walk_speed := 2.6
@@ -13,6 +13,8 @@ enum State { NORMAL, FALLING, STANDING_UP }
 
 @export_group("Slip and Fall")
 @export_range(0.05, 3.0, 0.05, "suffix:s") var fall_duration := 0.5
+## Beat spent flat on the floor between hitting it and pushing back up.
+@export_range(0.0, 3.0, 0.05, "suffix:s") var down_duration := 0.5
 @export_range(0.05, 3.0, 0.05, "suffix:s") var stand_up_duration := 0.5
 ## Grace period after standing up, so the same patch cannot trip you again the
 ## instant you are back on your feet.
@@ -80,6 +82,8 @@ func fall_tilt() -> float:
 	match state:
 		State.FALLING:
 			return clampf(_state_timer / maxf(fall_duration, 0.0001), 0.0, 1.0)
+		State.DOWN:
+			return 1.0
 		State.STANDING_UP:
 			return 1.0 - clampf(_state_timer / maxf(stand_up_duration, 0.0001), 0.0, 1.0)
 		_:
@@ -89,6 +93,9 @@ func fall_tilt() -> float:
 func _advance_fall(delta: float) -> void:
 	_state_timer += delta
 	if state == State.FALLING and _state_timer >= fall_duration:
+		state = State.DOWN
+		_state_timer = 0.0
+	elif state == State.DOWN and _state_timer >= down_duration:
 		state = State.STANDING_UP
 		_state_timer = 0.0
 	elif state == State.STANDING_UP and _state_timer >= stand_up_duration:

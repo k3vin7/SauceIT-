@@ -51,8 +51,8 @@ func _run() -> void:
 	scene.set_process_unhandled_input(false)
 	scene.debug_set_aim(0.0, 0.0)
 	var player: MayoPlayer = scene._player
-	print("walk %.1f m/s, run %.1f m/s, fall %.2f s, stand up %.2f s, immunity %.2f s" % [
-		player.walk_speed, player.run_speed, player.fall_duration,
+	print("walk %.1f m/s, run %.1f m/s, fall %.2f s, down %.2f s, stand up %.2f s, immunity %.2f s" % [
+		player.walk_speed, player.run_speed, player.fall_duration, player.down_duration,
 		player.stand_up_duration, player.slip_immunity_time])
 
 	# --- walking over mayo must not trip ---
@@ -99,22 +99,29 @@ func _run() -> void:
 	var fired := false
 	var moved := 0.0
 	var frames_down := 0
+	var flat_frames := 0
 	Input.action_press("fire_mayo")
 	scene._points.clear()
 	while player.is_incapacitated() and frames_down < 300:
 		await physics_frame
 		frames_down += 1
 		moved = maxf(moved, start_position.distance_to(player.global_position))
+		if is_equal_approx(player.fall_tilt(), 1.0):
+			flat_frames += 1
 		# Firing legitimately resumes on the very frame the player stands up, so
 		# only count sauce emitted while still down.
 		if player.is_incapacitated() and not scene._points.is_empty():
 			fired = true
 	_release_all()
-	var expected := int(round((player.fall_duration + player.stand_up_duration) * 60.0))
-	print("down for %d frames (expected ~%d), moved %.3f m, emitted sauce=%s" % [
-		frames_down, expected, moved, str(fired)])
-	_check(absi(frames_down - expected) <= 2,
+	var expected := int(round((player.fall_duration + player.down_duration + player.stand_up_duration) * 60.0))
+	print("down for %d frames (expected ~%d), flat for %d, moved %.3f m, emitted sauce=%s" % [
+		frames_down, expected, flat_frames, moved, str(fired)])
+	_check(absi(frames_down - expected) <= 3,
 		"down for %d frames, expected about %d" % [frames_down, expected])
+	# The capsule must stay flat through the whole lying-down beat.
+	_check(flat_frames >= int(round(player.down_duration * 60.0)) - 3,
+		"the player was only flat for %d frames, expected at least the %.2f s down beat" % [
+			flat_frames, player.down_duration])
 	_check(moved < 0.05, "the player moved %.3f m while down" % moved)
 	_check(not fired, "the player kept firing while down")
 

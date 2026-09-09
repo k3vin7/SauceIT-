@@ -21,7 +21,7 @@ All requested baseline values are under **Mayo Stream — Reference Values** and
 
 ### Slipping
 
-`MayoPlayer` walks by default and runs while `Shift` is held; both speeds are exported, along with the fall and stand-up durations and the immunity granted after standing up. Running onto a painted cell trips the player: the test is a plain cell lookup on the same grid the floor draws, with no probability in it. Walking never trips, and standing still with `Shift` held is not running, so it cannot trip you either. While down, movement and firing are both locked out.
+`MayoPlayer` walks by default and runs while `Shift` is held. Both speeds are exported, along with the three beats of going down — the fall, the pause spent flat on the floor, and pushing back up — and the immunity granted after standing up. Running onto a painted cell trips the player: the test is a plain cell lookup on the same grid the floor draws, with no probability in it. Walking never trips, and standing still with `Shift` held is not running, so it cannot trip you either. While down, movement and firing are both locked out.
 
 ### Contamination grid
 
