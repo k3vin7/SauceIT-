@@ -13,7 +13,12 @@ func _ready() -> void:
 
 func _physics_process(delta: float) -> void:
 	var input_vector := Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
-	var desired := Vector3(input_vector.x, 0.0, input_vector.y) * move_speed
+	# Movement is relative to where the player is facing, which the prototype
+	# drives from the aim yaw. Taking the input as a world direction only worked
+	# while the camera was locked to yaw 0.
+	var desired := global_basis * Vector3(input_vector.x, 0.0, input_vector.y)
+	desired.y = 0.0
+	desired *= move_speed
 	velocity.x = move_toward(velocity.x, desired.x, acceleration * delta)
 	velocity.z = move_toward(velocity.z, desired.z, acceleration * delta)
 	velocity.y = 0.0

@@ -4,6 +4,7 @@ const StreamVisualScript := preload("res://scripts/stream_visual.gd")
 const FloorScript := preload("res://scripts/floor_contamination.gd")
 const PlayerScript := preload("res://scripts/player_controller.gd")
 const WallScript := preload("res://scripts/contaminable_object.gd")
+const CrosshairScript := preload("res://scripts/crosshair.gd")
 
 enum PointPhase { AIR, WALL_FIXED, LANDING }
 
@@ -77,12 +78,23 @@ class MayoDroplet:
 @export var start_in_first_person := true
 @export_range(35.0, 90.0, 1.0, "suffix:°") var camera_fov := 74.0
 @export_range(0.2, 2.0, 0.01, "suffix:m") var eye_height := 0.52
-@export_range(-1.5, 1.5, 0.01, "suffix:m") var shoulder_offset_right := 0.42
-@export_range(-1.0, 1.5, 0.01, "suffix:m") var shoulder_offset_up := 0.16
-@export_range(0.5, 5.0, 0.05, "suffix:m") var shoulder_distance := 1.75
+@export_range(-1.5, 1.5, 0.01, "suffix:m") var shoulder_offset_right := 0.55
+@export_range(-1.0, 1.5, 0.01, "suffix:m") var shoulder_offset_up := 0.34
+@export_range(0.5, 5.0, 0.05, "suffix:m") var shoulder_distance := 2.40
 ## Points nearer than this to the camera are dropped from the ribbon so the
 ## strand root does not fill the screen in first person. 0 disables it.
 @export_range(0.0, 1.0, 0.01, "suffix:m") var strand_near_cull_distance := 0.34
+
+@export_group("Weapon Hold")
+@export_range(-0.6, 0.6, 0.01, "suffix:m") var weapon_offset_right := 0.155
+@export_range(-0.6, 0.3, 0.01, "suffix:m") var weapon_offset_up := -0.15
+@export_range(0.1, 1.0, 0.01, "suffix:m") var weapon_offset_forward := 0.28
+@export_range(0.02, 0.14, 0.005, "suffix:m") var bottle_radius := 0.052
+@export_range(0.08, 0.5, 0.01, "suffix:m") var bottle_length := 0.20
+## The strand is launched at the point the crosshair marks, this far down the
+## camera forward axis, so an off-centre nozzle still fires through the centre.
+@export_range(0.5, 8.0, 0.05, "suffix:m") var aim_convergence_distance := 2.2
+@export var show_crosshair := true
 
 var _points: Array[MayoPoint] = []
 var _emit_distance := 0.0
@@ -92,6 +104,8 @@ var _player: MayoPlayer
 var _muzzle: Marker3D
 var _aim_pivot: Node3D
 var _body_mesh: MeshInstance3D
+var _crosshair: Control
+var _weapon: Node3D
 var _camera: Camera3D
 var _floor: FloorContamination
 var _walls: Array[ContaminableObject] = []
@@ -202,6 +216,10 @@ func set_first_person(enabled: bool) -> void:
 	_first_person = enabled
 	if is_instance_valid(_body_mesh):
 		_body_mesh.visible = not enabled
+	# The bottle is a first-person viewmodel held at eye height; in third person
+	# it would sit inside the capsule, so it is hidden rather than mispositioned.
+	if is_instance_valid(_weapon):
+		_weapon.visible = enabled
 	_update_camera()
 
 
@@ -273,6 +291,16 @@ func _build_world() -> void:
 	_landing_visual = _make_stream_visual("LandingRibbon", landing_material)
 	_shadow_visual = _make_stream_visual("ProjectedShadow", shadow_material)
 	_build_droplet_pool(mayo_material)
+	_build_crosshair()
+
+
+func _build_crosshair() -> void:
+	var layer := CanvasLayer.new()
+	layer.name = "HUD"
+	add_child(layer)
+	_crosshair = CrosshairScript.new()
+	_crosshair.visible = show_crosshair
+	layer.add_child(_crosshair)
 
 
 func _build_environment() -> void:
@@ -324,25 +352,65 @@ func _build_player_body() -> void:
 	_aim_pivot.position = Vector3(0.0, eye_height, 0.0)
 	_player.add_child(_aim_pivot)
 
-	var nozzle := MeshInstance3D.new()
-	nozzle.name = "Nozzle"
-	var nozzle_mesh := CylinderMesh.new()
-	nozzle_mesh.top_radius = 0.055
-	nozzle_mesh.bottom_radius = 0.075
-	nozzle_mesh.height = 0.28
-	nozzle.mesh = nozzle_mesh
-	nozzle.rotation_degrees.x = 90.0
-	nozzle.position = Vector3(0.0, -0.06, -0.30)
-	var nozzle_material := StandardMaterial3D.new()
-	nozzle_material.albedo_color = Color("d9e2e8")
-	nozzle_material.roughness = 0.38
-	nozzle.material_override = nozzle_material
-	_aim_pivot.add_child(nozzle)
+	_build_weapon()
+
+
+## Sauce bottle viewmodel, held to the lower right and angled so its nozzle
+## points at the crosshair rather than straight down the view axis.
+func _build_weapon() -> void:
+	var hold := Vector3(weapon_offset_right, weapon_offset_up, -weapon_offset_forward)
+	_weapon = Node3D.new()
+	_weapon.name = "SauceBottle"
+	# The convergence point sits on the view axis, so pointing the bottle at it
+	# in pivot space is what visually lines the nozzle up with the crosshair.
+	var to_crosshair := Vector3(0.0, 0.0, -aim_convergence_distance) - hold
+	_weapon.transform = Transform3D(Basis.looking_at(to_crosshair, Vector3.UP), hold)
+	_aim_pivot.add_child(_weapon)
+
+	var body_color := Color("cdc4b4")
+	var cap_color := Color("2f3a47")
+	var label_color := Color("c25b3f")
+	var cursor := 0.0
+	# Squeeze-bottle silhouette: tapering body, a label band, then a dark cap and
+	# tip that clear the body so the nozzle reads against the scene.
+	cursor = _add_bottle_part("Body", bottle_radius, bottle_radius * 0.72,
+		bottle_length, cursor, body_color, 0.45, 16)
+	_add_bottle_part("Label", bottle_radius * 1.04, bottle_radius * 0.95,
+		bottle_length * 0.3, bottle_length * 0.22, label_color, 0.6, 16)
+	cursor = _add_bottle_part("Shoulder", bottle_radius * 0.72, bottle_radius * 0.4,
+		bottle_length * 0.26, cursor, body_color, 0.45, 14)
+	cursor = _add_bottle_part("Cap", bottle_radius * 0.46, bottle_radius * 0.42,
+		bottle_length * 0.26, cursor, cap_color, 0.55, 14)
+	cursor = _add_bottle_part("Tip", bottle_radius * 0.42, bottle_radius * 0.16,
+		bottle_length * 0.22, cursor, cap_color, 0.5, 12)
 
 	_muzzle = Marker3D.new()
 	_muzzle.name = "Muzzle"
-	_muzzle.position = Vector3(0.0, -0.06, -0.44)
-	_aim_pivot.add_child(_muzzle)
+	_muzzle.position = Vector3(0.0, 0.0, -cursor)
+	_weapon.add_child(_muzzle)
+
+
+## Adds one cylinder section along the bottle axis starting at `offset`, and
+## returns the offset of its far end.
+func _add_bottle_part(part_name: String, back_radius: float, front_radius: float,
+		length: float, offset: float, color: Color, roughness: float, segments: int) -> float:
+	var part := MeshInstance3D.new()
+	part.name = part_name
+	var mesh := CylinderMesh.new()
+	# The mesh is built along +Y then rotated onto -Z, so its "top" faces forward.
+	mesh.top_radius = front_radius
+	mesh.bottom_radius = back_radius
+	mesh.height = length
+	mesh.radial_segments = segments
+	part.mesh = mesh
+	part.rotation_degrees.x = -90.0
+	part.position = Vector3(0.0, 0.0, -(offset + length * 0.5))
+	var material := StandardMaterial3D.new()
+	material.albedo_color = color
+	material.roughness = roughness
+	part.material_override = material
+	_weapon.add_child(part)
+	return offset + length
 
 
 func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3, color: Color) -> void:
@@ -422,11 +490,14 @@ func _emit_point() -> void:
 	# Both jitters use the aim's own axes rather than the world up axis, which
 	# degenerates to a zero vector when aiming straight up or down.
 	var aim_basis := _aim_basis()
-	var angle := _rng.randf_range(-yaw_angle_jitter, yaw_angle_jitter)
-	var direction := _attack_direction.rotated(aim_basis.y, angle).normalized()
-	var lateral := aim_basis.x
 	var jitter := _rng.randf_range(-lateral_position_jitter, lateral_position_jitter)
-	point.position = _muzzle.global_position + direction * muzzle_forward_offset + lateral * jitter
+	point.position = _muzzle.global_position + _attack_direction * muzzle_forward_offset \
+		+ aim_basis.x * jitter
+	# The nozzle is held off to the side, so the strand is launched at the point
+	# the crosshair marks rather than parallel to the view axis.
+	var convergence := _aim_pivot.global_position + _attack_direction * aim_convergence_distance
+	var angle := _rng.randf_range(-yaw_angle_jitter, yaw_angle_jitter)
+	var direction := (convergence - point.position).normalized().rotated(aim_basis.y, angle).normalized()
 	point.last_collision_position = point.position
 	# Speed jitter is independent of the yaw jitter above: it spreads where a
 	# point runs out of pressure, and so spreads the landing point along the

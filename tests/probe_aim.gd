@@ -152,6 +152,71 @@ func _run() -> void:
 		"billboard vector still swings for points straddling the camera")
 	_check(swing_a.distance_to(-forward) < 0.001, "billboard fallback is not the view axis")
 
+	# --- movement must follow the aim, not the world axes ---
+	scene.set_first_person(true)
+	for yaw in [0.0, 90.0, 180.0, -90.0, 37.0]:
+		scene.debug_set_aim(yaw, 0.0)
+		await physics_frame
+		var aim_forward: Vector3 = scene._attack_direction
+		var aim_right: Vector3 = scene._aim_basis().x
+		for move in [["move_forward", aim_forward], ["move_backward", -aim_forward],
+				["move_right", aim_right], ["move_left", -aim_right]]:
+			scene._player.velocity = Vector3.ZERO
+			scene._player.global_position = Vector3(0.0, 0.64, 1.55)
+			Input.action_press(move[0])
+			for _frame in 30:
+				await physics_frame
+			Input.action_release(move[0])
+			var moved: Vector3 = scene._player.global_position - Vector3(0.0, 0.64, 1.55)
+			moved.y = 0.0
+			var expected: Vector3 = move[1]
+			expected.y = 0.0
+			expected = expected.normalized()
+			_check(moved.length() > 0.05, "%s produced no movement at yaw %.0f" % [move[0], yaw])
+			_check(moved.normalized().dot(expected) > 0.99,
+				"%s moved %.2f deg off the aim at yaw %.0f" % [
+					move[0], rad_to_deg(moved.normalized().angle_to(expected)), yaw])
+	for _frame in 10:
+		await physics_frame
+
+	# --- crosshair marks the centre, and the strand converges on it ---
+	scene.set_first_person(true)
+	scene.debug_set_aim(0.0, 0.0)
+	await physics_frame
+	await process_frame
+	_check(scene._crosshair != null and scene._crosshair.is_inside_tree(), "no crosshair was built")
+	_check(scene._crosshair.get_parent() is CanvasLayer, "crosshair is not on a CanvasLayer")
+	var viewport_size: Vector2 = scene.get_viewport().get_visible_rect().size
+	_check(scene._crosshair.size.distance_to(viewport_size) < 0.001,
+		"crosshair does not span the viewport, so its centre is not the screen centre")
+
+	for yaw in [0.0, 90.0, -140.0]:
+		for pitch in [0.0, 40.0, -40.0]:
+			scene.debug_set_aim(yaw, pitch)
+			await physics_frame
+			var pivot: Vector3 = scene._aim_pivot.global_position
+			var axis: Vector3 = scene._attack_direction
+			# The nozzle is held to the right of the view axis.
+			var muzzle_offset: Vector3 = scene._muzzle.global_position - pivot
+			_check(muzzle_offset.dot(scene._aim_basis().x) > 0.05,
+				"muzzle is not held right of centre at yaw %.0f pitch %.0f" % [yaw, pitch])
+			_check(muzzle_offset.dot(scene._aim_basis().y) < 0.0,
+				"muzzle is not held below the view axis at yaw %.0f pitch %.0f" % [yaw, pitch])
+			# Launched strand must cross the crosshair point, not run parallel.
+			scene._points.clear()
+			for _i in 60:
+				scene._emit_point()
+			var crosshair_point: Vector3 = pivot + axis * scene.aim_convergence_distance
+			var worst := 0.0
+			for point in scene._points:
+				var to_target: Vector3 = crosshair_point - point.position
+				var along: float = to_target.dot(point.launch_direction)
+				var miss: float = (to_target - point.launch_direction * along).length()
+				worst = maxf(worst, miss)
+			_check(worst < 0.06,
+				"strand misses the crosshair by %.3f m at yaw %.0f pitch %.0f" % [worst, yaw, pitch])
+	scene._points.clear()
+
 	if failures.is_empty():
 		print("MAYO_AIM_OK")
 		quit(0)

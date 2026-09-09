@@ -8,13 +8,15 @@ Godot 4 3D prototype for validating one continuous viscous mayonnaise strand, pe
 2. Run the project (`F6`/`F5`). The main scene is already configured.
 3. Move with `WASD`, aim with the mouse, and hold the left mouse button to fire. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
 
-The mouse is captured and there is no on-screen cursor: aiming accumulates yaw and pitch from relative mouse motion, FPS-style. Both camera modes run the same aim code and differ only in where the camera sits, so switching does not change how the weapon points.
+The mouse is captured and there is no on-screen cursor: aiming accumulates yaw and pitch from relative mouse motion, FPS-style, and a fixed crosshair marks the centre of the screen. `WASD` moves relative to where you are facing. Both camera modes run the same aim code and differ only in where the camera sits, so switching does not change how the weapon points.
 
 ## Tune
 
 Select the root `MayoPrototype` node in `main.tscn`. Its Inspector groups expose the reference stream values, per-point time/distance lifetime switches, gravity, inertial bend, grid bridge settings, and third-person camera angle/distance.
 
 All requested baseline values are under **Mayo Stream — Reference Values** and **Landing and Grid**. The generated `FloorContamination` node and each `ContaminableObject` wall expose the same cell/brush settings, and `MayoPrototype` pushes its `Landing and Grid` values into all of them on ready.
+
+**Weapon Hold** places the sauce bottle: right, up and forward offsets from the eye, plus its radius and length. The bottle is a first-person viewmodel — in third person it would sit inside the capsule, so it is hidden. `Aim Convergence Distance` is the distance along the view axis where the strand crosses the crosshair; without it an off-centre nozzle fires parallel to the view and misses the reticle by the full hold offset (measured: 0.267 m).
 
 **Aim** holds `Mouse Sensitivity` (degrees per pixel) and `Pitch Limit Degrees` (85° up and down). **Camera** holds the eye height used by both modes plus the third-person shoulder offset — right, up, and distance behind. The strand always leaves along the camera forward axis, vertical aim included.
 
@@ -58,7 +60,7 @@ The runtime profiler reports the per-stage CPU time, raycast count, grid paint/u
 - Emission jitter is taken from the aim's own axes, not the world up axis, which collapses near vertical aim: at 85° of pitch the world-axis version shrinks the fan from 1.03° to 0.09°.
 - Two guards keep the strand root from breaking up close to the camera in first person: points within `Strand Near Cull Distance` are dropped from the ribbon, and inside `min_view_distance` the billboard uses the fixed view axis instead of the point-to-camera vector, which swings violently there. With the current rig neither engages — the root stays 0.73 m from the eye — so they are insurance against a closer muzzle, not active work.
 
-Measured headless on an M-series MacBook Air (`/usr/bin/time`, 618 physics ticks, Godot 4.7.1, five interleaved runs per mode), the whole prototype costs a median **2.35 ms of CPU per physics tick** (range 2.14–2.91) against a 16.67 ms budget, of which 0.70 ms is the empty-scene engine floor. Run-to-run spread is wider than most changes worth making here, so compare medians of interleaved runs, not single runs — neither the speed jitter nor the release pressure loss moved the number measurably. `ribbon_update` is ~50% of the script time and is the only real hot spot; the raycasts are not.
+Measured headless on an M-series MacBook Air (`/usr/bin/time`, 618 physics ticks, Godot 4.7.1, interleaved runs per mode), the whole prototype costs a median **2.59 ms of CPU per physics tick** against a 16.67 ms budget, of which 0.55 ms is the empty-scene engine floor. Run-to-run spread is wider than most changes worth making here, so compare medians of interleaved runs, not single runs — neither the speed jitter nor the release pressure loss moved the number measurably. `ribbon_update` is ~50% of the script time and is the only real hot spot; the raycasts are not.
 
 Note that the debugger's *Frame Time* reads ~16.6 ms even with the scene entirely disabled — that is the fixed 60 Hz tick period, not a cost.
 
