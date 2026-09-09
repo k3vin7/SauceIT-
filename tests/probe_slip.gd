@@ -2,6 +2,7 @@ extends SceneTree
 
 # Slip system checks:
 #   * running over painted floor trips the player, walking over it does not
+#   * a slip starts with a stumble, not the fall itself
 #   * movement and firing are locked out until the player is back up
 #   * the fall and stand-up take their configured times
 #   * with no grace period, holding run on mayo puts you straight back down,
@@ -114,6 +115,12 @@ func _run() -> void:
 	var view_up := -2.0
 	var body_behind := -2.0
 	var third_person_up := 2.0
+	var stumble_frames := 0
+	var stumble_body_sway := 0.0
+	var stumble_camera_shake := 0.0
+	var stumble_tilt := 0.0
+	var stumbled_first := player.state == MayoPlayer.State.STUMBLE
+	var locked_through_stumble := true
 	Input.action_press("fire_mayo")
 	scene._points.clear()
 	while player.is_incapacitated() and frames_down < 300:
@@ -134,6 +141,14 @@ func _run() -> void:
 			third_person_up = (-scene._camera.global_basis.z).y
 			scene.set_first_person(true)
 			await process_frame
+		if player.state == MayoPlayer.State.STUMBLE:
+			stumble_frames += 1
+			stumble_body_sway = maxf(stumble_body_sway, absf(scene._body_mesh.rotation.z))
+			# A level aim keeps the camera's right vector horizontal, so any Y on
+			# it is the shake rolling the view.
+			stumble_camera_shake = maxf(stumble_camera_shake, absf(scene._camera.global_basis.x.y))
+			stumble_tilt = maxf(stumble_tilt, player.fall_tilt())
+			locked_through_stumble = locked_through_stumble and player.is_incapacitated()
 		if player.state == MayoPlayer.State.STANDING_UP:
 			resting_speed = maxf(resting_speed, Vector3(player.velocity.x, 0.0, player.velocity.z).length())
 		if is_equal_approx(player.fall_tilt(), 1.0):
@@ -143,15 +158,30 @@ func _run() -> void:
 		if player.is_incapacitated() and not scene._points.is_empty():
 			fired = true
 	_release_all()
-	var expected := int(round((player.fall_duration + player.down_duration + player.stand_up_duration) * 60.0))
+	var expected := int(round((player.stumble_duration + player.fall_duration
+		+ player.down_duration + player.stand_up_duration) * 60.0))
 	var slide: Vector3 = player.global_position - start_position
 	slide.y = 0.0
 	print("down for %d frames (expected ~%d), flat for %d, skidded %.3f m, %.1f deg off travel, speed left %.3f m/s, emitted sauce=%s" % [
 		frames_down, expected, flat_frames, slide.length(),
 		rad_to_deg(slide.normalized().angle_to(slide_direction)) if slide.length() > 0.001 else 0.0,
 		resting_speed, str(fired)])
-	_check(absi(frames_down - expected) <= 3,
+	_check(absi(frames_down - expected) <= 4,
 		"down for %d frames, expected about %d" % [frames_down, expected])
+	var stumble_expected := int(round(player.stumble_duration * 60.0))
+	print("stumble: %d frames (expected ~%d), first=%s, locked=%s, capsule swayed %.1f deg, view shake %.3f, tilt %.2f" % [
+		stumble_frames, stumble_expected, str(stumbled_first), str(locked_through_stumble),
+		rad_to_deg(stumble_body_sway), stumble_camera_shake, stumble_tilt])
+	_check(stumbled_first, "the player went straight to falling without stumbling first")
+	_check(absi(stumble_frames - stumble_expected) <= 2,
+		"stumbled for %d frames, expected about %d" % [stumble_frames, stumble_expected])
+	_check(locked_through_stumble, "controls were still live during the stumble")
+	_check(stumble_body_sway > deg_to_rad(scene.stumble_body_roll_degrees * 0.5),
+		"the capsule only swayed %.1f deg while stumbling" % rad_to_deg(stumble_body_sway))
+	_check(stumble_camera_shake > 0.02,
+		"the view barely shook while stumbling (%.3f)" % stumble_camera_shake)
+	_check(stumble_tilt < 0.01,
+		"the capsule was already tipping over during the stumble (tilt %.2f)" % stumble_tilt)
 	# The capsule must stay flat through the whole lying-down beat.
 	_check(flat_frames >= int(round(player.down_duration * 60.0)) - 3,
 		"the player was only flat for %d frames, expected at least the %.2f s down beat" % [

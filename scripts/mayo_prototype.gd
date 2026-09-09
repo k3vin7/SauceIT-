@@ -94,6 +94,10 @@ class MayoDroplet:
 @export_range(0.0, 100.0, 1.0, "suffix:°") var fall_camera_roll_degrees := 14.0
 @export_range(0.0, 90.0, 1.0, "suffix:°") var fall_camera_pitch_degrees := 80.0
 @export_range(-60.0, 60.0, 1.0, "suffix:°") var fall_body_roll_degrees := 12.0
+## How far the capsule and the view sway while catching their balance.
+@export_range(0.0, 60.0, 1.0, "suffix:°") var stumble_body_roll_degrees := 17.0
+@export_range(0.0, 30.0, 0.5, "suffix:°") var stumble_camera_roll_degrees := 7.0
+@export_range(0.0, 20.0, 0.5, "suffix:°") var stumble_camera_pitch_degrees := 3.0
 @export_range(0.05, 1.0, 0.01, "suffix:m") var fall_camera_height := 0.28
 
 @export_group("Weapon Hold")
@@ -217,7 +221,10 @@ func _update_fallen_body() -> void:
 	# tips about its local X: +90 degrees takes its top to +Z, behind the player.
 	var tilt := _player.fall_tilt()
 	_body_mesh.rotation.x = deg_to_rad(90.0) * tilt
-	_body_mesh.rotation.z = deg_to_rad(fall_body_roll_degrees) * tilt
+	# The stumble sways the capsule side to side before it goes over; the two
+	# never overlap, since fall_tilt is 0 while stumbling.
+	_body_mesh.rotation.z = deg_to_rad(fall_body_roll_degrees) * tilt \
+		+ deg_to_rad(stumble_body_roll_degrees) * _player.stumble_wobble()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -473,7 +480,7 @@ func _update_slip() -> void:
 	if not _player.can_slip() or not _player.is_running():
 		return
 	if _floor.is_mayo_at(_player.global_position):
-		_player.begin_fall()
+		_player.begin_slip()
 
 
 ## Orientation of the aim, shared by the camera and the strand direction.
@@ -488,6 +495,12 @@ func _update_camera() -> void:
 	var aim_basis := _aim_basis()
 	var eye := _player.global_position + Vector3.UP * eye_height
 	var tilt := _player.fall_tilt()
+	# The stumble shakes the view in both camera modes; it is small enough that
+	# the shoulder camera keeps the capsule in frame.
+	var wobble := _player.stumble_wobble()
+	if wobble != 0.0:
+		aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(stumble_camera_roll_degrees) * wobble)
+		aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(stumble_camera_pitch_degrees) * wobble)
 	if _first_person:
 		if tilt > 0.0:
 			# Landing on your back means you end up looking up, so the view

@@ -4,7 +4,7 @@ extends CharacterBody3D
 ## Walk/run movement plus the slip-and-fall state machine. Falling and standing
 ## up lock out movement and firing; the prototype reads `is_incapacitated()`.
 
-enum State { NORMAL, FALLING, DOWN, STANDING_UP }
+enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 
 @export_group("Movement")
 @export_range(0.5, 12.0, 0.1, "suffix:m/s") var walk_speed := 2.6
@@ -12,6 +12,11 @@ enum State { NORMAL, FALLING, DOWN, STANDING_UP }
 @export_range(1.0, 40.0, 0.5) var acceleration := 18.0
 
 @export_group("Slip and Fall")
+## Catching your balance before you actually go over. Controls are already
+## locked here; this is where an arm-flailing animation would go.
+@export_range(0.05, 1.0, 0.01, "suffix:s") var stumble_duration := 0.18
+## How many full side-to-side swings the stumble makes.
+@export_range(0.5, 5.0, 0.25) var stumble_wobble_cycles := 1.5
 @export_range(0.05, 3.0, 0.01, "suffix:s") var fall_duration := 0.18
 ## Beat spent flat on the floor between hitting it and pushing back up.
 @export_range(0.0, 3.0, 0.01, "suffix:s") var down_duration := 0.5
@@ -74,16 +79,27 @@ func can_slip() -> bool:
 	return state == State.NORMAL
 
 
-func begin_fall() -> void:
+## Slipping starts with a stumble, not the fall itself.
+func begin_slip() -> void:
 	if state != State.NORMAL:
 		return
-	state = State.FALLING
+	state = State.STUMBLE
 	_state_timer = 0.0
+
+
+## -1..1 side-to-side sway while catching your balance, 0 at any other time.
+## Starts and ends at zero so it blends into the fall.
+func stumble_wobble() -> float:
+	if state != State.STUMBLE:
+		return 0.0
+	return sin(_state_timer / maxf(stumble_duration, 0.0001) * TAU * stumble_wobble_cycles)
 
 
 ## 0 upright, 1 flat on the floor. Drives both the capsule and the camera.
 func fall_tilt() -> float:
 	match state:
+		State.STUMBLE:
+			return 0.0
 		State.FALLING:
 			return clampf(_state_timer / maxf(fall_duration, 0.0001), 0.0, 1.0)
 		State.DOWN:
@@ -96,7 +112,10 @@ func fall_tilt() -> float:
 
 func _advance_fall(delta: float) -> void:
 	_state_timer += delta
-	if state == State.FALLING and _state_timer >= fall_duration:
+	if state == State.STUMBLE and _state_timer >= stumble_duration:
+		state = State.FALLING
+		_state_timer = 0.0
+	elif state == State.FALLING and _state_timer >= fall_duration:
 		state = State.DOWN
 		_state_timer = 0.0
 	elif state == State.DOWN and _state_timer >= down_duration:
