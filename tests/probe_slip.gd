@@ -4,7 +4,8 @@ extends SceneTree
 #   * running over painted floor trips the player, walking over it does not
 #   * movement and firing are locked out until the player is back up
 #   * the fall and stand-up take their configured times
-#   * immunity stops an immediate second fall on the same patch
+#   * with no grace period, holding run on mayo puts you straight back down,
+#     while letting go of it makes the same patch harmless
 #   * the trip happens on the cell the floor says is painted
 
 var failures: Array[String] = []
@@ -39,7 +40,6 @@ func _reset(scene) -> void:
 	_release_all()
 	scene._player.state = 0
 	scene._player._state_timer = 0.0
-	scene._player._immunity_timer = 0.0
 	scene._player.velocity = Vector3.ZERO
 	scene._player.global_position = Vector3(0.0, 0.64, 3.0)
 
@@ -51,9 +51,9 @@ func _run() -> void:
 	scene.set_process_unhandled_input(false)
 	scene.debug_set_aim(0.0, 0.0)
 	var player: MayoPlayer = scene._player
-	print("walk %.1f m/s, run %.1f m/s, fall %.2f s, down %.2f s, stand up %.2f s, immunity %.2f s" % [
+	print("walk %.1f m/s, run %.1f m/s, fall %.2f s, down %.2f s, stand up %.2f s" % [
 		player.walk_speed, player.run_speed, player.fall_duration, player.down_duration,
-		player.stand_up_duration, player.slip_immunity_time])
+		player.stand_up_duration])
 
 	# --- walking over mayo must not trip ---
 	_reset(scene)
@@ -176,21 +176,58 @@ func _run() -> void:
 		"the shoulder camera tilted to %.2f with the fall instead of staying upright" % third_person_up)
 	_check(not fired, "the player kept firing while down")
 
-	# --- immunity prevents an instant second fall on the same spot ---
+	# --- no grace period: keep sprinting on mayo and you go straight back down,
+	# but let go of the run key and you are fine ---
 	_check(player.state == MayoPlayer.State.NORMAL, "the player did not get back up")
-	_check(not player.can_slip(), "immunity did not start after standing up")
+	_reset(scene)
+	_paint_patch(scene, 0.0)
+	_check(scene._floor.is_mayo_at(player.global_position),
+		"the player is not standing on painted floor, so this case tests nothing")
+
 	Input.action_press("move_forward")
 	Input.action_press("run")
-	var immune_frames := 0
-	while not player.can_slip() and immune_frames < 300:
+	# Count entries into FALLING, not the incapacitated edge: the player is back
+	# on their feet for less than a frame before going down again, so a
+	# not-incapacitated frame is never observed.
+	var falls := 0
+	var upright_frames := 0
+	var was_falling := false
+	var loop_start: Vector3 = player.global_position
+	for _frame in 400:
 		await physics_frame
-		immune_frames += 1
+		var falling_now := player.state == MayoPlayer.State.FALLING
+		if falling_now and not was_falling:
+			falls += 1
+		was_falling = falling_now
+		if player.state == MayoPlayer.State.NORMAL:
+			upright_frames += 1
+		if falls >= 3:
+			break
+	var travelled: Vector3 = player.global_position - loop_start
+	travelled.y = 0.0
+	print("still holding run on mayo: fell %d times, upright for %d frames in between, moved %.3f m total" % [
+		falls, upright_frames, travelled.length()])
+	_check(falls >= 3, "the player only fell %d times while sprinting on mayo" % falls)
+	_check(upright_frames <= 2,
+		"the player stayed on their feet for %d frames, so something is granting a grace period" % upright_frames)
+	# With no run-up there is no speed to skid with, so sprinting cannot carry
+	# the player out of a patch: they are pinned until they let go of the key.
+	_check(travelled.length() < 0.3,
+		"the player sprinted %.3f m out of the patch instead of being pinned" % travelled.length())
+
+	# Let go of run and the same patch is harmless.
 	_release_all()
-	print("immune for %d frames (expected ~%d)" % [
-		immune_frames, int(round(player.slip_immunity_time * 60.0))])
-	_check(absi(immune_frames - int(round(player.slip_immunity_time * 60.0))) <= 2,
-		"immunity lasted %d frames, expected about %d" % [
-			immune_frames, int(round(player.slip_immunity_time * 60.0))])
+	scene._player.state = 0
+	scene._player._state_timer = 0.0
+	Input.action_press("move_forward")
+	var fell_walking := false
+	for _f in 90:
+		await physics_frame
+		if player.is_incapacitated():
+			fell_walking = true
+	_release_all()
+	print("same patch, walking: fell=%s" % str(fell_walking))
+	_check(not fell_walking, "walking over the patch still knocked the player down")
 
 	if failures.is_empty():
 		print("MAYO_SLIP_OK")

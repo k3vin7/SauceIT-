@@ -20,14 +20,10 @@ enum State { NORMAL, FALLING, DOWN, STANDING_UP }
 ## keeps the speed they slipped at and carries it forward, so at run speed this
 ## is what sets how far they skid.
 @export_range(1.0, 60.0, 0.5, "suffix:m/s²") var slip_slide_friction := 16.0
-## Grace period after standing up, so the same patch cannot trip you again the
-## instant you are back on your feet.
-@export_range(0.0, 5.0, 0.05, "suffix:s") var slip_immunity_time := 0.8
 
 var frame_movement := Vector3.ZERO
 var state := State.NORMAL
 var _state_timer := 0.0
-var _immunity_timer := 0.0
 
 
 func _ready() -> void:
@@ -35,7 +31,6 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	_immunity_timer = maxf(_immunity_timer - delta, 0.0)
 	if state != State.NORMAL:
 		_advance_fall(delta)
 
@@ -72,8 +67,11 @@ func is_incapacitated() -> bool:
 	return state != State.NORMAL
 
 
+## No grace period after standing up. Slipping already needs the run key and a
+## direction held, so a player who keeps sprinting across mayo goes straight
+## back down, which is the point.
 func can_slip() -> bool:
-	return state == State.NORMAL and _immunity_timer <= 0.0
+	return state == State.NORMAL
 
 
 func begin_fall() -> void:
@@ -107,4 +105,3 @@ func _advance_fall(delta: float) -> void:
 	elif state == State.STANDING_UP and _state_timer >= stand_up_duration:
 		state = State.NORMAL
 		_state_timer = 0.0
-		_immunity_timer = slip_immunity_time
