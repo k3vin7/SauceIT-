@@ -12,10 +12,10 @@ enum State { NORMAL, FALLING, DOWN, STANDING_UP }
 @export_range(1.0, 40.0, 0.5) var acceleration := 18.0
 
 @export_group("Slip and Fall")
-@export_range(0.05, 3.0, 0.05, "suffix:s") var fall_duration := 0.5
+@export_range(0.05, 3.0, 0.01, "suffix:s") var fall_duration := 0.18
 ## Beat spent flat on the floor between hitting it and pushing back up.
-@export_range(0.0, 3.0, 0.05, "suffix:s") var down_duration := 0.5
-@export_range(0.05, 3.0, 0.05, "suffix:s") var stand_up_duration := 0.5
+@export_range(0.0, 3.0, 0.01, "suffix:s") var down_duration := 0.5
+@export_range(0.05, 3.0, 0.01, "suffix:s") var stand_up_duration := 0.5
 ## How hard the slide scrubs off speed once the player goes down. The player
 ## keeps the speed they slipped at and carries it forward, so at run speed this
 ## is what sets how far they skid.
