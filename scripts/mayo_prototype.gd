@@ -558,21 +558,8 @@ func _emit_point() -> void:
 ## Two array-adjacent points are one continuous strand only if they came from
 ## the same trigger press and have not been pulled apart into separate blobs.
 func _points_connected(front: MayoPoint, back: MayoPoint) -> bool:
-	if front.burst_index != back.burst_index:
-		return false
-	if _is_active_strand(front.burst_index):
-		return true
-	return front.position.distance_squared_to(back.position) <= _break_distance_squared()
-
-
-## The burst currently leaving the nozzle is continuous sauce by construction,
-## so the distance rule does not apply to it. Whipping the aim fans consecutive
-## points sideways, and the spacing constraint only corrects the gap projected
-## along the strand, so a fast turn would otherwise cross the break threshold
-## and sever the strand permanently: the same check also disables the
-## constraint for that pair, so it could never close again.
-func _is_active_strand(burst: int) -> bool:
-	return _was_firing and burst == _burst_index
+	return front.burst_index == back.burst_index \
+		and front.position.distance_squared_to(back.position) <= _break_distance_squared()
 
 
 func _break_distance_squared() -> float:
@@ -720,9 +707,10 @@ func _enforce_spacing_constraint() -> void:
 		for i in _points.size() - 1:
 			var front := _points[i]
 			var back := _points[i + 1]
-			# Only the burst being fired is constrained, and within it no gap is
-			# too wide to close: it is one continuous strand.
-			if front.burst_index != _burst_index or front.burst_index != back.burst_index:
+			# Inlined _points_connected: this runs once per pair per pass.
+			if front.burst_index != _burst_index \
+					or front.burst_index != back.burst_index \
+					or front.position.distance_squared_to(back.position) > break_distance_squared:
 				continue
 			var direction := (front.launch_direction + back.launch_direction).normalized()
 			if direction.length_squared() < 0.000001:
@@ -778,8 +766,6 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3) -> Array:
 	# run breaks and `previous` is cleared; within a run adjacency holds.
 	var previous: MayoPoint = null
 	var break_distance_squared := _break_distance_squared()
-	# Only the burst still leaving the nozzle is exempt from the distance break.
-	var active_strand := _was_firing
 	for point in _points:
 		if point.phase != phase or _is_near_camera(point, camera_position):
 			if not current.is_empty():
@@ -788,8 +774,7 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3) -> Array:
 			previous = null
 			continue
 		if previous != null and (previous.burst_index != point.burst_index \
-				or (not (active_strand and point.burst_index == _burst_index) \
-					and previous.position.distance_squared_to(point.position) > break_distance_squared)):
+				or previous.position.distance_squared_to(point.position) > break_distance_squared):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []
@@ -811,8 +796,6 @@ func _shadow_segments(camera_position: Vector3) -> Array:
 	var current: Array = []
 	var previous: MayoPoint = null
 	var break_distance_squared := _break_distance_squared()
-	# Only the burst still leaving the nozzle is exempt from the distance break.
-	var active_strand := _was_firing
 	for point in _points:
 		if point.phase == PointPhase.WALL_FIXED or _is_near_camera(point, camera_position):
 			if not current.is_empty():
@@ -821,8 +804,7 @@ func _shadow_segments(camera_position: Vector3) -> Array:
 			previous = null
 			continue
 		if previous != null and (previous.burst_index != point.burst_index \
-				or (not (active_strand and point.burst_index == _burst_index) \
-					and previous.position.distance_squared_to(point.position) > break_distance_squared)):
+				or previous.position.distance_squared_to(point.position) > break_distance_squared):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []
