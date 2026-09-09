@@ -90,8 +90,10 @@ class MayoDroplet:
 ## Points nearer than this to the camera are dropped from the ribbon so the
 ## strand root does not fill the screen in first person. 0 disables it.
 @export_range(0.0, 1.0, 0.01, "suffix:m") var strand_near_cull_distance := 0.34
-@export_range(0.0, 100.0, 1.0, "suffix:°") var fall_camera_roll_degrees := 78.0
-@export_range(0.0, 80.0, 1.0, "suffix:°") var fall_camera_pitch_degrees := 32.0
+## Going down is mostly a backwards pitch; the roll is a little asymmetry on top.
+@export_range(0.0, 100.0, 1.0, "suffix:°") var fall_camera_roll_degrees := 14.0
+@export_range(0.0, 90.0, 1.0, "suffix:°") var fall_camera_pitch_degrees := 80.0
+@export_range(-60.0, 60.0, 1.0, "suffix:°") var fall_body_roll_degrees := 12.0
 @export_range(0.05, 1.0, 0.01, "suffix:m") var fall_camera_height := 0.28
 
 @export_group("Weapon Hold")
@@ -211,7 +213,11 @@ func _process(_delta: float) -> void:
 func _update_fallen_body() -> void:
 	if not is_instance_valid(_body_mesh):
 		return
-	_body_mesh.rotation.z = deg_to_rad(90.0) * _player.fall_tilt()
+	# The feet skid forward and the body goes over backwards, so the capsule
+	# tips about its local X: +90 degrees takes its top to +Z, behind the player.
+	var tilt := _player.fall_tilt()
+	_body_mesh.rotation.x = deg_to_rad(90.0) * tilt
+	_body_mesh.rotation.z = deg_to_rad(fall_body_roll_degrees) * tilt
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -482,15 +488,17 @@ func _update_camera() -> void:
 	var aim_basis := _aim_basis()
 	var eye := _player.global_position + Vector3.UP * eye_height
 	var tilt := _player.fall_tilt()
-	if tilt > 0.0:
-		# Roll onto the shoulder and pitch down so the view ends up facing the
-		# floor. Deliberately crude; the timing is what matters.
-		aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(fall_camera_roll_degrees) * tilt)
-		aim_basis = aim_basis.rotated(aim_basis.x, -deg_to_rad(fall_camera_pitch_degrees) * tilt)
-		eye.y = lerpf(eye.y, fall_camera_height, tilt)
 	if _first_person:
+		if tilt > 0.0:
+			# Landing on your back means you end up looking up, so the view
+			# pitches back rather than down. Crude on purpose; timing matters more.
+			aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(fall_camera_roll_degrees) * tilt)
+			aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(fall_camera_pitch_degrees) * tilt)
+			eye.y = lerpf(eye.y, fall_camera_height, tilt)
 		_camera.global_transform = Transform3D(aim_basis, eye)
 		return
+	# The shoulder camera does not go down with the player: tilting it there
+	# would swing it to the floor and lose the capsule it exists to show.
 	# Over-the-shoulder: the camera keeps the aim orientation and is offset
 	# behind and to the side, so the strand leaves toward the screen centre
 	# rather than converging on a fixed point.

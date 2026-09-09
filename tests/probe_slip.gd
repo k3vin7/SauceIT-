@@ -94,18 +94,48 @@ func _run() -> void:
 	_check(scene._floor.is_mayo_at(trip_position),
 		"the player fell on a cell the floor says is clean")
 
-	# --- controls are locked and the timings hold ---
+	# --- the player skids forward, uncontrolled, and the timings hold ---
 	var start_position: Vector3 = player.global_position
+	var slide_direction: Vector3 = player.velocity
+	slide_direction.y = 0.0
+	_check(slide_direction.length() > 0.1, "the player had no speed left to skid with")
+	slide_direction = slide_direction.normalized()
+	# Fight the slide: input must not steer or stop it. The forward/run keys from
+	# the run-up have to be let go first, or the two inputs cancel and the check
+	# passes without ever pushing against the skid.
+	_release_all()
+	Input.action_press("move_backward")
 	var fired := false
 	var moved := 0.0
 	var frames_down := 0
 	var flat_frames := 0
+	var resting_speed := 0.0
+	var body_pitch := 0.0
+	var view_up := -2.0
+	var body_behind := -2.0
+	var third_person_up := 2.0
 	Input.action_press("fire_mayo")
 	scene._points.clear()
 	while player.is_incapacitated() and frames_down < 300:
 		await physics_frame
 		frames_down += 1
 		moved = maxf(moved, start_position.distance_to(player.global_position))
+		if is_equal_approx(player.fall_tilt(), 1.0):
+			# Flat out: the capsule must have gone over backwards and the view
+			# with it, so the player ends up looking up off their back.
+			body_pitch = scene._body_mesh.rotation.x
+			# Local +Z is behind the player, and the capsule's own up axis must
+			# have swung there.
+			body_behind = (scene._body_mesh.global_basis.y).dot(scene._player.global_basis.z)
+			view_up = (-scene._camera.global_basis.z).y
+			# The shoulder camera stays upright so the fall can be watched.
+			scene.set_first_person(false)
+			await process_frame
+			third_person_up = (-scene._camera.global_basis.z).y
+			scene.set_first_person(true)
+			await process_frame
+		if player.state == MayoPlayer.State.STANDING_UP:
+			resting_speed = maxf(resting_speed, Vector3(player.velocity.x, 0.0, player.velocity.z).length())
 		if is_equal_approx(player.fall_tilt(), 1.0):
 			flat_frames += 1
 		# Firing legitimately resumes on the very frame the player stands up, so
@@ -114,15 +144,36 @@ func _run() -> void:
 			fired = true
 	_release_all()
 	var expected := int(round((player.fall_duration + player.down_duration + player.stand_up_duration) * 60.0))
-	print("down for %d frames (expected ~%d), flat for %d, moved %.3f m, emitted sauce=%s" % [
-		frames_down, expected, flat_frames, moved, str(fired)])
+	var slide: Vector3 = player.global_position - start_position
+	slide.y = 0.0
+	print("down for %d frames (expected ~%d), flat for %d, skidded %.3f m, %.1f deg off travel, speed left %.3f m/s, emitted sauce=%s" % [
+		frames_down, expected, flat_frames, slide.length(),
+		rad_to_deg(slide.normalized().angle_to(slide_direction)) if slide.length() > 0.001 else 0.0,
+		resting_speed, str(fired)])
 	_check(absi(frames_down - expected) <= 3,
 		"down for %d frames, expected about %d" % [frames_down, expected])
 	# The capsule must stay flat through the whole lying-down beat.
 	_check(flat_frames >= int(round(player.down_duration * 60.0)) - 3,
 		"the player was only flat for %d frames, expected at least the %.2f s down beat" % [
 			flat_frames, player.down_duration])
-	_check(moved < 0.05, "the player moved %.3f m while down" % moved)
+	# The skid must happen, must follow the direction of travel rather than the
+	# input fighting it, and must be over before the player gets up.
+	_check(slide.length() > 0.1, "the player did not skid at all, they stopped dead" )
+	_check(slide.length() < 3.0, "the player skidded %.3f m, far past a slight slide" % slide.length())
+	_check(slide.normalized().dot(slide_direction) > 0.95,
+		"the skid went %.1f deg off the direction of travel, so input steered it" % rad_to_deg(slide.normalized().angle_to(slide_direction)))
+	_check(resting_speed < 0.01,
+		"the player was still moving at %.3f m/s by the time they stood up" % resting_speed)
+	print("flat out: capsule pitched %.1f deg, its top %.2f toward the player's back, first-person view up %.2f, shoulder view up %.2f" % [
+		rad_to_deg(body_pitch), body_behind, view_up, third_person_up])
+	_check(body_pitch > deg_to_rad(80.0),
+		"the capsule only pitched %.1f deg, so it did not lie down" % rad_to_deg(body_pitch))
+	_check(body_behind > 0.9,
+		"the capsule went over the wrong way: its top ended %.2f toward the player's back" % body_behind)
+	_check(view_up > 0.5,
+		"the view ended pointing %.2f up, so the player is not looking up off their back" % view_up)
+	_check(absf(third_person_up) < 0.35,
+		"the shoulder camera tilted to %.2f with the fall instead of staying upright" % third_person_up)
 	_check(not fired, "the player kept firing while down")
 
 	# --- immunity prevents an instant second fall on the same spot ---

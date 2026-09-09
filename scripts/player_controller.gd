@@ -16,6 +16,10 @@ enum State { NORMAL, FALLING, DOWN, STANDING_UP }
 ## Beat spent flat on the floor between hitting it and pushing back up.
 @export_range(0.0, 3.0, 0.05, "suffix:s") var down_duration := 0.5
 @export_range(0.05, 3.0, 0.05, "suffix:s") var stand_up_duration := 0.5
+## How hard the slide scrubs off speed once the player goes down. The player
+## keeps the speed they slipped at and carries it forward, so at run speed this
+## is what sets how far they skid.
+@export_range(1.0, 60.0, 0.5, "suffix:m/s²") var slip_slide_friction := 16.0
 ## Grace period after standing up, so the same patch cannot trip you again the
 ## instant you are back on your feet.
 @export_range(0.0, 5.0, 0.05, "suffix:s") var slip_immunity_time := 0.8
@@ -44,8 +48,11 @@ func _physics_process(delta: float) -> void:
 		desired.y = 0.0
 		desired *= run_speed if Input.is_action_pressed("run") else walk_speed
 
-	velocity.x = move_toward(velocity.x, desired.x, acceleration * delta)
-	velocity.z = move_toward(velocity.z, desired.z, acceleration * delta)
+	# Going down keeps whatever speed the player slipped at and scrubs it off,
+	# so they skid forward instead of stopping dead where they tripped.
+	var rate := acceleration if state == State.NORMAL else slip_slide_friction
+	velocity.x = move_toward(velocity.x, desired.x, rate * delta)
+	velocity.z = move_toward(velocity.z, desired.z, rate * delta)
 	velocity.y = 0.0
 	var before := global_position
 	move_and_slide()
@@ -74,7 +81,6 @@ func begin_fall() -> void:
 		return
 	state = State.FALLING
 	_state_timer = 0.0
-	velocity = Vector3.ZERO
 
 
 ## 0 upright, 1 flat on the floor. Drives both the capsule and the camera.
