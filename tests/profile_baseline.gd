@@ -45,8 +45,8 @@ func _run() -> void:
 		scene.debug_max_points,
 		scene.debug_raycast_count,
 		float(scene.debug_raycast_count) / frames,
-		scene._floor.debug_paint_calls,
-		scene._floor.debug_texture_uploads,
+		scene._floor.debug_paint_calls(),
+		scene._floor.debug_texture_uploads(),
 		max_droplet_nodes,
 		max_total_nodes,
 	])

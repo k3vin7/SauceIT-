@@ -69,8 +69,10 @@ class MayoDroplet:
 @export_range(1, 8, 1) var spacing_constraint_passes := 3
 
 @export_group("Landing and Grid")
-@export_range(0.05, 0.5, 0.01, "suffix:m") var grid_cell_size := 0.2
-@export_range(1, 2, 1) var landing_brush_radius_cells := 2
+@export_range(0.05, 0.5, 0.01, "suffix:m") var grid_cell_size := 0.1
+## Splat radius in metres. Converted to cells internally, so changing the
+## cell size does not change how big a splat is.
+@export_range(0.05, 1.5, 0.01, "suffix:m") var contamination_brush_radius := 0.4
 @export_range(0.05, 0.5, 0.01, "suffix:s") var landing_transition_time := 0.16
 @export_range(0.1, 2.0, 0.05, "suffix:s") var droplet_lifetime := 0.55
 
@@ -88,6 +90,9 @@ class MayoDroplet:
 ## Points nearer than this to the camera are dropped from the ribbon so the
 ## strand root does not fill the screen in first person. 0 disables it.
 @export_range(0.0, 1.0, 0.01, "suffix:m") var strand_near_cull_distance := 0.34
+@export_range(0.0, 100.0, 1.0, "suffix:°") var fall_camera_roll_degrees := 78.0
+@export_range(0.0, 80.0, 1.0, "suffix:°") var fall_camera_pitch_degrees := 32.0
+@export_range(0.05, 1.0, 0.01, "suffix:m") var fall_camera_height := 0.28
 
 @export_group("Weapon Hold")
 @export_range(-0.6, 0.6, 0.01, "suffix:m") var weapon_offset_right := 0.155
@@ -148,9 +153,9 @@ func _ready() -> void:
 	_build_world()
 	set_first_person(start_in_first_person)
 	_capture_mouse()
-	_floor.configure(grid_cell_size, landing_brush_radius_cells)
+	_floor.configure(grid_cell_size, contamination_brush_radius)
 	for wall in _walls:
-		wall.configure(grid_cell_size, landing_brush_radius_cells)
+		wall.configure(grid_cell_size, contamination_brush_radius)
 	_update_camera()
 
 
@@ -158,7 +163,8 @@ func _physics_process(delta: float) -> void:
 	var frame_started := Time.get_ticks_usec() if debug_profile_enabled else 0
 	var step_started := frame_started
 	_update_aim()
-	var firing := Input.is_action_pressed("fire_mayo")
+	_update_slip()
+	var firing := Input.is_action_pressed("fire_mayo") and not _player.is_incapacitated()
 	if firing:
 		if not _was_firing:
 			_burst_index += 1
@@ -197,6 +203,15 @@ func _physics_process(delta: float) -> void:
 
 func _process(_delta: float) -> void:
 	_update_camera()
+	_update_fallen_body()
+
+
+## The capsule lies on its side while the player is down. A capsule is all the
+## character model this step needs, so this is a single rotation.
+func _update_fallen_body() -> void:
+	if not is_instance_valid(_body_mesh):
+		return
+	_body_mesh.rotation.z = deg_to_rad(90.0) * _player.fall_tilt()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -235,9 +250,14 @@ func _ensure_input_actions() -> void:
 	if InputMap.has_action("toggle_camera_mode"):
 		return
 	InputMap.add_action("toggle_camera_mode")
-	var event := InputEventKey.new()
-	event.physical_keycode = KEY_F1
-	InputMap.action_add_event("toggle_camera_mode", event)
+	var toggle := InputEventKey.new()
+	toggle.physical_keycode = KEY_F1
+	InputMap.action_add_event("toggle_camera_mode", toggle)
+	if not InputMap.has_action("run"):
+		InputMap.add_action("run")
+		var run := InputEventKey.new()
+		run.physical_keycode = KEY_SHIFT
+		InputMap.action_add_event("run", run)
 
 
 func _capture_mouse() -> void:
@@ -253,7 +273,7 @@ func _build_world() -> void:
 	_floor.name = "FloorContamination"
 	_floor.floor_size = Vector2(12.0, 12.0)
 	_floor.cell_size = grid_cell_size
-	_floor.landing_brush_radius_cells = landing_brush_radius_cells
+	_floor.brush_radius = contamination_brush_radius
 	add_child(_floor)
 
 	# The default centre aim is left open for the ballistic-to-floor test. Aim to
@@ -427,7 +447,7 @@ func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3,
 	wall.size = wall_size
 	wall.body_color = color
 	wall.cell_size = grid_cell_size
-	wall.impact_brush_radius_cells = landing_brush_radius_cells
+	wall.brush_radius = contamination_brush_radius
 	add_child(wall)
 	_walls.push_back(wall)
 
@@ -438,6 +458,16 @@ func _make_stream_visual(visual_name: String, material: Material) -> StreamVisua
 	visual.setup(material, maximum_point_count)
 	add_child(visual)
 	return visual
+
+
+## Running over a painted cell trips the player. The test is a plain cell
+## lookup on the same grid the floor draws, so it is exact and repeatable:
+## there is no probability anywhere in it.
+func _update_slip() -> void:
+	if not _player.can_slip() or not _player.is_running():
+		return
+	if _floor.is_mayo_at(_player.global_position):
+		_player.begin_fall()
 
 
 ## Orientation of the aim, shared by the camera and the strand direction.
@@ -451,6 +481,13 @@ func _update_camera() -> void:
 	_camera.fov = camera_fov
 	var aim_basis := _aim_basis()
 	var eye := _player.global_position + Vector3.UP * eye_height
+	var tilt := _player.fall_tilt()
+	if tilt > 0.0:
+		# Roll onto the shoulder and pitch down so the view ends up facing the
+		# floor. Deliberately crude; the timing is what matters.
+		aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(fall_camera_roll_degrees) * tilt)
+		aim_basis = aim_basis.rotated(aim_basis.x, -deg_to_rad(fall_camera_pitch_degrees) * tilt)
+		eye.y = lerpf(eye.y, fall_camera_height, tilt)
 	if _first_person:
 		_camera.global_transform = Transform3D(aim_basis, eye)
 		return
@@ -873,8 +910,6 @@ func debug_reset_profile() -> void:
 	for key in debug_timings_us:
 		debug_timings_us[key] = 0
 	if is_instance_valid(_floor):
-		_floor.debug_paint_calls = 0
-		_floor.debug_texture_uploads = 0
+		_floor.reset_debug_counters()
 	for wall in _walls:
-		wall.debug_paint_calls = 0
-		wall.debug_texture_uploads = 0
+		wall.reset_debug_counters()

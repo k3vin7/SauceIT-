@@ -50,10 +50,7 @@ func _run() -> void:
 
 	for _frame in 75:
 		await physics_frame
-	var painted_cells := 0
-	for cell in scene._floor._cells:
-		if cell == 1:
-			painted_cells += 1
+	var painted_cells: int = scene._floor.grid.painted_cell_count()
 	_check(painted_cells > 0, "ballistic points did not paint the floor grid")
 
 	var muzzle_flat: Vector3 = scene._muzzle.global_position
@@ -77,13 +74,13 @@ func _run() -> void:
 	scene.set_physics_process(false)
 	scene._points.clear()
 	scene._floor._rebuild_grid()
-	scene._floor.debug_texture_uploads = 0
+	scene._floor.reset_debug_counters()
 	for i in 8:
 		scene._floor.paint_mayo(Vector3(-3.5 + float(i), 0.0, 3.0))
-	_check(scene._floor.debug_texture_uploads == 0, "grid uploaded during an individual paint call")
+	_check(scene._floor.debug_texture_uploads() == 0, "grid uploaded during an individual paint call")
 	await process_frame
 	await process_frame
-	_check(scene._floor.debug_texture_uploads == 1, "grid writes were not batched to one frame upload")
+	_check(scene._floor.debug_texture_uploads() == 1, "grid writes were not batched to one frame upload")
 
 	# Isolate and run the wall route with the same per-point physics code.
 	scene.debug_aim_at(Vector3(2.35, 1.1, -0.72))
@@ -106,7 +103,7 @@ func _run() -> void:
 	var wall: ContaminableObject = scene.get_node("ImpactWall")
 	var wall_cells := wall.painted_cell_count()
 	_check(wall_cells > 0, "wall impacts did not paint the wall grid")
-	_check(wall.debug_texture_uploads < wall.debug_paint_calls,
+	_check(wall.debug_texture_uploads() < wall.debug_paint_calls(),
 		"wall grid writes were not batched to one upload per frame")
 	scene._points.clear()
 	for _frame in int(scene.wall_fixed_hold_time * 60.0) + 30:

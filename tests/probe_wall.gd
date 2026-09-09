@@ -38,5 +38,5 @@ func _run() -> void:
 					fixed += 1
 			print("t=%.2fs firing=%-5s WALL_FIXED=%3d  wall_painted_cells=%3d  wall_paint_calls=%4d  wall_uploads=%3d" % [
 				frame / 60.0, str(firing), fixed, wall.painted_cell_count(),
-				wall.debug_paint_calls, wall.debug_texture_uploads])
+				wall.debug_paint_calls(), wall.debug_texture_uploads()])
 	quit(0)
