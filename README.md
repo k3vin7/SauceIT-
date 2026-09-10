@@ -36,7 +36,10 @@ The split is server-authoritative, with one deliberate exception:
 * **Aim is local.** The one exception. The mouse moves the view immediately and the packet follows, because a view that lags the hand by the round trip is unusable. The body's yaw still comes back from the server, which derives it from that same aim.
 * **The strand is not synchronised.** Only the firing flag and the aim pitch travel; every peer emits and simulates every shooter's strand itself, from the aim it already has for them. Two machines' strands differ by centimetres, which is fine — the strand is decoration, and what it leaves behind is not.
 * **The grid is the server's, exactly.** When a strand lands, only the server paints, and it broadcasts the splat's **centre cell** — two ints. Every peer replays that cell through the same `paint_cell`, which depends on nothing but the cell coordinates and the radius (`_cell_noise` is a pure function of the cell), so the grids come out byte-identical rather than approximately alike. Sending the cell *list* instead would be ~15,000 cells a second at the reference fire rate, for a worse guarantee. A peer that joins mid-game is handed the whole mask first.
+* **Client input is validated, always.** Nothing a client sends is trusted. The keyboard path bounds itself — `Input.get_vector` never returns more than a full stick, the aim clamps to the pitch limit as the mouse moves — but a packet carries no such guarantee, and its values go straight into a body the server simulates. Every client RPC runs its floats through `MayoNet.all_finite` and drops the whole packet if any is NaN or infinite, then clamps each one to what the keys could have produced: `clamp_direction` for the move vector, `clamp_angle` for the pitch, `wrap_angle` for the yaw. Unbounded, a move vector is a speed hack; a single NaN is worse, because the server writes it into the next state packet and both screens follow it. **Any client input added later goes through the same helpers** — those are the only doors into the simulation from outside.
 * **Slipping is the server's.** It tests its own grid against its own bodies, and the fall state travels with its timer, so the stumble, the fall, the skid and standing up line up frame for frame on both screens.
+
+The session is not otherwise hardened, and is not meant to be: ENet here is unencrypted and unauthenticated, so anyone on the same LAN can take the second slot. The validation above is about not letting a client corrupt the simulation, not about keeping strangers out.
 
 `probe_determinism.gd` is what holds the grid claim up, and `probe_network.gd` runs an actual two-peer session in one process and checks the four things that matter: both screens' grids hash the same, A's mayo trips B, A sees B go down, and the fall states agree on every frame.
 
@@ -81,7 +84,7 @@ godot --headless --path . --script res://tests/probe_landing.gd -- nojitter    #
 godot --headless --path . --script res://tests/probe_landing.gd -- noloss      #           pressure loss off
 godot --headless --path . --script res://tests/probe_geom.gd                   # wall face/cell mapping
 godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
-godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states
+godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states, hostile input
 ```
 
 `probe_determinism.gd` prints `MAYO_GRID_HASH`; run it twice and compare, since a difference between two processes is exactly what would break the grid sync.

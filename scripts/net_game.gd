@@ -47,6 +47,8 @@ var _client_input: Dictionary = {}
 var _slots: Dictionary = {1: 0}
 var _next_slot := 1
 var debug_state_packets := 0
+## Client packets thrown away for carrying a value that is not a number.
+var rejected_packets := 0
 
 
 func bind(new_world: Node) -> void:
@@ -181,6 +183,53 @@ func _set_status(message: String) -> void:
 
 
 # --------------------------------------------------------------------------
+# Client input validation
+#
+# Nothing a client sends is trusted. The keyboard path bounds itself on the way
+# in -- Input.get_vector never returns a vector longer than the stick, and the
+# aim is clamped to the pitch limit as the mouse moves it -- but a packet
+# carries no such guarantee, and the values in one go straight into the body the
+# server simulates. Unbounded, a move vector is a speed hack; a single NaN in a
+# position is worse than that, because the server writes it into the next state
+# packet and both screens follow it.
+#
+# So: every RPC a client can call runs its floats through `all_finite` and drops
+# the whole packet if any of them is not, then clamps each value to the range
+# the keyboard could have produced. Any client input added later belongs here
+# too -- these are the only doors into the simulation from outside.
+# --------------------------------------------------------------------------
+
+## True when every float in `values` is a real number. Vector2s are checked
+## component-wise; anything that is not a number is ignored.
+static func all_finite(values: Array) -> bool:
+	for value in values:
+		if value is Vector2:
+			if not is_finite(value.x) or not is_finite(value.y):
+				return false
+		elif value is float or value is int:
+			if not is_finite(value):
+				return false
+	return true
+
+
+## A direction, never a magnitude: anything longer than a full stick deflection
+## is cut back to it, so a packet cannot ask for a speed the keys could not.
+static func clamp_direction(value: Vector2) -> Vector2:
+	return value if value.length_squared() <= 1.0 else value.normalized()
+
+
+## For an angle with a stop at each end, like the aim pitch.
+static func clamp_angle(value: float, limit: float) -> float:
+	return clampf(value, -limit, limit)
+
+
+## For an angle that wraps instead, like yaw: out of range is not hostile, it
+## just needs bringing back into the turn the body understands.
+static func wrap_angle(value: float) -> float:
+	return wrapf(value, -PI, PI)
+
+
+# --------------------------------------------------------------------------
 # Per-frame traffic
 # --------------------------------------------------------------------------
 
@@ -245,7 +294,12 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 func _submit_input(move: Vector2, run: bool, firing: bool, yaw: float, pitch: float) -> void:
 	if not multiplayer.is_server():
 		return
-	_client_input[multiplayer.get_remote_sender_id()] = [move, run, firing, yaw, pitch]
+	if not all_finite([move, yaw, pitch]):
+		rejected_packets += 1
+		return
+	_client_input[multiplayer.get_remote_sender_id()] = [
+		clamp_direction(move), run, firing, wrap_angle(yaw),
+		clamp_angle(pitch, deg_to_rad(world.pitch_limit_degrees))]
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")

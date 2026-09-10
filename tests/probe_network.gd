@@ -14,6 +14,8 @@ extends SceneTree
 #   * the fall states line up on both screens, every frame, through the
 #     stumble, the fall, the slide and standing up
 #   * only the server paints: a client's own strand marks nothing by itself
+#   * a client cannot move faster than its keys allow, and cannot put a NaN
+#     into a body the server owns
 
 const PORT := 24777
 
@@ -116,6 +118,59 @@ func _run() -> void:
 	if failures.size() > 0:
 		_finish()
 		return
+
+	# --- a client's packets cannot ask for more than its keyboard could ---
+	# The server simulates both bodies off these values, so an unclamped one is
+	# a speed hack and a NaN takes the session down with it.
+	var target = server_world.shooter_for(client_id).player
+	var start_position: Vector3 = target.global_position
+	var rejected_before: int = server_world._net.rejected_packets
+	client_world.debug_set_input(Vector2.ZERO, false, false)
+	# The client world is stopped for this section so that its own well-behaved
+	# packet does not land on top of the hostile one and hide the result: what
+	# the server acts on here is only what is sent below.
+	client_world.set_physics_process(false)
+	for _f in 40:
+		await physics_frame
+		client_world._net._submit_input.rpc_id(1,
+			Vector2(NAN, INF), true, true, NAN, INF)
+	await _wait(4)
+	var after_nan: Vector3 = target.global_position
+	print("hostile: %d NaN packets rejected, B at %.2v (started %.2v), speed %.2f m/s" % [
+		server_world._net.rejected_packets - rejected_before, after_nan, start_position,
+		target.velocity.length()])
+	# Not all 40 arrive: the input channel is unreliable by design, and a late
+	# one is dropped rather than delivered late. What matters is that every one
+	# that did arrive was thrown away, which the two checks below measure.
+	_check(server_world._net.rejected_packets - rejected_before > 30,
+		"only %d of the 40 hostile packets reached the server, too few to conclude from"
+			% (server_world._net.rejected_packets - rejected_before))
+	_check(after_nan.is_finite() and target.velocity.is_finite(),
+		"a NaN reached the body the server owns: position %v" % after_nan)
+	_check(after_nan.distance_to(start_position) < 0.01,
+		"the rejected packets still moved B %.2f m" % after_nan.distance_to(start_position))
+
+	# A move vector a hundred times longer than a full stick deflection, held
+	# long enough that any speed above the run speed would have shown up.
+	for _f in 90:
+		await physics_frame
+		client_world._net._submit_input.rpc_id(1,
+			Vector2(0.0, -100.0), true, false, 0.0, 0.0)
+	var top_speed: float = target.velocity.length()
+	var run_speed: float = target.run_speed
+	print("hostile: oversized move vector reached %.2f m/s, run speed is %.2f m/s" % [
+		top_speed, run_speed])
+	_check(top_speed <= run_speed + 0.01,
+		"an oversized move vector drove B at %.2f m/s, past the %.2f m/s run speed" % [
+			top_speed, run_speed])
+	# And it did move: a check that passes because nothing happened proves
+	# nothing about the clamp.
+	_check(top_speed > run_speed - 0.5,
+		"B only reached %.2f m/s, so the oversized packet never drove them at all" % top_speed)
+	# Put B back where the rest of the checks expect to find them.
+	client_world.set_physics_process(true)
+	client_world.debug_set_input(Vector2.ZERO, false, false)
+	await _wait(30)
 
 	# --- A sprays the floor; both grids must agree cell for cell ---
 	server_world.debug_set_input(Vector2.ZERO, false, true)
