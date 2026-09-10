@@ -272,6 +272,10 @@ func _run() -> void:
 		server_world._splatter.blob_count(), client_world._splatter.blob_count()])
 	_check(client_world._splatter.blob_count() > 0,
 		"B was sprayed and got no sauce on their camera")
+	# A second and a half of spray, not a screenful: one burst must not fill the
+	# cap, or being hit again would leave only the newest marks.
+	_check(client_world._splatter.blob_count() < ScreenSplatter.MAX_BLOBS,
+		"one burst put B's camera straight to the %d blob cap" % ScreenSplatter.MAX_BLOBS)
 	_check(server_world._splatter.blob_count() == 0,
 		"A got %d blobs on their own camera for spraying someone else"
 			% server_world._splatter.blob_count())

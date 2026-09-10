@@ -14,6 +14,8 @@ extends SceneTree
 #     still reads the floor alone
 #   * a splat on your own body puts sauce on your camera, on the side it came
 #     from, and R wipes the lot
+#   * being hit again does not push off what is already on the glass: a burst is
+#     ~78 splats a second and the cap is 18, so sauce on the lens is throttled
 
 var failures: Array[String] = []
 
@@ -140,6 +142,9 @@ func _run() -> void:
 
 	# --- sauce on your own body is sauce on your camera ---
 	var splatter = scene._splatter
+	# Off for the placement checks below, which want one blob per call.
+	var throttle: float = splatter.blob_interval
+	splatter.blob_interval = 0.0
 	_check(splatter.size.x > 0.0 and splatter.size.y > 0.0,
 		"the splatter overlay has no rect, so every blob would land at the corner")
 	_check(splatter.blob_count() == 0, "the screen started out dirty")
@@ -179,6 +184,33 @@ func _run() -> void:
 			splatter.blob_count(), ScreenSplatter.MAX_BLOBS])
 	_check(splatter.coverage() > 0.1,
 		"a screenful of splats covers only %.0f%% of it" % (splatter.coverage() * 100.0))
+
+	# --- a second hit does not wipe out the first ---
+	# The failure this guards against: one burst is far more splats than the cap
+	# holds, so without the throttle being hit again left only the new marks.
+	splatter.wipe()
+	splatter.blob_interval = throttle
+	scene._note_body_splat(1, Vector2i(0, eye_row))
+	var first: Vector2 = splatter._blobs[0].position
+	# A full second of being sprayed, spread over the frames it really arrives
+	# on rather than in one instant, which the throttle would swallow whole.
+	var burst := 0
+	for _frame in 60:
+		await physics_frame
+		# The strand lands about 78 splats a second at the reference fire rate.
+		for _i in 2:
+			scene._note_body_splat(1, Vector2i(body.grid.width / 2, eye_row))
+			burst += 1
+	var added: int = splatter.blob_count() - 1
+	print("a second of being sprayed (%d splats) added %d blobs, first mark still there=%s" % [
+		burst, added, str(splatter.blob_count() > 0 and splatter._blobs[0].position == first)])
+	_check(added >= 3 and added <= 12,
+		"a second of spray added %d blobs, which is not a second's worth" % added)
+	_check(splatter.blob_count() < ScreenSplatter.MAX_BLOBS,
+		"a single burst filled the screen to the %d cap" % ScreenSplatter.MAX_BLOBS)
+	_check(splatter.blob_count() > 0 and splatter._blobs[0].position == first,
+		"the burst pushed the earlier mark off the glass")
+	splatter.blob_interval = 0.0
 
 	# --- and R wipes it ---
 	var wipe := InputEventAction.new()

@@ -28,9 +28,16 @@ const MAX_BLOBS := 18
 const EDGE_MARGIN := 0.12
 
 @export var mayo_color := Color("fff0a8")
+## A burst lands roughly 78 splats a second, so one squirt in the face would
+## otherwise fill the cap several times over and push off everything already on
+## the glass -- being hit a second time would leave only the second hit. Sauce
+## on the lens is throttled to this instead: a burst builds up over seconds, and
+## what is already there survives it.
+@export_range(0.0, 1.0, 0.01, "suffix:s") var blob_interval := 0.14
 
 var _blobs: Array[Blob] = []
 var _rng := RandomNumberGenerator.new()
+var _next_blob_at := 0.0
 
 
 func _ready() -> void:
@@ -44,6 +51,10 @@ func _ready() -> void:
 ## straight ahead. A hit from behind lands at the edge on the side it came from
 ## rather than being dropped, so you can tell which way to turn.
 func add_splat(view_direction: Vector3) -> void:
+	var now := Time.get_ticks_msec() * 0.001
+	if now < _next_blob_at:
+		return
+	_next_blob_at = now + blob_interval
 	var blob := Blob.new()
 	blob.position = _to_screen(view_direction)
 	blob.radius = _rng.randf_range(0.045, 0.10) * minf(size.x, size.y)
@@ -64,6 +75,8 @@ func wipe() -> void:
 	if _blobs.is_empty():
 		return
 	_blobs.clear()
+	# Wiping does not buy immunity: the next splat lands as soon as it arrives.
+	_next_blob_at = 0.0
 	queue_redraw()
 
 

@@ -53,6 +53,8 @@ Bodies carry their own cell size and brush (`Body Cell Size`, `Body Brush Radius
 
 Getting hit also puts sauce on your camera. Every splat the server marks on *your* body adds a blob to the screen overlay, placed on the side it came from — a hit from behind lands at the edge you would turn toward — and **`R` wipes the screen clean**. It is driven off the same splat, so there is no second hit test and no extra traffic, and on a client it arrives with the broadcast rather than being guessed locally. Nothing fades on a timer: being covered is a state you have to do something about, which is what the wipe key is for. Blobs are capped at 18, and wiping the lens does not wash the body.
 
+Sauce reaching the lens is throttled (`Blob Interval`, 0.14 s) even though the stain on the body is not. A burst lands about 78 splats a second, so one squirt in the face would otherwise fill the 18-blob cap several times over and push off everything already there — being hit twice would leave only the second hit. Throttled, a second of spray adds about six blobs and what is already on the glass survives it.
+
 **The stain is cosmetic and nothing reads it back.** Slipping is decided by the floor grid and the floor grid alone. Over the network a body is painted exactly like a wall — only the server marks it, and it broadcasts the centre cell — and a peer joining a session that is already messy is handed each body's mask along with the floor's.
 
 ### Contamination grid
