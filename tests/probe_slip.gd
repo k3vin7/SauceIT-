@@ -8,6 +8,8 @@ extends SceneTree
 #   * with no grace period, holding run on mayo puts you straight back down,
 #     while letting go of it makes the same patch harmless
 #   * the trip happens on the cell the floor says is painted
+#   * slipping again inside the recovery window pitches the player forward,
+#     with no stumble, and the capsule and view go over the other way
 
 var failures: Array[String] = []
 
@@ -42,6 +44,8 @@ func _reset(scene) -> void:
 	scene._player.state = 0
 	scene._player._state_timer = 0.0
 	scene._player.velocity = Vector3.ZERO
+	scene._player.fall_direction = 1.0
+	scene._player._recovery_timer = 0.0
 	scene._player.global_position = Vector3(0.0, 0.64, 3.0)
 
 
@@ -205,6 +209,74 @@ func _run() -> void:
 	_check(absf(third_person_up) < 0.35,
 		"the shoulder camera tilted to %.2f with the fall instead of staying upright" % third_person_up)
 	_check(not fired, "the player kept firing while down")
+
+	# --- slipping again straight after standing up pitches you forward ---
+	_reset(scene)
+	var forward_patch := _paint_patch(scene, 1.2)
+	_check(scene._floor.is_mayo_at(forward_patch), "the second-fall patch was not painted")
+	Input.action_press("move_forward")
+	Input.action_press("run")
+	# First fall: backwards, with a stumble, as always.
+	for _f in 120:
+		await physics_frame
+		if player.state != MayoPlayer.State.NORMAL:
+			break
+	_check(player.state == MayoPlayer.State.STUMBLE,
+		"the first fall skipped the stumble")
+	_check(player.fall_direction > 0.0,
+		"the first fall went forwards (direction %.1f)" % player.fall_direction)
+	# Ride it out with the keys still held, so the player is sprinting again the
+	# instant they are upright -- which is the case this covers.
+	for _f in 300:
+		await physics_frame
+		if not player.is_incapacitated():
+			break
+	# The skid carries the player past the first patch, so paint the ground they
+	# stood up on: they are sprinting again the instant they are upright.
+	_paint_patch(scene, 0.0)
+	_check(scene._floor.is_mayo_at(player.global_position),
+		"the player did not stand up on painted floor, so this case tests nothing")
+	var second_stumbled := false
+	var second_fall := false
+	for _f in 10:
+		await physics_frame
+		if player.state == MayoPlayer.State.STUMBLE:
+			second_stumbled = true
+		if player.state == MayoPlayer.State.FALLING:
+			second_fall = true
+			break
+	# Let go now the fall is under way: still sprinting on the patch would just
+	# put the player straight back down and never end this loop.
+	_release_all()
+	var forward_pitch := 0.0
+	var forward_body_ahead := 0.0
+	var forward_view_down := 0.0
+	for _f in 300:
+		await physics_frame
+		if not player.is_incapacitated():
+			break
+		if is_equal_approx(player.fall_tilt(), 1.0):
+			forward_pitch = scene._body_mesh.rotation.x
+			# Local -Z is ahead of the player: the capsule's up axis must have
+			# swung out in front instead of behind.
+			forward_body_ahead = (scene._body_mesh.global_basis.y).dot(-scene._player.global_basis.z)
+			forward_view_down = (-scene._camera.global_basis.z).y
+	_release_all()
+	print("second fall: happened=%s, stumbled=%s, direction %.1f, capsule pitched %.1f deg, top %.2f ahead, view up %.2f" % [
+		str(second_fall), str(second_stumbled), player.fall_direction,
+		rad_to_deg(forward_pitch), forward_body_ahead, forward_view_down])
+	_check(second_fall, "sprinting straight after standing up did not knock the player down again")
+	_check(not second_stumbled,
+		"the second fall stumbled first instead of pitching straight forward")
+	_check(forward_pitch < deg_to_rad(-80.0),
+		"the capsule pitched %.1f deg, so it did not go over forwards" % rad_to_deg(forward_pitch))
+	_check(forward_body_ahead > 0.9,
+		"the capsule went over the wrong way: its top ended %.2f ahead of the player" % forward_body_ahead)
+	_check(forward_view_down < -0.5,
+		"the view ended pointing %.2f up, so the player is not face down" % forward_view_down)
+	# Standing up clears the direction, so the next fall is a backwards one again.
+	_check(player.fall_direction > 0.0,
+		"the fall direction stayed forward after standing up (%.1f)" % player.fall_direction)
 
 	# --- no grace period: keep sprinting on mayo and you go straight back down,
 	# but let go of the run key and you are fine ---

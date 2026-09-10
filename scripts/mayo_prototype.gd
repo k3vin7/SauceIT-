@@ -217,13 +217,14 @@ func _process(_delta: float) -> void:
 func _update_fallen_body() -> void:
 	if not is_instance_valid(_body_mesh):
 		return
-	# The feet skid forward and the body goes over backwards, so the capsule
-	# tips about its local X: +90 degrees takes its top to +Z, behind the player.
+	# Going over backwards, the feet skid forward and the capsule tips about its
+	# local X: +90 degrees takes its top to +Z, behind the player. Pitching
+	# forward is the same rotation mirrored, which puts the top out in front.
 	var tilt := _player.fall_tilt()
-	_body_mesh.rotation.x = deg_to_rad(90.0) * tilt
+	_body_mesh.rotation.x = deg_to_rad(90.0) * tilt * _player.fall_direction
 	# The stumble sways the capsule side to side before it goes over; the two
 	# never overlap, since fall_tilt is 0 while stumbling.
-	_body_mesh.rotation.z = deg_to_rad(fall_body_roll_degrees) * tilt \
+	_body_mesh.rotation.z = deg_to_rad(fall_body_roll_degrees) * tilt * _player.fall_direction \
 		+ deg_to_rad(stumble_body_roll_degrees) * _player.stumble_wobble()
 
 
@@ -504,9 +505,11 @@ func _update_camera() -> void:
 	if _first_person:
 		if tilt > 0.0:
 			# Landing on your back means you end up looking up, so the view
-			# pitches back rather than down. Crude on purpose; timing matters more.
-			aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(fall_camera_roll_degrees) * tilt)
-			aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(fall_camera_pitch_degrees) * tilt)
+			# pitches back rather than down; going over forwards mirrors it and
+			# ends up staring at the floor. Crude on purpose; timing matters more.
+			var fall_sign := _player.fall_direction
+			aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(fall_camera_roll_degrees) * tilt * fall_sign)
+			aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(fall_camera_pitch_degrees) * tilt * fall_sign)
 			eye.y = lerpf(eye.y, fall_camera_height, tilt)
 		_camera.global_transform = Transform3D(aim_basis, eye)
 		return

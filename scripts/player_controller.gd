@@ -25,10 +25,21 @@ enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 ## keeps the speed they slipped at and carries it forward, so at run speed this
 ## is what sets how far they skid.
 @export_range(1.0, 60.0, 0.5, "suffix:m/s²") var slip_slide_friction := 16.0
+## Pitching forward puts the skid under the body instead of out from under it,
+## so a long slide reads as a slide tackle. Scrubbed harder to land face first.
+@export_range(1.0, 80.0, 0.5, "suffix:m/s²") var forward_slip_slide_friction := 34.0
+## How long after standing up a fresh slip counts as losing footing you never
+## had, and goes over forwards instead of backwards.
+@export_range(0.0, 3.0, 0.05, "suffix:s") var recovery_window := 0.7
 
 var frame_movement := Vector3.ZERO
 var state := State.NORMAL
+## +1 goes over backwards, -1 pitches forward. Set when the slip starts and
+## held until the player is back on their feet; the prototype mirrors the
+## capsule and the camera by it.
+var fall_direction := 1.0
 var _state_timer := 0.0
+var _recovery_timer := 0.0
 
 
 func _ready() -> void:
@@ -38,6 +49,8 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	if state != State.NORMAL:
 		_advance_fall(delta)
+	else:
+		_recovery_timer = maxf(_recovery_timer - delta, 0.0)
 
 	var desired := Vector3.ZERO
 	if state == State.NORMAL:
@@ -50,7 +63,9 @@ func _physics_process(delta: float) -> void:
 
 	# Going down keeps whatever speed the player slipped at and scrubs it off,
 	# so they skid forward instead of stopping dead where they tripped.
-	var rate := acceleration if state == State.NORMAL else slip_slide_friction
+	var rate := acceleration
+	if state != State.NORMAL:
+		rate = forward_slip_slide_friction if fall_direction < 0.0 else slip_slide_friction
 	velocity.x = move_toward(velocity.x, desired.x, rate * delta)
 	velocity.z = move_toward(velocity.z, desired.z, rate * delta)
 	velocity.y = 0.0
@@ -79,11 +94,19 @@ func can_slip() -> bool:
 	return state == State.NORMAL
 
 
-## Slipping starts with a stumble, not the fall itself.
+## Slipping starts with a stumble, not the fall itself -- unless the player is
+## still recovering from the last one. Sprinting the instant you are upright
+## means your feet never take the weight, so you pitch straight forward with no
+## balance to catch: the stumble is skipped and the fall starts immediately.
 func begin_slip() -> void:
 	if state != State.NORMAL:
 		return
-	state = State.STUMBLE
+	if _recovery_timer > 0.0:
+		fall_direction = -1.0
+		state = State.FALLING
+	else:
+		fall_direction = 1.0
+		state = State.STUMBLE
 	_state_timer = 0.0
 
 
@@ -124,3 +147,5 @@ func _advance_fall(delta: float) -> void:
 	elif state == State.STANDING_UP and _state_timer >= stand_up_duration:
 		state = State.NORMAL
 		_state_timer = 0.0
+		fall_direction = 1.0
+		_recovery_timer = recovery_window
