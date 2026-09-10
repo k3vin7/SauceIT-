@@ -322,6 +322,11 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		if not shooter.is_local:
 			shooter.firing = data[index + 6] > 0.5
 			shooter.aim_pitch = data[index + 7]
+			# The yaw has to land on the aim, not only on the body: _update_aim
+			# rewrites the body from the aim every frame, and the strand leaves
+			# along the aim too. Setting the body alone points a remote player's
+			# spray back down whatever yaw this peer last had for them.
+			shooter.aim_yaw = data[index + 3]
 		else:
 			shooter.player.rotation.y = shooter.aim_yaw
 

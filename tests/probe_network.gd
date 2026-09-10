@@ -16,6 +16,8 @@ extends SceneTree
 #   * only the server paints: a client's own strand marks nothing by itself
 #   * a client cannot move faster than its keys allow, and cannot put a NaN
 #     into a body the server owns
+#   * both screens agree which way each player is facing and spraying, at an
+#     angle picked so that "not replicated at all" would still look plausible
 
 const PORT := 24777
 
@@ -193,6 +195,28 @@ func _run() -> void:
 	_check(server_cells > 100, "A only painted %d cells, too few to test with" % server_cells)
 	_check(server_hash == client_hash,
 		"the two screens disagree about the grid (%d vs %d cells)" % [server_cells, client_cells])
+
+	# --- both screens agree which way a player is aiming and spraying ---
+	# Yaw is the one that can go wrong quietly: the body's rotation travels in
+	# the state packet, but _update_aim rewrites the body from the aim every
+	# frame, so a yaw that lands on the body alone is overwritten and the remote
+	# player sprays down whatever yaw this peer happened to have for them.
+	for aim in [[47.0, -20.0], [-133.0, 12.0], [95.0, 0.0]]:
+		server_world.debug_set_aim(aim[0], aim[1])
+		await _wait(6)
+		var here = server_world.shooter_for(1)
+		var there = client_world.shooter_for(1)
+		var facing_gap := rad_to_deg(absf(wrapf(
+			here.player.rotation.y - there.player.rotation.y, -PI, PI)))
+		var spray_gap := rad_to_deg(here.attack_direction.angle_to(there.attack_direction))
+		print("A aims yaw %.0f pitch %.0f: body differs by %.2f deg, spray by %.2f deg" % [
+			aim[0], aim[1], facing_gap, spray_gap])
+		_check(facing_gap < 1.0,
+			"the two screens have A facing %.1f deg apart at yaw %.0f" % [facing_gap, aim[0]])
+		_check(spray_gap < 1.0,
+			"the two screens have A spraying %.1f deg apart at yaw %.0f" % [spray_gap, aim[0]])
+	server_world.debug_set_aim(0.0, -34.0)
+	await _wait(6)
 
 	# --- a client's own strand paints nothing: the server owns the grid ---
 	var before_hash: String = client_world.grid_md5()
