@@ -6,7 +6,7 @@ Godot 4 3D prototype for validating one continuous viscous mayonnaise strand, pe
 
 1. Open this directory in Godot 4.4 or newer.
 2. Run the project (`F6`/`F5`). The main scene is already configured.
-3. Move with `WASD`, hold `Shift` to run, aim with the mouse, and hold the left mouse button to fire. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
+3. Move with `WASD`, hold `Shift` to run, aim with the mouse, and hold the left mouse button to fire. `R` wipes sauce off your screen. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
 4. Spray the floor, then run across your own mayo. Running over a painted cell knocks you down; walking over it does not.
 5. `F2` opens the LAN panel; without it the game is the single-player one it has always been.
 
@@ -50,6 +50,8 @@ Players are contaminable too, and the grid on a body is the same `ContaminationG
 Two things differ from a flat face. The u axis is a loop, so the body's grid sets `wrap_x` and a splat near the seam carries on round the far side instead of being clipped. And the shader (`body_contamination.gdshader`) derives its texture coordinate from the surface position rather than from the mesh's own UVs, using the same maths the CPU paints with — a capsule's UVs distribute v across the caps, which would slide every splat toward the middle.
 
 Bodies carry their own cell size and brush (`Body Cell Size`, `Body Brush Radius`, 0.02 m and 0.07 m) because they are small: the world's 0.4 m brush would cover a fifth of the way round a player in one splat. The stain is stored in the body's own space, so it travels with the player as they walk and turn.
+
+Getting hit also puts sauce on your camera. Every splat the server marks on *your* body adds a blob to the screen overlay, placed on the side it came from — a hit from behind lands at the edge you would turn toward — and **`R` wipes the screen clean**. It is driven off the same splat, so there is no second hit test and no extra traffic, and on a client it arrives with the broadcast rather than being guessed locally. Nothing fades on a timer: being covered is a state you have to do something about, which is what the wipe key is for. Blobs are capped at 18, and wiping the lens does not wash the body.
 
 **The stain is cosmetic and nothing reads it back.** Slipping is decided by the floor grid and the floor grid alone. Over the network a body is painted exactly like a wall — only the server marks it, and it broadcasts the centre cell — and a peer joining a session that is already messy is handed each body's mask along with the floor's.
 
@@ -96,7 +98,7 @@ godot --headless --path . --script res://tests/probe_geom.gd                   #
 godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
 godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states, hostile input
 godot --headless --path . --script res://tests/probe_panel.gd                  # the F2 panel is on screen and centred
-godot --headless --path . --script res://tests/probe_body.gd                   # body stains: side hit, seam wrap, replay
+godot --headless --path . --script res://tests/probe_body.gd                   # body stains: side hit, seam wrap, replay, screen wipe
 ```
 
 `probe_determinism.gd` prints `MAYO_GRID_HASH`; run it twice and compare, since a difference between two processes is exactly what would break the grid sync.

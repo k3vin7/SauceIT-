@@ -7,6 +7,7 @@ const WallScript := preload("res://scripts/contaminable_object.gd")
 const CrosshairScript := preload("res://scripts/crosshair.gd")
 const NetPanelScript := preload("res://scripts/net_panel.gd")
 const BodyContaminationScript := preload("res://scripts/body_contamination.gd")
+const ScreenSplatterScript := preload("res://scripts/screen_splatter.gd")
 
 # Splat batch entry kinds. Four ints per splat: kind, target, cell x, cell y.
 # What `target` means is the kind's business -- a wall packs its index and the
@@ -164,6 +165,7 @@ var _input_enabled := true
 ## Four ints each: kind, target, cell x, cell y. See MayoNet.apply_splats.
 var _pending_splats := PackedInt32Array()
 var _crosshair: Control
+var _splatter: ScreenSplatter
 var _hud_layer: CanvasLayer
 var _mayo_material: Material
 var _landing_material: Material
@@ -394,6 +396,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if not _input_enabled:
 		return
+	if event.is_action_pressed("wipe_screen"):
+		_splatter.wipe()
+		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		apply_look((event as InputEventMouseMotion).relative)
 
@@ -433,6 +438,11 @@ func _ensure_input_actions() -> void:
 		var run := InputEventKey.new()
 		run.physical_keycode = KEY_SHIFT
 		InputMap.action_add_event("run", run)
+	if not InputMap.has_action("wipe_screen"):
+		InputMap.add_action("wipe_screen")
+		var wipe := InputEventKey.new()
+		wipe.physical_keycode = KEY_R
+		InputMap.action_add_event("wipe_screen", wipe)
 	if not InputMap.has_action("toggle_network_panel"):
 		InputMap.add_action("toggle_network_panel")
 		var network := InputEventKey.new()
@@ -631,6 +641,10 @@ func _build_crosshair() -> void:
 	var layer := CanvasLayer.new()
 	layer.name = "HUD"
 	add_child(layer)
+	_splatter = ScreenSplatterScript.new() as ScreenSplatter
+	_splatter.name = "ScreenSplatter"
+	layer.add_child(_splatter)
+	# Above the sauce, so there is always something to aim with.
 	_crosshair = CrosshairScript.new()
 	_crosshair.visible = show_crosshair
 	layer.add_child(_crosshair)
@@ -1095,6 +1109,7 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3) ->
 			return
 		_pending_splats.append_array(PackedInt32Array([
 			SPLAT_BODY, player.peer_id, cell.x, cell.y]))
+		_note_body_splat(player.peer_id, cell)
 
 
 ## Replays a batch of splat centre cells from the server. `paint_cell` depends
@@ -1114,11 +1129,33 @@ func apply_splats(data: PackedInt32Array) -> void:
 			var shooter: Shooter = _shooters.get(target)
 			if shooter != null:
 				shooter.player.paint_mayo_cell(cell)
+				_note_body_splat(target, cell)
 			continue
 		var wall_index := target / FACES_PER_WALL
 		var face := target % FACES_PER_WALL
 		if wall_index >= 0 and wall_index < _walls.size():
 			_walls[wall_index].paint_mayo_cell(face, cell)
+
+
+## Every splat that lands on this player's own body also lands on their camera.
+## Driven off the splat the server decided, not off a second hit test, so the
+## mayo on the glass and the mayo on the capsule are the same event -- and on a
+## client it arrives with the broadcast rather than being guessed locally.
+func _note_body_splat(peer_id: int, cell: Vector2i) -> void:
+	if _local == null or peer_id != _local.peer_id or _splatter == null:
+		return
+	if not is_instance_valid(_camera):
+		return
+	var body := _local.player.contamination
+	if body == null:
+		return
+	# The cell is the body unwrapped, so it says which way the hit was facing.
+	var angle := (float(cell.x) + 0.5) * body.cell_size / body.radius - PI
+	var height := (float(cell.y) + 0.5) * body.cell_size - body.height * 0.5
+	var outward := _local.player.global_basis * Vector3(sin(angle), 0.0, cos(angle))
+	var from_camera := (outward * body.radius + Vector3.UP * height) \
+		+ _local.player.global_position - _camera.global_position
+	_splatter.add_splat(_camera.global_basis.inverse() * from_camera)
 
 
 ## Whole-grid state for a peer that has just joined, so it starts from what is

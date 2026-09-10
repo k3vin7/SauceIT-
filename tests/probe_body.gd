@@ -12,6 +12,8 @@ extends SceneTree
 #     travels over the network the way the floor does
 #   * the floor is untouched by any of it: bodies are cosmetic, and slipping
 #     still reads the floor alone
+#   * a splat on your own body puts sauce on your camera, on the side it came
+#     from, and R wipes the lot
 
 var failures: Array[String] = []
 
@@ -135,6 +137,60 @@ func _run() -> void:
 		"two bodies given the same centre cells came out different")
 	_check(source_body.painted_cell_count() > 100,
 		"the replay test only marked %d cells" % source_body.painted_cell_count())
+
+	# --- sauce on your own body is sauce on your camera ---
+	var splatter = scene._splatter
+	_check(splatter.size.x > 0.0 and splatter.size.y > 0.0,
+		"the splatter overlay has no rect, so every blob would land at the corner")
+	_check(splatter.blob_count() == 0, "the screen started out dirty")
+	# Level and facing down -Z, so the view is not pitched when the blobs land.
+	scene.debug_set_aim(0.0, 0.0)
+	await physics_frame
+	# Forward is -Z, so the front of the body is where the unwrap starts and the
+	# middle column is the player's back. A hit on the chest belongs in the
+	# middle of the view; one in the back has nowhere to be but the edge.
+	var eye_row: int = int((scene.eye_height + 0.64) / 0.02)
+	scene._note_body_splat(1, Vector2i(0, eye_row))
+	_check(splatter.blob_count() == 1, "a splat on your own body did not reach the camera")
+	var ahead: Vector2 = splatter._blobs[0].position
+	scene._note_body_splat(1, Vector2i(body.grid.width / 2, eye_row))
+	var behind: Vector2 = splatter._blobs[1].position
+	print("blob from the front at %.0v, from behind at %.0v, screen %.0v" % [
+		ahead, behind, splatter.size])
+	_check(ahead.distance_to(splatter.size * 0.5) < splatter.size.y * 0.25,
+		"a hit from straight ahead landed at %.0v, not near the middle" % ahead)
+	_check(behind.distance_to(splatter.size * 0.5) > splatter.size.y * 0.25,
+		"a hit from behind landed at %.0v, in the middle of the view" % behind)
+	for blob in splatter._blobs:
+		_check(blob.position.x >= 0.0 and blob.position.y >= 0.0
+				and blob.position.x <= splatter.size.x and blob.position.y <= splatter.size.y,
+			"a blob landed at %.0v, off the screen" % blob.position)
+
+	# Blobs pile up, and they stay: nothing here is on a timer, or the wipe key
+	# would have nothing to do.
+	for i in 40:
+		scene._note_body_splat(1, Vector2i(i * 2, eye_row))
+	await physics_frame
+	await physics_frame
+	print("after 42 splats: %d blobs held, roughly %.0f%% of the screen" % [
+		splatter.blob_count(), splatter.coverage() * 100.0])
+	_check(splatter.blob_count() == ScreenSplatter.MAX_BLOBS,
+		"%d blobs are being held, past the %d cap" % [
+			splatter.blob_count(), ScreenSplatter.MAX_BLOBS])
+	_check(splatter.coverage() > 0.1,
+		"a screenful of splats covers only %.0f%% of it" % (splatter.coverage() * 100.0))
+
+	# --- and R wipes it ---
+	var wipe := InputEventAction.new()
+	wipe.action = "wipe_screen"
+	wipe.pressed = true
+	scene._unhandled_input(wipe)
+	print("after R: %d blobs" % splatter.blob_count())
+	_check(InputMap.has_action("wipe_screen"), "the wipe key is not bound")
+	_check(splatter.blob_count() == 0, "R left %d blobs on the screen" % splatter.blob_count())
+	# The body underneath is untouched: wiping the lens does not wash the player.
+	_check(body.painted_cell_count() > 0,
+		"wiping the screen cleared the stain on the body as well")
 
 	# --- and none of it touched the floor ---
 	print("floor cells before %d, after %d" % [

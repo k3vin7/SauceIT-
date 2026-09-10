@@ -18,7 +18,8 @@ extends SceneTree
 #     into a body the server owns
 #   * both screens agree which way each player is facing and spraying, at an
 #     angle picked so that "not replicated at all" would still look plausible
-#   * spraying a player marks their body identically on both screens
+#   * spraying a player marks their body identically on both screens, and puts
+#     sauce on the sprayed player's camera and on nobody else's
 
 const PORT := 24777
 
@@ -266,6 +267,18 @@ func _run() -> void:
 	await _wait(90)
 	server_world.debug_set_input(Vector2.ZERO, false, false)
 	await _wait(30)
+
+	print("screens: %d blobs on the shooter's, %d on the player being sprayed" % [
+		server_world._splatter.blob_count(), client_world._splatter.blob_count()])
+	_check(client_world._splatter.blob_count() > 0,
+		"B was sprayed and got no sauce on their camera")
+	_check(server_world._splatter.blob_count() == 0,
+		"A got %d blobs on their own camera for spraying someone else"
+			% server_world._splatter.blob_count())
+	client_world._splatter.wipe()
+	_check(client_world._splatter.blob_count() == 0, "the wipe left blobs behind")
+	_check(client_world.body_md5(client_id) == server_world.body_md5(client_id),
+		"wiping B's camera changed the stain on B's body")
 
 	var host_body: String = server_world.body_md5(client_id)
 	var client_body: String = client_world.body_md5(client_id)
