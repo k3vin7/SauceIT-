@@ -215,8 +215,27 @@ func _run() -> void:
 			"the two screens have A facing %.1f deg apart at yaw %.0f" % [facing_gap, aim[0]])
 		_check(spray_gap < 1.0,
 			"the two screens have A spraying %.1f deg apart at yaw %.0f" % [spray_gap, aim[0]])
+	# The same check the other way round. The two directions read a player's aim
+	# from different messages -- the host takes a client's off the input packet,
+	# a client takes the host's off the state packet -- so one of them being
+	# right says nothing about the other.
+	for aim in [[47.0, -20.0], [-133.0, 12.0], [95.0, 0.0]]:
+		client_world.debug_set_aim(aim[0], aim[1])
+		await _wait(10)
+		var mine = client_world.shooter_for(client_id)
+		var theirs = server_world.shooter_for(client_id)
+		var facing_gap := rad_to_deg(absf(wrapf(
+			mine.player.rotation.y - theirs.player.rotation.y, -PI, PI)))
+		var spray_gap := rad_to_deg(mine.attack_direction.angle_to(theirs.attack_direction))
+		print("B aims yaw %.0f pitch %.0f: body differs by %.2f deg, spray by %.2f deg" % [
+			aim[0], aim[1], facing_gap, spray_gap])
+		_check(facing_gap < 1.0,
+			"the two screens have B facing %.1f deg apart at yaw %.0f" % [facing_gap, aim[0]])
+		_check(spray_gap < 1.0,
+			"the two screens have B spraying %.1f deg apart at yaw %.0f" % [spray_gap, aim[0]])
 	server_world.debug_set_aim(0.0, -34.0)
-	await _wait(6)
+	client_world.debug_set_aim(0.0, 0.0)
+	await _wait(10)
 
 	# --- a client's own strand paints nothing: the server owns the grid ---
 	var before_hash: String = client_world.grid_md5()
