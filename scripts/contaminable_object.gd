@@ -47,19 +47,52 @@ func configure(new_cell_size: float, new_brush_radius: float) -> void:
 ## Marks the impact on whichever face `world_normal` points out of. Called when
 ## the raycast hits, not when a point lands, so the stain does not depend on how
 ## long the strand point survives.
-func paint_mayo(world_position: Vector3, world_normal: Vector3) -> void:
+## Returns (face, cell_x, cell_y) for the splat, or (-1, -1, -1) if it missed.
+## The floor's note on why the centre cell alone goes over the wire applies here
+## too; `paint_mayo_cell` is the replay side.
+func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector3i:
 	if grids.is_empty():
-		return
+		return Vector3i(-1, -1, -1)
 	var local_normal := (global_transform.basis.inverse() * world_normal).normalized()
 	var face := _face_for_normal(local_normal)
 	if face < 0:
-		return
+		return Vector3i(-1, -1, -1)
 	var local := to_local(world_position)
 	var u_axis: Vector3 = FACE_BASIS[face][1]
 	var v_axis: Vector3 = FACE_BASIS[face][2]
 	# The brush clips at the face border instead of wrapping around the box
 	# edge; a strand hitting a corner marks only the face it hit.
-	grids[face].paint(Vector2(local.dot(u_axis), local.dot(v_axis)), brush_radius)
+	var cell := grids[face].paint(Vector2(local.dot(u_axis), local.dot(v_axis)), brush_radius)
+	if cell.x < 0:
+		return Vector3i(-1, -1, -1)
+	return Vector3i(face, cell.x, cell.y)
+
+
+func paint_mayo_cell(face: int, cell: Vector2i) -> void:
+	if face < 0 or face >= grids.size():
+		return
+	grids[face].paint_cell(cell, brush_radius)
+
+
+func cells_md5() -> String:
+	var parts := PackedStringArray()
+	for grid in grids:
+		parts.push_back(grid.cells_md5())
+	return "|".join(parts)
+
+
+func snapshot_cells(face: int) -> PackedByteArray:
+	return grids[face].cells.duplicate()
+
+
+func restore_cells(face: int, cells: PackedByteArray) -> bool:
+	if face < 0 or face >= grids.size():
+		return false
+	return grids[face].restore_cells(cells)
+
+
+func face_count() -> int:
+	return grids.size()
 
 
 func painted_cell_count() -> int:

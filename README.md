@@ -8,6 +8,7 @@ Godot 4 3D prototype for validating one continuous viscous mayonnaise strand, pe
 2. Run the project (`F6`/`F5`). The main scene is already configured.
 3. Move with `WASD`, hold `Shift` to run, aim with the mouse, and hold the left mouse button to fire. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
 4. Spray the floor, then run across your own mayo. Running over a painted cell knocks you down; walking over it does not.
+5. `F2` opens the LAN panel; without it the game is the single-player one it has always been.
 
 The mouse is captured and there is no on-screen cursor: aiming accumulates yaw and pitch from relative mouse motion, FPS-style, and a fixed crosshair marks the centre of the screen. `WASD` moves relative to where you are facing. Both camera modes run the same aim code and differ only in where the camera sits, so switching does not change how the weapon points.
 
@@ -24,6 +25,20 @@ All requested baseline values are under **Mayo Stream — Reference Values** and
 ### Slipping
 
 `MayoPlayer` walks by default and runs while `Shift` is held. Both speeds are exported, along with the four beats of going down: a stumble spent catching your balance, the fall, the pause spent flat on the floor, and pushing back up. Stepping on mayo starts the stumble, not the fall — controls are already locked there while the capsule sways side to side and the view shakes, and it is where an arm-flailing animation would go once there is a character model. There is no grace period afterwards. Slipping already requires the run key and a direction to be held, so a player who keeps sprinting across mayo goes straight back down on the frame they stand up — and with no run-up there is no speed left to skid with, so they are pinned in place until they let go of the key. Letting go makes the same patch harmless. Running onto a painted cell trips the player: the test is a plain cell lookup on the same grid the floor draws, with no probability in it. Walking never trips, and standing still with `Shift` held is not running, so it cannot trip you either. The player keeps the speed they slipped at and skids forward while going over backwards, landing on their back looking up; `Slip Slide Friction` sets how far that skid runs, about 0.5 m at run speed. Going down again inside `Recovery Window` (0.7 s from standing up) is a different fall: sprinting the instant you are upright means your feet never take the weight, so there is no balance to catch and the player pitches straight forward with no stumble, landing face down. `Forward Slip Slide Friction` scrubs that one harder, since a forward skid runs under the body rather than out from under it and a long one reads as a slide tackle. Standing up clears the direction, so the next fall is a backwards one again. While down, movement and firing are both locked out, and input cannot steer the skid. The shoulder camera stays upright through all of it, so the fall can be watched; only the first-person view goes over with the player.
+
+### LAN multiplayer (2 players)
+
+`F2` opens the connection panel: one player presses **호스트 시작**, the other types the host's IP and presses **접속**. Port 24565 by default. No lobby and no matchmaking — the first peer to connect is the second player, and the panel closes straight back into the game. Nothing about this changes the offline game: with no session, the world is its own authority and runs exactly the code it ran before.
+
+The split is server-authoritative, with one deliberate exception:
+
+* **Movement is the server's.** Clients send their keys and their aim and nothing else; the server runs both bodies and sends back where they ended up. There is no client-side prediction — on a LAN the round trip is a frame or two.
+* **Aim is local.** The one exception. The mouse moves the view immediately and the packet follows, because a view that lags the hand by the round trip is unusable. The body's yaw still comes back from the server, which derives it from that same aim.
+* **The strand is not synchronised.** Only the firing flag and the aim pitch travel; every peer emits and simulates every shooter's strand itself, from the aim it already has for them. Two machines' strands differ by centimetres, which is fine — the strand is decoration, and what it leaves behind is not.
+* **The grid is the server's, exactly.** When a strand lands, only the server paints, and it broadcasts the splat's **centre cell** — two ints. Every peer replays that cell through the same `paint_cell`, which depends on nothing but the cell coordinates and the radius (`_cell_noise` is a pure function of the cell), so the grids come out byte-identical rather than approximately alike. Sending the cell *list* instead would be ~15,000 cells a second at the reference fire rate, for a worse guarantee. A peer that joins mid-game is handed the whole mask first.
+* **Slipping is the server's.** It tests its own grid against its own bodies, and the fall state travels with its timer, so the stumble, the fall, the skid and standing up line up frame for frame on both screens.
+
+`probe_determinism.gd` is what holds the grid claim up, and `probe_network.gd` runs an actual two-peer session in one process and checks the four things that matter: both screens' grids hash the same, A's mayo trips B, A sees B go down, and the fall states agree on every frame.
 
 ### Contamination grid
 
@@ -65,7 +80,11 @@ godot --headless --path . --script res://tests/probe_landing.gd -- full        #
 godot --headless --path . --script res://tests/probe_landing.gd -- nojitter    # controls: jitter off
 godot --headless --path . --script res://tests/probe_landing.gd -- noloss      #           pressure loss off
 godot --headless --path . --script res://tests/probe_geom.gd                   # wall face/cell mapping
+godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
+godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states
 ```
+
+`probe_determinism.gd` prints `MAYO_GRID_HASH`; run it twice and compare, since a difference between two processes is exactly what would break the grid sync.
 
 `profile_runtime.gd` reports the wall-clock tick interval, which is the tick period in every mode; read `script_ms` and the per-stage figures for actual cost, or wrap the run in `/usr/bin/time` and difference `full` against `noscript`.
 

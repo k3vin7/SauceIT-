@@ -33,13 +33,33 @@ func configure(new_cell_size: float, new_brush_radius: float) -> void:
 		_rebuild_grid()
 
 
-func paint_mayo(world_position: Vector3) -> void:
-	grid.paint(_to_grid(world_position), brush_radius)
+## Returns the centre cell of the splat, or (-1, -1) if it fell off the grid.
+## The server broadcasts that cell and every peer replays it through
+## `paint_mayo_cell`, so the wire carries two ints per splat rather than the
+## cell list, and every grid stays byte-identical.
+func paint_mayo(world_position: Vector3) -> Vector2i:
+	return grid.paint(_to_grid(world_position), brush_radius)
+
+
+func paint_mayo_cell(cell: Vector2i) -> void:
+	grid.paint_cell(cell, brush_radius)
 
 
 ## Cell-exact slip query: true when the cell under this position is painted.
 func is_mayo_at(world_position: Vector3) -> bool:
 	return grid.is_painted(_to_grid(world_position))
+
+
+func cells_md5() -> String:
+	return grid.cells_md5()
+
+
+func snapshot_cells() -> PackedByteArray:
+	return grid.cells.duplicate()
+
+
+func restore_cells(cells: PackedByteArray) -> bool:
+	return grid.restore_cells(cells)
 
 
 func reset_debug_counters() -> void:

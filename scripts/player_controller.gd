@@ -3,6 +3,11 @@ extends CharacterBody3D
 
 ## Walk/run movement plus the slip-and-fall state machine. Falling and standing
 ## up lock out movement and firing; the prototype reads `is_incapacitated()`.
+##
+## In a session the server owns every player: it runs this simulation for both,
+## reading the remote player's keys out of `input_move`/`input_run` instead of
+## the local keyboard, and the clients' copies are set from the network with
+## `apply_network_state` rather than simulated.
 
 enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 
@@ -33,6 +38,14 @@ enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 @export_range(0.0, 3.0, 0.05, "suffix:s") var recovery_window := 0.7
 
 var frame_movement := Vector3.ZERO
+## False on a client for every player including their own: the body is placed
+## by the server. Aim stays local -- see MayoPrototype._read_local_input.
+var authority := true
+## The server plays a remote player's keys back through these. Offline and for
+## the host's own body this stays false and the real keyboard is read.
+var use_injected_input := false
+var input_move := Vector2.ZERO
+var input_run := false
 var state := State.NORMAL
 ## +1 goes over backwards, -1 pitches forward. Set when the slip starts and
 ## held until the player is back on their feet; the prototype mirrors the
@@ -40,6 +53,7 @@ var state := State.NORMAL
 var fall_direction := 1.0
 var _state_timer := 0.0
 var _recovery_timer := 0.0
+var _network_previous_position := Vector3.ZERO
 
 
 func _ready() -> void:
@@ -47,6 +61,12 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if not authority:
+		# The strand's inertial follow still needs to know how far the body
+		# moved, and on a client that is whatever the last sync moved it by.
+		frame_movement = global_position - _network_previous_position
+		_network_previous_position = global_position
+		return
 	if state != State.NORMAL:
 		_advance_fall(delta)
 	else:
@@ -54,12 +74,12 @@ func _physics_process(delta: float) -> void:
 
 	var desired := Vector3.ZERO
 	if state == State.NORMAL:
-		var input_vector := Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
+		var input_vector := movement_input()
 		# Movement is relative to where the player is facing, which the prototype
 		# drives from the aim yaw.
 		desired = global_basis * Vector3(input_vector.x, 0.0, input_vector.y)
 		desired.y = 0.0
-		desired *= run_speed if Input.is_action_pressed("run") else walk_speed
+		desired *= run_speed if run_held() else walk_speed
 
 	# Going down keeps whatever speed the player slipped at and scrubs it off,
 	# so they skid forward instead of stopping dead where they tripped.
@@ -78,9 +98,41 @@ func _physics_process(delta: float) -> void:
 ## True while the run key is held and a direction is actually pressed. Standing
 ## still with the key down is not running, so it cannot trip you.
 func is_running() -> bool:
-	if state != State.NORMAL or not Input.is_action_pressed("run"):
+	if state != State.NORMAL or not run_held():
 		return false
-	return Input.get_vector("move_left", "move_right", "move_forward", "move_backward").length_squared() > 0.0
+	return movement_input().length_squared() > 0.0
+
+
+## The movement keys this body is being driven by: the real keyboard for the
+## local player, the last packet for a player the server is simulating.
+func movement_input() -> Vector2:
+	if use_injected_input:
+		return input_move
+	return Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
+
+
+func run_held() -> bool:
+	if use_injected_input:
+		return input_run
+	return Input.is_action_pressed("run")
+
+
+## Whole-body state from the server. The fall is not re-simulated here: the
+## timer comes over the wire too, so the stumble, the fall, the slide and
+## standing up line up frame for frame on both machines.
+func apply_network_state(new_position: Vector3, yaw: float, new_velocity: Vector3,
+		new_state: int, timer: float, direction: float) -> void:
+	global_position = new_position
+	rotation.y = yaw
+	velocity = new_velocity
+	state = new_state as State
+	_state_timer = timer
+	fall_direction = direction
+
+
+## What the server sends: enough to place the body and to replay the fall.
+func network_state() -> Array:
+	return [global_position, rotation.y, velocity, int(state), _state_timer, fall_direction]
 
 
 func is_incapacitated() -> bool:

@@ -59,14 +59,23 @@ func is_painted(local: Vector2) -> bool:
 	return cells[cell.y * width + cell.x] == 1
 
 
-## Marks a disc of `radius_meters` around a local position. The radius is given
-## in metres and converted here, so changing cell_size does not change how big
-## a splat is.
-func paint(local: Vector2, radius_meters: float) -> void:
+## Marks a disc of `radius_meters` around a local position, and returns the
+## centre cell it painted around, or (-1, -1) if the position was off the grid.
+## The radius is given in metres and converted here, so changing cell_size does
+## not change how big a splat is.
+func paint(local: Vector2, radius_meters: float) -> Vector2i:
+	return paint_cell(cell_of(local), radius_meters)
+
+
+## The splat itself, addressed by cell rather than by position. Everything below
+## depends only on the centre cell and the radius -- `_cell_noise` is a pure
+## function of the cell coordinates -- so two machines given the same centre
+## cell paint byte-identical grids. That is what lets the network send two ints
+## per splat instead of the cell list, and it is checked by probe_determinism.
+func paint_cell(centre: Vector2i, radius_meters: float) -> Vector2i:
 	paint_calls += 1
-	var centre := cell_of(local)
 	if not has_cell(centre):
-		return
+		return Vector2i(-1, -1)
 	var radius := maxi(1, roundi(radius_meters / cell_size))
 	var changed := false
 	for offset_y in range(-radius - 1, radius + 2):
@@ -85,6 +94,26 @@ func paint(local: Vector2, radius_meters: float) -> void:
 					changed = true
 	if changed:
 		dirty = true
+	return centre
+
+
+## Byte-exact fingerprint of the whole cell mask, for comparing two machines'
+## grids against each other.
+func cells_md5() -> String:
+	return Marshalls.raw_to_base64(cells).md5_text()
+
+
+## Replaces the whole mask, for handing a joining peer the state it missed.
+func restore_cells(new_cells: PackedByteArray) -> bool:
+	if new_cells.size() != cells.size():
+		return false
+	cells = new_cells
+	for y in height:
+		for x in width:
+			var value := 1.0 if cells[y * width + x] == 1 else 0.0
+			image.set_pixel(x, y, Color(value, 0.0, 0.0, 1.0))
+	dirty = true
+	return true
 
 
 ## All cell writes made during a physics frame share one upload.

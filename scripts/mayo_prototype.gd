@@ -5,6 +5,12 @@ const FloorScript := preload("res://scripts/floor_contamination.gd")
 const PlayerScript := preload("res://scripts/player_controller.gd")
 const WallScript := preload("res://scripts/contaminable_object.gd")
 const CrosshairScript := preload("res://scripts/crosshair.gd")
+const NetPanelScript := preload("res://scripts/net_panel.gd")
+
+# Splat batch entry kinds. Four ints per splat: kind, target, cell x, cell y.
+const SPLAT_FLOOR := 0
+const SPLAT_WALL := 1
+const FACES_PER_WALL := 6
 
 enum PointPhase { AIR, WALL_FIXED, LANDING }
 
@@ -26,6 +32,34 @@ class RibbonPoint:
 	var position := Vector3.ZERO
 	var opacity := 1.0
 	var width_scale := 1.0
+
+## Everything that belongs to one player rather than to the world: their body,
+## their aim, and their own strand. Offline there is exactly one, the local
+## player; in a session there is one per peer, and every peer simulates all of
+## them. Only the strand's landings are authoritative, and only on the server.
+class Shooter:
+	var peer_id := 1
+	var is_local := false
+	var player: MayoPlayer
+	var body_mesh: MeshInstance3D
+	var aim_pivot: Node3D
+	var weapon: Node3D
+	var muzzle: Marker3D
+	var points: Array[MayoPoint] = []
+	var emit_distance := 0.0
+	var attack_direction := Vector3.FORWARD
+	var burst_index := 0
+	var was_firing := false
+	var firing := false
+	var next_collision_slot := 0
+	var aim_yaw := 0.0
+	var aim_pitch := 0.0
+	var rng := RandomNumberGenerator.new()
+	var air_visual: StreamVisual
+	var wall_visual: StreamVisual
+	var landing_visual: StreamVisual
+	var shadow_visual: StreamVisual
+
 
 class MayoDroplet:
 	var active := false
@@ -111,35 +145,71 @@ class MayoDroplet:
 @export_range(0.5, 8.0, 0.05, "suffix:m") var aim_convergence_distance := 2.2
 @export var show_crosshair := true
 
-var _points: Array[MayoPoint] = []
-var _emit_distance := 0.0
-var _attack_direction := Vector3.FORWARD
-var _rng := RandomNumberGenerator.new()
-var _player: MayoPlayer
-var _muzzle: Marker3D
-var _aim_pivot: Node3D
-var _body_mesh: MeshInstance3D
+var _local: Shooter
+## peer id -> Shooter. Offline this holds the local player alone under id 1.
+var _shooters: Dictionary = {}
+var _net: MayoNet
+var _net_panel: Control
+var _input_enabled := true
+## Splat centre cells found this frame, flushed to the peers at the end of it.
+## Four ints each: kind, target, cell x, cell y. See MayoNet.apply_splats.
+var _pending_splats := PackedInt32Array()
 var _crosshair: Control
-var _weapon: Node3D
+var _hud_layer: CanvasLayer
+var _mayo_material: Material
+var _landing_material: Material
+var _shadow_material: Material
 var _camera: Camera3D
 var _floor: FloorContamination
 var _walls: Array[ContaminableObject] = []
-var _air_visual: StreamVisual
-var _wall_visual: StreamVisual
-var _landing_visual: StreamVisual
-var _shadow_visual: StreamVisual
+
+# The single-player fields the checks and the rest of this file grew up with,
+# now views onto the local player's Shooter. Nothing assigns through them.
+var _points: Array[MayoPoint]:
+	get: return _local.points
+var _emit_distance: float:
+	get: return _local.emit_distance
+var _attack_direction: Vector3:
+	get: return _local.attack_direction
+var _rng: RandomNumberGenerator:
+	get: return _local.rng
+var _player: MayoPlayer:
+	get: return _local.player
+var _muzzle: Marker3D:
+	get: return _local.muzzle
+var _aim_pivot: Node3D:
+	get: return _local.aim_pivot
+var _body_mesh: MeshInstance3D:
+	get: return _local.body_mesh
+var _weapon: Node3D:
+	get: return _local.weapon
+var _air_visual: StreamVisual:
+	get: return _local.air_visual
+var _wall_visual: StreamVisual:
+	get: return _local.wall_visual
+var _landing_visual: StreamVisual:
+	get: return _local.landing_visual
+var _shadow_visual: StreamVisual:
+	get: return _local.shadow_visual
+var _burst_index: int:
+	get: return _local.burst_index
+var _was_firing: bool:
+	get: return _local.was_firing
+var _aim_yaw: float:
+	get: return _local.aim_yaw
+var _aim_pitch: float:
+	get: return _local.aim_pitch
 var _droplet_multimesh: MultiMesh
 var _droplets: Array[MayoDroplet] = []
 var _active_droplet_indices := PackedInt32Array()
 var _droplet_buffer := PackedFloat32Array()
 var _droplet_buffer_dirty := false
 var _droplet_cursor := 0
-var _next_collision_slot := 0
-var _was_firing := false
-var _burst_index := 0
-var _aim_yaw := 0.0
-var _aim_pitch := 0.0
 var _first_person := true
+var debug_input_override := false
+var debug_input_move := Vector2.ZERO
+var debug_input_run := false
+var debug_input_firing := false
 var debug_profile_enabled := false
 var debug_profile_frames := 0
 var debug_raycast_count := 0
@@ -154,7 +224,6 @@ var debug_timings_us := {
 
 
 func _ready() -> void:
-	_rng.seed = 0x4d41594f
 	_ensure_input_actions()
 	_build_world()
 	set_first_person(start_in_first_person)
@@ -166,74 +235,155 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if _local == null:
+		return
 	var frame_started := Time.get_ticks_usec() if debug_profile_enabled else 0
 	var step_started := frame_started
-	_update_aim()
-	_update_slip()
-	var firing := Input.is_action_pressed("fire_mayo") and not _player.is_incapacitated()
-	if firing:
-		if not _was_firing:
-			_burst_index += 1
-		_apply_inertial_follow(_player.frame_movement)
-		_emit_distance += extend_speed * delta
-		while _emit_distance >= point_spacing:
-			_emit_distance -= point_spacing
-			_emit_point()
-	else:
-		_emit_distance = 0.0
-		if _was_firing:
-			_apply_release_pressure_loss()
-	_was_firing = firing
+	_read_local_input()
+	# Every peer simulates every strand off the aim it has for that shooter, so
+	# nothing about the strand itself goes over the wire. Only the server's copy
+	# is allowed to paint, and it broadcasts the cells it painted.
+	for shooter in _shooters.values():
+		_update_aim(shooter)
+	if _is_authority():
+		for shooter in _shooters.values():
+			_update_slip(shooter)
+	for shooter in _shooters.values():
+		_advance_strand(shooter, delta)
 	if debug_profile_enabled:
 		debug_timings_us.emit_follow += Time.get_ticks_usec() - step_started
 		step_started = Time.get_ticks_usec()
 
-	_simulate_points(delta)
+	for shooter in _shooters.values():
+		_simulate_points(delta, shooter)
 	_simulate_droplets(delta)
 	if debug_profile_enabled:
 		debug_timings_us.point_physics += Time.get_ticks_usec() - step_started
 		step_started = Time.get_ticks_usec()
-	if firing:
-		_enforce_spacing_constraint()
+	for shooter in _shooters.values():
+		if shooter.firing:
+			_enforce_spacing_constraint(shooter)
 	if debug_profile_enabled:
 		debug_timings_us.constraint += Time.get_ticks_usec() - step_started
 		step_started = Time.get_ticks_usec()
-	_trim_safety_cap()
-	_update_visuals()
+	for shooter in _shooters.values():
+		_trim_safety_cap(shooter)
+		_update_visuals(shooter)
 	if debug_profile_enabled:
 		debug_timings_us.ribbon_update += Time.get_ticks_usec() - step_started
 		debug_timings_us.total += Time.get_ticks_usec() - frame_started
 		debug_profile_frames += 1
 		debug_max_points = maxi(debug_max_points, _points.size())
+	if is_instance_valid(_net):
+		_net.end_of_frame(_pending_splats)
+	_pending_splats.clear()
+
+
+## Emission and the trigger edges, for one shooter. Split out of the frame loop
+## so remote shooters go through exactly the same path as the local one.
+func _advance_strand(shooter: Shooter, delta: float) -> void:
+	if shooter.firing:
+		if not shooter.was_firing:
+			shooter.burst_index += 1
+		_apply_inertial_follow(shooter.player.frame_movement, shooter)
+		shooter.emit_distance += extend_speed * delta
+		while shooter.emit_distance >= point_spacing:
+			shooter.emit_distance -= point_spacing
+			_emit_point(shooter)
+	else:
+		shooter.emit_distance = 0.0
+		if shooter.was_firing:
+			_apply_release_pressure_loss(shooter)
+	shooter.was_firing = shooter.firing
+
+
+## The local player's own keyboard and mouse. Their aim is applied immediately,
+## never round-tripped, or the view would lag the mouse by the latency; the
+## server still owns where the body ends up.
+func _read_local_input() -> void:
+	if _local == null:
+		return
+	var live := _input_enabled and not _local.player.is_incapacitated()
+	_local.firing = live and _fire_held()
+	if debug_input_override:
+		# The checks have no keyboard, so the same keys reach the body and the
+		# packet through here rather than through Input.
+		_local.player.use_injected_input = true
+		_local.player.input_move = debug_input_move
+		_local.player.input_run = debug_input_run
+	if not is_instance_valid(_net) or not _net.is_online():
+		return
+	if _net.is_server():
+		return
+	var move := Vector2.ZERO
+	var run := false
+	if debug_input_override:
+		move = debug_input_move
+		run = debug_input_run
+	elif _input_enabled:
+		move = Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
+		run = Input.is_action_pressed("run")
+	_net.send_input(move, run, _local.firing, _local.aim_yaw, _local.aim_pitch)
+
+
+func _fire_held() -> bool:
+	if debug_input_override:
+		return debug_input_firing
+	return Input.is_action_pressed("fire_mayo")
+
+
+## Stands in for the keyboard in the headless checks, the way debug_set_aim
+## stands in for the mouse.
+func debug_set_input(move: Vector2, run: bool, firing: bool) -> void:
+	debug_input_override = true
+	debug_input_move = move
+	debug_input_run = run
+	debug_input_firing = firing
+
+
+## True when this peer decides slips and grid paint: the server, or offline,
+## where a session of one is its own authority.
+func _is_authority() -> bool:
+	return not is_instance_valid(_net) or _net.is_server()
 
 
 func _process(_delta: float) -> void:
+	if _local == null:
+		return
 	_update_camera()
-	_update_fallen_body()
+	for shooter in _shooters.values():
+		_update_fallen_body(shooter)
 
 
 ## The capsule lies on its side while the player is down. A capsule is all the
 ## character model this step needs, so this is a single rotation.
-func _update_fallen_body() -> void:
-	if not is_instance_valid(_body_mesh):
+func _update_fallen_body(shooter: Shooter) -> void:
+	if not is_instance_valid(shooter.body_mesh):
 		return
 	# Going over backwards, the feet skid forward and the capsule tips about its
 	# local X: +90 degrees takes its top to +Z, behind the player. Pitching
 	# forward is the same rotation mirrored, which puts the top out in front.
-	var tilt := _player.fall_tilt()
-	_body_mesh.rotation.x = deg_to_rad(90.0) * tilt * _player.fall_direction
+	var tilt := shooter.player.fall_tilt()
+	shooter.body_mesh.rotation.x = deg_to_rad(90.0) * tilt * shooter.player.fall_direction
 	# The stumble sways the capsule side to side before it goes over; the two
 	# never overlap, since fall_tilt is 0 while stumbling.
-	_body_mesh.rotation.z = deg_to_rad(fall_body_roll_degrees) * tilt * _player.fall_direction \
-		+ deg_to_rad(stumble_body_roll_degrees) * _player.stumble_wobble()
+	shooter.body_mesh.rotation.z = deg_to_rad(fall_body_roll_degrees) * tilt * shooter.player.fall_direction \
+		+ deg_to_rad(stumble_body_roll_degrees) * shooter.player.stumble_wobble()
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _local == null:
+		return
 	if event.is_action_pressed("ui_cancel"):
 		get_tree().quit()
 		return
 	if event.is_action_pressed("toggle_camera_mode"):
 		set_first_person(not _first_person)
+		return
+	if event.is_action_pressed("toggle_network_panel"):
+		set_network_panel_open(not _net_panel.visible)
+		return
+	if not _input_enabled:
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		apply_look((event as InputEventMouseMotion).relative)
@@ -243,19 +393,21 @@ func _unhandled_input(event: InputEvent) -> void:
 ## identical in first and third person; only the camera placement differs.
 func apply_look(relative: Vector2) -> void:
 	var radians_per_pixel := deg_to_rad(mouse_sensitivity)
-	_aim_yaw = wrapf(_aim_yaw - relative.x * radians_per_pixel, -PI, PI)
+	_local.aim_yaw = wrapf(_local.aim_yaw - relative.x * radians_per_pixel, -PI, PI)
 	var limit := deg_to_rad(pitch_limit_degrees)
-	_aim_pitch = clampf(_aim_pitch - relative.y * radians_per_pixel, -limit, limit)
+	_local.aim_pitch = clampf(_local.aim_pitch - relative.y * radians_per_pixel, -limit, limit)
 
 
+## Only the local player's own capsule is hidden in first person. Everyone
+## else's stays visible in both modes -- that is the whole point of them.
 func set_first_person(enabled: bool) -> void:
 	_first_person = enabled
-	if is_instance_valid(_body_mesh):
-		_body_mesh.visible = not enabled
+	if _local != null and is_instance_valid(_local.body_mesh):
+		_local.body_mesh.visible = not enabled
 	# The bottle is a first-person viewmodel held at eye height; in third person
 	# it would sit inside the capsule, so it is hidden rather than mispositioned.
-	if is_instance_valid(_weapon):
-		_weapon.visible = enabled
+	if _local != null and is_instance_valid(_local.weapon):
+		_local.weapon.visible = enabled
 	_update_camera()
 
 
@@ -272,6 +424,11 @@ func _ensure_input_actions() -> void:
 		var run := InputEventKey.new()
 		run.physical_keycode = KEY_SHIFT
 		InputMap.action_add_event("run", run)
+	if not InputMap.has_action("toggle_network_panel"):
+		InputMap.add_action("toggle_network_panel")
+		var network := InputEventKey.new()
+		network.physical_keycode = KEY_F2
+		InputMap.action_add_event("toggle_network_panel", network)
 
 
 func _capture_mouse() -> void:
@@ -296,11 +453,12 @@ func _build_world() -> void:
 	_create_wall("LeftGuide", Vector3(-3.6, 0.75, 0.8), Vector3(0.16, 1.5, 4.0), Color("6b7b84"))
 	_create_wall("RightBlock", Vector3(3.0, 0.7, 2.1), Vector3(0.9, 1.4, 0.9), Color("6b7b84"))
 
-	_player = PlayerScript.new()
-	_player.name = "Player"
-	_player.position = Vector3(0.0, 0.64, 1.55)
-	add_child(_player)
-	_build_player_body()
+	_net = MayoNet.new()
+	_net.name = "Net"
+	add_child(_net)
+	_net.bind(self)
+
+	_local = _create_shooter(1, true)
 
 	_camera = Camera3D.new()
 	_camera.name = "ThirdPersonCamera"
@@ -327,12 +485,130 @@ func _build_world() -> void:
 	shadow_material.no_depth_test = false
 	shadow_material.render_priority = -1
 
-	_air_visual = _make_stream_visual("AirRibbon", mayo_material)
-	_wall_visual = _make_stream_visual("WallFixedRibbon", mayo_material)
-	_landing_visual = _make_stream_visual("LandingRibbon", landing_material)
-	_shadow_visual = _make_stream_visual("ProjectedShadow", shadow_material)
+	_mayo_material = mayo_material
+	_landing_material = landing_material
+	_shadow_material = shadow_material
+	_build_shooter_visuals(_local)
 	_build_droplet_pool(mayo_material)
 	_build_crosshair()
+	_build_network_panel()
+
+
+## Spawn point for the nth player to join. Fixed by join order so both peers
+## place everyone the same way.
+func spawn_position_for(slot: int) -> Vector3:
+	const SPAWNS := [Vector3(0.0, 0.64, 1.55), Vector3(1.35, 0.64, 2.6)]
+	return SPAWNS[slot % SPAWNS.size()]
+
+
+## Builds one player: capsule, aim pivot, bottle, and their own strand. Called
+## for the local player at startup and for each peer as they join.
+func create_avatar(peer_id: int, slot: int, is_local: bool) -> Shooter:
+	if _shooters.has(peer_id):
+		return _shooters[peer_id]
+	var shooter := _create_shooter(peer_id, is_local, slot)
+	if _mayo_material != null:
+		_build_shooter_visuals(shooter)
+	# Anyone but the player at this keyboard is driven by the packets they send.
+	shooter.player.use_injected_input = not is_local
+	# A client simulates no bodies at all, its own included: every one of them
+	# is placed by the server. Set here rather than at each call site so no
+	# ordering of the join messages can leave a body simulating itself.
+	shooter.player.authority = _is_authority()
+	if is_local:
+		_local = shooter
+		set_first_person(_first_person)
+	return shooter
+
+
+func remove_avatar(peer_id: int) -> void:
+	if not _shooters.has(peer_id) or (_local != null and peer_id == _local.peer_id):
+		return
+	_free_shooter(_shooters[peer_id])
+	_shooters.erase(peer_id)
+
+
+## Joining a session throws away the offline body: the server decides who is in
+## the world, this peer included, and says so in the messages that follow.
+func reset_for_join() -> void:
+	for peer_id in _shooters.keys():
+		_free_shooter(_shooters[peer_id])
+	_shooters.clear()
+	_local = null
+
+
+## Back to a session of one after the host goes away, so the game is still
+## playable rather than left with an empty world.
+func reset_to_offline() -> void:
+	reset_for_join()
+	_local = _create_shooter(1, true)
+	_build_shooter_visuals(_local)
+	set_first_person(_first_person)
+
+
+## Marks which of the spawned bodies this peer is looking out of.
+func claim_avatar(peer_id: int, slot := 0) -> void:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null:
+		shooter = create_avatar(peer_id, slot, true)
+	shooter.is_local = true
+	_local = shooter
+	shooter.player.use_injected_input = false
+	var material := shooter.body_mesh.material_override as StandardMaterial3D
+	if material != null:
+		material.albedo_color = Color("33495b")
+	set_first_person(_first_person)
+
+
+func set_avatar_authority(peer_id: int, authority: bool) -> void:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter != null:
+		shooter.player.authority = authority
+
+
+func _free_shooter(shooter: Shooter) -> void:
+	for node in [shooter.player, shooter.air_visual, shooter.wall_visual,
+			shooter.landing_visual, shooter.shadow_visual]:
+		if is_instance_valid(node):
+			# Detached before freeing so the node name is free again this frame:
+			# the same peer id has to be able to respawn under the same name.
+			remove_child(node)
+			node.queue_free()
+
+
+func shooter_for(peer_id: int) -> Shooter:
+	return _shooters.get(peer_id)
+
+
+func shooter_ids() -> Array:
+	return _shooters.keys()
+
+
+func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
+	var shooter := Shooter.new()
+	shooter.peer_id = peer_id
+	shooter.is_local = is_local
+	# Seeded per peer so two players firing at once do not share a jitter
+	# sequence. Peer 1 keeps the original seed, so the single-player game and
+	# the checks built on it emit exactly the strand they always did.
+	shooter.rng.seed = 0x4d41594f + peer_id - 1
+	shooter.player = PlayerScript.new()
+	# The name is the address the network state is applied through, so it must
+	# be derived from the peer id and nothing else.
+	shooter.player.name = "Player_%d" % peer_id
+	shooter.player.position = spawn_position_for(slot)
+	add_child(shooter.player)
+	_build_player_body(shooter)
+	_shooters[peer_id] = shooter
+	return shooter
+
+
+func _build_shooter_visuals(shooter: Shooter) -> void:
+	var suffix := str(shooter.peer_id)
+	shooter.air_visual = _make_stream_visual("AirRibbon" + suffix, _mayo_material)
+	shooter.wall_visual = _make_stream_visual("WallFixedRibbon" + suffix, _mayo_material)
+	shooter.landing_visual = _make_stream_visual("LandingRibbon" + suffix, _landing_material)
+	shooter.shadow_visual = _make_stream_visual("ProjectedShadow" + suffix, _shadow_material)
 
 
 func _build_crosshair() -> void:
@@ -342,6 +618,26 @@ func _build_crosshair() -> void:
 	_crosshair = CrosshairScript.new()
 	_crosshair.visible = show_crosshair
 	layer.add_child(_crosshair)
+	_hud_layer = layer
+
+
+## Host / join panel, opened with F2 and closed again once a session is up.
+## Hidden by default, so the offline game starts exactly as it always has.
+func _build_network_panel() -> void:
+	_net_panel = NetPanelScript.new()
+	_net_panel.bind(_net)
+	_net_panel.visible = false
+	_hud_layer.add_child(_net_panel)
+
+
+func set_network_panel_open(open: bool) -> void:
+	if not is_instance_valid(_net_panel):
+		return
+	_net_panel.visible = open
+	_input_enabled = not open
+	if DisplayServer.get_name() == "headless":
+		return
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if open else Input.MOUSE_MODE_CAPTURED
 
 
 func _build_environment() -> void:
@@ -366,47 +662,52 @@ func _build_environment() -> void:
 	add_child(sun)
 
 
-func _build_player_body() -> void:
+func _build_player_body(shooter: Shooter) -> void:
 	var collision := CollisionShape3D.new()
 	var capsule_shape := CapsuleShape3D.new()
 	capsule_shape.radius = 0.32
 	capsule_shape.height = 1.28
 	collision.shape = capsule_shape
-	_player.add_child(collision)
+	shooter.player.add_child(collision)
 
-	_body_mesh = MeshInstance3D.new()
-	_body_mesh.name = "CapsuleBody"
+	var body_mesh := MeshInstance3D.new()
+	body_mesh.name = "CapsuleBody"
 	var capsule_mesh := CapsuleMesh.new()
 	capsule_mesh.radius = 0.32
 	capsule_mesh.height = 1.28
-	_body_mesh.mesh = capsule_mesh
+	body_mesh.mesh = capsule_mesh
 	var body_material := StandardMaterial3D.new()
-	body_material.albedo_color = Color("33495b")
+	# The other player is a different colour, so it is obvious which capsule
+	# on screen is being watched fall over.
+	body_material.albedo_color = Color("33495b") if shooter.is_local else Color("7a4b3a")
 	body_material.roughness = 0.75
-	_body_mesh.material_override = body_material
-	_player.add_child(_body_mesh)
+	body_mesh.material_override = body_material
+	shooter.player.add_child(body_mesh)
+	shooter.body_mesh = body_mesh
 
 	# The pivot carries the pitch so the nozzle and muzzle follow vertical aim.
 	# The player body itself only yaws.
-	_aim_pivot = Node3D.new()
-	_aim_pivot.name = "AimPivot"
-	_aim_pivot.position = Vector3(0.0, eye_height, 0.0)
-	_player.add_child(_aim_pivot)
+	var aim_pivot := Node3D.new()
+	aim_pivot.name = "AimPivot"
+	aim_pivot.position = Vector3(0.0, eye_height, 0.0)
+	shooter.player.add_child(aim_pivot)
+	shooter.aim_pivot = aim_pivot
 
-	_build_weapon()
+	_build_weapon(shooter)
 
 
 ## Sauce bottle viewmodel, held to the lower right and angled so its nozzle
 ## points at the crosshair rather than straight down the view axis.
-func _build_weapon() -> void:
+func _build_weapon(shooter: Shooter) -> void:
 	var hold := Vector3(weapon_offset_right, weapon_offset_up, -weapon_offset_forward)
-	_weapon = Node3D.new()
-	_weapon.name = "SauceBottle"
+	var weapon := Node3D.new()
+	weapon.name = "SauceBottle"
 	# The convergence point sits on the view axis, so pointing the bottle at it
 	# in pivot space is what visually lines the nozzle up with the crosshair.
 	var to_crosshair := Vector3(0.0, 0.0, -aim_convergence_distance) - hold
-	_weapon.transform = Transform3D(Basis.looking_at(to_crosshair, Vector3.UP), hold)
-	_aim_pivot.add_child(_weapon)
+	weapon.transform = Transform3D(Basis.looking_at(to_crosshair, Vector3.UP), hold)
+	shooter.aim_pivot.add_child(weapon)
+	shooter.weapon = weapon
 
 	var body_color := Color("cdc4b4")
 	var cap_color := Color("2f3a47")
@@ -414,26 +715,27 @@ func _build_weapon() -> void:
 	var cursor := 0.0
 	# Squeeze-bottle silhouette: tapering body, a label band, then a dark cap and
 	# tip that clear the body so the nozzle reads against the scene.
-	cursor = _add_bottle_part("Body", bottle_radius, bottle_radius * 0.72,
+	cursor = _add_bottle_part(weapon, "Body", bottle_radius, bottle_radius * 0.72,
 		bottle_length, cursor, body_color, 0.45, 16)
-	_add_bottle_part("Label", bottle_radius * 1.04, bottle_radius * 0.95,
+	_add_bottle_part(weapon, "Label", bottle_radius * 1.04, bottle_radius * 0.95,
 		bottle_length * 0.3, bottle_length * 0.22, label_color, 0.6, 16)
-	cursor = _add_bottle_part("Shoulder", bottle_radius * 0.72, bottle_radius * 0.4,
+	cursor = _add_bottle_part(weapon, "Shoulder", bottle_radius * 0.72, bottle_radius * 0.4,
 		bottle_length * 0.26, cursor, body_color, 0.45, 14)
-	cursor = _add_bottle_part("Cap", bottle_radius * 0.46, bottle_radius * 0.42,
+	cursor = _add_bottle_part(weapon, "Cap", bottle_radius * 0.46, bottle_radius * 0.42,
 		bottle_length * 0.26, cursor, cap_color, 0.55, 14)
-	cursor = _add_bottle_part("Tip", bottle_radius * 0.42, bottle_radius * 0.16,
+	cursor = _add_bottle_part(weapon, "Tip", bottle_radius * 0.42, bottle_radius * 0.16,
 		bottle_length * 0.22, cursor, cap_color, 0.5, 12)
 
-	_muzzle = Marker3D.new()
-	_muzzle.name = "Muzzle"
-	_muzzle.position = Vector3(0.0, 0.0, -cursor)
-	_weapon.add_child(_muzzle)
+	var muzzle := Marker3D.new()
+	muzzle.name = "Muzzle"
+	muzzle.position = Vector3(0.0, 0.0, -cursor)
+	weapon.add_child(muzzle)
+	shooter.muzzle = muzzle
 
 
 ## Adds one cylinder section along the bottle axis starting at `offset`, and
 ## returns the offset of its far end.
-func _add_bottle_part(part_name: String, back_radius: float, front_radius: float,
+func _add_bottle_part(weapon: Node3D, part_name: String, back_radius: float, front_radius: float,
 		length: float, offset: float, color: Color, roughness: float, segments: int) -> float:
 	var part := MeshInstance3D.new()
 	part.name = part_name
@@ -450,7 +752,7 @@ func _add_bottle_part(part_name: String, back_radius: float, front_radius: float
 	material.albedo_color = color
 	material.roughness = roughness
 	part.material_override = material
-	_weapon.add_child(part)
+	weapon.add_child(part)
 	return offset + length
 
 
@@ -477,20 +779,23 @@ func _make_stream_visual(visual_name: String, material: Material) -> StreamVisua
 ## Running over a painted cell trips the player. The test is a plain cell
 ## lookup on the same grid the floor draws, so it is exact and repeatable:
 ## there is no probability anywhere in it.
-func _update_slip() -> void:
-	if not _player.can_slip() or not _player.is_running():
+func _update_slip(shooter: Shooter) -> void:
+	var player := shooter.player
+	if not player.can_slip() or not player.is_running():
 		return
-	if _floor.is_mayo_at(_player.global_position):
-		_player.begin_slip()
+	if _floor.is_mayo_at(player.global_position):
+		player.begin_slip()
 
 
 ## Orientation of the aim, shared by the camera and the strand direction.
-func _aim_basis() -> Basis:
-	return Basis.from_euler(Vector3(_aim_pitch, _aim_yaw, 0.0))
+func _aim_basis(shooter: Shooter = null) -> Basis:
+	if shooter == null:
+		shooter = _local
+	return Basis.from_euler(Vector3(shooter.aim_pitch, shooter.aim_yaw, 0.0))
 
 
 func _update_camera() -> void:
-	if not is_instance_valid(_camera) or not is_instance_valid(_player):
+	if _local == null or not is_instance_valid(_camera) or not is_instance_valid(_player):
 		return
 	_camera.fov = camera_fov
 	var aim_basis := _aim_basis()
@@ -524,59 +829,64 @@ func _update_camera() -> void:
 	_camera.global_transform = Transform3D(aim_basis, eye + offset)
 
 
-func _update_aim() -> void:
-	if not is_instance_valid(_player):
+func _update_aim(shooter: Shooter = null) -> void:
+	if shooter == null:
+		shooter = _local
+	if shooter == null or not is_instance_valid(shooter.player):
 		return
 	# The body yaws, the weapon pivot pitches, and the strand always leaves
 	# along the camera forward axis.
-	_player.rotation.y = _aim_yaw
-	_aim_pivot.rotation.x = _aim_pitch
-	_attack_direction = -_aim_basis().z
+	shooter.player.rotation.y = shooter.aim_yaw
+	shooter.aim_pivot.rotation.x = shooter.aim_pitch
+	shooter.attack_direction = -_aim_basis(shooter).z
 
 
 ## Aims at an explicit yaw/pitch in degrees. Used by the headless checks, which
 ## have no mouse to move.
 func debug_set_aim(yaw_degrees: float, pitch_degrees: float) -> void:
 	var limit := deg_to_rad(pitch_limit_degrees)
-	_aim_yaw = deg_to_rad(yaw_degrees)
-	_aim_pitch = clampf(deg_to_rad(pitch_degrees), -limit, limit)
+	_local.aim_yaw = deg_to_rad(yaw_degrees)
+	_local.aim_pitch = clampf(deg_to_rad(pitch_degrees), -limit, limit)
 	_update_aim()
 	_update_camera()
 
 
 ## Aims from the weapon pivot at a world position.
 func debug_aim_at(target: Vector3) -> void:
-	var to_target := target - _aim_pivot.global_position
+	var to_target := target - _local.aim_pivot.global_position
 	if to_target.length_squared() < 0.000001:
 		return
 	to_target = to_target.normalized()
 	debug_set_aim(rad_to_deg(atan2(-to_target.x, -to_target.z)), rad_to_deg(asin(to_target.y)))
 
 
-func _emit_point() -> void:
+func _emit_point(shooter: Shooter = null) -> void:
+	if shooter == null:
+		shooter = _local
 	var point := MayoPoint.new()
 	# Both jitters use the aim's own axes rather than the world up axis, which
 	# degenerates to a zero vector when aiming straight up or down.
-	var aim_basis := _aim_basis()
-	var jitter := _rng.randf_range(-lateral_position_jitter, lateral_position_jitter)
-	point.position = _muzzle.global_position + _attack_direction * muzzle_forward_offset \
+	var aim_basis := _aim_basis(shooter)
+	var jitter := shooter.rng.randf_range(-lateral_position_jitter, lateral_position_jitter)
+	point.position = shooter.muzzle.global_position + shooter.attack_direction * muzzle_forward_offset \
 		+ aim_basis.x * jitter
 	# The nozzle is held off to the side, so the strand is launched at the point
 	# the crosshair marks rather than parallel to the view axis.
-	var convergence := _aim_pivot.global_position + _attack_direction * aim_convergence_distance
-	var angle := _rng.randf_range(-yaw_angle_jitter, yaw_angle_jitter)
+	var convergence := shooter.aim_pivot.global_position + shooter.attack_direction * aim_convergence_distance
+	var angle := shooter.rng.randf_range(-yaw_angle_jitter, yaw_angle_jitter)
 	var direction := (convergence - point.position).normalized().rotated(aim_basis.y, angle).normalized()
 	point.last_collision_position = point.position
 	# Speed jitter is independent of the yaw jitter above: it spreads where a
 	# point runs out of pressure, and so spreads the landing point along the
 	# strand axis rather than across it.
-	var speed := extend_speed * (1.0 + _rng.randf_range(-speed_magnitude_jitter, speed_magnitude_jitter))
-	point.velocity = direction * speed + Vector3(_player.velocity.x, 0.0, _player.velocity.z) * inherited_player_velocity
+	var speed := extend_speed * (1.0 + shooter.rng.randf_range(-speed_magnitude_jitter, speed_magnitude_jitter))
+	var player_velocity := shooter.player.velocity
+	point.velocity = direction * speed + Vector3(player_velocity.x, 0.0, player_velocity.z) * inherited_player_velocity
 	point.launch_direction = direction
-	point.collision_slot = _next_collision_slot
-	point.burst_index = _burst_index
-	_next_collision_slot = (_next_collision_slot + 1) % maxi(raycast_frame_stride, 1)
-	_points.push_back(point)
+	point.collision_slot = shooter.next_collision_slot
+	point.burst_index = shooter.burst_index
+	shooter.next_collision_slot = (shooter.next_collision_slot + 1) % maxi(raycast_frame_stride, 1)
+	shooter.points.push_back(point)
 
 
 ## Two array-adjacent points are one continuous strand only if they came from
@@ -592,28 +902,34 @@ func _break_distance_squared() -> float:
 
 
 ## Index range [start, end] of the burst the point at `start` belongs to.
-func _burst_end(start: int) -> int:
-	var burst: int = _points[start].burst_index
+func _burst_end(start: int, shooter: Shooter = null) -> int:
+	if shooter == null:
+		shooter = _local
+	var points := shooter.points
+	var burst: int = points[start].burst_index
 	var last := start
-	while last + 1 < _points.size() and _points[last + 1].burst_index == burst:
+	while last + 1 < points.size() and points[last + 1].burst_index == burst:
 		last += 1
 	return last
 
 
-func _apply_inertial_follow(player_movement: Vector3) -> void:
-	if player_movement.length_squared() <= 0.00000001 or _points.is_empty():
+func _apply_inertial_follow(player_movement: Vector3, shooter: Shooter = null) -> void:
+	if shooter == null:
+		shooter = _local
+	var points := shooter.points
+	if player_movement.length_squared() <= 0.00000001 or points.is_empty():
 		return
 	# t is the point's position inside its own burst. Measuring it against the
 	# whole array skews the bend of the strand being extended whenever an
 	# earlier burst is still falling. Only the burst still attached to the
 	# muzzle follows the player; detached ones are on their own.
 	var index := 0
-	while index < _points.size():
-		var last := _burst_end(index)
-		if _points[index].burst_index == _burst_index:
+	while index < points.size():
+		var last := _burst_end(index, shooter)
+		if points[index].burst_index == shooter.burst_index:
 			var denominator := maxf(float(last - index), 1.0)
 			for i in range(index, last + 1):
-				var point := _points[i]
+				var point := points[i]
 				if point.phase != PointPhase.AIR:
 					continue
 				var t := float(i - index) / denominator
@@ -625,19 +941,22 @@ func _apply_inertial_follow(player_movement: Vector3) -> void:
 ## already coasting on its own momentum and keeps its speed, while the points
 ## still at the muzzle lose the most, so the trail that lands afterwards starts
 ## at full range and is drawn back toward the player.
-func _apply_release_pressure_loss() -> void:
-	if release_pressure_loss <= 0.0 or _points.is_empty():
+func _apply_release_pressure_loss(shooter: Shooter = null) -> void:
+	if shooter == null:
+		shooter = _local
+	var points := shooter.points
+	if release_pressure_loss <= 0.0 or points.is_empty():
 		return
 	# Only the burst that was being fired loses pressure, and t is measured
 	# inside it: an earlier burst is already coasting and must not be decayed
 	# a second time.
 	var start := 0
-	while start < _points.size():
-		var last := _burst_end(start)
-		if _points[start].burst_index == _burst_index:
+	while start < points.size():
+		var last := _burst_end(start, shooter)
+		if points[start].burst_index == shooter.burst_index:
 			var denominator := maxf(float(last - start), 1.0)
 			for i in range(start, last + 1):
-				var point := _points[i]
+				var point := points[i]
 				if point.phase != PointPhase.AIR:
 					continue
 				# The burst's index 0 is its front tip; its last index is the muzzle.
@@ -648,11 +967,14 @@ func _apply_release_pressure_loss() -> void:
 		start = last + 1
 
 
-func _simulate_points(delta: float) -> void:
+func _simulate_points(delta: float, shooter: Shooter = null) -> void:
+	if shooter == null:
+		shooter = _local
+	var points := shooter.points
 	var space_state := get_world_3d().direct_space_state
 	var physics_frame := int(Engine.get_physics_frames())
 	var stride := maxi(raycast_frame_stride, 1)
-	for point in _points:
+	for point in points:
 		if point.phase == PointPhase.WALL_FIXED:
 			point.fixed_age += delta
 			continue
@@ -680,7 +1002,7 @@ func _simulate_points(delta: float) -> void:
 			and (scheduled or near_floor or must_catch_up)
 		if should_cast:
 			var query := PhysicsRayQueryParameters3D.create(point.last_collision_position, next)
-			query.exclude = [_player.get_rid()]
+			query.exclude = [shooter.player.get_rid()]
 			query.collide_with_areas = false
 			if debug_profile_enabled:
 				debug_raycast_count += 1
@@ -690,8 +1012,11 @@ func _simulate_points(delta: float) -> void:
 				if collider != null and collider.is_in_group("mayo_floor"):
 					_begin_landing(point, hit.position)
 				else:
-					if collider is ContaminableObject:
-						collider.paint_mayo(hit.position, hit.normal)
+					# Only the server's copy of the strand marks anything. Every
+					# peer runs this same code for every shooter, but a client's
+					# splats would be its own guess; it waits for the broadcast.
+					if collider is ContaminableObject and _is_authority():
+						_record_wall_splat(collider, hit.position, hit.normal)
 					point.position = hit.position + hit.normal * (strand_thickness * 0.5)
 					point.last_collision_position = point.position
 					point.velocity = Vector3.ZERO
@@ -702,15 +1027,15 @@ func _simulate_points(delta: float) -> void:
 		else:
 			point.position = next
 
-	for i in range(_points.size() - 1, -1, -1):
-		var point := _points[i]
+	for i in range(points.size() - 1, -1, -1):
+		var point := points[i]
 		if point.phase == PointPhase.LANDING and point.landing_age >= landing_transition_time:
 			_spawn_landing_droplets(point.position)
-			_points.remove_at(i)
+			points.remove_at(i)
 		elif point.phase == PointPhase.WALL_FIXED and point.fixed_age >= wall_fixed_hold_time:
-			_points.remove_at(i)
+			points.remove_at(i)
 		elif point.position.y < -1.0:
-			_points.remove_at(i)
+			points.remove_at(i)
 
 
 func _begin_landing(point: MayoPoint, hit_position: Vector3) -> void:
@@ -720,25 +1045,94 @@ func _begin_landing(point: MayoPoint, hit_position: Vector3) -> void:
 	point.powered = false
 	point.phase = PointPhase.LANDING
 	point.landing_age = 0.0
-	_floor.paint_mayo(hit_position)
+	if not _is_authority():
+		return
+	var cell := _floor.paint_mayo(hit_position)
+	if cell.x >= 0:
+		_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR, 0, cell.x, cell.y]))
 
 
-func _enforce_spacing_constraint() -> void:
-	if _points.size() < 2:
+## The server paints the wall and queues the same splat for the peers.
+func _record_wall_splat(wall: ContaminableObject, hit_position: Vector3, hit_normal: Vector3) -> void:
+	var splat := wall.paint_mayo(hit_position, hit_normal)
+	if splat.x < 0:
+		return
+	var index := _walls.find(wall)
+	if index < 0:
+		return
+	_pending_splats.append_array(PackedInt32Array([
+		SPLAT_WALL, index * FACES_PER_WALL + splat.x, splat.y, splat.z]))
+
+
+## Replays a batch of splat centre cells from the server. `paint_cell` depends
+## on nothing but the centre cell, so this reproduces the server's grid exactly
+## rather than approximately -- see probe_determinism.
+func apply_splats(data: PackedInt32Array) -> void:
+	var index := 0
+	while index + 3 < data.size():
+		var kind := data[index]
+		var target := data[index + 1]
+		var cell := Vector2i(data[index + 2], data[index + 3])
+		index += 4
+		if kind == SPLAT_FLOOR:
+			_floor.paint_mayo_cell(cell)
+			continue
+		var wall_index := target / FACES_PER_WALL
+		var face := target % FACES_PER_WALL
+		if wall_index >= 0 and wall_index < _walls.size():
+			_walls[wall_index].paint_mayo_cell(face, cell)
+
+
+## Whole-grid state for a peer that has just joined, so it starts from what is
+## already on the floor rather than from clean.
+func grid_snapshot() -> Array:
+	var snapshot := [_floor.snapshot_cells()]
+	for wall in _walls:
+		for face in wall.face_count():
+			snapshot.push_back(wall.snapshot_cells(face))
+	return snapshot
+
+
+## The pieces arrive one message each, in the order `grid_snapshot` produced
+## them: the floor, then every wall face.
+func apply_grid_snapshot_part(index: int, cells: PackedByteArray) -> bool:
+	if index == 0:
+		return _floor.restore_cells(cells)
+	var cursor := 1
+	for wall in _walls:
+		for face in wall.face_count():
+			if cursor == index:
+				return wall.restore_cells(face, cells)
+			cursor += 1
+	return false
+
+
+func grid_md5() -> String:
+	var parts := PackedStringArray([_floor.cells_md5()])
+	for wall in _walls:
+		parts.push_back(wall.cells_md5())
+	return "|".join(parts)
+
+
+func _enforce_spacing_constraint(shooter: Shooter = null) -> void:
+	if shooter == null:
+		shooter = _local
+	var points := shooter.points
+	if points.size() < 2:
 		return
 	var break_distance_squared := _break_distance_squared()
 	for _pass in spacing_constraint_passes:
-		for i in _points.size() - 1:
-			var front := _points[i]
-			var back := _points[i + 1]
+		for i in points.size() - 1:
+			var front := points[i]
+			var back := points[i + 1]
 			# Inlined _points_connected: this runs once per pair per pass.
-			if front.burst_index != _burst_index \
+			if front.burst_index != shooter.burst_index \
 					or front.burst_index != back.burst_index \
 					or front.position.distance_squared_to(back.position) > break_distance_squared:
 				continue
 			var direction := (front.launch_direction + back.launch_direction).normalized()
 			if direction.length_squared() < 0.000001:
-				direction = _attack_direction
+				direction = shooter.attack_direction
 			var projected_gap := (front.position - back.position).dot(direction)
 			if projected_gap <= point_spacing:
 				continue
@@ -754,23 +1148,29 @@ func _enforce_spacing_constraint() -> void:
 				back.position += correction
 
 
-func _trim_safety_cap() -> void:
-	while _points.size() > maximum_point_count:
-		_points.pop_front()
+func _trim_safety_cap(shooter: Shooter = null) -> void:
+	if shooter == null:
+		shooter = _local
+	while shooter.points.size() > maximum_point_count:
+		shooter.points.pop_front()
 
 
-func _update_visuals() -> void:
+func _update_visuals(shooter: Shooter = null) -> void:
+	if shooter == null:
+		shooter = _local
+	if shooter.air_visual == null:
+		return
 	var camera_position := _camera.global_position
 	var camera_forward := -_camera.global_basis.z
-	var air_segments := _segments_for_phase(PointPhase.AIR, camera_position)
-	var wall_segments := _segments_for_phase(PointPhase.WALL_FIXED, camera_position)
-	var landing_segments := _segments_for_phase(PointPhase.LANDING, camera_position)
-	var shadow_segments := _shadow_segments(camera_position)
+	var air_segments := _segments_for_phase(PointPhase.AIR, camera_position, shooter)
+	var wall_segments := _segments_for_phase(PointPhase.WALL_FIXED, camera_position, shooter)
+	var landing_segments := _segments_for_phase(PointPhase.LANDING, camera_position, shooter)
+	var shadow_segments := _shadow_segments(camera_position, shooter)
 	var mayo_tint := Color("fff0a8")
-	_air_visual.update_ribbon(air_segments, camera_position, camera_forward, strand_thickness, mayo_tint)
-	_wall_visual.update_ribbon(wall_segments, camera_position, camera_forward, strand_thickness, mayo_tint)
-	_landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, strand_thickness, mayo_tint, 0.004)
-	_shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward, strand_thickness * 0.72,
+	shooter.air_visual.update_ribbon(air_segments, camera_position, camera_forward, strand_thickness, mayo_tint)
+	shooter.wall_visual.update_ribbon(wall_segments, camera_position, camera_forward, strand_thickness, mayo_tint)
+	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, strand_thickness, mayo_tint, 0.004)
+	shooter.shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward, strand_thickness * 0.72,
 		Color(0.08, 0.07, 0.055, 0.18), 0.012)
 
 
@@ -783,14 +1183,16 @@ func _is_near_camera(point: MayoPoint, camera_position: Vector3) -> bool:
 		< strand_near_cull_distance * strand_near_cull_distance
 
 
-func _segments_for_phase(phase: PointPhase, camera_position: Vector3) -> Array:
+func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: Shooter = null) -> Array:
+	if shooter == null:
+		shooter = _local
 	var result: Array = []
 	var current: Array = []
 	# Points skipped here are not array-adjacent to the next kept one, so the
 	# run breaks and `previous` is cleared; within a run adjacency holds.
 	var previous: MayoPoint = null
 	var break_distance_squared := _break_distance_squared()
-	for point in _points:
+	for point in shooter.points:
 		if point.phase != phase or _is_near_camera(point, camera_position):
 			if not current.is_empty():
 				result.push_back(current)
@@ -815,12 +1217,14 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3) -> Array:
 	return result
 
 
-func _shadow_segments(camera_position: Vector3) -> Array:
+func _shadow_segments(camera_position: Vector3, shooter: Shooter = null) -> Array:
+	if shooter == null:
+		shooter = _local
 	var result: Array = []
 	var current: Array = []
 	var previous: MayoPoint = null
 	var break_distance_squared := _break_distance_squared()
-	for point in _points:
+	for point in shooter.points:
 		if point.phase == PointPhase.WALL_FIXED or _is_near_camera(point, camera_position):
 			if not current.is_empty():
 				result.push_back(current)
