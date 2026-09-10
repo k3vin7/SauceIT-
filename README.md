@@ -85,6 +85,7 @@ godot --headless --path . --script res://tests/probe_landing.gd -- noloss      #
 godot --headless --path . --script res://tests/probe_geom.gd                   # wall face/cell mapping
 godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
 godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states, hostile input
+godot --headless --path . --script res://tests/probe_panel.gd                  # the F2 panel is on screen and centred
 ```
 
 `probe_determinism.gd` prints `MAYO_GRID_HASH`; run it twice and compare, since a difference between two processes is exactly what would break the grid sync.

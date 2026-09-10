@@ -22,20 +22,28 @@ func bind(net: MayoNet) -> void:
 
 
 func _ready() -> void:
-	set_anchors_preset(Control.PRESET_FULL_RECT)
+	# The offsets have to be zeroed along with the anchors: a Control built in
+	# code has no rect yet, and a preset that only moves the anchors leaves the
+	# node its old zero size. This one covers the screen, so the dim behind the
+	# panel covers it too and clicks cannot fall through to the game.
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 
 	var dim := ColorRect.new()
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	dim.color = Color(0.02, 0.03, 0.04, 0.72)
 	add_child(dim)
 
+	# Centred by a container rather than by anchors, so the panel is placed
+	# after its contents have decided how big it is.
+	var centre := CenterContainer.new()
+	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	centre.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(centre)
+
 	var panel := PanelContainer.new()
-	panel.set_anchors_preset(Control.PRESET_CENTER)
-	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
 	panel.custom_minimum_size = Vector2(380.0, 0.0)
-	add_child(panel)
+	centre.add_child(panel)
 
 	var margin := MarginContainer.new()
 	for side in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
