@@ -41,6 +41,8 @@ var frame_movement := Vector3.ZERO
 ## False on a client for every player including their own: the body is placed
 ## by the server. Aim stays local -- see MayoPrototype._read_local_input.
 var authority := true
+## Which player this body belongs to. The splat batch addresses a body by it.
+var peer_id := 1
 ## The server plays a remote player's keys back through these. Offline and for
 ## the host's own body this stays false and the real keyboard is read.
 var use_injected_input := false
@@ -54,10 +56,27 @@ var fall_direction := 1.0
 var _state_timer := 0.0
 var _recovery_timer := 0.0
 var _network_previous_position := Vector3.ZERO
+## The stain on this body. Set by the world when it builds the capsule; the
+## strand finds it through here, because what a raycast hits is the body.
+var contamination: BodyContamination
 
 
 func _ready() -> void:
 	process_physics_priority = -10
+	add_to_group("mayo_contaminable")
+
+
+## The strand marks a body the same way it marks a wall. Purely cosmetic: the
+## grid here is never read back, and slipping is decided by the floor alone.
+func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
+	if contamination == null:
+		return Vector2i(-1, -1)
+	return contamination.paint_mayo(world_position, world_normal)
+
+
+func paint_mayo_cell(cell: Vector2i) -> void:
+	if contamination != null:
+		contamination.paint_mayo_cell(cell)
 
 
 func _physics_process(delta: float) -> void:

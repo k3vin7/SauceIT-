@@ -18,6 +18,7 @@ extends SceneTree
 #     into a body the server owns
 #   * both screens agree which way each player is facing and spraying, at an
 #     angle picked so that "not replicated at all" would still look plausible
+#   * spraying a player marks their body identically on both screens
 
 const PORT := 24777
 
@@ -254,6 +255,29 @@ func _run() -> void:
 		"the client painted its own splat instead of waiting for the server")
 	_check(settled_hash == server_world.grid_md5(),
 		"the grids diverged once the client's own strand landed")
+
+	# --- A sprays B, and B's body is marked the same on both screens ---
+	var b_on_host = server_world.shooter_for(client_id).player
+	b_on_host.global_position = Vector3(0.0, 0.64, 0.05)
+	server_world.shooter_for(1).player.global_position = Vector3(0.0, 0.64, 1.55)
+	await _wait(6)
+	server_world.debug_aim_at(b_on_host.global_position + Vector3(0.0, 0.15, 0.0))
+	server_world.debug_set_input(Vector2.ZERO, false, true)
+	await _wait(90)
+	server_world.debug_set_input(Vector2.ZERO, false, false)
+	await _wait(30)
+
+	var host_body: String = server_world.body_md5(client_id)
+	var client_body: String = client_world.body_md5(client_id)
+	var host_body_cells: int = server_world.shooter_for(client_id).player.contamination.painted_cell_count()
+	var client_body_cells: int = client_world.shooter_for(client_id).player.contamination.painted_cell_count()
+	print("B's body after A sprays them: %d cells on the host, %d on B's screen" % [
+		host_body_cells, client_body_cells])
+	_check(host_body_cells > 20,
+		"A sprayed B and only %d cells of B's body were marked" % host_body_cells)
+	_check(host_body == client_body,
+		"the two screens disagree about B's body (%d vs %d cells)" % [
+			host_body_cells, client_body_cells])
 
 	# --- B runs through A's mayo and goes down ---
 	var patch := _painted_cell_position(server_world)

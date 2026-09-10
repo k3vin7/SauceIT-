@@ -10,6 +10,10 @@ const ShaderFile := preload("res://scripts/contamination.gdshader")
 
 var cell_size := 0.1
 var extent := Vector2(1.0, 1.0)
+## True when the x axis is a loop rather than an edge, which is what a body
+## unwrapped around its own axis needs: a splat near the seam has to carry on
+## round the other side instead of being clipped off.
+var wrap_x := false
 var width := 1
 var height := 1
 var cells := PackedByteArray()
@@ -49,14 +53,23 @@ func cell_of(local: Vector2) -> Vector2i:
 
 
 func has_cell(cell: Vector2i) -> bool:
-	return cell.x >= 0 and cell.y >= 0 and cell.x < width and cell.y < height
+	if cell.y < 0 or cell.y >= height:
+		return false
+	return wrap_x or (cell.x >= 0 and cell.x < width)
+
+
+## The column a cell falls in, brought back inside the grid when x loops.
+func wrapped_x(x: int) -> int:
+	if not wrap_x:
+		return x
+	return posmod(x, width)
 
 
 func is_painted(local: Vector2) -> bool:
 	var cell := cell_of(local)
 	if not has_cell(cell):
 		return false
-	return cells[cell.y * width + cell.x] == 1
+	return cells[cell.y * width + wrapped_x(cell.x)] == 1
 
 
 ## Marks a disc of `radius_meters` around a local position, and returns the
@@ -76,6 +89,7 @@ func paint_cell(centre: Vector2i, radius_meters: float) -> Vector2i:
 	paint_calls += 1
 	if not has_cell(centre):
 		return Vector2i(-1, -1)
+	centre.x = wrapped_x(centre.x)
 	var radius := maxi(1, roundi(radius_meters / cell_size))
 	var changed := false
 	for offset_y in range(-radius - 1, radius + 2):
@@ -83,6 +97,9 @@ func paint_cell(centre: Vector2i, radius_meters: float) -> Vector2i:
 			var cell := centre + Vector2i(offset_x, offset_y)
 			if not has_cell(cell):
 				continue
+			# The noise is read at the wrapped column, so a cell gets the same
+			# jitter whichever side of the seam the splat came from.
+			cell.x = wrapped_x(cell.x)
 			var distance := Vector2(offset_x, offset_y).length()
 			# Deterministic cell noise roughens only the hard boundary. No blur/alpha.
 			var edge_jitter := _cell_noise(cell.x, cell.y) * 0.42

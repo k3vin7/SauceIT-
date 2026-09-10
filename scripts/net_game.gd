@@ -148,6 +148,11 @@ func _on_peer_connected(id: int) -> void:
 	var snapshot: Array = world.grid_snapshot()
 	for index in snapshot.size():
 		_load_grid.rpc_id(id, index, snapshot[index])
+	# Bodies too: whoever is already in the session may already be covered.
+	for existing_id in world.shooter_ids():
+		var body: PackedByteArray = world.body_snapshot(existing_id)
+		if not body.is_empty():
+			_load_body_grid.rpc_id(id, existing_id, body)
 	_set_status("player %d connected" % id)
 
 
@@ -359,6 +364,11 @@ func _join_session(id: int, slot: int) -> void:
 @rpc("authority", "call_remote", "reliable")
 func _load_grid(index: int, cells: PackedByteArray) -> void:
 	world.apply_grid_snapshot_part(index, cells)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _load_body_grid(peer_id: int, cells: PackedByteArray) -> void:
+	world.apply_body_snapshot(peer_id, cells)
 
 
 func _ready() -> void:

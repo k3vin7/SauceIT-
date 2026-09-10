@@ -28,6 +28,8 @@ var grids: Array[ContaminationGrid] = []
 
 func _ready() -> void:
 	add_to_group("mayo_wall")
+	# What the strand looks for: anything it can mark, walls and bodies alike.
+	add_to_group("mayo_contaminable")
 	_rebuild()
 
 

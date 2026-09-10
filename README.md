@@ -43,6 +43,16 @@ The session is not otherwise hardened, and is not meant to be: ENet here is unen
 
 `probe_determinism.gd` is what holds the grid claim up, and `probe_network.gd` runs an actual two-peer session in one process and checks the four things that matter: both screens' grids hash the same, A's mayo trips B, A sees B go down, and the fall states agree on every frame.
 
+### Bodies
+
+Players are contaminable too, and the grid on a body is the same `ContaminationGrid` the floor and the walls use. A body is a capsule, which is a cylinder with rounded ends, so unwrapping it about its own axis gives a rectangle — u is the angle about Y times the circumference, v is the height — and the grid, the deterministic paint and the two-int network splat all apply unchanged. That is the reason for doing it this way rather than per polygon: a stain on a player costs the same as a stain on the floor, and `probe_determinism` already covers the mechanism. Per polygon would mean a trimesh collider that does not follow a skinned mesh's animation, and a resolution set by the model rather than by the brush.
+
+Two things differ from a flat face. The u axis is a loop, so the body's grid sets `wrap_x` and a splat near the seam carries on round the far side instead of being clipped. And the shader (`body_contamination.gdshader`) derives its texture coordinate from the surface position rather than from the mesh's own UVs, using the same maths the CPU paints with — a capsule's UVs distribute v across the caps, which would slide every splat toward the middle.
+
+Bodies carry their own cell size and brush (`Body Cell Size`, `Body Brush Radius`, 0.02 m and 0.07 m) because they are small: the world's 0.4 m brush would cover a fifth of the way round a player in one splat. The stain is stored in the body's own space, so it travels with the player as they walk and turn.
+
+**The stain is cosmetic and nothing reads it back.** Slipping is decided by the floor grid and the floor grid alone. Over the network a body is painted exactly like a wall — only the server marks it, and it broadcasts the centre cell — and a peer joining a session that is already messy is handed each body's mask along with the floor's.
+
 ### Contamination grid
 
 `ContaminationGrid` is one rectangular mask — cells, texture and material. The floor owns one; each wall face owns one of its own, so walls and floor share the same grid code, shader and brush. Cells are 0.1 m and the brush radius is exported **in metres**, converted to cells internally, so changing the cell size does not change how big a splat is.
@@ -86,6 +96,7 @@ godot --headless --path . --script res://tests/probe_geom.gd                   #
 godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
 godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states, hostile input
 godot --headless --path . --script res://tests/probe_panel.gd                  # the F2 panel is on screen and centred
+godot --headless --path . --script res://tests/probe_body.gd                   # body stains: side hit, seam wrap, replay
 ```
 
 `probe_determinism.gd` prints `MAYO_GRID_HASH`; run it twice and compare, since a difference between two processes is exactly what would break the grid sync.

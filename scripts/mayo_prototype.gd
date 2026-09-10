@@ -6,10 +6,14 @@ const PlayerScript := preload("res://scripts/player_controller.gd")
 const WallScript := preload("res://scripts/contaminable_object.gd")
 const CrosshairScript := preload("res://scripts/crosshair.gd")
 const NetPanelScript := preload("res://scripts/net_panel.gd")
+const BodyContaminationScript := preload("res://scripts/body_contamination.gd")
 
 # Splat batch entry kinds. Four ints per splat: kind, target, cell x, cell y.
+# What `target` means is the kind's business -- a wall packs its index and the
+# face it was hit on, a body carries the peer id whose body it is.
 const SPLAT_FLOOR := 0
 const SPLAT_WALL := 1
+const SPLAT_BODY := 2
 const FACES_PER_WALL := 6
 
 enum PointPhase { AIR, WALL_FIXED, LANDING }
@@ -107,6 +111,11 @@ class MayoDroplet:
 ## Splat radius in metres. Converted to cells internally, so changing the
 ## cell size does not change how big a splat is.
 @export_range(0.05, 1.5, 0.01, "suffix:m") var contamination_brush_radius := 0.4
+## Bodies carry their own, much finer grid: the world brush is 0.4 m and a
+## player is only 2 m around, so one world-sized splat would cover a fifth of
+## the way round them.
+@export_range(0.005, 0.2, 0.001, "suffix:m") var body_cell_size := 0.02
+@export_range(0.01, 0.5, 0.005, "suffix:m") var body_brush_radius := 0.07
 @export_range(0.05, 0.5, 0.01, "suffix:s") var landing_transition_time := 0.16
 @export_range(0.1, 2.0, 0.05, "suffix:s") var droplet_lifetime := 0.55
 
@@ -494,6 +503,12 @@ func _build_world() -> void:
 	_build_network_panel()
 
 
+## The other player is a different colour, so it is obvious which capsule on
+## screen is being watched fall over -- and, now, which one is covered in mayo.
+func _body_color(is_local: bool) -> Color:
+	return Color("33495b") if is_local else Color("7a4b3a")
+
+
 ## Spawn point for the nth player to join. Fixed by join order so both peers
 ## place everyone the same way.
 func spawn_position_for(slot: int) -> Vector3:
@@ -554,9 +569,9 @@ func claim_avatar(peer_id: int, slot := 0) -> void:
 	shooter.is_local = true
 	_local = shooter
 	shooter.player.use_injected_input = false
-	var material := shooter.body_mesh.material_override as StandardMaterial3D
+	var material := shooter.body_mesh.material_override as ShaderMaterial
 	if material != null:
-		material.albedo_color = Color("33495b")
+		material.set_shader_parameter("clean_color", _body_color(true))
 	set_first_person(_first_person)
 
 
@@ -593,6 +608,7 @@ func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
 	# the checks built on it emit exactly the strand they always did.
 	shooter.rng.seed = 0x4d41594f + peer_id - 1
 	shooter.player = PlayerScript.new()
+	shooter.player.peer_id = peer_id
 	# The name is the address the network state is applied through, so it must
 	# be derived from the peer id and nothing else.
 	shooter.player.name = "Player_%d" % peer_id
@@ -676,14 +692,20 @@ func _build_player_body(shooter: Shooter) -> void:
 	capsule_mesh.radius = 0.32
 	capsule_mesh.height = 1.28
 	body_mesh.mesh = capsule_mesh
-	var body_material := StandardMaterial3D.new()
-	# The other player is a different colour, so it is obvious which capsule
-	# on screen is being watched fall over.
-	body_material.albedo_color = Color("33495b") if shooter.is_local else Color("7a4b3a")
-	body_material.roughness = 0.75
-	body_mesh.material_override = body_material
 	shooter.player.add_child(body_mesh)
 	shooter.body_mesh = body_mesh
+
+	# The capsule carries a contamination grid of its own, wrapped around it,
+	# and the shader that draws it is also what colours the body -- so the
+	# player's colour is the grid's clean colour.
+	var contamination := BodyContaminationScript.new() as BodyContamination
+	contamination.name = "BodyContamination"
+	contamination.cell_size = body_cell_size
+	contamination.brush_radius = body_brush_radius
+	shooter.player.add_child(contamination)
+	shooter.player.contamination = contamination
+	contamination.configure(shooter.player, body_mesh, capsule_shape.radius,
+		capsule_shape.height, _body_color(shooter.is_local))
 
 	# The pivot carries the pitch so the nozzle and muzzle follow vertical aim.
 	# The player body itself only yaws.
@@ -1015,8 +1037,9 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 					# Only the server's copy of the strand marks anything. Every
 					# peer runs this same code for every shooter, but a client's
 					# splats would be its own guess; it waits for the broadcast.
-					if collider is ContaminableObject and _is_authority():
-						_record_wall_splat(collider, hit.position, hit.normal)
+					if _is_authority() and collider != null \
+							and collider.is_in_group("mayo_contaminable"):
+						_record_splat(collider, hit.position, hit.normal)
 					point.position = hit.position + hit.normal * (strand_thickness * 0.5)
 					point.last_collision_position = point.position
 					point.velocity = Vector3.ZERO
@@ -1052,16 +1075,26 @@ func _begin_landing(point: MayoPoint, hit_position: Vector3) -> void:
 		_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR, 0, cell.x, cell.y]))
 
 
-## The server paints the wall and queues the same splat for the peers.
-func _record_wall_splat(wall: ContaminableObject, hit_position: Vector3, hit_normal: Vector3) -> void:
-	var splat := wall.paint_mayo(hit_position, hit_normal)
-	if splat.x < 0:
+## The server paints whatever was hit and queues the same splat for the peers.
+## Walls and bodies differ only in how the surface is addressed; the strand and
+## the batch do not care which one it was.
+func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3) -> void:
+	if surface is ContaminableObject:
+		var wall := surface as ContaminableObject
+		var splat := wall.paint_mayo(hit_position, hit_normal)
+		var index := _walls.find(wall)
+		if splat.x < 0 or index < 0:
+			return
+		_pending_splats.append_array(PackedInt32Array([
+			SPLAT_WALL, index * FACES_PER_WALL + splat.x, splat.y, splat.z]))
 		return
-	var index := _walls.find(wall)
-	if index < 0:
-		return
-	_pending_splats.append_array(PackedInt32Array([
-		SPLAT_WALL, index * FACES_PER_WALL + splat.x, splat.y, splat.z]))
+	if surface is MayoPlayer:
+		var player := surface as MayoPlayer
+		var cell := player.paint_mayo(hit_position, hit_normal)
+		if cell.x < 0:
+			return
+		_pending_splats.append_array(PackedInt32Array([
+			SPLAT_BODY, player.peer_id, cell.x, cell.y]))
 
 
 ## Replays a batch of splat centre cells from the server. `paint_cell` depends
@@ -1076,6 +1109,11 @@ func apply_splats(data: PackedInt32Array) -> void:
 		index += 4
 		if kind == SPLAT_FLOOR:
 			_floor.paint_mayo_cell(cell)
+			continue
+		if kind == SPLAT_BODY:
+			var shooter: Shooter = _shooters.get(target)
+			if shooter != null:
+				shooter.player.paint_mayo_cell(cell)
 			continue
 		var wall_index := target / FACES_PER_WALL
 		var face := target % FACES_PER_WALL
@@ -1105,6 +1143,30 @@ func apply_grid_snapshot_part(index: int, cells: PackedByteArray) -> bool:
 				return wall.restore_cells(face, cells)
 			cursor += 1
 	return false
+
+
+## A body's stain, for a peer joining a session that is already messy. Bodies
+## are not part of `grid_snapshot`: which ones exist depends on who is in the
+## session, so they are sent per player as the players themselves are spawned.
+func body_snapshot(peer_id: int) -> PackedByteArray:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null or shooter.player.contamination == null:
+		return PackedByteArray()
+	return shooter.player.contamination.snapshot_cells()
+
+
+func apply_body_snapshot(peer_id: int, cells: PackedByteArray) -> bool:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null or shooter.player.contamination == null:
+		return false
+	return shooter.player.contamination.restore_cells(cells)
+
+
+func body_md5(peer_id: int) -> String:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null or shooter.player.contamination == null:
+		return ""
+	return shooter.player.contamination.cells_md5()
 
 
 func grid_md5() -> String:
