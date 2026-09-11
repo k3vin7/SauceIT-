@@ -119,6 +119,13 @@ func _run() -> void:
 		"the client is not looking out of its own body")
 	_check(client_world.shooter_for(1) != null,
 		"the client never got a body for the host")
+	# Joining replaces the body the client had been walking around in, and with
+	# it the lenses and the texture the screen overlay samples. Bound to the old
+	# one, the client's own screen never shows a thing however filthy they get.
+	for world in [server_world, client_world]:
+		var bound = world._visor_overlay.material.get_shader_parameter("mask_texture")
+		_check(bound == world._local.player.visor.grid.texture,
+			"the screen overlay is not showing the lenses this player is wearing")
 	print("state packets the client has taken: %d" % client_world._net.debug_state_packets)
 	_check(client_world._net.debug_state_packets > 0,
 		"the client never received a state packet")

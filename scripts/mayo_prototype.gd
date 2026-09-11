@@ -580,8 +580,7 @@ func create_avatar(peer_id: int, slot: int, is_local: bool) -> Shooter:
 	# ordering of the join messages can leave a body simulating itself.
 	shooter.player.authority = _is_authority()
 	if is_local:
-		_local = shooter
-		set_first_person(_first_person)
+		_adopt_local(shooter)
 	return shooter
 
 
@@ -605,9 +604,9 @@ func reset_for_join() -> void:
 ## playable rather than left with an empty world.
 func reset_to_offline() -> void:
 	reset_for_join()
-	_local = _create_shooter(1, true)
-	_build_shooter_visuals(_local)
-	set_first_person(_first_person)
+	var shooter := _create_shooter(1, true)
+	_build_shooter_visuals(shooter)
+	_adopt_local(shooter)
 
 
 ## Marks which of the spawned bodies this peer is looking out of.
@@ -616,11 +615,18 @@ func claim_avatar(peer_id: int, slot := 0) -> void:
 	if shooter == null:
 		shooter = create_avatar(peer_id, slot, true)
 	shooter.is_local = true
-	_local = shooter
 	shooter.player.use_injected_input = false
 	var material := shooter.body_mesh.material_override as ShaderMaterial
 	if material != null:
 		material.set_shader_parameter("clean_color", _body_color(true))
+	_adopt_local(shooter)
+
+
+## The one place the local player changes hands. Everything bound to the body
+## the player is looking out of is rebound here.
+func _adopt_local(shooter: Shooter) -> void:
+	_local = shooter
+	_rebind_visor_overlay()
 	set_first_person(_first_person)
 
 
@@ -683,8 +689,7 @@ func _build_crosshair() -> void:
 	_visor_overlay = VisorOverlayScript.new() as VisorOverlay
 	_visor_overlay.name = "VisorOverlay"
 	layer.add_child(_visor_overlay)
-	if _local != null:
-		_visor_overlay.bind(_local.player.visor)
+	_rebind_visor_overlay()
 	# Above the sauce, so there is always something to aim with.
 	_crosshair = CrosshairScript.new()
 	_crosshair.visible = show_crosshair
@@ -699,6 +704,17 @@ func _build_network_panel() -> void:
 	_net_panel.bind(_net)
 	_net_panel.visible = false
 	_hud_layer.add_child(_net_panel)
+
+
+## The overlay draws whichever lenses the local player is currently wearing.
+## Joining a session replaces their body, and with it the visor and the texture
+## the overlay samples, so this has to be redone every time the local player
+## changes -- otherwise the screen keeps showing the mask of a body that no
+## longer exists, which is to say nothing at all.
+func _rebind_visor_overlay() -> void:
+	if _visor_overlay == null or _local == null or _local.player.visor == null:
+		return
+	_visor_overlay.bind(_local.player.visor)
 
 
 func set_network_panel_open(open: bool) -> void:
