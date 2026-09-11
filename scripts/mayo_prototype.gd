@@ -37,6 +37,9 @@ class MayoPoint:
 	var phase := PointPhase.AIR
 	var landing_age := 0.0
 	var collision_slot := 0
+	## True when this point settled on the floor rather than on a wall or a
+	## player. Only the floor throws droplets by default.
+	var landed_on_floor := false
 	var burst_index := 0
 
 class RibbonPoint:
@@ -140,6 +143,12 @@ class MayoDroplet:
 ## seven, two players firing filled all 512 slots and began overwriting droplets
 ## that were still alive.
 @export_range(1, 16, 1) var droplets_per_landing := 4
+## Droplets are static beads placed where a point settles, with no gravity and
+## no fall: on a floor they read as spatter, on a wall or a player they would
+## hang in the air. Now that walls and bodies land like the floor does, which
+## surfaces throw them is a choice rather than a side effect of the phase.
+@export var droplets_on_floor := true
+@export var droplets_on_surfaces := false
 
 @export_group("Aim")
 @export_range(0.01, 1.0, 0.01, "suffix:°/px") var mouse_sensitivity := 0.12
@@ -1135,12 +1144,13 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 				# shooter, but a client's splats would be its own guess, so it
 				# waits for the broadcast.
 				var collider := hit.collider as Node
+				var on_floor: bool = collider != null and collider.is_in_group("mayo_floor")
 				if _is_authority() and collider != null:
-					if collider.is_in_group("mayo_floor"):
+					if on_floor:
 						_record_floor_splat(hit.position)
 					elif collider.is_in_group("mayo_contaminable"):
 						_record_splat(collider, hit.position, hit.normal)
-				_begin_landing(point, hit.position, hit.normal)
+				_begin_landing(point, hit.position, hit.normal, on_floor)
 			else:
 				point.position = next
 				point.last_collision_position = next
@@ -1150,7 +1160,8 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 	for i in range(points.size() - 1, -1, -1):
 		var point := points[i]
 		if point.phase == PointPhase.LANDING and point.landing_age >= landing_transition_time:
-			_spawn_landing_droplets(point.position)
+			if droplets_on_floor if point.landed_on_floor else droplets_on_surfaces:
+				_spawn_landing_droplets(point.position)
 			points.remove_at(i)
 		elif point.position.y < -1.0:
 			points.remove_at(i)
@@ -1159,8 +1170,10 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 ## Settles a point onto whatever it hit. The offset is along the surface's own
 ## normal rather than straight up, which is the same thing on a floor and the
 ## difference between hugging a wall and sinking into it.
-func _begin_landing(point: MayoPoint, hit_position: Vector3, hit_normal: Vector3) -> void:
+func _begin_landing(point: MayoPoint, hit_position: Vector3, hit_normal: Vector3,
+		on_floor: bool) -> void:
 	point.position = hit_position + hit_normal * 0.008
+	point.landed_on_floor = on_floor
 	point.last_collision_position = point.position
 	point.velocity = Vector3.ZERO
 	point.powered = false
@@ -1233,6 +1246,15 @@ func apply_splats(data: PackedInt32Array) -> void:
 ## A hit that lands in front of a player's eyes goes on their glasses as well
 ## as on their body. Decided by the server off the same hit, so the mask that
 ## blinds them and the mask everyone else sees on their face are one thing.
+##
+## One impact deliberately marks two surfaces. The lenses have no collider --
+## the ray always hits the capsule -- so a hit on the forehead marks the
+## forehead and is then projected onto the lenses in front of it, where
+## physically the lenses would have caught it first. Giving them a collider
+## would be truer and would also shield the body and the floor behind the head,
+## which is a bigger change than the doubling is worth. What keeps it honest is
+## the filtering below: anything level with the lenses or behind them, and
+## anything projecting outside the field of view, marks nothing.
 func _record_visor_splat(player: MayoPlayer, hit_position: Vector3) -> void:
 	if player.visor == null:
 		return

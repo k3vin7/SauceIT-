@@ -49,6 +49,8 @@ Players are contaminable too, and the grid on a body is the same `ContaminationG
 
 Two things differ from a flat face. The u axis is a loop, so the body's grid sets `wrap_x` and a splat near the seam carries on round the far side instead of being clipped. And the shader (`body_contamination.gdshader`) derives its texture coordinate from the surface position rather than from the mesh's own UVs, using the same maths the CPU paints with — a capsule's UVs distribute v across the caps, which would slide every splat toward the middle.
 
+One impact marks two surfaces on purpose: the lenses have no collider, so the ray hits the capsule and the hit is then projected onto the lenses in front of it. Giving them a collider would be truer and would also shield the body and the floor behind the head, which costs more than the doubling does. Hits that are level with the lenses or behind them, and hits that project outside the field of view, mark nothing — measured, a hit on the back, the back of the head, a shoulder, the chest or the belly all reach the glasses not at all; the forehead, the eyes and the chin do, and the neck clips the bottom edge.
+
 Bodies carry their own cell size and brush (`Body Cell Size`, `Body Brush Radius`, 0.02 m and 0.07 m) because they are small: the world's 0.4 m brush would cover a fifth of the way round a player in one splat. The stain is stored in the body's own space, so it travels with the player as they walk and turn.
 
 ### Glasses
@@ -79,7 +81,7 @@ Each trigger press starts a new **burst**. `_points` stays one array, but every 
 
 **Release Pressure** governs what happens when the trigger is let go. `Release Pressure Loss` is the fraction of speed removed at the muzzle end; `Release Pressure Curve` shapes the falloff between the front tip (which keeps its speed) and the muzzle. Every airborne point also stops being powered at that instant, so the trail that lands afterwards begins at full range and is dragged back toward the player.
 
-Performance controls are under **Collision Budget**. `Raycast Frame Stride` defaults to 1: staggering casts across frames saved only ~0.27 ms per physics tick and let a point sit up to one frame (117 mm at the reference speed, wider than the strand) inside a wall before being snapped out, so it is not worth the artifact. `Wall Fixed Hold Time` bounds fixed-point buildup; the wall stain is written at collision time and is unaffected by it.
+Performance controls are under **Collision Budget**. `Raycast Frame Stride` defaults to 1: staggering casts across frames saved only ~0.27 ms per physics tick and let a point sit up to one frame (117 mm at the reference speed, wider than the strand) inside a wall before being snapped out, so it is not worth the artifact. Walls and players are landed on the way the floor is: the point settles against the surface and fades over `Landing Transition Time`, rather than hanging there in a phase of its own. The stain is written at collision time either way, so what changed is how many points a wall-facing strand keeps alive — measured, 239 down to 78 for one player, 463 down to 141 for two. Droplets are the one thing that does not follow: they are static beads with no fall, which reads as spatter on a floor and as beads hanging in mid-air on a wall or a player, so `Droplets On Floor` is on and `Droplets On Surfaces` is off.
 
 ## Testing a session on your own
 
