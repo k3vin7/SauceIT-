@@ -7,7 +7,8 @@ const WallScript := preload("res://scripts/contaminable_object.gd")
 const CrosshairScript := preload("res://scripts/crosshair.gd")
 const NetPanelScript := preload("res://scripts/net_panel.gd")
 const BodyContaminationScript := preload("res://scripts/body_contamination.gd")
-const ScreenSplatterScript := preload("res://scripts/screen_splatter.gd")
+const VisorScript := preload("res://scripts/visor_contamination.gd")
+const VisorOverlayScript := preload("res://scripts/visor_overlay.gd")
 
 # Splat batch entry kinds. Four ints per splat: kind, target, cell x, cell y.
 # What `target` means is the kind's business -- a wall packs its index and the
@@ -15,6 +16,10 @@ const ScreenSplatterScript := preload("res://scripts/screen_splatter.gd")
 const SPLAT_FLOOR := 0
 const SPLAT_WALL := 1
 const SPLAT_BODY := 2
+## Sauce on a player's glasses, and the wipe that takes it off again. The wipe
+## is a grid change like any other, so it travels the same way the splats do.
+const SPLAT_VISOR := 3
+const SPLAT_VISOR_CLEAR := 4
 const FACES_PER_WALL := 6
 
 enum PointPhase { AIR, WALL_FIXED, LANDING }
@@ -164,8 +169,11 @@ var _input_enabled := true
 ## Splat centre cells found this frame, flushed to the peers at the end of it.
 ## Four ints each: kind, target, cell x, cell y. See MayoNet.apply_splats.
 var _pending_splats := PackedInt32Array()
+## Peers whose lenses the authority is currently wiping, so the clear can be
+## broadcast on the frame the timer runs out.
+var _wiping: Dictionary = {}
 var _crosshair: Control
-var _splatter: ScreenSplatter
+var _visor_overlay: VisorOverlay
 var _hud_layer: CanvasLayer
 var _mayo_material: Material
 var _landing_material: Material
@@ -285,6 +293,8 @@ func _physics_process(delta: float) -> void:
 		debug_timings_us.total += Time.get_ticks_usec() - frame_started
 		debug_profile_frames += 1
 		debug_max_points = maxi(debug_max_points, _points.size())
+	if _is_authority():
+		_finish_wipes()
 	if is_instance_valid(_net):
 		_net.end_of_frame(_pending_splats)
 	_pending_splats.clear()
@@ -314,7 +324,8 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 func _read_local_input() -> void:
 	if _local == null:
 		return
-	var live := _input_enabled and not _local.player.is_incapacitated()
+	var live := _input_enabled and not _local.player.is_incapacitated() \
+		and not _local.player.is_wiping()
 	_local.firing = live and _fire_held()
 	if debug_input_override:
 		# The checks have no keyboard, so the same keys reach the body and the
@@ -364,10 +375,20 @@ func _process(_delta: float) -> void:
 	_update_camera()
 	for shooter in _shooters.values():
 		_update_fallen_body(shooter)
+		_update_visor(shooter)
 
 
 ## The capsule lies on its side while the player is down. A capsule is all the
 ## character model this step needs, so this is a single rotation.
+## The lenses tipping up and back down, which is the part of a wipe that
+## everyone else can see. Driven off the replicated timer, so it plays at the
+## same moment on every screen.
+func _update_visor(shooter: Shooter) -> void:
+	if shooter.player.visor == null:
+		return
+	shooter.player.visor.set_wipe_progress(shooter.player.wipe_progress())
+
+
 func _update_fallen_body(shooter: Shooter) -> void:
 	if not is_instance_valid(shooter.body_mesh):
 		return
@@ -397,7 +418,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not _input_enabled:
 		return
 	if event.is_action_pressed("wipe_screen"):
-		_splatter.wipe()
+		_request_wipe()
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		apply_look((event as InputEventMouseMotion).relative)
@@ -418,6 +439,10 @@ func set_first_person(enabled: bool) -> void:
 	_first_person = enabled
 	if _local != null and is_instance_valid(_local.body_mesh):
 		_local.body_mesh.visible = not enabled
+	# You look through your own lenses, not at them: the mask reaches you as the
+	# screen overlay instead. Everyone else's stay visible in both modes.
+	if _local != null and _local.player.visor != null:
+		_local.player.visor.visible = not enabled
 	# The bottle is a first-person viewmodel held at eye height; in third person
 	# it would sit inside the capsule, so it is hidden rather than mispositioned.
 	if _local != null and is_instance_valid(_local.weapon):
@@ -641,9 +666,11 @@ func _build_crosshair() -> void:
 	var layer := CanvasLayer.new()
 	layer.name = "HUD"
 	add_child(layer)
-	_splatter = ScreenSplatterScript.new() as ScreenSplatter
-	_splatter.name = "ScreenSplatter"
-	layer.add_child(_splatter)
+	_visor_overlay = VisorOverlayScript.new() as VisorOverlay
+	_visor_overlay.name = "VisorOverlay"
+	layer.add_child(_visor_overlay)
+	if _local != null:
+		_visor_overlay.bind(_local.player.visor)
 	# Above the sauce, so there is always something to aim with.
 	_crosshair = CrosshairScript.new()
 	_crosshair.visible = show_crosshair
@@ -728,6 +755,13 @@ func _build_player_body(shooter: Shooter) -> void:
 	aim_pivot.position = Vector3(0.0, eye_height, 0.0)
 	shooter.player.add_child(aim_pivot)
 	shooter.aim_pivot = aim_pivot
+
+	# The glasses hang off the aim pivot, which already carries the aim pitch,
+	# so they move with the camera rather than with the body.
+	var visor := VisorScript.new() as VisorContamination
+	visor.name = "Visor"
+	aim_pivot.add_child(visor)
+	shooter.player.visor = visor
 
 	_build_weapon(shooter)
 
@@ -1109,7 +1143,7 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3) ->
 			return
 		_pending_splats.append_array(PackedInt32Array([
 			SPLAT_BODY, player.peer_id, cell.x, cell.y]))
-		_note_body_splat(player.peer_id, cell)
+		_record_visor_splat(player, hit_position)
 
 
 ## Replays a batch of splat centre cells from the server. `paint_cell` depends
@@ -1126,10 +1160,17 @@ func apply_splats(data: PackedInt32Array) -> void:
 			_floor.paint_mayo_cell(cell)
 			continue
 		if kind == SPLAT_BODY:
-			var shooter: Shooter = _shooters.get(target)
-			if shooter != null:
-				shooter.player.paint_mayo_cell(cell)
-				_note_body_splat(target, cell)
+			var body_shooter: Shooter = _shooters.get(target)
+			if body_shooter != null:
+				body_shooter.player.paint_mayo_cell(cell)
+			continue
+		if kind == SPLAT_VISOR or kind == SPLAT_VISOR_CLEAR:
+			var visor_shooter: Shooter = _shooters.get(target)
+			if visor_shooter != null and visor_shooter.player.visor != null:
+				if kind == SPLAT_VISOR_CLEAR:
+					visor_shooter.player.visor.clear()
+				else:
+					visor_shooter.player.visor.paint_cell(cell)
 			continue
 		var wall_index := target / FACES_PER_WALL
 		var face := target % FACES_PER_WALL
@@ -1137,25 +1178,54 @@ func apply_splats(data: PackedInt32Array) -> void:
 			_walls[wall_index].paint_mayo_cell(face, cell)
 
 
-## Every splat that lands on this player's own body also lands on their camera.
-## Driven off the splat the server decided, not off a second hit test, so the
-## mayo on the glass and the mayo on the capsule are the same event -- and on a
-## client it arrives with the broadcast rather than being guessed locally.
-func _note_body_splat(peer_id: int, cell: Vector2i) -> void:
-	if _local == null or peer_id != _local.peer_id or _splatter == null:
+## A hit that lands in front of a player's eyes goes on their glasses as well
+## as on their body. Decided by the server off the same hit, so the mask that
+## blinds them and the mask everyone else sees on their face are one thing.
+func _record_visor_splat(player: MayoPlayer, hit_position: Vector3) -> void:
+	if player.visor == null:
 		return
-	if not is_instance_valid(_camera):
+	var direction := player.visor.to_local(hit_position)
+	var cell := player.visor.paint_from_view(direction, camera_fov)
+	if cell.x < 0:
 		return
-	var body := _local.player.contamination
-	if body == null:
+	_pending_splats.append_array(PackedInt32Array([
+		SPLAT_VISOR, player.peer_id, cell.x, cell.y]))
+
+
+## R. The wipe is a shared state change -- everyone watches the lenses come up
+## and the mask disappear -- so a client asks and the server decides.
+func _request_wipe() -> void:
+	if _local == null:
 		return
-	# The cell is the body unwrapped, so it says which way the hit was facing.
-	var angle := (float(cell.x) + 0.5) * body.cell_size / body.radius - PI
-	var height := (float(cell.y) + 0.5) * body.cell_size - body.height * 0.5
-	var outward := _local.player.global_basis * Vector3(sin(angle), 0.0, cos(angle))
-	var from_camera := (outward * body.radius + Vector3.UP * height) \
-		+ _local.player.global_position - _camera.global_position
-	_splatter.add_splat(_camera.global_basis.inverse() * from_camera)
+	if _is_authority():
+		begin_wipe_for(_local.peer_id)
+		return
+	_net.request_wipe()
+
+
+## The authority's side of a wipe request, wherever it came from.
+func begin_wipe_for(peer_id: int) -> bool:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null or not shooter.player.begin_wipe():
+		return false
+	_wiping[peer_id] = true
+	return true
+
+
+## Ends the wipes that ran out this frame, on the authority, and queues the
+## clear for everyone else.
+func _finish_wipes() -> void:
+	for shooter in _shooters.values():
+		var player: MayoPlayer = shooter.player
+		if not _wiping.has(player.peer_id):
+			continue
+		if player.is_wiping():
+			continue
+		_wiping.erase(player.peer_id)
+		if player.visor != null:
+			player.visor.clear()
+		_pending_splats.append_array(PackedInt32Array([
+			SPLAT_VISOR_CLEAR, player.peer_id, 0, 0]))
 
 
 ## Whole-grid state for a peer that has just joined, so it starts from what is
@@ -1197,6 +1267,29 @@ func apply_body_snapshot(peer_id: int, cells: PackedByteArray) -> bool:
 	if shooter == null or shooter.player.contamination == null:
 		return false
 	return shooter.player.contamination.restore_cells(cells)
+
+
+## The glasses go over with the body: someone joining a messy session should see
+## who is already blinded, not a room of clean lenses.
+func visor_snapshot(peer_id: int) -> PackedByteArray:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null or shooter.player.visor == null:
+		return PackedByteArray()
+	return shooter.player.visor.snapshot_cells()
+
+
+func apply_visor_snapshot(peer_id: int, cells: PackedByteArray) -> bool:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null or shooter.player.visor == null:
+		return false
+	return shooter.player.visor.restore_cells(cells)
+
+
+func visor_md5(peer_id: int) -> String:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null or shooter.player.visor == null:
+		return ""
+	return shooter.player.visor.cells_md5()
 
 
 func body_md5(peer_id: int) -> String:

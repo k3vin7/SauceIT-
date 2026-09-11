@@ -51,9 +51,13 @@ Two things differ from a flat face. The u axis is a loop, so the body's grid set
 
 Bodies carry their own cell size and brush (`Body Cell Size`, `Body Brush Radius`, 0.02 m and 0.07 m) because they are small: the world's 0.4 m brush would cover a fifth of the way round a player in one splat. The stain is stored in the body's own space, so it travels with the player as they walk and turn.
 
-Getting hit also puts sauce on your camera. Every splat the server marks on *your* body adds a blob to the screen overlay, placed on the side it came from — a hit from behind lands at the edge you would turn toward — and **`R` wipes the screen clean**. It is driven off the same splat, so there is no second hit test and no extra traffic, and on a client it arrives with the broadcast rather than being guessed locally. Nothing fades on a timer: being covered is a state you have to do something about, which is what the wipe key is for. Blobs are capped at 18, and wiping the lens does not wash the body.
+### Glasses
 
-Sauce reaching the lens is throttled (`Blob Interval`, 0.14 s) even though the stain on the body is not. A burst lands about 78 splats a second, so one squirt in the face would otherwise fill the 18-blob cap several times over and push off everything already there — being hit twice would leave only the second hit. Throttled, a second of spray adds about six blobs and what is already on the glass survives it.
+Players wear lenses, and sauce landing in front of their eyes goes on them. `VisorContamination` is another `ContaminationGrid`, but measured in **view units** — 16 by 9 across the field of view — rather than in metres, which makes the screen a straight 1:1 sample of it. There is no projection, no blob cap, and no separate screen effect that could drift from what everyone else sees: the mask that blinds you *is* the mask on your face.
+
+It hangs off the `AimPivot`, which already carries the aim pitch, so it moves exactly with the camera — sauce stays where it landed on screen as you look around, the way sauce on glasses does. In first person your own lenses are hidden and reach you as the overlay instead; everyone else's are visible on their faces in both camera modes. A hit that is level with the lenses or behind them paints nothing: it is not in front of your eyes, so it does not blind you.
+
+**`R` wipes them**, and it is a shared action rather than a private one. A client asks and the server decides — whether the lenses are dirty enough to be worth it, and whether the player is in a state to do it (going over backwards is not the moment). The wipe takes `Wipe Duration` (0.7 s), its timer travels in the state packet the way the fall timer does, and **firing is locked while it runs** — movement and aim are not, so being blinded costs you the shot rather than the fight. Everyone watches the lenses tip up and the mask disappear at the end of it, so an opponent can see the opening and take it. Wiping the glasses does not wash the body.
 
 **The stain is cosmetic and nothing reads it back.** Slipping is decided by the floor grid and the floor grid alone. Over the network a body is painted exactly like a wall — only the server marks it, and it broadcasts the centre cell — and a peer joining a session that is already messy is handed each body's mask along with the floor's.
 
@@ -100,7 +104,7 @@ godot --headless --path . --script res://tests/probe_geom.gd                   #
 godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
 godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states, hostile input
 godot --headless --path . --script res://tests/probe_panel.gd                  # the F2 panel is on screen and centred
-godot --headless --path . --script res://tests/probe_body.gd                   # body stains: side hit, seam wrap, replay, screen wipe
+godot --headless --path . --script res://tests/probe_body.gd                   # body stains, glasses, and the wipe
 ```
 
 `probe_determinism.gd` prints `MAYO_GRID_HASH`; run it twice and compare, since a difference between two processes is exactly what would break the grid sync.

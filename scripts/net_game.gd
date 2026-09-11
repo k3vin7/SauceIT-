@@ -28,10 +28,10 @@ extends Node
 const DEFAULT_PORT := 24565
 const MAX_CLIENTS := 1
 ## Floats per player in a state packet: position xyz, yaw, velocity xz, firing,
-## aim pitch, fall state, fall timer, fall direction. The peer ids travel
-## alongside as ints -- a peer id is a full 32-bit random number and does not
-## survive a round trip through a 32-bit float.
-const STATE_STRIDE := 11
+## aim pitch, fall state, fall timer, fall direction, wipe timer. The peer ids
+## travel alongside as ints -- a peer id is a full 32-bit random number and does
+## not survive a round trip through a 32-bit float.
+const STATE_STRIDE := 12
 
 signal status_changed(message: String)
 
@@ -153,6 +153,9 @@ func _on_peer_connected(id: int) -> void:
 		var body: PackedByteArray = world.body_snapshot(existing_id)
 		if not body.is_empty():
 			_load_body_grid.rpc_id(id, existing_id, body)
+		var visor: PackedByteArray = world.visor_snapshot(existing_id)
+		if not visor.is_empty():
+			_load_visor_grid.rpc_id(id, existing_id, visor)
 	_set_status("player %d connected" % id)
 
 
@@ -252,6 +255,28 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 	_apply_state.rpc(ids, state)
 
 
+## R, on a client. The wipe is a change everyone sees, so the client asks and
+## the server decides -- the server owns whether the lenses are dirty enough to
+## be worth wiping and whether the player is in a state to do it.
+func request_wipe() -> void:
+	if not _online or multiplayer.is_server():
+		return
+	if _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+	_request_wipe.rpc_id(1)
+
+
+## No numbers to range-check here: the packet carries nothing but the fact that
+## a key was pressed, and the sender is taken from the connection rather than
+## from the message. Anything added to it goes through `all_finite` and the
+## clamps above, like every other client input.
+@rpc("any_peer", "call_remote", "reliable")
+func _request_wipe() -> void:
+	if not multiplayer.is_server():
+		return
+	world.begin_wipe_for(multiplayer.get_remote_sender_id())
+
+
 func send_input(move: Vector2, run: bool, firing: bool, yaw: float, pitch: float) -> void:
 	if not _online or multiplayer.is_server():
 		return
@@ -274,7 +299,8 @@ func apply_client_input() -> void:
 		var packet: Array = _client_input[id]
 		shooter.player.input_move = packet[0]
 		shooter.player.input_run = packet[1]
-		shooter.firing = packet[2] and not shooter.player.is_incapacitated()
+		shooter.firing = packet[2] and not shooter.player.is_incapacitated() \
+			and not shooter.player.is_wiping()
 		shooter.aim_yaw = packet[3]
 		shooter.aim_pitch = packet[4]
 
@@ -291,7 +317,7 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			position.x, position.y, position.z, state[1],
 			velocity.x, velocity.z,
 			1.0 if shooter.firing else 0.0, shooter.aim_pitch,
-			float(state[3]), state[4], state[5]]))
+			float(state[3]), state[4], state[5], state[6]]))
 	return data
 
 
@@ -321,7 +347,8 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 			Vector3(data[index], data[index + 1], data[index + 2]),
 			data[index + 3],
 			Vector3(data[index + 4], 0.0, data[index + 5]),
-			int(data[index + 8]), data[index + 9], data[index + 10])
+			int(data[index + 8]), data[index + 9], data[index + 10],
+			data[index + 11])
 		# The local player's own aim is never taken back from the server: it is
 		# already ahead of this packet.
 		if not shooter.is_local:
@@ -369,6 +396,11 @@ func _load_grid(index: int, cells: PackedByteArray) -> void:
 @rpc("authority", "call_remote", "reliable")
 func _load_body_grid(peer_id: int, cells: PackedByteArray) -> void:
 	world.apply_body_snapshot(peer_id, cells)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _load_visor_grid(peer_id: int, cells: PackedByteArray) -> void:
+	world.apply_visor_snapshot(peer_id, cells)
 
 
 func _ready() -> void:

@@ -12,10 +12,8 @@ extends SceneTree
 #     travels over the network the way the floor does
 #   * the floor is untouched by any of it: bodies are cosmetic, and slipping
 #     still reads the floor alone
-#   * a splat on your own body puts sauce on your camera, on the side it came
-#     from, and R wipes the lot
-#   * being hit again does not push off what is already on the glass: a burst is
-#     ~78 splats a second and the cap is 18, so sauce on the lens is throttled
+#   * sauce in front of the eyes lands on the glasses, sauce behind the head
+#     does not, and a wipe takes it off at the end rather than the start
 
 var failures: Array[String] = []
 
@@ -140,89 +138,54 @@ func _run() -> void:
 	_check(source_body.painted_cell_count() > 100,
 		"the replay test only marked %d cells" % source_body.painted_cell_count())
 
-	# --- sauce on your own body is sauce on your camera ---
-	var splatter = scene._splatter
-	# Off for the placement checks below, which want one blob per call.
-	var throttle: float = splatter.blob_interval
-	splatter.blob_interval = 0.0
-	_check(splatter.size.x > 0.0 and splatter.size.y > 0.0,
-		"the splatter overlay has no rect, so every blob would land at the corner")
-	_check(splatter.blob_count() == 0, "the screen started out dirty")
-	# Level and facing down -Z, so the view is not pitched when the blobs land.
-	scene.debug_set_aim(0.0, 0.0)
-	await physics_frame
-	# Forward is -Z, so the front of the body is where the unwrap starts and the
-	# middle column is the player's back. A hit on the chest belongs in the
-	# middle of the view; one in the back has nowhere to be but the edge.
-	var eye_row: int = int((scene.eye_height + 0.64) / 0.02)
-	scene._note_body_splat(1, Vector2i(0, eye_row))
-	_check(splatter.blob_count() == 1, "a splat on your own body did not reach the camera")
-	var ahead: Vector2 = splatter._blobs[0].position
-	scene._note_body_splat(1, Vector2i(body.grid.width / 2, eye_row))
-	var behind: Vector2 = splatter._blobs[1].position
-	print("blob from the front at %.0v, from behind at %.0v, screen %.0v" % [
-		ahead, behind, splatter.size])
-	_check(ahead.distance_to(splatter.size * 0.5) < splatter.size.y * 0.25,
-		"a hit from straight ahead landed at %.0v, not near the middle" % ahead)
-	_check(behind.distance_to(splatter.size * 0.5) > splatter.size.y * 0.25,
-		"a hit from behind landed at %.0v, in the middle of the view" % behind)
-	for blob in splatter._blobs:
-		_check(blob.position.x >= 0.0 and blob.position.y >= 0.0
-				and blob.position.x <= splatter.size.x and blob.position.y <= splatter.size.y,
-			"a blob landed at %.0v, off the screen" % blob.position)
+	# --- sauce in front of the eyes lands on the glasses ---
+	# The visor is a grid like any other, but measured in view units, so what is
+	# painted on it is what the player cannot see through.
+	var visor = target_player.visor
+	_check(visor != null, "the player has no glasses")
+	_check(visor.painted_cell_count() == 0, "the glasses started out dirty")
+	# Straight ahead, a quarter of the way up the view.
+	visor.paint_from_view(Vector3(0.0, 0.25, -1.0), scene.camera_fov)
+	var ahead: int = visor.painted_cell_count()
+	# And from behind: not in front of your eyes, so it does not blind you.
+	visor.paint_from_view(Vector3(0.0, 0.0, 1.0), scene.camera_fov)
+	print("glasses: %d cells from a hit ahead, %d after one from behind, %.0f%% blind" % [
+		ahead, visor.painted_cell_count(), visor.coverage() * 100.0])
+	_check(ahead > 0, "a hit in front of the eyes did not reach the glasses")
+	_check(visor.painted_cell_count() == ahead,
+		"a hit from behind the head put sauce on the lenses")
+	_check(visor.coverage() > 0.0 and visor.coverage() < 0.5,
+		"one splat left the player %.0f%% blind" % (visor.coverage() * 100.0))
 
-	# Blobs pile up, and they stay: nothing here is on a timer, or the wipe key
-	# would have nothing to do.
-	for i in 40:
-		scene._note_body_splat(1, Vector2i(i * 2, eye_row))
-	await physics_frame
-	await physics_frame
-	print("after 42 splats: %d blobs held, roughly %.0f%% of the screen" % [
-		splatter.blob_count(), splatter.coverage() * 100.0])
-	_check(splatter.blob_count() == ScreenSplatter.MAX_BLOBS,
-		"%d blobs are being held, past the %d cap" % [
-			splatter.blob_count(), ScreenSplatter.MAX_BLOBS])
-	_check(splatter.coverage() > 0.1,
-		"a screenful of splats covers only %.0f%% of it" % (splatter.coverage() * 100.0))
-
-	# --- a second hit does not wipe out the first ---
-	# The failure this guards against: one burst is far more splats than the cap
-	# holds, so without the throttle being hit again left only the new marks.
-	splatter.wipe()
-	splatter.blob_interval = throttle
-	scene._note_body_splat(1, Vector2i(0, eye_row))
-	var first: Vector2 = splatter._blobs[0].position
-	# A full second of being sprayed, spread over the frames it really arrives
-	# on rather than in one instant, which the throttle would swallow whole.
-	var burst := 0
-	for _frame in 60:
+	# --- and a wipe takes it off, with the firing lock that pays for it ---
+	var wiper = target_player
+	# Through the authority's entry point, which is what R reaches: it is also
+	# what remembers to broadcast the clear when the timer runs out.
+	_check(scene.begin_wipe_for(2), "the player could not start wiping dirty lenses")
+	_check(wiper.is_wiping(), "the wipe did not start")
+	_check(visor.painted_cell_count() > 0,
+		"the lenses were cleared the instant the wipe started, not at the end of it")
+	var lifted := 0.0
+	var frames := 0
+	while wiper.is_wiping() and frames < 300:
 		await physics_frame
-		# The strand lands about 78 splats a second at the reference fire rate.
-		for _i in 2:
-			scene._note_body_splat(1, Vector2i(body.grid.width / 2, eye_row))
-			burst += 1
-	var added: int = splatter.blob_count() - 1
-	print("a second of being sprayed (%d splats) added %d blobs, first mark still there=%s" % [
-		burst, added, str(splatter.blob_count() > 0 and splatter._blobs[0].position == first)])
-	_check(added >= 3 and added <= 12,
-		"a second of spray added %d blobs, which is not a second's worth" % added)
-	_check(splatter.blob_count() < ScreenSplatter.MAX_BLOBS,
-		"a single burst filled the screen to the %d cap" % ScreenSplatter.MAX_BLOBS)
-	_check(splatter.blob_count() > 0 and splatter._blobs[0].position == first,
-		"the burst pushed the earlier mark off the glass")
-	splatter.blob_interval = 0.0
-
-	# --- and R wipes it ---
-	var wipe := InputEventAction.new()
-	wipe.action = "wipe_screen"
-	wipe.pressed = true
-	scene._unhandled_input(wipe)
-	print("after R: %d blobs" % splatter.blob_count())
-	_check(InputMap.has_action("wipe_screen"), "the wipe key is not bound")
-	_check(splatter.blob_count() == 0, "R left %d blobs on the screen" % splatter.blob_count())
-	# The body underneath is untouched: wiping the lens does not wash the player.
+		frames += 1
+		scene._update_visor(mark)
+		lifted = maxf(lifted, absf(visor._lens.rotation.x))
+	scene._finish_wipes()
+	print("wipe: %d frames (expected ~%d), lenses lifted %.0f deg, %d cells left" % [
+		frames, int(wiper.wipe_duration * 60.0), rad_to_deg(lifted),
+		visor.painted_cell_count()])
+	_check(absi(frames - int(wiper.wipe_duration * 60.0)) <= 3,
+		"the wipe took %d frames, expected about %d" % [
+			frames, int(wiper.wipe_duration * 60.0)])
+	_check(lifted > deg_to_rad(20.0),
+		"the lenses only tipped %.0f deg, so nobody can see the wipe" % rad_to_deg(lifted))
+	_check(visor.painted_cell_count() == 0, "the wipe left the lenses dirty")
+	_check(not scene.begin_wipe_for(2), "clean lenses can still be wiped")
+	# Wiping the glasses does not wash the body.
 	_check(body.painted_cell_count() > 0,
-		"wiping the screen cleared the stain on the body as well")
+		"the wipe cleared the stain on the body as well")
 
 	# --- and none of it touched the floor ---
 	print("floor cells before %d, after %d" % [

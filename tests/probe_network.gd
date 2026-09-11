@@ -19,7 +19,10 @@ extends SceneTree
 #   * both screens agree which way each player is facing and spraying, at an
 #     angle picked so that "not replicated at all" would still look plausible
 #   * spraying a player marks their body identically on both screens, and puts
-#     sauce on the sprayed player's camera and on nobody else's
+#     sauce on the sprayed player's glasses and on nobody else's
+#   * a client asking to wipe is decided by the server, plays out on both
+#     screens at once, locks their firing while it runs, and clears the lenses
+#     for everyone at the end
 
 const PORT := 24777
 
@@ -261,28 +264,29 @@ func _run() -> void:
 	var b_on_host = server_world.shooter_for(client_id).player
 	b_on_host.global_position = Vector3(0.0, 0.64, 0.05)
 	server_world.shooter_for(1).player.global_position = Vector3(0.0, 0.64, 1.55)
-	await _wait(6)
-	server_world.debug_aim_at(b_on_host.global_position + Vector3(0.0, 0.15, 0.0))
+	# B turns to face A. Sprayed in the back their glasses would stay clean,
+	# which is right but tests nothing about them.
+	client_world.debug_set_aim(180.0, 0.0)
+	await _wait(10)
+	# At eye height, so it lands on the face and not only on the chest.
+	server_world.debug_aim_at(b_on_host.global_position + Vector3.UP * server_world.eye_height)
 	server_world.debug_set_input(Vector2.ZERO, false, true)
 	await _wait(90)
 	server_world.debug_set_input(Vector2.ZERO, false, false)
 	await _wait(30)
 
-	print("screens: %d blobs on the shooter's, %d on the player being sprayed" % [
-		server_world._splatter.blob_count(), client_world._splatter.blob_count()])
-	_check(client_world._splatter.blob_count() > 0,
-		"B was sprayed and got no sauce on their camera")
-	# A second and a half of spray, not a screenful: one burst must not fill the
-	# cap, or being hit again would leave only the newest marks.
-	_check(client_world._splatter.blob_count() < ScreenSplatter.MAX_BLOBS,
-		"one burst put B's camera straight to the %d blob cap" % ScreenSplatter.MAX_BLOBS)
-	_check(server_world._splatter.blob_count() == 0,
-		"A got %d blobs on their own camera for spraying someone else"
-			% server_world._splatter.blob_count())
-	client_world._splatter.wipe()
-	_check(client_world._splatter.blob_count() == 0, "the wipe left blobs behind")
-	_check(client_world.body_md5(client_id) == server_world.body_md5(client_id),
-		"wiping B's camera changed the stain on B's body")
+	var b_visor_host = server_world.shooter_for(client_id).player.visor
+	var b_visor_client = client_world.shooter_for(client_id).player.visor
+	var a_visor_host = server_world.shooter_for(1).player.visor
+	print("glasses: B %.0f%% blind on the host, %.0f%% on B's screen; A %.0f%%" % [
+		b_visor_host.coverage() * 100.0, b_visor_client.coverage() * 100.0,
+		a_visor_host.coverage() * 100.0])
+	_check(b_visor_host.painted_cell_count() > 0,
+		"B was sprayed in the face and their glasses stayed clean")
+	_check(b_visor_host.cells_md5() == b_visor_client.cells_md5(),
+		"the two screens disagree about B's glasses")
+	_check(a_visor_host.painted_cell_count() == 0,
+		"A got sauce on their own glasses for spraying someone else")
 
 	var host_body: String = server_world.body_md5(client_id)
 	var client_body: String = client_world.body_md5(client_id)
@@ -295,6 +299,48 @@ func _run() -> void:
 	_check(host_body == client_body,
 		"the two screens disagree about B's body (%d vs %d cells)" % [
 			host_body_cells, client_body_cells])
+
+	# --- B wipes, A watches it happen ---
+	# The request goes from the client to the server, and everything after it is
+	# the server's: whether it starts, how long it runs, and the clear at the end.
+	var b_player_host = server_world.shooter_for(client_id).player
+	var b_player_client = client_world.shooter_for(client_id).player
+	client_world._request_wipe()
+	await _wait(4)
+	_check(b_player_host.is_wiping(), "B pressed R and the host never started a wipe")
+	_check(b_player_client.is_wiping(), "the wipe is not running on B's own screen")
+	var timer_gap := 0.0
+	var lifted_on_a := 0.0
+	var fired_while_wiping := false
+	client_world.debug_set_input(Vector2.ZERO, false, true)
+	var wipe_frames := 0
+	while b_player_host.is_wiping() and wipe_frames < 200:
+		await physics_frame
+		wipe_frames += 1
+		timer_gap = maxf(timer_gap, absf(b_player_host.wipe_timer - b_player_client.wipe_timer))
+		# What A sees of it: B's lenses tipped up on A's screen.
+		lifted_on_a = maxf(lifted_on_a, absf(
+			server_world.shooter_for(client_id).player.visor._lens.rotation.x))
+		if server_world.shooter_for(client_id).firing:
+			fired_while_wiping = true
+	client_world.debug_set_input(Vector2.ZERO, false, false)
+	await _wait(10)
+	print("wipe: %d frames, timers %.3f s apart, B's lenses lifted %.0f deg on A's screen" % [
+		wipe_frames, timer_gap, rad_to_deg(lifted_on_a)])
+	print("  after: host %d cells on B's glasses, B's screen %d, fired while wiping=%s" % [
+		b_visor_host.painted_cell_count(), b_visor_client.painted_cell_count(),
+		str(fired_while_wiping)])
+	_check(timer_gap < 0.05,
+		"the wipe timers drifted %.3f s apart, so the two screens are out of step" % timer_gap)
+	_check(lifted_on_a > deg_to_rad(20.0),
+		"B's lenses only tipped %.0f deg on A's screen" % rad_to_deg(lifted_on_a))
+	_check(not fired_while_wiping, "B kept firing while wiping their glasses")
+	_check(b_visor_host.painted_cell_count() == 0, "the host still has B's lenses dirty")
+	_check(b_visor_client.painted_cell_count() == 0, "B's own lenses were never cleared")
+	_check(server_world.body_md5(client_id) == client_world.body_md5(client_id),
+		"the two screens disagree about B's body after the wipe")
+	_check(server_world.shooter_for(client_id).player.contamination.painted_cell_count() > 0,
+		"wiping B's glasses washed the stain off their body as well")
 
 	# --- B runs through A's mayo and goes down ---
 	var patch := _painted_cell_position(server_world)

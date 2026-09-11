@@ -33,6 +33,9 @@ enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 ## Pitching forward puts the skid under the body instead of out from under it,
 ## so a long slide reads as a slide tackle. Scrubbed harder to land face first.
 @export_range(1.0, 80.0, 0.5, "suffix:m/s²") var forward_slip_slide_friction := 34.0
+## How long wiping the lenses takes. Firing is locked for it -- movement and
+## aim are not -- so being blinded costs you the shot rather than the fight.
+@export_range(0.1, 3.0, 0.05, "suffix:s") var wipe_duration := 0.7
 ## How long after standing up a fresh slip counts as losing footing you never
 ## had, and goes over forwards instead of backwards.
 @export_range(0.0, 3.0, 0.05, "suffix:s") var recovery_window := 0.7
@@ -59,6 +62,12 @@ var _network_previous_position := Vector3.ZERO
 ## The stain on this body. Set by the world when it builds the capsule; the
 ## strand finds it through here, because what a raycast hits is the body.
 var contamination: BodyContamination
+## The glasses on this body's face. The mask on them is what blinds the player
+## looking through them, and what everyone else sees is filthy.
+var visor: VisorContamination
+## Counts down while the lenses are being wiped. Replicated like the fall timer,
+## so the wipe plays out frame for frame on every screen.
+var wipe_timer := 0.0
 
 
 func _ready() -> void:
@@ -90,6 +99,7 @@ func _physics_process(delta: float) -> void:
 		_advance_fall(delta)
 	else:
 		_recovery_timer = maxf(_recovery_timer - delta, 0.0)
+	_advance_wipe(delta)
 
 	var desired := Vector3.ZERO
 	if state == State.NORMAL:
@@ -136,22 +146,55 @@ func run_held() -> bool:
 	return Input.is_action_pressed("run")
 
 
+## Starts a wipe, if there is anything to wipe and the player is in a state to
+## do it. Going over backwards is not the moment to clean your glasses.
+func begin_wipe() -> bool:
+	if wipe_timer > 0.0 or state != State.NORMAL:
+		return false
+	if visor == null or visor.painted_cell_count() == 0:
+		return false
+	wipe_timer = wipe_duration
+	return true
+
+
+func is_wiping() -> bool:
+	return wipe_timer > 0.0
+
+
+## 0 -> 1 across the wipe, for the lenses tipping up and back down.
+func wipe_progress() -> float:
+	if wipe_timer <= 0.0:
+		return 0.0
+	return 1.0 - clampf(wipe_timer / maxf(wipe_duration, 0.0001), 0.0, 1.0)
+
+
+## Only the authority runs the clock down; everyone else is handed the value.
+## The lenses are not cleared here -- that is a change to a grid, and grids are
+## only ever changed by the server telling everyone the same thing.
+func _advance_wipe(delta: float) -> void:
+	if wipe_timer <= 0.0:
+		return
+	wipe_timer = maxf(wipe_timer - delta, 0.0)
+
+
 ## Whole-body state from the server. The fall is not re-simulated here: the
 ## timer comes over the wire too, so the stumble, the fall, the slide and
 ## standing up line up frame for frame on both machines.
 func apply_network_state(new_position: Vector3, yaw: float, new_velocity: Vector3,
-		new_state: int, timer: float, direction: float) -> void:
+		new_state: int, timer: float, direction: float, wipe: float) -> void:
 	global_position = new_position
 	rotation.y = yaw
 	velocity = new_velocity
 	state = new_state as State
 	_state_timer = timer
 	fall_direction = direction
+	wipe_timer = wipe
 
 
 ## What the server sends: enough to place the body and to replay the fall.
 func network_state() -> Array:
-	return [global_position, rotation.y, velocity, int(state), _state_timer, fall_direction]
+	return [global_position, rotation.y, velocity, int(state), _state_timer,
+		fall_direction, wipe_timer]
 
 
 func is_incapacitated() -> bool:
