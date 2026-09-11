@@ -14,6 +14,8 @@ extends SceneTree
 #     still reads the floor alone
 #   * sauce in front of the eyes lands on the glasses, sauce behind the head
 #     does not, and a wipe takes it off at the end rather than the start
+#   * your own sauce can come back on you once it is clear of you -- fired
+#     straight up it lands on your own face -- but never as it leaves the muzzle
 
 var failures: Array[String] = []
 
@@ -192,6 +194,45 @@ func _run() -> void:
 		floor_before, scene._floor.grid.painted_cell_count()])
 	_check(scene._floor.grid.painted_cell_count() == floor_before,
 		"spraying a body painted the floor as well")
+
+	# --- your own sauce can come back on you ---
+	# Fired up it drifts about a metre before it lands, so the case that really
+	# happens is walking into your own falling stream. Either way it must never
+	# hit you on the way out: the muzzle sits inside your own capsule.
+	var self_visor = scene._local.player.visor
+	var self_body = scene._local.player.contamination
+	self_visor.clear()
+	_check(self_body.painted_cell_count() == 0,
+		"the shooter was already dirty before firing at themselves")
+	scene.debug_set_aim(0.0, 85.0)
+	await physics_frame
+	for _f in 30:
+		scene._emit_point()
+		scene._simulate_points(1.0 / 60.0)
+		await physics_frame
+	var on_the_way_out: int = self_body.painted_cell_count()
+	# Now walk under it while it comes down.
+	for _f in 180:
+		scene._simulate_points(1.0 / 60.0)
+		var centre := Vector3.ZERO
+		var airborne := 0
+		for point in scene._points:
+			if point.phase == 0:
+				centre += point.position
+				airborne += 1
+		if airborne > 0:
+			centre /= float(airborne)
+			scene._local.player.global_position = Vector3(
+				centre.x, scene._local.player.global_position.y, centre.z)
+		await physics_frame
+	print("own sauce: %d cells on self while leaving the muzzle, %d after walking under it, %.0f%% blind" % [
+		on_the_way_out, self_body.painted_cell_count(), self_visor.coverage() * 100.0])
+	_check(on_the_way_out == 0,
+		"%d cells were marked on the shooter as the strand left the muzzle" % on_the_way_out)
+	_check(self_body.painted_cell_count() > 0,
+		"walking into your own falling sauce did not mark you")
+	_check(self_visor.painted_cell_count() > 0,
+		"it landed on you but not on your own glasses, which were pointing at it")
 
 	if failures.is_empty():
 		print("MAYO_BODY_OK")

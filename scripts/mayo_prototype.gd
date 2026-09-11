@@ -102,6 +102,11 @@ class MayoDroplet:
 @export_range(1, 4, 1) var raycast_frame_stride := 1
 @export_range(0.0, 0.03, 0.001, "suffix:m") var raycast_min_accumulated_motion := 0.004
 @export_range(0.2, 4.0, 0.1, "suffix:s") var wall_fixed_hold_time := 1.2
+## How far a point has to have travelled before it can hit the player who fired
+## it. The muzzle sits inside its owner's own capsule, so a point leaving it
+## would hit them immediately; past this it is clear of them and fair game, and
+## sauce fired straight up, or walked into, comes back on you.
+@export_range(0.0, 3.0, 0.05, "suffix:m") var self_hit_distance := 0.6
 
 @export_group("Release Pressure")
 @export_range(0.0, 1.0, 0.01) var release_pressure_loss := 0.55
@@ -1072,7 +1077,8 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 			and (scheduled or near_floor or must_catch_up)
 		if should_cast:
 			var query := PhysicsRayQueryParameters3D.create(point.last_collision_position, next)
-			query.exclude = [shooter.player.get_rid()]
+			if point.distance_travelled < self_hit_distance:
+				query.exclude = [shooter.player.get_rid()]
 			query.collide_with_areas = false
 			if debug_profile_enabled:
 				debug_raycast_count += 1
