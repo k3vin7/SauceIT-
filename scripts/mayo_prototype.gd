@@ -1141,7 +1141,7 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 			if not hit.is_empty():
 				var collider := hit.collider as Node
 				if collider != null and collider.is_in_group("mayo_floor"):
-					_begin_landing(point, hit.position)
+					_begin_landing(point, hit.position, hit.normal)
 				else:
 					# Only the server's copy of the strand marks anything. Every
 					# peer runs this same code for every shooter, but a client's
@@ -1170,8 +1170,11 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 			points.remove_at(i)
 
 
-func _begin_landing(point: MayoPoint, hit_position: Vector3) -> void:
-	point.position = hit_position + Vector3.UP * 0.008
+## Settles a point onto whatever it hit. The offset is along the surface's own
+## normal rather than straight up, which is the same thing on a floor and the
+## difference between hugging a wall and sinking into it.
+func _begin_landing(point: MayoPoint, hit_position: Vector3, hit_normal: Vector3) -> void:
+	point.position = hit_position + hit_normal * 0.008
 	point.last_collision_position = point.position
 	point.velocity = Vector3.ZERO
 	point.powered = false
