@@ -254,6 +254,10 @@ var debug_max_points := 0
 ## quantities, which is what makes them worth counting against point density.
 var debug_splats := 0
 var debug_droplet_spawns := 0
+## Droplets replaced while still alive, and how much life they had left. A pool
+## that is full is only a problem if this second number is not near zero.
+var debug_droplet_overwrites := 0
+var debug_droplet_overwritten_life := 0.0
 var debug_timings_us := {
 	"emit_follow": 0,
 	"point_physics": 0,
@@ -1528,11 +1532,19 @@ func _spawn_landing_droplets(position: Vector3) -> void:
 	if _droplet_multimesh == null:
 		return
 	debug_droplet_spawns += 1
-	var expires_at := Time.get_ticks_msec() * 0.001 + droplet_lifetime
+	var now := Time.get_ticks_msec() * 0.001
+	var expires_at := now + droplet_lifetime
 	for _i in droplets_per_landing:
 		var droplet := _droplets[_droplet_cursor]
 		if not droplet.active:
 			_active_droplet_indices.push_back(_droplet_cursor)
+		else:
+			# The cursor walks the pool in order and every droplet is given the
+			# same lifetime, so the slot it arrives at is always the one taken
+			# longest ago. Recorded so that can be checked rather than assumed:
+			# if it holds, what is overwritten was about to expire anyway.
+			debug_droplet_overwrites += 1
+			debug_droplet_overwritten_life += maxf(droplet.expires_at - now, 0.0)
 		_droplet_cursor = (_droplet_cursor + 1) % _droplets.size()
 		var angle := _rng.randf_range(0.0, TAU)
 		var spread_radius := sqrt(_rng.randf()) * 0.12
@@ -1585,6 +1597,8 @@ func debug_reset_profile() -> void:
 	debug_max_points = 0
 	debug_splats = 0
 	debug_droplet_spawns = 0
+	debug_droplet_overwrites = 0
+	debug_droplet_overwritten_life = 0.0
 	for key in debug_timings_us:
 		debug_timings_us[key] = 0
 	if is_instance_valid(_floor):
