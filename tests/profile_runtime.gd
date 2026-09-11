@@ -62,7 +62,7 @@ func _run() -> void:
 	scene.debug_profile_enabled = false
 
 	var pf: int = maxi(scene.debug_profile_frames, 1)
-	print("R mode=%-9s tick_ms=%.3f script_ms=%.3f max_points=%d mean_points=%.1f rays_per_frame=%.2f paint=%d uploads=%d emit=%.3f pts=%.3f cons=%.3f ribbon=%.3f" % [
+	print("R mode=%-9s tick_ms=%.3f script_ms=%.3f max_points=%d mean_points=%.1f rays_per_frame=%.2f paint=%d uploads=%d emit=%.3f pts=%.3f cons=%.3f ribbon=%.3f net=%.3f" % [
 		mode,
 		float(phys_us) / n * 0.001,
 		float(scene.debug_timings_us.total) / pf * 0.001,
@@ -75,5 +75,6 @@ func _run() -> void:
 		float(scene.debug_timings_us.point_physics) / pf * 0.001,
 		float(scene.debug_timings_us.constraint) / pf * 0.001,
 		float(scene.debug_timings_us.ribbon_update) / pf * 0.001,
+		float(scene.debug_timings_us.net_send) / pf * 0.001,
 	])
 	quit(0)

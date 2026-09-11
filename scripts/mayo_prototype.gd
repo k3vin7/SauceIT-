@@ -20,6 +20,8 @@ const SPLAT_BODY := 2
 ## is a grid change like any other, so it travels the same way the splats do.
 const SPLAT_VISOR := 3
 const SPLAT_VISOR_CLEAR := 4
+## Ints per entry in a splat batch: kind, target, cell x, cell y.
+const SPLAT_STRIDE := 4
 const FACES_PER_WALL := 6
 
 enum PointPhase { AIR, WALL_FIXED, LANDING }
@@ -238,11 +240,16 @@ var debug_profile_enabled := false
 var debug_profile_frames := 0
 var debug_raycast_count := 0
 var debug_max_points := 0
+## Splats queued this run, and landings that threw droplets. Both are per-hit
+## quantities, which is what makes them worth counting against point density.
+var debug_splats := 0
+var debug_droplet_spawns := 0
 var debug_timings_us := {
 	"emit_follow": 0,
 	"point_physics": 0,
 	"constraint": 0,
 	"ribbon_update": 0,
+	"net_send": 0,
 	"total": 0,
 }
 
@@ -295,14 +302,21 @@ func _physics_process(delta: float) -> void:
 		_update_visuals(shooter)
 	if debug_profile_enabled:
 		debug_timings_us.ribbon_update += Time.get_ticks_usec() - step_started
-		debug_timings_us.total += Time.get_ticks_usec() - frame_started
-		debug_profile_frames += 1
-		debug_max_points = maxi(debug_max_points, _points.size())
+		step_started = Time.get_ticks_usec()
 	if _is_authority():
 		_finish_wipes()
+	if debug_profile_enabled:
+		debug_splats += _pending_splats.size() / SPLAT_STRIDE
 	if is_instance_valid(_net):
 		_net.end_of_frame(_pending_splats)
 	_pending_splats.clear()
+	# Sending the frame's splats and player states is part of the frame, and was
+	# being left out of it: the total used to be taken before this ran.
+	if debug_profile_enabled:
+		debug_timings_us.net_send += Time.get_ticks_usec() - step_started
+		debug_timings_us.total += Time.get_ticks_usec() - frame_started
+		debug_profile_frames += 1
+		debug_max_points = maxi(debug_max_points, _points.size())
 
 
 ## Emission and the trigger edges, for one shooter. Split out of the frame loop
@@ -1503,6 +1517,7 @@ func _build_droplet_pool(mayo_material: Material) -> void:
 func _spawn_landing_droplets(position: Vector3) -> void:
 	if _droplet_multimesh == null:
 		return
+	debug_droplet_spawns += 1
 	var expires_at := Time.get_ticks_msec() * 0.001 + droplet_lifetime
 	for _i in 7:
 		var droplet := _droplets[_droplet_cursor]
@@ -1558,6 +1573,8 @@ func debug_reset_profile() -> void:
 	debug_profile_frames = 0
 	debug_raycast_count = 0
 	debug_max_points = 0
+	debug_splats = 0
+	debug_droplet_spawns = 0
 	for key in debug_timings_us:
 		debug_timings_us[key] = 0
 	if is_instance_valid(_floor):

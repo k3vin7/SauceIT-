@@ -126,6 +126,8 @@ godot --headless --path . --script res://tests/probe_body.gd                   #
 
 `probe_determinism.gd` prints `MAYO_GRID_HASH`; run it twice and compare, since a difference between two processes is exactly what would break the grid sync.
 
+The profile covers the whole physics tick, the frame's splat and state send included — that last stage (`net_send`) used to fall outside the total, which made a session's cost look like the offline one.
+
 `profile_runtime.gd` reports the wall-clock tick interval, which is the tick period in every mode; read `script_ms` and the per-stage figures for actual cost, or wrap the run in `/usr/bin/time` and difference `full` against `noscript`.
 
 The runtime profiler reports the per-stage CPU time, raycast count, grid paint/upload count, point high-water mark, and droplet-pool node count.
