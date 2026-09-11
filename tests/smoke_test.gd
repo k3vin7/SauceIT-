@@ -16,7 +16,9 @@ func _check(condition: bool, message: String) -> void:
 func _nearest_landing_range(scene, muzzle_flat: Vector3) -> float:
 	var nearest := INF
 	for point in scene._points:
-		if point.phase != 2:
+		# LANDING. The phases are AIR, LANDING since walls stopped being a
+		# separate kind of point.
+		if point.phase != 1:
 			continue
 		var flat: Vector3 = point.position
 		flat.y = 0.0
@@ -93,11 +95,13 @@ func _run() -> void:
 		scene._simulate_points(1.0 / 60.0)
 		scene._enforce_spacing_constraint()
 		await physics_frame
+	# A wall is landed on like the floor is: the point settles against it and
+	# fades, rather than hanging there as a separate kind of point.
 	var fixed_count := 0
 	for point in scene._points:
 		if point.phase == 1:
 			fixed_count += 1
-	_check(fixed_count > 0, "wall route produced no fixed points")
+	_check(fixed_count > 0, "wall route produced no landing points")
 
 	# The wall stain is written at collision time, so it must outlive the points.
 	var wall: ContaminableObject = scene.get_node("ImpactWall")
@@ -106,7 +110,7 @@ func _run() -> void:
 	_check(wall.debug_texture_uploads() < wall.debug_paint_calls(),
 		"wall grid writes were not batched to one upload per frame")
 	scene._points.clear()
-	for _frame in int(scene.wall_fixed_hold_time * 60.0) + 30:
+	for _frame in int(scene.landing_transition_time * 60.0) + 30:
 		scene._simulate_points(1.0 / 60.0)
 		await physics_frame
 	_check(wall.painted_cell_count() == wall_cells,

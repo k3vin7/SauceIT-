@@ -24,7 +24,7 @@ const SPLAT_VISOR_CLEAR := 4
 const SPLAT_STRIDE := 4
 const FACES_PER_WALL := 6
 
-enum PointPhase { AIR, WALL_FIXED, LANDING }
+enum PointPhase { AIR, LANDING }
 
 class MayoPoint:
 	var position := Vector3.ZERO
@@ -36,7 +36,6 @@ class MayoPoint:
 	var powered := true
 	var phase := PointPhase.AIR
 	var landing_age := 0.0
-	var fixed_age := 0.0
 	var collision_slot := 0
 	var burst_index := 0
 
@@ -68,7 +67,6 @@ class Shooter:
 	var aim_pitch := 0.0
 	var rng := RandomNumberGenerator.new()
 	var air_visual: StreamVisual
-	var wall_visual: StreamVisual
 	var landing_visual: StreamVisual
 	var shadow_visual: StreamVisual
 
@@ -108,7 +106,6 @@ class MayoDroplet:
 @export_group("Collision Budget")
 @export_range(1, 4, 1) var raycast_frame_stride := 1
 @export_range(0.0, 0.03, 0.001, "suffix:m") var raycast_min_accumulated_motion := 0.004
-@export_range(0.2, 4.0, 0.1, "suffix:s") var wall_fixed_hold_time := 1.2
 ## How far a point has to have travelled before it can hit the player who fired
 ## it. The muzzle sits inside its owner's own capsule, so a point leaving it
 ## would hit them immediately; past this it is clear of them and fair game, and
@@ -223,8 +220,6 @@ var _weapon: Node3D:
 	get: return _local.weapon
 var _air_visual: StreamVisual:
 	get: return _local.air_visual
-var _wall_visual: StreamVisual:
-	get: return _local.wall_visual
 var _landing_visual: StreamVisual:
 	get: return _local.landing_visual
 var _shadow_visual: StreamVisual:
@@ -667,7 +662,7 @@ func set_avatar_authority(peer_id: int, authority: bool) -> void:
 
 
 func _free_shooter(shooter: Shooter) -> void:
-	for node in [shooter.player, shooter.air_visual, shooter.wall_visual,
+	for node in [shooter.player, shooter.air_visual,
 			shooter.landing_visual, shooter.shadow_visual]:
 		if is_instance_valid(node):
 			# Detached before freeing so the node name is free again this frame:
@@ -707,7 +702,6 @@ func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
 func _build_shooter_visuals(shooter: Shooter) -> void:
 	var suffix := str(shooter.peer_id)
 	shooter.air_visual = _make_stream_visual("AirRibbon" + suffix, _mayo_material)
-	shooter.wall_visual = _make_stream_visual("WallFixedRibbon" + suffix, _mayo_material)
 	shooter.landing_visual = _make_stream_visual("LandingRibbon" + suffix, _landing_material)
 	shooter.shadow_visual = _make_stream_visual("ProjectedShadow" + suffix, _shadow_material)
 
@@ -1105,9 +1099,6 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 	var physics_frame := int(Engine.get_physics_frames())
 	var stride := maxi(raycast_frame_stride, 1)
 	for point in points:
-		if point.phase == PointPhase.WALL_FIXED:
-			point.fixed_age += delta
-			continue
 		if point.phase == PointPhase.LANDING:
 			point.landing_age += delta
 			continue
@@ -1139,20 +1130,17 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 				debug_raycast_count += 1
 			var hit := space_state.intersect_ray(query)
 			if not hit.is_empty():
+				# Everything the strand touches is landed on. Only the server's
+				# copy marks anything: every peer runs this same code for every
+				# shooter, but a client's splats would be its own guess, so it
+				# waits for the broadcast.
 				var collider := hit.collider as Node
-				if collider != null and collider.is_in_group("mayo_floor"):
-					_begin_landing(point, hit.position, hit.normal)
-				else:
-					# Only the server's copy of the strand marks anything. Every
-					# peer runs this same code for every shooter, but a client's
-					# splats would be its own guess; it waits for the broadcast.
-					if _is_authority() and collider != null \
-							and collider.is_in_group("mayo_contaminable"):
+				if _is_authority() and collider != null:
+					if collider.is_in_group("mayo_floor"):
+						_record_floor_splat(hit.position)
+					elif collider.is_in_group("mayo_contaminable"):
 						_record_splat(collider, hit.position, hit.normal)
-					point.position = hit.position + hit.normal * (strand_thickness * 0.5)
-					point.last_collision_position = point.position
-					point.velocity = Vector3.ZERO
-					point.phase = PointPhase.WALL_FIXED
+				_begin_landing(point, hit.position, hit.normal)
 			else:
 				point.position = next
 				point.last_collision_position = next
@@ -1163,8 +1151,6 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 		var point := points[i]
 		if point.phase == PointPhase.LANDING and point.landing_age >= landing_transition_time:
 			_spawn_landing_droplets(point.position)
-			points.remove_at(i)
-		elif point.phase == PointPhase.WALL_FIXED and point.fixed_age >= wall_fixed_hold_time:
 			points.remove_at(i)
 		elif point.position.y < -1.0:
 			points.remove_at(i)
@@ -1180,8 +1166,10 @@ func _begin_landing(point: MayoPoint, hit_position: Vector3, hit_normal: Vector3
 	point.powered = false
 	point.phase = PointPhase.LANDING
 	point.landing_age = 0.0
-	if not _is_authority():
-		return
+
+
+## The server paints the floor and queues the same splat for the peers.
+func _record_floor_splat(hit_position: Vector3) -> void:
 	var cell := _floor.paint_mayo(hit_position)
 	if cell.x >= 0:
 		_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR, 0, cell.x, cell.y]))
@@ -1419,12 +1407,10 @@ func _update_visuals(shooter: Shooter = null) -> void:
 	var camera_position := _camera.global_position
 	var camera_forward := -_camera.global_basis.z
 	var air_segments := _segments_for_phase(PointPhase.AIR, camera_position, shooter)
-	var wall_segments := _segments_for_phase(PointPhase.WALL_FIXED, camera_position, shooter)
 	var landing_segments := _segments_for_phase(PointPhase.LANDING, camera_position, shooter)
 	var shadow_segments := _shadow_segments(camera_position, shooter)
 	var mayo_tint := Color("fff0a8")
 	shooter.air_visual.update_ribbon(air_segments, camera_position, camera_forward, strand_thickness, mayo_tint)
-	shooter.wall_visual.update_ribbon(wall_segments, camera_position, camera_forward, strand_thickness, mayo_tint)
 	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, strand_thickness, mayo_tint, 0.004)
 	shooter.shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward, strand_thickness * 0.72,
 		Color(0.08, 0.07, 0.055, 0.18), 0.012)
@@ -1481,7 +1467,7 @@ func _shadow_segments(camera_position: Vector3, shooter: Shooter = null) -> Arra
 	var previous: MayoPoint = null
 	var break_distance_squared := _break_distance_squared()
 	for point in shooter.points:
-		if point.phase == PointPhase.WALL_FIXED or _is_near_camera(point, camera_position):
+		if _is_near_camera(point, camera_position):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []
