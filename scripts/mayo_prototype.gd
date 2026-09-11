@@ -131,6 +131,11 @@ class MayoDroplet:
 @export_range(0.01, 0.5, 0.005, "suffix:m") var body_brush_radius := 0.07
 @export_range(0.05, 0.5, 0.01, "suffix:s") var landing_transition_time := 0.16
 @export_range(0.1, 2.0, 0.05, "suffix:s") var droplet_lifetime := 0.55
+## Droplets thrown by one landing. The pool they come from is one per world, not
+## one per player, so this is multiplied by every strand landing at once: at
+## seven, two players firing filled all 512 slots and began overwriting droplets
+## that were still alive.
+@export_range(1, 16, 1) var droplets_per_landing := 4
 
 @export_group("Aim")
 @export_range(0.01, 1.0, 0.01, "suffix:°/px") var mouse_sensitivity := 0.12
@@ -1519,7 +1524,7 @@ func _spawn_landing_droplets(position: Vector3) -> void:
 		return
 	debug_droplet_spawns += 1
 	var expires_at := Time.get_ticks_msec() * 0.001 + droplet_lifetime
-	for _i in 7:
+	for _i in droplets_per_landing:
 		var droplet := _droplets[_droplet_cursor]
 		if not droplet.active:
 			_active_droplet_indices.push_back(_droplet_cursor)
