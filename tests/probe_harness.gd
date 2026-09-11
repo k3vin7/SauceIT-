@@ -51,6 +51,14 @@ func _run() -> void:
 	var client = harness._worlds[1]
 	var host = harness._worlds[0]
 	var client_id: int = client._net.local_id()
+	# A leftover process on the harness port leaves both sides offline, and
+	# every check below would then fail on a missing body rather than on the
+	# port, which is the thing that actually went wrong.
+	if host.shooter_for(client_id) == null:
+		_check(false, "no session came up: host says '%s', client says '%s'" % [
+			host._net.status(), client._net.status()])
+		_finish()
+		return
 	var before_b: Vector3 = host.shooter_for(client_id).player.global_position
 	var before_a: Vector3 = host.shooter_for(1).player.global_position
 	Input.action_press("move_forward")
@@ -65,6 +73,10 @@ func _run() -> void:
 	_check(moved_a < 0.01,
 		"the side that is not being driven moved %.2f m as well" % moved_a)
 
+	_finish()
+
+
+func _finish() -> void:
 	if failures.is_empty():
 		print("MAYO_HARNESS_OK")
 		quit(0)

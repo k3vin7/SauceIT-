@@ -135,7 +135,9 @@ class MayoDroplet:
 @export_range(0.005, 0.2, 0.001, "suffix:m") var body_cell_size := 0.02
 @export_range(0.01, 0.5, 0.005, "suffix:m") var body_brush_radius := 0.07
 @export_range(0.05, 0.5, 0.01, "suffix:s") var landing_transition_time := 0.16
-@export_range(0.1, 2.0, 0.05, "suffix:s") var droplet_lifetime := 0.55
+## Kept at what the droplet pool can hold for two players firing at once. See
+## the note on POOL_SIZE before raising it.
+@export_range(0.1, 2.0, 0.05, "suffix:s") var droplet_lifetime := 0.40
 ## Droplets thrown by one landing. The pool they come from is one per world, not
 ## one per player, so this is multiplied by every strand landing at once: at
 ## seven, two players firing filled all 512 slots and began overwriting droplets
@@ -1501,6 +1503,22 @@ func _shadow_segments(camera_position: Vector3, shooter: Shooter = null) -> Arra
 
 
 func _build_droplet_pool(mayo_material: Material) -> void:
+	# One pool per world, shared by every player in it, and a landing takes its
+	# droplets whether or not there is room: a full pool replaces the droplet
+	# taken longest ago, which is fine only while that one was about to expire
+	# anyway. What it has to hold is
+	#
+	#     needed = landings per second x droplets_per_landing x droplet_lifetime
+	#
+	# A landing is one point reaching the floor, so the rate follows
+	# extend_speed / point_spacing: 156 a second per player at the current
+	# density. Two players firing: 311 x 4 x 0.40 = 498, inside 512.
+	#
+	# MAX_CLIENTS caps a session at two players, which is what this is sized
+	# for. Raise it and this needs recomputing -- at four players the same
+	# settings need 1369, and droplets start being thrown away with two thirds
+	# of their life left. debug_droplet_overwrites and
+	# debug_droplet_overwritten_life measure exactly that.
 	const POOL_SIZE := 512
 	var droplet_mesh := SphereMesh.new()
 	droplet_mesh.radius = 0.5
