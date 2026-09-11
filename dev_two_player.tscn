@@ -1,4 +1,4 @@
-[gd_scene load_steps=2 format=3 uid="uid://cdev2playerharn"]
+[gd_scene format=3 uid="uid://db3rv0hxr285p"]
 
 [ext_resource type="Script" path="res://scripts/dev_two_player.gd" id="1_dev"]
 

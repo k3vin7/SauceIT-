@@ -89,6 +89,8 @@ A real session wants two machines, and the things that actually go wrong in one 
 godot --path . res://dev_two_player.tscn
 ```
 
+From the editor it is **not** `F5` — that always runs the project's main scene, which is the normal single-player game. Open `dev_two_player.tscn` in the editor first and press `F6`, which runs the scene you are looking at.
+
 Host and client each get their own `SubViewport`, and so their own 3D world — sharing one would put both floors and all four capsules in the same physics space — and their own `MultiplayerAPI`, talking over the loopback exactly as two machines would. Both screens are shown side by side at the same brightness, which is the point: you are comparing what they draw. `Tab` moves the keyboard and mouse between them, or `1` and `2` pick a side outright, and the label says which one you are driving. The side you are not driving has its keys held at zero rather than reading the same keyboard, since `Input` is global and both worlds can see it.
 
 It is a development harness, not a game mode. The shipped scene is untouched.
@@ -118,6 +120,7 @@ godot --headless --path . --script res://tests/probe_geom.gd                   #
 godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
 godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states, hostile input
 godot --headless --path . --script res://tests/probe_panel.gd                  # the F2 panel is on screen and centred
+godot --headless --path . --script res://tests/probe_harness.gd                # the two-player harness swaps controls correctly
 godot --headless --path . --script res://tests/probe_body.gd                   # body stains, glasses, and the wipe
 ```
 
