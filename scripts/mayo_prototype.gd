@@ -82,7 +82,10 @@ class MayoDroplet:
 @export_group("Mayo Stream — Reference Values")
 @export_range(0.2, 6.0, 0.01, "suffix:m") var stream_range := 2.94
 @export_range(0.5, 15.0, 0.1, "suffix:m/s") var extend_speed := 7.0
-@export_range(0.025, 0.25, 0.005, "suffix:m") var point_spacing := 0.09
+## How far apart the strand's points are, which is also how finely it samples
+## what it hits: a sweep across someone's face only marks them where a point
+## lands, so at 0.09 a quick flick left three dots rather than a line.
+@export_range(0.025, 0.25, 0.005, "suffix:m") var point_spacing := 0.045
 @export_range(0.02, 0.2, 0.001, "suffix:m") var strand_thickness := 0.093
 @export_range(0.0, 0.5, 0.01, "suffix:m") var muzzle_forward_offset := 0.15
 @export_range(0.02, 1.5, 0.01, "suffix:s") var point_time_lifetime := 0.42
@@ -95,7 +98,9 @@ class MayoDroplet:
 @export_range(0.0, 0.08, 0.001, "suffix:rad") var yaw_angle_jitter := 0.018
 @export_range(0.0, 0.5, 0.01) var speed_magnitude_jitter := 0.10
 @export_range(0.0, 1.0, 0.01) var inherited_player_velocity := 0.22
-@export_range(32, 512, 1) var maximum_point_count := 192
+## Scales with the density above: at 0.045 a strand carries twice the points,
+## and a cap left at 192 would cut it short instead of letting it run its range.
+@export_range(32, 768, 1) var maximum_point_count := 384
 ## Adjacent points further apart than this many point_spacings are treated as
 ## separate strands: the ribbon breaks there and no spacing correction is applied.
 @export_range(1.5, 12.0, 0.1) var strand_break_spacing := 6.0
