@@ -360,12 +360,21 @@ func _fire_held() -> bool:
 
 
 ## Stands in for the keyboard in the headless checks, the way debug_set_aim
-## stands in for the mouse.
+## stands in for the mouse. The two-player harness uses it to hold whichever
+## player is not being driven still.
 func debug_set_input(move: Vector2, run: bool, firing: bool) -> void:
 	debug_input_override = true
 	debug_input_move = move
 	debug_input_run = run
 	debug_input_firing = firing
+
+
+## Hands the body back to the real keyboard.
+func debug_clear_input_override() -> void:
+	debug_input_override = false
+	debug_input_move = Vector2.ZERO
+	debug_input_run = false
+	debug_input_firing = false
 
 
 ## True when this peer decides slips and grid paint: the server, or offline,

@@ -81,6 +81,18 @@ Each trigger press starts a new **burst**. `_points` stays one array, but every 
 
 Performance controls are under **Collision Budget**. `Raycast Frame Stride` defaults to 1: staggering casts across frames saved only ~0.27 ms per physics tick and let a point sit up to one frame (117 mm at the reference speed, wider than the strand) inside a wall before being snapped out, so it is not worth the artifact. `Wall Fixed Hold Time` bounds fixed-point buildup; the wall stain is written at collision time and is unaffected by it.
 
+## Testing a session on your own
+
+A real session wants two machines, and the things that actually go wrong in one — a player's aim reading correctly on their own screen and wrongly on the other — are awkward to see when you can only look at one screen at a time. `dev_two_player.tscn` runs both ends in one process:
+
+```sh
+godot --path . res://dev_two_player.tscn
+```
+
+Host and client each get their own `SubViewport`, and so their own 3D world — sharing one would put both floors and all four capsules in the same physics space — and their own `MultiplayerAPI`, talking over the loopback exactly as two machines would. Both screens are shown side by side at the same brightness, which is the point: you are comparing what they draw. `Tab` moves the keyboard and mouse between them, or `1` and `2` pick a side outright, and the label says which one you are driving. The side you are not driving has its keys held at zero rather than reading the same keyboard, since `Input` is global and both worlds can see it.
+
+It is a development harness, not a game mode. The shipped scene is untouched.
+
 ## Verification
 
 Run the headless checks with a Godot 4 executable:
