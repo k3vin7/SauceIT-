@@ -22,7 +22,7 @@ const HALF_WIDTH := 8.0
 ## The lenses as an object: as wide as the head is at eye height, and 16:9, the
 ## shape of the mask they carry. The grid spans the whole of this, so it is also
 ## what converts the world's brush into view units.
-const LENS_SIZE := Vector2(0.50, 0.28)
+const LENS_SIZE := Vector2(1.00, 0.56)
 
 ## 0.08 of a view unit is about six screen pixels across at 720p: fine enough
 ## that the boundary reads as a splat edge rather than as steps.
@@ -38,6 +38,10 @@ var brush_radius := 1.2
 var grid := ContaminationGrid.new()
 
 var _lens: MeshInstance3D
+## The lenses swing on this rather than on the mesh itself: the mesh's own
+## rotation is the base that faces it forward, and an animation writing to the
+## same axis would wipe that out every frame.
+var _hinge: Node3D
 
 
 ## The brush the floor and the walls use, in metres, converted into the view
@@ -52,6 +56,9 @@ func configure_brush(world_brush_radius: float) -> void:
 func _ready() -> void:
 	grid.configure(Vector2(HALF_WIDTH * 2.0, HALF_HEIGHT * 2.0), cell_size,
 		lens_color, mayo_color)
+	# The grid is in view units, not metres, so it has to be told how big a cell
+	# really is or its edges would be roughened at the wrong scale.
+	grid.metres_per_cell = LENS_SIZE.y / float(grid.height)
 	_build_lens()
 
 
@@ -79,9 +86,7 @@ func paint_cell(cell: Vector2i) -> void:
 
 
 func clear() -> void:
-	grid.cells.fill(0)
-	grid.image.fill(Color(0.0, 0.0, 0.0, 1.0))
-	grid.dirty = true
+	grid.clear()
 
 
 ## 0 clear, 1 completely blind. What the player has to do something about.
@@ -108,10 +113,16 @@ func restore_cells(cells: PackedByteArray) -> bool:
 ## `progress` runs 0 -> 1 across the wipe. The lenses tip up out of the way and
 ## back down, which is the part of it everyone else can see.
 func set_wipe_progress(progress: float) -> void:
-	if _lens == null:
+	if _hinge == null:
 		return
 	var lift := sin(clampf(progress, 0.0, 1.0) * PI)
-	_lens.rotation.x = deg_to_rad(wipe_lift_degrees) * lift
+	_hinge.rotation.x = deg_to_rad(wipe_lift_degrees) * lift
+
+
+## How far the lenses are tipped up, in radians. What everyone else sees of a
+## wipe, and what the checks measure it by.
+func wipe_lift() -> float:
+	return 0.0 if _hinge == null else absf(_hinge.rotation.x)
 
 
 ## The lenses as another player sees them: a small quad on the face carrying the
@@ -119,22 +130,31 @@ func set_wipe_progress(progress: float) -> void:
 ## quad's (-u, -v) corner, which is the convention ContaminationGrid.cell_of
 ## already uses everywhere else.
 func _build_lens() -> void:
+	_hinge = Node3D.new()
+	_hinge.name = "LensHinge"
+	add_child(_hinge)
+
 	_lens = MeshInstance3D.new()
 	_lens.name = "Lenses"
 	var quad := PlaneMesh.new()
 	quad.size = LENS_SIZE
 	quad.orientation = PlaneMesh.FACE_Z
 	_lens.mesh = quad
-	# Clear of the head. The capsule is 0.32 at its waist but only about 0.25
+	# Clear of the head. The capsule is 0.64 at its waist but only about 0.50
 	# across at eye height, which is up in the rounded end of it.
-	_lens.position = Vector3(0.0, 0.0, -0.27)
+	_lens.position = Vector3(0.0, 0.0, -0.54)
 	# The plane faces +Z and the player looks down -Z, so it is turned to face
-	# out of the front of the head.
-	_lens.rotation.y = PI
+	# out of the front of the head. About X, not Y: both turns face it forward,
+	# but turning about Y takes the mesh's +X with it, and the mask would come
+	# out mirrored -- sauce on the wearer's right drawn on their left. About X
+	# the mesh's +X stays the wearer's right, and the flip it does apply to Y
+	# is the one the mask needs, since a PlaneMesh's v counts downwards and the
+	# grid's counts up.
+	_lens.rotation.x = PI
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://scripts/contamination.gdshader")
 	material.set_shader_parameter("mask_texture", grid.texture)
 	material.set_shader_parameter("clean_color", lens_color)
 	material.set_shader_parameter("mayo_color", mayo_color)
 	_lens.material_override = material
-	add_child(_lens)
+	_hinge.add_child(_lens)
