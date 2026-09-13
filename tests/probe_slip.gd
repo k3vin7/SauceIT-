@@ -46,7 +46,7 @@ func _reset(scene) -> void:
 	scene._player.velocity = Vector3.ZERO
 	scene._player.fall_direction = 1.0
 	scene._player._recovery_timer = 0.0
-	scene._player.global_position = Vector3(0.0, 0.64, 3.0)
+	scene._player.global_position = Vector3(0.0, scene.spawn_position_for(0).y, 3.0)
 
 
 func _run() -> void:

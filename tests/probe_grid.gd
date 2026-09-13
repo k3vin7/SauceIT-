@@ -45,12 +45,46 @@ func _run() -> void:
 	print("shader: step at 0.5, filter_linear, repeat_disable; image mipmaps=%s format=%s" % [
 		str(grid.image.has_mipmaps()), str(grid.texture.get_image().get_format())])
 
+	# --- the texture the shader samples actually carries the mask ---
+	# Everything else here reads `cells`, which is why an upload that wrote 1
+	# into an R8 texture -- read back as 1/255, far under the 0.5 cut -- left
+	# every surface in the game blank without a single check noticing.
+	floor_node.paint_mayo(Vector3(2.0, 0.0, 2.0))
+	grid.upload_if_dirty()
+	# grid.image is what is handed to texture.update. Reading the texture back
+	# would be closer to what the shader sees, but headless has no GPU to read
+	# it back from -- it returns the blank image it was created with.
+	var uploaded := grid.image
+	var marked := grid.cell_of(Vector2(2.0, 2.0))
+	var painted_texel: int = uploaded.get_pixel(marked.x, marked.y).r8
+	var clean_texel: int = uploaded.get_pixel(0, 0).r8
+	print("uploaded texel: painted cell reads %d, clean cell reads %d (the cut is at 128)" % [
+		painted_texel, clean_texel])
+	_check(grid.cells[marked.y * grid.width + marked.x] == 1,
+		"the test splat did not mark the cell it was aimed at")
+	_check(painted_texel > 128,
+		"a painted cell uploads as %d, under the shader's 0.5 cut: it would not be drawn"
+			% painted_texel)
+	_check(clean_texel == 0, "a clean cell uploads as %d rather than 0" % clean_texel)
+	# And wiping has to take the texture with it, not just the mask.
+	grid.clear()
+	grid.upload_if_dirty()
+	_check(grid.image.get_pixel(marked.x, marked.y).r8 == 0,
+		"clearing the grid left the stain in the texture")
+
 	# --- the 0.5 crossing sits on the cell boundary ---
-	# Paint a block, then walk across one of its straight edges in fine steps.
+	# A block of cells filled directly, then walked across in fine steps. Built
+	# from the cells rather than from splats because this is a claim about the
+	# shader's maths, not about the brush: a block of overlapping splats has a
+	# roughened outer edge, and how rough depends on the brush radius.
 	var centre := Vector3(0.0, 0.0, 0.0)
+	var block := grid.cell_of(Vector2(centre.x, centre.z))
 	for offset_x in range(-6, 7):
-		for offset_z in range(-6, 7):
-			floor_node.paint_mayo(centre + Vector3(offset_x, 0.0, offset_z) * grid.cell_size)
+		for offset_y in range(-6, 7):
+			var cell := block + Vector2i(offset_x, offset_y)
+			if grid.has_cell(cell):
+				grid.cells[cell.y * grid.width + cell.x] = 1
+	grid.dirty = true
 	var crossing := _find_crossing(floor_node, grid, centre)
 	var boundary := _nearest_cell_boundary(grid, crossing)
 	print("bilinear 0.5 crossing at x=%.5f m, nearest cell boundary x=%.5f m, error %.6f m" % [

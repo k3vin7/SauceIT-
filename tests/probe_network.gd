@@ -169,11 +169,15 @@ func _run() -> void:
 
 	# A move vector a hundred times longer than a full stick deflection, held
 	# long enough that any speed above the run speed would have shown up.
+	var top_speed := 0.0
 	for _f in 90:
 		await physics_frame
 		client_world._net._submit_input.rpc_id(1,
 			Vector2(0.0, -100.0), true, false, 0.0, 0.0)
-	var top_speed: float = target.velocity.length()
+		# The peak over the run, not the speed at the end of it: B has a wall
+		# ahead of them and stalls against it, which says nothing about whether
+		# the clamp held.
+		top_speed = maxf(top_speed, target.velocity.length())
 	var run_speed: float = target.run_speed
 	print("hostile: oversized move vector reached %.2f m/s, run speed is %.2f m/s" % [
 		top_speed, run_speed])
@@ -272,8 +276,9 @@ func _run() -> void:
 
 	# --- A sprays B, and B's body is marked the same on both screens ---
 	var b_on_host = server_world.shooter_for(client_id).player
-	b_on_host.global_position = Vector3(0.0, 0.64, 0.05)
-	server_world.shooter_for(1).player.global_position = Vector3(0.0, 0.64, 1.55)
+	var stand: float = server_world.spawn_position_for(0).y
+	b_on_host.global_position = Vector3(0.0, stand, 0.05)
+	server_world.shooter_for(1).player.global_position = Vector3(0.0, stand, 1.55)
 	# B turns to face A. Sprayed in the back their glasses would stay clean,
 	# which is right but tests nothing about them.
 	client_world.debug_set_aim(180.0, 0.0)
@@ -330,7 +335,7 @@ func _run() -> void:
 		timer_gap = maxf(timer_gap, absf(b_player_host.wipe_timer - b_player_client.wipe_timer))
 		# What A sees of it: B's lenses tipped up on A's screen.
 		lifted_on_a = maxf(lifted_on_a, absf(
-			server_world.shooter_for(client_id).player.visor._lens.rotation.x))
+			server_world.shooter_for(client_id).player.visor.wipe_lift()))
 		if server_world.shooter_for(client_id).firing:
 			fired_while_wiping = true
 	client_world.debug_set_input(Vector2.ZERO, false, false)
@@ -359,9 +364,9 @@ func _run() -> void:
 	var client_player = server_world.shooter_for(client_id).player
 	# A is stood well out of the way first: two capsules overlapping would shove
 	# B off the line before they reached the patch.
-	server_world.shooter_for(1).player.global_position = Vector3(-5.0, 0.64, 5.0)
+	server_world.shooter_for(1).player.global_position = Vector3(-5.0, stand, 5.0)
 	# Dropped in behind the patch, facing it, and told to sprint at it.
-	client_player.global_position = patch + Vector3(0.0, 0.64, 1.1)
+	client_player.global_position = patch + Vector3(0.0, stand, 1.1)
 	client_world.debug_set_aim(0.0, 0.0)
 	client_world.debug_set_input(Vector2(0.0, -1.0), true, false)
 	print("B starts at %.2v, patch centre %.2v" % [client_player.global_position, patch])

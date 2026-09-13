@@ -53,7 +53,10 @@ func _run() -> void:
 	var mark = scene.create_avatar(2, 1, false)
 	var target_player = mark.player
 	var body = target_player.contamination
-	target_player.global_position = Vector3(0.0, 0.64, -1.6)
+	# The height a body stands at, taken from the world rather than written
+	# down, so resizing the player does not quietly bury these bodies.
+	var stand: float = scene.spawn_position_for(0).y
+	target_player.global_position = Vector3(0.0, stand, -1.6)
 	await physics_frame
 	print("body grid: %dx%d cells of %.3f m, brush %.3f m" % [
 		body.grid.width, body.grid.height, body.cell_size, body.brush_radius])
@@ -63,7 +66,7 @@ func _run() -> void:
 	var floor_before: int = scene._floor.grid.painted_cell_count()
 
 	# --- spraying a body marks it, on the side that was hit ---
-	var chest: Vector3 = target_player.global_position + Vector3(0.0, 0.2, 0.32)
+	var chest: Vector3 = target_player.global_position + Vector3(0.0, 0.2, body.radius)
 	var marked: int = await _spray_at(scene, body, chest, 60)
 	print("sprayed the near side: %d cells marked, %.1f%% of the body" % [
 		marked, body.coverage() * 100.0])
@@ -101,11 +104,11 @@ func _run() -> void:
 	# the splat has to appear on both ends of the grid, not be cut in half.
 	var fresh = scene.create_avatar(3, 1, false)
 	var seam_body = fresh.player.contamination
-	fresh.player.global_position = Vector3(4.0, 0.64, 0.0)
+	fresh.player.global_position = Vector3(4.0, stand, 0.0)
 	await physics_frame
 	# Local -Z is the far side of the unwrap, where column 0 and the last column
 	# meet, so this is the splat that would be clipped without the wrap.
-	seam_body.paint_mayo(fresh.player.to_global(Vector3(0.0, 0.0, -0.32)), Vector3.BACK)
+	seam_body.paint_mayo(fresh.player.to_global(Vector3(0.0, 0.0, -seam_body.radius)), Vector3.BACK)
 	var left_edge := 0
 	var right_edge := 0
 	for y in seam_body.grid.height:
@@ -163,8 +166,38 @@ func _run() -> void:
 	# One splat fills them. The lenses are a hand's breadth across and the brush
 	# is the world's, the same one that leaves a patch on a wall, so a hit in
 	# the face blinds you outright and the wipe is what you do about it.
-	_check(visor.coverage() > 0.9,
-		"a splat in the face left the player only %.0f%% blind" % (visor.coverage() * 100.0))
+	# Enough to be worth wiping, and not so much that one hit is the whole
+	# screen: the point of the brush being what it is.
+	_check(visor.coverage() > 0.1 and visor.coverage() < 0.5,
+		"a splat in the face left the player %.0f%% blind" % (visor.coverage() * 100.0))
+
+	# --- the lenses others see carry the mask the right way round ---
+	# Turning the quad to face forward is easy to do about the wrong axis, and
+	# the mask then comes out mirrored: sauce on the wearer's right drawn on
+	# their left, and upside down with it. Nothing about the wearer's own view
+	# would change, so only this catches it.
+	var lens: MeshInstance3D = visor.get_node("LensHinge/Lenses")
+	var lens_arrays: Array = lens.mesh.surface_get_arrays(0)
+	var lens_verts: PackedVector3Array = lens_arrays[Mesh.ARRAY_VERTEX]
+	var lens_uvs: PackedVector2Array = lens_arrays[Mesh.ARRAY_TEX_UV]
+	var far_u := 0
+	var far_v := 0
+	for i in lens_verts.size():
+		if lens_uvs[i].x > lens_uvs[far_u].x:
+			far_u = i
+		if lens_uvs[i].y > lens_uvs[far_v].y:
+			far_v = i
+	var pivot := visor.get_parent() as Node3D
+	# The mask's own axes: a hit from the upper right fills its far x and far y,
+	# so u=1 has to sit on the wearer's right and v=1 above them.
+	var u_end: Vector3 = pivot.to_local(lens.to_global(lens_verts[far_u]))
+	var v_end: Vector3 = pivot.to_local(lens.to_global(lens_verts[far_v]))
+	print("lenses: u=1 at %.2v, v=1 at %.2v (wearer's +x is their right, +y up)" % [u_end, v_end])
+	_check(u_end.x > 0.0,
+		"the lenses are mirrored left to right: u=1 sits at x=%.2f" % u_end.x)
+	_check(v_end.y > 0.0,
+		"the lenses are upside down: v=1 sits at y=%.2f" % v_end.y)
+	_check(u_end.z < 0.0, "the lenses are not facing out of the front of the head")
 
 	# --- and a wipe takes it off, with the firing lock that pays for it ---
 	var wiper = target_player
@@ -180,7 +213,7 @@ func _run() -> void:
 		await physics_frame
 		frames += 1
 		scene._update_visor(mark)
-		lifted = maxf(lifted, absf(visor._lens.rotation.x))
+		lifted = maxf(lifted, absf(visor.wipe_lift()))
 	scene._finish_wipes()
 	print("wipe: %d frames (expected ~%d), lenses lifted %.0f deg, %d cells left" % [
 		frames, int(wiper.wipe_duration * 60.0), rad_to_deg(lifted),
