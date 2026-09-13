@@ -59,6 +59,8 @@ Bodies carry their own cell size and brush (`Body Cell Size`, `Body Brush Radius
 
 Players wear lenses, and sauce landing in front of their eyes goes on them. `VisorContamination` is another `ContaminationGrid`, but measured in **view units** — 16 by 9 across the field of view — rather than in metres, which makes the screen a straight 1:1 sample of it. There is no projection, no blob cap, and no separate screen effect that could drift from what everyone else sees: the mask that blinds you *is* the mask on your face.
 
+The lenses everyone else sees are as wide as the head is at eye height and shaped 16:9, the same shape as the mask, so what shows on the face is the wearer's view rather than a squashed copy of it. Being a flat pane on a round head, its corners stand proud of the capsule.
+
 It hangs off the `AimPivot`, which already carries the aim pitch, so it moves exactly with the camera — sauce stays where it landed on screen as you look around, the way sauce on glasses does. In first person your own lenses are hidden and reach you as the overlay instead; everyone else's are visible on their faces in both camera modes. A hit that is level with the lenses or behind them paints nothing: it is not in front of your eyes, so it does not blind you.
 
 Your own sauce counts. A point cannot hit the player who fired it until it has travelled `Self Hit Distance` (0.6 m) — the muzzle sits inside its owner's own capsule, so without that every point would hit them as it left — and past that it is fair game. Fired straight up it drifts about a metre before it lands, so what actually happens is walking into your own falling stream, and then it marks you and blinds you exactly as an opponent's would.

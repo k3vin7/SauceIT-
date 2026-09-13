@@ -109,7 +109,11 @@ func _build_lens() -> void:
 	_lens = MeshInstance3D.new()
 	_lens.name = "Lenses"
 	var quad := PlaneMesh.new()
-	quad.size = Vector2(0.26, 0.11)
+	# As wide as the head is at eye height -- the capsule is 0.32 at its waist
+	# but 0.25 across up in its rounded end -- and 16:9, which is the shape of
+	# the mask, so what everyone else sees on the face is the wearer's view
+	# rather than a squashed copy of it.
+	quad.size = Vector2(0.50, 0.28)
 	quad.orientation = PlaneMesh.FACE_Z
 	_lens.mesh = quad
 	# Clear of the head. The capsule is 0.32 at its waist but only about 0.25
