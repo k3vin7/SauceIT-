@@ -69,9 +69,7 @@ func paint_mayo_cell(cell: Vector2i) -> void:
 
 ## Clean again, for a body that is being handed to a different player.
 func clear() -> void:
-	grid.cells.fill(0)
-	grid.image.fill(Color(0.0, 0.0, 0.0, 1.0))
-	grid.dirty = true
+	grid.clear()
 
 
 func painted_cell_count() -> int:

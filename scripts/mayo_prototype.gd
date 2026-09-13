@@ -112,8 +112,9 @@ class MayoDroplet:
 ## How far a point has to have travelled before it can hit the player who fired
 ## it. The muzzle sits inside its owner's own capsule, so a point leaving it
 ## would hit them immediately; past this it is clear of them and fair game, and
-## sauce fired straight up, or walked into, comes back on you.
-@export_range(0.0, 3.0, 0.05, "suffix:m") var self_hit_distance := 0.6
+## sauce fired straight up, or walked into, comes back on you. Has to stay clear
+## of the capsule's radius, which is 0.64.
+@export_range(0.0, 4.0, 0.05, "suffix:m") var self_hit_distance := 1.2
 
 @export_group("Release Pressure")
 @export_range(0.0, 1.0, 0.01) var release_pressure_loss := 0.55
@@ -128,7 +129,11 @@ class MayoDroplet:
 @export_range(0.05, 0.5, 0.01, "suffix:m") var grid_cell_size := 0.1
 ## Splat radius in metres. Converted to cells internally, so changing the
 ## cell size does not change how big a splat is.
-@export_range(0.05, 1.5, 0.01, "suffix:m") var contamination_brush_radius := 0.4
+## Every surface that can take sauce uses this, so a splat is the same size on
+## all of them. Its cost is the square of how many cells it spans, and the visor
+## has the finest cells of any of them: at 0.4 m it spanned 160 of them and a
+## second of being sprayed in the face cost 5.9 ms a frame on its own.
+@export_range(0.05, 1.5, 0.01, "suffix:m") var contamination_brush_radius := 0.2
 ## Bodies carry a much finer grid than the world does, because they are small:
 ## 0.1 m cells would be ten of them across a player. The brush is not theirs
 ## though -- a splat is the same size in metres on a person as on a wall, which
@@ -158,10 +163,10 @@ class MayoDroplet:
 @export_group("Camera")
 @export var start_in_first_person := true
 @export_range(35.0, 90.0, 1.0, "suffix:°") var camera_fov := 74.0
-@export_range(0.2, 2.0, 0.01, "suffix:m") var eye_height := 0.52
-@export_range(-1.5, 1.5, 0.01, "suffix:m") var shoulder_offset_right := 0.55
-@export_range(-1.0, 1.5, 0.01, "suffix:m") var shoulder_offset_up := 0.34
-@export_range(0.5, 5.0, 0.05, "suffix:m") var shoulder_distance := 2.40
+@export_range(0.2, 3.0, 0.01, "suffix:m") var eye_height := 1.04
+@export_range(-3.0, 3.0, 0.01, "suffix:m") var shoulder_offset_right := 1.10
+@export_range(-2.0, 3.0, 0.01, "suffix:m") var shoulder_offset_up := 0.68
+@export_range(0.5, 10.0, 0.05, "suffix:m") var shoulder_distance := 4.80
 ## Points nearer than this to the camera are dropped from the ribbon so the
 ## strand root does not fill the screen in first person. 0 disables it.
 @export_range(0.0, 1.0, 0.01, "suffix:m") var strand_near_cull_distance := 0.34
@@ -173,7 +178,7 @@ class MayoDroplet:
 @export_range(0.0, 60.0, 1.0, "suffix:°") var stumble_body_roll_degrees := 17.0
 @export_range(0.0, 30.0, 0.5, "suffix:°") var stumble_camera_roll_degrees := 7.0
 @export_range(0.0, 20.0, 0.5, "suffix:°") var stumble_camera_pitch_degrees := 3.0
-@export_range(0.05, 1.0, 0.01, "suffix:m") var fall_camera_height := 0.28
+@export_range(0.05, 2.0, 0.01, "suffix:m") var fall_camera_height := 0.56
 
 @export_group("Weapon Hold")
 @export_range(-0.6, 0.6, 0.01, "suffix:m") var weapon_offset_right := 0.155
@@ -535,7 +540,10 @@ func _build_world() -> void:
 
 	_floor = FloorScript.new()
 	_floor.name = "FloorContamination"
-	_floor.floor_size = Vector2(12.0, 12.0)
+	# Wide enough for the players standing on it: from a 2.2 m muzzle a level
+	# spray carries about 7.6 m, and at 12 m across it landed just past the
+	# edge from the spawn -- nothing was painted at all.
+	_floor.floor_size = Vector2(16.0, 16.0)
 	_floor.cell_size = grid_cell_size
 	_floor.brush_radius = contamination_brush_radius
 	add_child(_floor)
@@ -596,7 +604,8 @@ func _body_color(is_local: bool) -> Color:
 ## Spawn point for the nth player to join. Fixed by join order so both peers
 ## place everyone the same way.
 func spawn_position_for(slot: int) -> Vector3:
-	const SPAWNS := [Vector3(0.0, 0.64, 1.55), Vector3(1.35, 0.64, 2.6)]
+	# y is half the capsule's height, so it stands on the floor rather than in it.
+	const SPAWNS := [Vector3(0.0, 1.28, 1.55), Vector3(1.35, 1.28, 2.6)]
 	return SPAWNS[slot % SPAWNS.size()]
 
 
@@ -786,16 +795,19 @@ func _build_environment() -> void:
 func _build_player_body(shooter: Shooter) -> void:
 	var collision := CollisionShape3D.new()
 	var capsule_shape := CapsuleShape3D.new()
-	capsule_shape.radius = 0.32
-	capsule_shape.height = 1.28
+	# Everything measured against the body scales with these: the eye height and
+	# the spawn height below it, the lens quad, the self-hit distance, and the
+	# shoulder camera's framing. The contamination grid takes them directly.
+	capsule_shape.radius = 0.64
+	capsule_shape.height = 2.56
 	collision.shape = capsule_shape
 	shooter.player.add_child(collision)
 
 	var body_mesh := MeshInstance3D.new()
 	body_mesh.name = "CapsuleBody"
 	var capsule_mesh := CapsuleMesh.new()
-	capsule_mesh.radius = 0.32
-	capsule_mesh.height = 1.28
+	capsule_mesh.radius = 0.64
+	capsule_mesh.height = 2.56
 	body_mesh.mesh = capsule_mesh
 	shooter.player.add_child(body_mesh)
 	shooter.body_mesh = body_mesh
