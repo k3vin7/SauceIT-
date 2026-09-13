@@ -53,7 +53,7 @@ Two things differ from a flat face. The u axis is a loop, so the body's grid set
 
 One impact marks two surfaces on purpose: the lenses have no collider, so the ray hits the capsule and the hit is then projected onto the lenses in front of it. Giving them a collider would be truer and would also shield the body and the floor behind the head, which costs more than the doubling does. Hits that are level with the lenses or behind them, and hits that project outside the field of view, mark nothing — measured, a hit on the back, the back of the head, a shoulder, the chest or the belly all reach the glasses not at all; the forehead, the eyes and the chin do, and the neck clips the bottom edge.
 
-Bodies carry their own cell size and brush (`Body Cell Size`, `Body Brush Radius`, 0.02 m and 0.07 m) because they are small: the world's 0.4 m brush would cover a fifth of the way round a player in one splat. The stain is stored in the body's own space, so it travels with the player as they walk and turn.
+Bodies carry their own cell size (`Body Cell Size`, 0.02 m) because they are small — 0.1 m cells would be ten of them across a player — but not their own brush. A splat is the same size in metres on a person as on a wall, and since the edge roughness is a fraction of the radius, the two come out indistinguishable. It does mean one hit covers about a fifth of a player, which is the point of matching them. The stain is stored in the body's own space, so it travels with the player as they walk and turn.
 
 ### Glasses
 

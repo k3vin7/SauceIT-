@@ -129,11 +129,12 @@ class MayoDroplet:
 ## Splat radius in metres. Converted to cells internally, so changing the
 ## cell size does not change how big a splat is.
 @export_range(0.05, 1.5, 0.01, "suffix:m") var contamination_brush_radius := 0.4
-## Bodies carry their own, much finer grid: the world brush is 0.4 m and a
-## player is only 2 m around, so one world-sized splat would cover a fifth of
-## the way round them.
+## Bodies carry a much finer grid than the world does, because they are small:
+## 0.1 m cells would be ten of them across a player. The brush is not theirs
+## though -- a splat is the same size in metres on a person as on a wall, which
+## with the edge roughness being a fraction of the radius makes the two
+## indistinguishable.
 @export_range(0.005, 0.2, 0.001, "suffix:m") var body_cell_size := 0.02
-@export_range(0.01, 0.5, 0.005, "suffix:m") var body_brush_radius := 0.07
 @export_range(0.05, 0.5, 0.01, "suffix:s") var landing_transition_time := 0.16
 ## Kept at what the droplet pool can hold for two players firing at once. See
 ## the note on POOL_SIZE before raising it.
@@ -805,7 +806,7 @@ func _build_player_body(shooter: Shooter) -> void:
 	var contamination := BodyContaminationScript.new() as BodyContamination
 	contamination.name = "BodyContamination"
 	contamination.cell_size = body_cell_size
-	contamination.brush_radius = body_brush_radius
+	contamination.brush_radius = contamination_brush_radius
 	shooter.player.add_child(contamination)
 	shooter.player.contamination = contamination
 	contamination.configure(shooter.player, body_mesh, capsule_shape.radius,
