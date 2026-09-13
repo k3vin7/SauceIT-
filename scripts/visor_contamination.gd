@@ -19,13 +19,17 @@ extends Node3D
 ## view; 8 across is that at 16:9.
 const HALF_HEIGHT := 4.5
 const HALF_WIDTH := 8.0
+## The lenses as an object: as wide as the head is at eye height, and 16:9, the
+## shape of the mask they carry. The grid spans the whole of this, so it is also
+## what converts the world's brush into view units.
+const LENS_SIZE := Vector2(0.50, 0.28)
 
 ## 0.08 of a view unit is about six screen pixels across at 720p: fine enough
 ## that the boundary reads as a splat edge rather than as steps.
 @export_range(0.02, 1.0, 0.01) var cell_size := 0.08
-## In view units too: a body splat a hand's width from the eye covers about this
-## much of the view.
-@export_range(0.1, 4.0, 0.05) var brush_radius := 1.2
+## In view units, worked out by `configure_brush` from the world's brush so that
+## a splat is the same size on the lenses as on a wall. Not set by hand.
+var brush_radius := 1.2
 @export var mayo_color := Color("fff0a8")
 @export var lens_color := Color(0.12, 0.15, 0.19, 1.0)
 ## How far the lenses tip up while they are being wiped.
@@ -34,6 +38,15 @@ const HALF_WIDTH := 8.0
 var grid := ContaminationGrid.new()
 
 var _lens: MeshInstance3D
+
+
+## The brush the floor and the walls use, in metres, converted into the view
+## units the lenses are measured in. Done here rather than given a value of its
+## own so that a splat covers the same amount of lens as it does of a wall --
+## and the lenses are a hand's breadth across, so what is a patch on a wall
+## fills them.
+func configure_brush(world_brush_radius: float) -> void:
+	brush_radius = world_brush_radius * (HALF_HEIGHT * 2.0) / LENS_SIZE.y
 
 
 func _ready() -> void:
@@ -109,11 +122,7 @@ func _build_lens() -> void:
 	_lens = MeshInstance3D.new()
 	_lens.name = "Lenses"
 	var quad := PlaneMesh.new()
-	# As wide as the head is at eye height -- the capsule is 0.32 at its waist
-	# but 0.25 across up in its rounded end -- and 16:9, which is the shape of
-	# the mask, so what everyone else sees on the face is the wearer's view
-	# rather than a squashed copy of it.
-	quad.size = Vector2(0.50, 0.28)
+	quad.size = LENS_SIZE
 	quad.orientation = PlaneMesh.FACE_Z
 	_lens.mesh = quad
 	# Clear of the head. The capsule is 0.32 at its waist but only about 0.25

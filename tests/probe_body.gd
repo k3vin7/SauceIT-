@@ -160,8 +160,11 @@ func _run() -> void:
 	_check(ahead > 0, "a hit in front of the eyes did not reach the glasses")
 	_check(visor.painted_cell_count() == ahead,
 		"a hit from behind the head put sauce on the lenses")
-	_check(visor.coverage() > 0.0 and visor.coverage() < 0.5,
-		"one splat left the player %.0f%% blind" % (visor.coverage() * 100.0))
+	# One splat fills them. The lenses are a hand's breadth across and the brush
+	# is the world's, the same one that leaves a patch on a wall, so a hit in
+	# the face blinds you outright and the wipe is what you do about it.
+	_check(visor.coverage() > 0.9,
+		"a splat in the face left the player only %.0f%% blind" % (visor.coverage() * 100.0))
 
 	# --- and a wipe takes it off, with the firing lock that pays for it ---
 	var wiper = target_player

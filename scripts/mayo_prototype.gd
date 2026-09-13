@@ -824,6 +824,9 @@ func _build_player_body(shooter: Shooter) -> void:
 	# so they move with the camera rather than with the body.
 	var visor := VisorScript.new() as VisorContamination
 	visor.name = "Visor"
+	# The world's brush, converted into the view units the lenses use: a splat
+	# is the same size on them as on a wall.
+	visor.configure_brush(contamination_brush_radius)
 	aim_pivot.add_child(visor)
 	shooter.player.visor = visor
 
