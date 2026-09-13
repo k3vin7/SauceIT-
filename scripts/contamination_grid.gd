@@ -8,6 +8,15 @@ extends RefCounted
 
 const ShaderFile := preload("res://scripts/contamination.gdshader")
 
+## How far the splat's edge wanders, as a fraction of the brush radius. Relative
+## rather than an absolute number of cells, so a surface's stains look the same
+## whatever its cell size and brush are: at a fixed number of cells a big brush
+## comes out nearly circular and a small one ragged, which is what made the
+## visor's splats smooth and the floor's rough while both ran this same code.
+## 0.105 is what the floor was already getting, so the floor, the walls and
+## bodies are unchanged and only the visor moves.
+const EDGE_ROUGHNESS := 0.105
+
 var cell_size := 0.1
 var extent := Vector2(1.0, 1.0)
 ## True when the x axis is a loop rather than an edge, which is what a body
@@ -91,9 +100,11 @@ func paint_cell(centre: Vector2i, radius_meters: float) -> Vector2i:
 		return Vector2i(-1, -1)
 	centre.x = wrapped_x(centre.x)
 	var radius := maxi(1, roundi(radius_meters / cell_size))
+	# Enough margin for the edge to wander outwards without being clipped.
+	var margin := maxi(1, ceili(float(radius) * EDGE_ROUGHNESS))
 	var changed := false
-	for offset_y in range(-radius - 1, radius + 2):
-		for offset_x in range(-radius - 1, radius + 2):
+	for offset_y in range(-radius - margin, radius + margin + 1):
+		for offset_x in range(-radius - margin, radius + margin + 1):
 			var cell := centre + Vector2i(offset_x, offset_y)
 			if not has_cell(cell):
 				continue
@@ -102,7 +113,7 @@ func paint_cell(centre: Vector2i, radius_meters: float) -> Vector2i:
 			cell.x = wrapped_x(cell.x)
 			var distance := Vector2(offset_x, offset_y).length()
 			# Deterministic cell noise roughens only the hard boundary. No blur/alpha.
-			var edge_jitter := _cell_noise(cell.x, cell.y) * 0.42
+			var edge_jitter := _cell_noise(cell.x, cell.y) * float(radius) * EDGE_ROUGHNESS
 			if distance <= float(radius) + edge_jitter:
 				var index := cell.y * width + cell.x
 				if cells[index] != 1:
