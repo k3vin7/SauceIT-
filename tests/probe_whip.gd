@@ -29,8 +29,8 @@ func _run() -> void:
 	root.add_child(scene)
 	await process_frame
 	scene.set_process_unhandled_input(false)
-	var threshold: float = scene.point_spacing * scene.strand_break_spacing
-	print("break threshold = %.3f m (%.1f x point_spacing)" % [threshold, scene.strand_break_spacing])
+	var threshold: float = scene.strand_break_distance
+	print("break threshold = %.3f m" % threshold)
 
 	# A steady aim must stay in one piece; only turning should tear it.
 	var steady := await _whip(scene, 0.0, threshold)

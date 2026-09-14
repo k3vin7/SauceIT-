@@ -102,9 +102,18 @@ class MayoDroplet:
 ## Scales with the density above: at 0.045 a strand carries twice the points,
 ## and a cap left at 192 would cut it short instead of letting it run its range.
 @export_range(32, 768, 1) var maximum_point_count := 384
-## Adjacent points further apart than this many point_spacings are treated as
-## separate strands: the ribbon breaks there and no spacing correction is applied.
-@export_range(1.5, 12.0, 0.1) var strand_break_spacing := 6.0
+## Adjacent points further apart than this are treated as separate strands: the
+## ribbon breaks there and no spacing correction is applied. In metres, not in
+## point spacings -- as a multiple it moved with the point density, so doubling
+## the density halved how far a falling strand could stretch before it came
+## apart, and what had been a strand became a scatter of single points.
+@export_range(0.05, 2.0, 0.01, "suffix:m") var strand_break_distance := 0.27
+## The same, for points the pressure has left. A jet under pressure is taut and
+## a sweep snaps it; sauce already falling is a thread of liquid that stretches
+## instead. One threshold had to be both, and whichever way it was set one of
+## them was wrong: tight enough to tear on a fast turn shattered every falling
+## strand into single points.
+@export_range(0.05, 4.0, 0.01, "suffix:m") var falling_break_distance := 1.2
 
 @export_group("Collision Budget")
 @export_range(1, 4, 1) var raycast_frame_stride := 1
@@ -1042,11 +1051,15 @@ func _emit_point(shooter: Shooter = null) -> void:
 ## the same trigger press and have not been pulled apart into separate blobs.
 func _points_connected(front: MayoPoint, back: MayoPoint) -> bool:
 	return front.burst_index == back.burst_index \
-		and front.position.distance_squared_to(back.position) <= _break_distance_squared()
+		and front.position.distance_squared_to(back.position) <= _break_distance_squared(front, back)
 
 
-func _break_distance_squared() -> float:
-	var break_distance := point_spacing * strand_break_spacing
+## Which threshold a pair is held to: the taut one while either end is still
+## under pressure, the slack one once both are falling.
+func _break_distance_squared(front: MayoPoint = null, back: MayoPoint = null) -> float:
+	var break_distance := strand_break_distance
+	if front != null and back != null and not front.powered and not back.powered:
+		break_distance = falling_break_distance
 	return break_distance * break_distance
 
 
@@ -1402,7 +1415,6 @@ func _enforce_spacing_constraint(shooter: Shooter = null) -> void:
 	var points := shooter.points
 	if points.size() < 2:
 		return
-	var break_distance_squared := _break_distance_squared()
 	for _pass in spacing_constraint_passes:
 		for i in points.size() - 1:
 			var front := points[i]
@@ -1410,7 +1422,8 @@ func _enforce_spacing_constraint(shooter: Shooter = null) -> void:
 			# Inlined _points_connected: this runs once per pair per pass.
 			if front.burst_index != shooter.burst_index \
 					or front.burst_index != back.burst_index \
-					or front.position.distance_squared_to(back.position) > break_distance_squared:
+					or front.position.distance_squared_to(back.position) \
+						> _break_distance_squared(front, back):
 				continue
 			var direction := (front.launch_direction + back.launch_direction).normalized()
 			if direction.length_squared() < 0.000001:
@@ -1471,7 +1484,6 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: S
 	# Points skipped here are not array-adjacent to the next kept one, so the
 	# run breaks and `previous` is cleared; within a run adjacency holds.
 	var previous: MayoPoint = null
-	var break_distance_squared := _break_distance_squared()
 	for point in shooter.points:
 		if point.phase != phase or _is_near_camera(point, camera_position):
 			if not current.is_empty():
@@ -1480,7 +1492,8 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: S
 			previous = null
 			continue
 		if previous != null and (previous.burst_index != point.burst_index \
-				or previous.position.distance_squared_to(point.position) > break_distance_squared):
+				or previous.position.distance_squared_to(point.position) \
+					> _break_distance_squared(previous, point)):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []
@@ -1503,7 +1516,6 @@ func _shadow_segments(camera_position: Vector3, shooter: Shooter = null) -> Arra
 	var result: Array = []
 	var current: Array = []
 	var previous: MayoPoint = null
-	var break_distance_squared := _break_distance_squared()
 	for point in shooter.points:
 		if _is_near_camera(point, camera_position):
 			if not current.is_empty():
@@ -1512,7 +1524,8 @@ func _shadow_segments(camera_position: Vector3, shooter: Shooter = null) -> Arra
 			previous = null
 			continue
 		if previous != null and (previous.burst_index != point.burst_index \
-				or previous.position.distance_squared_to(point.position) > break_distance_squared):
+				or previous.position.distance_squared_to(point.position) \
+					> _break_distance_squared(previous, point)):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []

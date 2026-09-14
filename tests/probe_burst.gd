@@ -131,7 +131,7 @@ func _two_bursts(scene, pause_frames: int) -> Dictionary:
 	Input.action_release("fire_mayo")
 	return {
 		"gap": tail.distance_to(head),
-		"threshold": scene.point_spacing * scene.strand_break_spacing,
+		"threshold": scene.strand_break_distance,
 		"segments": scene._segments_for_phase(0, scene._camera.global_position),
 	}
 
