@@ -16,8 +16,8 @@ func _run() -> void:
 	# Aim at the wall through the normal aim path, so _update_aim keeps
 	# reproducing this direction every physics frame.
 	scene.debug_aim_at(Vector3(2.35, 1.1, -0.72))
-	print("wall_fixed_hold_time=%.2f s  raycast_frame_stride=%d  emit_rate=%.1f pts/s" % [
-		scene.wall_fixed_hold_time, scene.raycast_frame_stride,
+	print("landing_transition_time=%.2f s  raycast_frame_stride=%d  emit_rate=%.1f pts/s" % [
+		scene.landing_transition_time, scene.raycast_frame_stride,
 		scene.extend_speed / scene.point_spacing])
 
 	var accumulator := 0.0
@@ -36,7 +36,7 @@ func _run() -> void:
 			for point in scene._points:
 				if point.phase == 1:
 					fixed += 1
-			print("t=%.2fs firing=%-5s WALL_FIXED=%3d  wall_painted_cells=%3d  wall_paint_calls=%4d  wall_uploads=%3d" % [
+			print("t=%.2fs firing=%-5s LANDING=%3d  wall_painted_cells=%3d  wall_paint_calls=%4d  wall_uploads=%3d" % [
 				frame / 60.0, str(firing), fixed, wall.painted_cell_count(),
 				wall.debug_paint_calls(), wall.debug_texture_uploads()])
 	quit(0)

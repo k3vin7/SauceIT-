@@ -76,7 +76,12 @@ func _run() -> void:
 	_check(scene._body_mesh.visible, "player body is hidden in third person")
 	_check(absf(offset.z - scene.shoulder_distance) < 0.001, "shoulder camera is not behind the player")
 	_check(absf(offset.x - scene.shoulder_offset_right) < 0.001, "shoulder camera has no lateral offset")
-	_check(offset.length() < 3.0, "shoulder camera is a distant top-down camera, not over the shoulder")
+	# Against the player's own size rather than a fixed number of metres, or
+	# resizing them turns an over-the-shoulder camera into a failure.
+	var body_height: float = scene._player.contamination.height
+	_check(offset.length() < body_height * 2.5,
+		"shoulder camera sits %.1f m out, a distant top-down view rather than over the shoulder"
+			% offset.length())
 
 	# --- emission jitter must not collapse near vertical ---
 	for pitch in [0.0, 85.0, -85.0]:
@@ -162,12 +167,12 @@ func _run() -> void:
 		for move in [["move_forward", aim_forward], ["move_backward", -aim_forward],
 				["move_right", aim_right], ["move_left", -aim_right]]:
 			scene._player.velocity = Vector3.ZERO
-			scene._player.global_position = Vector3(0.0, 0.64, 1.55)
+			scene._player.global_position = scene.spawn_position_for(0)
 			Input.action_press(move[0])
 			for _frame in 30:
 				await physics_frame
 			Input.action_release(move[0])
-			var moved: Vector3 = scene._player.global_position - Vector3(0.0, 0.64, 1.55)
+			var moved: Vector3 = scene._player.global_position - scene.spawn_position_for(0)
 			moved.y = 0.0
 			var expected: Vector3 = move[1]
 			expected.y = 0.0

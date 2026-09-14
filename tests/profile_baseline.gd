@@ -50,7 +50,7 @@ func _run() -> void:
 		max_droplet_nodes,
 		max_total_nodes,
 	])
-	for key in ["emit_follow", "point_physics", "constraint", "ribbon_update", "total"]:
+	for key in ["emit_follow", "point_physics", "constraint", "ribbon_update", "net_send", "total"]:
 		var average_us := float(scene.debug_timings_us[key]) / frames
 		var share := float(scene.debug_timings_us[key]) / maxf(float(total_us), 1.0) * 100.0
 		print("PROFILE_CURRENT_TIME %s avg_us=%.2f share=%.1f%%" % [key, average_us, share])

@@ -15,6 +15,12 @@ enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 @export_range(0.5, 12.0, 0.1, "suffix:m/s") var walk_speed := 2.6
 @export_range(0.5, 14.0, 0.1, "suffix:m/s") var run_speed := 5.2
 @export_range(1.0, 40.0, 0.5) var acceleration := 18.0
+## Jump. The body is 2.56 m, so these are scaled for it: 8 m/s against 20 m/s^2
+## clears about 1.6 m, a little over half its own height. Gravity here is the
+## body's own, not the sauce's -- a player that floated like a droplet would be
+## unplayable.
+@export_range(0.0, 20.0, 0.1, "suffix:m/s") var jump_speed := 8.0
+@export_range(1.0, 60.0, 0.5, "suffix:m/s²") var fall_gravity := 20.0
 
 @export_group("Slip and Fall")
 ## Catching your balance before you actually go over. Controls are already
@@ -51,6 +57,7 @@ var peer_id := 1
 var use_injected_input := false
 var input_move := Vector2.ZERO
 var input_run := false
+var input_jump := false
 var state := State.NORMAL
 ## +1 goes over backwards, -1 pitches forward. Set when the slip starts and
 ## held until the player is back on their feet; the prototype mirrors the
@@ -59,6 +66,10 @@ var fall_direction := 1.0
 var _state_timer := 0.0
 var _recovery_timer := 0.0
 var _network_previous_position := Vector3.ZERO
+## The jump is taken on the press, not while the key is down, and the press is
+## found here rather than with Input.is_action_just_pressed: a client's jump
+## arrives as a held flag in a packet, and the server has to see the edge in it.
+var _jump_was_held := false
 ## The stain on this body. Set by the world when it builds the capsule; the
 ## strand finds it through here, because what a raycast hits is the body.
 var contamination: BodyContamination
@@ -117,10 +128,20 @@ func _physics_process(delta: float) -> void:
 		rate = forward_slip_slide_friction if fall_direction < 0.0 else slip_slide_friction
 	velocity.x = move_toward(velocity.x, desired.x, rate * delta)
 	velocity.z = move_toward(velocity.z, desired.z, rate * delta)
-	velocity.y = 0.0
+
+	var jump_held := jump_wanted()
+	if is_on_floor():
+		velocity.y = 0.0
+		# On the press, and only while upright: going over backwards is not a
+		# jump, it is a fall.
+		if jump_held and not _jump_was_held and state == State.NORMAL:
+			velocity.y = jump_speed
+	else:
+		velocity.y -= fall_gravity * delta
+	_jump_was_held = jump_held
+
 	var before := global_position
 	move_and_slide()
-	global_position.y = before.y
 	frame_movement = global_position - before
 
 
@@ -144,6 +165,12 @@ func run_held() -> bool:
 	if use_injected_input:
 		return input_run
 	return Input.is_action_pressed("run")
+
+
+func jump_wanted() -> bool:
+	if use_injected_input:
+		return input_jump
+	return Input.is_action_pressed("jump")
 
 
 ## Starts a wipe, if there is anything to wipe and the player is in a state to
@@ -203,9 +230,10 @@ func is_incapacitated() -> bool:
 
 ## No grace period after standing up. Slipping already needs the run key and a
 ## direction held, so a player who keeps sprinting across mayo goes straight
-## back down, which is the point.
+## back down, which is the point. Being in the air is the one reprieve: mayo
+## underneath you is not underfoot.
 func can_slip() -> bool:
-	return state == State.NORMAL
+	return state == State.NORMAL and is_on_floor()
 
 
 ## Slipping starts with a stumble, not the fall itself -- unless the player is

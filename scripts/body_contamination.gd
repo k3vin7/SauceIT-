@@ -13,13 +13,17 @@ extends Node
 ##
 ## Two things differ from a flat face. The u axis is a loop, so the grid wraps
 ## there (`wrap_x`) and a splat near the seam carries on round the far side.
-## And the body is small: the world's 0.4 m brush would cover a fifth of the way
-## round a player, so bodies carry their own much smaller brush.
+## And the body is small, so the same 0.4 m brush that is a patch on a wall is a
+## drenching on a player -- which is the point: being hit reads the same either
+## way, and the edge roughness, being a fraction of the radius, comes out
+## identical in metres too.
 
 ## The stain is purely cosmetic. Nothing reads this grid back -- slipping is
 ## decided by the floor, and it is the floor alone.
 @export_range(0.005, 0.2, 0.001, "suffix:m") var cell_size := 0.02
-@export_range(0.01, 0.5, 0.005, "suffix:m") var brush_radius := 0.07
+## The world's brush, not one of its own: a splat is the same size on a person
+## as on a wall.
+@export_range(0.01, 1.5, 0.005, "suffix:m") var brush_radius := 0.4
 @export var mayo_color := Color("fff0a8")
 
 var grid := ContaminationGrid.new()
@@ -65,9 +69,7 @@ func paint_mayo_cell(cell: Vector2i) -> void:
 
 ## Clean again, for a body that is being handed to a different player.
 func clear() -> void:
-	grid.cells.fill(0)
-	grid.image.fill(Color(0.0, 0.0, 0.0, 1.0))
-	grid.dirty = true
+	grid.clear()
 
 
 func painted_cell_count() -> int:

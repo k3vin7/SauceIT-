@@ -277,14 +277,15 @@ func _request_wipe() -> void:
 	world.begin_wipe_for(multiplayer.get_remote_sender_id())
 
 
-func send_input(move: Vector2, run: bool, firing: bool, yaw: float, pitch: float) -> void:
+func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
+		yaw: float, pitch: float) -> void:
 	if not _online or multiplayer.is_server():
 		return
 	# The handshake takes a few frames, and the keys sent during it have nowhere
 	# to go yet.
 	if _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
-	_submit_input.rpc_id(1, move, run, firing, yaw, pitch)
+	_submit_input.rpc_id(1, move, run, jump, firing, yaw, pitch)
 
 
 ## The server applies the last input it heard from each client before running
@@ -299,6 +300,7 @@ func apply_client_input() -> void:
 		var packet: Array = _client_input[id]
 		shooter.player.input_move = packet[0]
 		shooter.player.input_run = packet[1]
+		shooter.player.input_jump = packet[5]
 		shooter.firing = packet[2] and not shooter.player.is_incapacitated() \
 			and not shooter.player.is_wiping()
 		shooter.aim_yaw = packet[3]
@@ -322,15 +324,18 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
-func _submit_input(move: Vector2, run: bool, firing: bool, yaw: float, pitch: float) -> void:
+func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
+		yaw: float, pitch: float) -> void:
 	if not multiplayer.is_server():
 		return
+	# The bools need no range check -- there is no wrong value for a key being
+	# down -- but the floats do, and they go through the same helpers as before.
 	if not all_finite([move, yaw, pitch]):
 		rejected_packets += 1
 		return
 	_client_input[multiplayer.get_remote_sender_id()] = [
 		clamp_direction(move), run, firing, wrap_angle(yaw),
-		clamp_angle(pitch, deg_to_rad(world.pitch_limit_degrees))]
+		clamp_angle(pitch, deg_to_rad(world.pitch_limit_degrees)), jump]
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")

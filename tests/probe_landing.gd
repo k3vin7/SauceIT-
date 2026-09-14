@@ -40,7 +40,7 @@ func _run() -> void:
 			Input.action_release("fire_mayo")
 		await physics_frame
 		for point in scene._points:
-			if point.phase == 1 or point.phase == 2:
+			if point.phase == 1:
 				var key: int = point.get_instance_id()
 				if not seen.has(key):
 					seen[key] = true
@@ -51,7 +51,7 @@ func _run() -> void:
 	var sustained: Array[float] = []
 	var after: Array = []
 	for entry in landings:
-		if entry[2] != 2:
+		if entry[2] != 1:
 			continue
 		if entry[0] < release_frame:
 			sustained.push_back(entry[1])

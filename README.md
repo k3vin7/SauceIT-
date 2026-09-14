@@ -6,7 +6,7 @@ Godot 4 3D prototype for validating one continuous viscous mayonnaise strand, pe
 
 1. Open this directory in Godot 4.4 or newer.
 2. Run the project (`F6`/`F5`). The main scene is already configured.
-3. Move with `WASD`, hold `Shift` to run, aim with the mouse, and hold the left mouse button to fire. `R` wipes sauce off your screen. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
+3. Move with `WASD`, hold `Shift` to run, `Space` to jump, aim with the mouse, and hold the left mouse button to fire. `R` wipes sauce off your screen. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
 4. Spray the floor, then run across your own mayo. Running over a painted cell knocks you down; walking over it does not.
 5. `F2` opens the LAN panel; without it the game is the single-player one it has always been.
 
@@ -18,7 +18,7 @@ Select the root `MayoPrototype` node in `main.tscn`. Its Inspector groups expose
 
 All requested baseline values are under **Mayo Stream — Reference Values** and **Landing and Grid**.
 
-`Stream Range` and `Point Time Lifetime` both cut the stream's powered phase, and whichever comes first wins, so they are kept matched at `extend_speed`: 2.94 m and 0.42 s at 7 m/s. Changing one alone does nothing — the other still cuts at the old distance. The generated `FloorContamination` node and each `ContaminableObject` wall expose the same cell/brush settings, and `MayoPrototype` pushes its `Landing and Grid` values into all of them on ready.
+`Stream Range` and `Point Time Lifetime` both cut the stream's powered phase, and whichever comes first wins, so they are kept matched at `extend_speed`: 2.94 m and 0.21 s at 14 m/s. Changing one alone does nothing — the other still cuts at the old distance. The generated `FloorContamination` node and each `ContaminableObject` wall expose the same cell/brush settings, and `MayoPrototype` pushes its `Landing and Grid` values into all of them on ready.
 
 **Weapon Hold** places the sauce bottle: right, up and forward offsets from the eye, plus its radius and length. The bottle is a first-person viewmodel — in third person it would sit inside the capsule, so it is hidden. `Aim Convergence Distance` is the distance along the view axis where the strand crosses the crosshair; without it an off-centre nozzle fires parallel to the view and misses the reticle by the full hold offset (measured: 0.267 m).
 
@@ -47,13 +47,21 @@ The session is not otherwise hardened, and is not meant to be: ENet here is unen
 
 Players are contaminable too, and the grid on a body is the same `ContaminationGrid` the floor and the walls use. A body is a capsule, which is a cylinder with rounded ends, so unwrapping it about its own axis gives a rectangle — u is the angle about Y times the circumference, v is the height — and the grid, the deterministic paint and the two-int network splat all apply unchanged. That is the reason for doing it this way rather than per polygon: a stain on a player costs the same as a stain on the floor, and `probe_determinism` already covers the mechanism. Per polygon would mean a trimesh collider that does not follow a skinned mesh's animation, and a resolution set by the model rather than by the brush.
 
+Every surface that can take sauce uses the world's brush, so a splat is the same size on all of them: `contamination_brush_radius` in metres for the floor, the walls and bodies, and the same figure converted into view units for the lenses, which the grid measures in. They differ enormously in what that amounts to — a patch on a wall, a fifth of a player, and the whole of a pair of glasses, which are a hand's breadth across. A hit in the face blinds you outright, and `R` is what you do about it.
+
+The splat's edge wanders by a fraction of the brush radius rather than by a fixed number of cells, so every surface's stains look alike however coarse its grid is. At a fixed number of cells the visor's 15-cell brush came out nearly circular while the floor's 4-cell brush came out ragged, from the same code.
+
 Two things differ from a flat face. The u axis is a loop, so the body's grid sets `wrap_x` and a splat near the seam carries on round the far side instead of being clipped. And the shader (`body_contamination.gdshader`) derives its texture coordinate from the surface position rather than from the mesh's own UVs, using the same maths the CPU paints with — a capsule's UVs distribute v across the caps, which would slide every splat toward the middle.
 
-Bodies carry their own cell size and brush (`Body Cell Size`, `Body Brush Radius`, 0.02 m and 0.07 m) because they are small: the world's 0.4 m brush would cover a fifth of the way round a player in one splat. The stain is stored in the body's own space, so it travels with the player as they walk and turn.
+One impact marks two surfaces on purpose: the lenses have no collider, so the ray hits the capsule and the hit is then projected onto the lenses in front of it. Giving them a collider would be truer and would also shield the body and the floor behind the head, which costs more than the doubling does. Hits that are level with the lenses or behind them, and hits that project outside the field of view, mark nothing — measured, a hit on the back, the back of the head, a shoulder, the chest or the belly all reach the glasses not at all; the forehead, the eyes and the chin do, and the neck clips the bottom edge.
+
+Bodies carry their own cell size (`Body Cell Size`, 0.02 m) because they are small — 0.1 m cells would be ten of them across a player — but not their own brush. A splat is the same size in metres on a person as on a wall, and since the edge roughness is a fraction of the radius, the two come out indistinguishable. It does mean one hit covers about a fifth of a player, which is the point of matching them. The stain is stored in the body's own space, so it travels with the player as they walk and turn.
 
 ### Glasses
 
 Players wear lenses, and sauce landing in front of their eyes goes on them. `VisorContamination` is another `ContaminationGrid`, but measured in **view units** — 16 by 9 across the field of view — rather than in metres, which makes the screen a straight 1:1 sample of it. There is no projection, no blob cap, and no separate screen effect that could drift from what everyone else sees: the mask that blinds you *is* the mask on your face.
+
+The lenses everyone else sees are as wide as the head is at eye height and shaped 16:9, the same shape as the mask, so what shows on the face is the wearer's view rather than a squashed copy of it. Being a flat pane on a round head, its corners stand proud of the capsule.
 
 It hangs off the `AimPivot`, which already carries the aim pitch, so it moves exactly with the camera — sauce stays where it landed on screen as you look around, the way sauce on glasses does. In first person your own lenses are hidden and reach you as the overlay instead; everyone else's are visible on their faces in both camera modes. A hit that is level with the lenses or behind them paints nothing: it is not in front of your eyes, so it does not blind you.
 
@@ -79,7 +87,21 @@ Each trigger press starts a new **burst**. `_points` stays one array, but every 
 
 **Release Pressure** governs what happens when the trigger is let go. `Release Pressure Loss` is the fraction of speed removed at the muzzle end; `Release Pressure Curve` shapes the falloff between the front tip (which keeps its speed) and the muzzle. Every airborne point also stops being powered at that instant, so the trail that lands afterwards begins at full range and is dragged back toward the player.
 
-Performance controls are under **Collision Budget**. `Raycast Frame Stride` defaults to 1: staggering casts across frames saved only ~0.27 ms per physics tick and let a point sit up to one frame (117 mm at the reference speed, wider than the strand) inside a wall before being snapped out, so it is not worth the artifact. `Wall Fixed Hold Time` bounds fixed-point buildup; the wall stain is written at collision time and is unaffected by it.
+Performance controls are under **Collision Budget**. `Raycast Frame Stride` defaults to 1: staggering casts across frames saved only ~0.27 ms per physics tick and let a point sit up to one frame (117 mm at the reference speed, wider than the strand) inside a wall before being snapped out, so it is not worth the artifact. Walls and players are landed on the way the floor is: the point settles against the surface and fades over `Landing Transition Time`, rather than hanging there in a phase of its own. The stain is written at collision time either way, so what changed is how many points a wall-facing strand keeps alive — measured, 239 down to 78 for one player, 463 down to 141 for two. Droplets are the one thing that does not follow: they are static beads with no fall, which reads as spatter on a floor and as beads hanging in mid-air on a wall or a player, so `Droplets On Floor` is on and `Droplets On Surfaces` is off.
+
+## Testing a session on your own
+
+A real session wants two machines, and the things that actually go wrong in one — a player's aim reading correctly on their own screen and wrongly on the other — are awkward to see when you can only look at one screen at a time. `dev_two_player.tscn` runs both ends in one process:
+
+```sh
+godot --path . res://dev_two_player.tscn
+```
+
+From the editor it is **not** `F5` — that always runs the project's main scene, which is the normal single-player game. Open `dev_two_player.tscn` in the editor first and press `F6`, which runs the scene you are looking at.
+
+Host and client each get their own `SubViewport`, and so their own 3D world — sharing one would put both floors and all four capsules in the same physics space — and their own `MultiplayerAPI`, talking over the loopback exactly as two machines would. Both screens are shown side by side at the same brightness, which is the point: you are comparing what they draw. `Tab` moves the keyboard and mouse between them, or `1` and `2` pick a side outright, and the label says which one you are driving. The side you are not driving has its keys held at zero rather than reading the same keyboard, since `Input` is global and both worlds can see it.
+
+It is a development harness, not a game mode. The shipped scene is untouched.
 
 ## Verification
 
@@ -106,10 +128,13 @@ godot --headless --path . --script res://tests/probe_geom.gd                   #
 godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
 godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states, hostile input
 godot --headless --path . --script res://tests/probe_panel.gd                  # the F2 panel is on screen and centred
+godot --headless --path . --script res://tests/probe_harness.gd                # the two-player harness swaps controls correctly
 godot --headless --path . --script res://tests/probe_body.gd                   # body stains, glasses, and the wipe
 ```
 
 `probe_determinism.gd` prints `MAYO_GRID_HASH`; run it twice and compare, since a difference between two processes is exactly what would break the grid sync.
+
+The profile covers the whole physics tick, the frame's splat and state send included — that last stage (`net_send`) used to fall outside the total, which made a session's cost look like the offline one.
 
 `profile_runtime.gd` reports the wall-clock tick interval, which is the tick period in every mode; read `script_ms` and the per-stage figures for actual cost, or wrap the run in `/usr/bin/time` and difference `full` against `noscript`.
 

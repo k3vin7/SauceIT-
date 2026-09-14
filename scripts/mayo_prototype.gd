@@ -20,9 +20,11 @@ const SPLAT_BODY := 2
 ## is a grid change like any other, so it travels the same way the splats do.
 const SPLAT_VISOR := 3
 const SPLAT_VISOR_CLEAR := 4
+## Ints per entry in a splat batch: kind, target, cell x, cell y.
+const SPLAT_STRIDE := 4
 const FACES_PER_WALL := 6
 
-enum PointPhase { AIR, WALL_FIXED, LANDING }
+enum PointPhase { AIR, LANDING }
 
 class MayoPoint:
 	var position := Vector3.ZERO
@@ -34,8 +36,16 @@ class MayoPoint:
 	var powered := true
 	var phase := PointPhase.AIR
 	var landing_age := 0.0
-	var fixed_age := 0.0
 	var collision_slot := 0
+	## True when this point settled on the floor rather than on a wall or a
+	## player. Only the floor throws droplets by default.
+	var landed_on_floor := false
+	## True once this point has come away from the one before it in the array.
+	## Latched: sauce that has parted does not join back up, and without the
+	## latch it did -- the threshold a pair is held to loosens when the pressure
+	## leaves it, so a strand torn by a whip healed the moment it stopped being
+	## a jet.
+	var severed := false
 	var burst_index := 0
 
 class RibbonPoint:
@@ -61,12 +71,22 @@ class Shooter:
 	var burst_index := 0
 	var was_firing := false
 	var firing := false
+	## Counts down after the trigger is let go, so a tap still puts out a
+	## stream rather than a couple of points.
+	var fire_hold := 0.0
+	## And counts down after that, with the trigger dead, so hammering the
+	## button gives separate squirts rather than one stream.
+	var fire_cooldown := 0.0
+	## Whether the trigger has come up since this squirt began. A squirt that is
+	## still being held carries on; one that was let go runs out its minimum and
+	## then locks. Without this, hammering re-armed the minimum on every press
+	## and the stream never ended, so the lock never started either.
+	var trigger_released := true
 	var next_collision_slot := 0
 	var aim_yaw := 0.0
 	var aim_pitch := 0.0
 	var rng := RandomNumberGenerator.new()
 	var air_visual: StreamVisual
-	var wall_visual: StreamVisual
 	var landing_visual: StreamVisual
 	var shadow_visual: StreamVisual
 
@@ -79,34 +99,67 @@ class MayoDroplet:
 
 @export_group("Mayo Stream — Reference Values")
 @export_range(0.2, 6.0, 0.01, "suffix:m") var stream_range := 2.94
-@export_range(0.5, 15.0, 0.1, "suffix:m/s") var extend_speed := 7.0
-@export_range(0.025, 0.25, 0.005, "suffix:m") var point_spacing := 0.09
+@export_range(0.5, 25.0, 0.1, "suffix:m/s") var extend_speed := 14.0
+## A tap keeps firing for at least this long. Emission is a couple of points a
+## frame, so a click held for one frame put out two of them -- not enough to be
+## a strand, or to leave anything but a dot.
+@export_range(0.0, 0.5, 0.01, "suffix:s") var minimum_fire_time := 0.1
+## And the trigger is dead for this long afterwards. Without it the minimum
+## above re-arms on every press, so holding the button down and hammering it
+## came out the same: one unbroken stream. With it, taps are separate squirts.
+@export_range(0.0, 1.0, 0.01, "suffix:s") var fire_cooldown_time := 0.15
+## How far apart the strand's points are, which is also how finely it samples
+## what it hits: a sweep across someone's face only marks them where a point
+## lands, so at 0.09 a quick flick left three dots rather than a line.
+@export_range(0.025, 0.25, 0.005, "suffix:m") var point_spacing := 0.045
 @export_range(0.02, 0.2, 0.001, "suffix:m") var strand_thickness := 0.093
 @export_range(0.0, 0.5, 0.01, "suffix:m") var muzzle_forward_offset := 0.15
-@export_range(0.02, 1.5, 0.01, "suffix:s") var point_time_lifetime := 0.42
+## Matched to stream_range at extend_speed, so neither silently cuts first:
+## 2.94 m at 14 m/s is 0.21 s.
+@export_range(0.02, 1.5, 0.001, "suffix:s") var point_time_lifetime := 0.21
 @export var use_time_lifetime := true
 @export var use_distance_lifetime := true
 @export_range(0.0, 30.0, 0.1, "suffix:m/s²") var gravity_acceleration := 9.8
 
 @export_group("Emission Shape")
-@export_range(0.0, 0.05, 0.001, "suffix:m") var lateral_position_jitter := 0.009
-@export_range(0.0, 0.08, 0.001, "suffix:rad") var yaw_angle_jitter := 0.018
-@export_range(0.0, 0.5, 0.01) var speed_magnitude_jitter := 0.10
+## Both are absolute, while the spacing between points is not, so what they do
+## to the look of the line depends on the density: at 0.045 m spacing the old
+## values threw each point sideways by 40% of the step to the next one, and the
+## strand read as a zigzag rather than as a line with some life in it. Halved
+## with the spacing, so the ratio is what it was.
+@export_range(0.0, 0.05, 0.001, "suffix:m") var lateral_position_jitter := 0.0045
+@export_range(0.0, 0.08, 0.001, "suffix:rad") var yaw_angle_jitter := 0.009
+## A fraction of the launch speed, so what it does depends on that speed: at
+## 7 m/s a tenth was a spread of 0.7 m/s, and at 14 it was 1.4, which pulled
+## neighbouring points apart faster than the strand could hold and tore it with
+## the aim standing still. Halved with the speed, so the spread is what it was.
+@export_range(0.0, 0.5, 0.01) var speed_magnitude_jitter := 0.05
 @export_range(0.0, 1.0, 0.01) var inherited_player_velocity := 0.22
-@export_range(32, 512, 1) var maximum_point_count := 192
-## Adjacent points further apart than this many point_spacings are treated as
-## separate strands: the ribbon breaks there and no spacing correction is applied.
-@export_range(1.5, 12.0, 0.1) var strand_break_spacing := 6.0
+## Scales with the density above: at 0.045 a strand carries twice the points,
+## and a cap left at 192 would cut it short instead of letting it run its range.
+@export_range(32, 768, 1) var maximum_point_count := 384
+## Adjacent points further apart than this are treated as separate strands: the
+## ribbon breaks there and no spacing correction is applied. In metres, not in
+## point spacings -- as a multiple it moved with the point density, so doubling
+## the density halved how far a falling strand could stretch before it came
+## apart, and what had been a strand became a scatter of single points.
+@export_range(0.05, 2.0, 0.01, "suffix:m") var strand_break_distance := 0.27
+## The same, for points the pressure has left. A jet under pressure is taut and
+## a sweep snaps it; sauce already falling is a thread of liquid that stretches
+## instead. One threshold had to be both, and whichever way it was set one of
+## them was wrong: tight enough to tear on a fast turn shattered every falling
+## strand into single points.
+@export_range(0.05, 4.0, 0.01, "suffix:m") var falling_break_distance := 1.2
 
 @export_group("Collision Budget")
 @export_range(1, 4, 1) var raycast_frame_stride := 1
 @export_range(0.0, 0.03, 0.001, "suffix:m") var raycast_min_accumulated_motion := 0.004
-@export_range(0.2, 4.0, 0.1, "suffix:s") var wall_fixed_hold_time := 1.2
 ## How far a point has to have travelled before it can hit the player who fired
 ## it. The muzzle sits inside its owner's own capsule, so a point leaving it
 ## would hit them immediately; past this it is clear of them and fair game, and
-## sauce fired straight up, or walked into, comes back on you.
-@export_range(0.0, 3.0, 0.05, "suffix:m") var self_hit_distance := 0.6
+## sauce fired straight up, or walked into, comes back on you. Has to stay clear
+## of the capsule's radius, which is 0.64.
+@export_range(0.0, 4.0, 0.05, "suffix:m") var self_hit_distance := 1.2
 
 @export_group("Release Pressure")
 @export_range(0.0, 1.0, 0.01) var release_pressure_loss := 0.55
@@ -121,14 +174,32 @@ class MayoDroplet:
 @export_range(0.05, 0.5, 0.01, "suffix:m") var grid_cell_size := 0.1
 ## Splat radius in metres. Converted to cells internally, so changing the
 ## cell size does not change how big a splat is.
-@export_range(0.05, 1.5, 0.01, "suffix:m") var contamination_brush_radius := 0.4
-## Bodies carry their own, much finer grid: the world brush is 0.4 m and a
-## player is only 2 m around, so one world-sized splat would cover a fifth of
-## the way round them.
+## Every surface that can take sauce uses this, so a splat is the same size on
+## all of them. Its cost is the square of how many cells it spans, and the visor
+## has the finest cells of any of them: at 0.4 m it spanned 160 of them and a
+## second of being sprayed in the face cost 5.9 ms a frame on its own.
+@export_range(0.05, 1.5, 0.01, "suffix:m") var contamination_brush_radius := 0.2
+## Bodies carry a much finer grid than the world does, because they are small:
+## 0.1 m cells would be ten of them across a player. The brush is not theirs
+## though -- a splat is the same size in metres on a person as on a wall, which
+## with the edge roughness being a fraction of the radius makes the two
+## indistinguishable.
 @export_range(0.005, 0.2, 0.001, "suffix:m") var body_cell_size := 0.02
-@export_range(0.01, 0.5, 0.005, "suffix:m") var body_brush_radius := 0.07
 @export_range(0.05, 0.5, 0.01, "suffix:s") var landing_transition_time := 0.16
-@export_range(0.1, 2.0, 0.05, "suffix:s") var droplet_lifetime := 0.55
+## Kept at what the droplet pool can hold for two players firing at once. See
+## the note on POOL_SIZE before raising it.
+@export_range(0.1, 2.0, 0.05, "suffix:s") var droplet_lifetime := 0.40
+## Droplets thrown by one landing. The pool they come from is one per world, not
+## one per player, so this is multiplied by every strand landing at once: at
+## seven, two players firing filled all 512 slots and began overwriting droplets
+## that were still alive.
+@export_range(1, 16, 1) var droplets_per_landing := 4
+## Droplets are static beads placed where a point settles, with no gravity and
+## no fall: on a floor they read as spatter, on a wall or a player they would
+## hang in the air. Now that walls and bodies land like the floor does, which
+## surfaces throw them is a choice rather than a side effect of the phase.
+@export var droplets_on_floor := true
+@export var droplets_on_surfaces := false
 
 @export_group("Aim")
 @export_range(0.01, 1.0, 0.01, "suffix:°/px") var mouse_sensitivity := 0.12
@@ -137,10 +208,10 @@ class MayoDroplet:
 @export_group("Camera")
 @export var start_in_first_person := true
 @export_range(35.0, 90.0, 1.0, "suffix:°") var camera_fov := 74.0
-@export_range(0.2, 2.0, 0.01, "suffix:m") var eye_height := 0.52
-@export_range(-1.5, 1.5, 0.01, "suffix:m") var shoulder_offset_right := 0.55
-@export_range(-1.0, 1.5, 0.01, "suffix:m") var shoulder_offset_up := 0.34
-@export_range(0.5, 5.0, 0.05, "suffix:m") var shoulder_distance := 2.40
+@export_range(0.2, 3.0, 0.01, "suffix:m") var eye_height := 1.04
+@export_range(-3.0, 3.0, 0.01, "suffix:m") var shoulder_offset_right := 1.10
+@export_range(-2.0, 3.0, 0.01, "suffix:m") var shoulder_offset_up := 0.68
+@export_range(0.5, 10.0, 0.05, "suffix:m") var shoulder_distance := 4.80
 ## Points nearer than this to the camera are dropped from the ribbon so the
 ## strand root does not fill the screen in first person. 0 disables it.
 @export_range(0.0, 1.0, 0.01, "suffix:m") var strand_near_cull_distance := 0.34
@@ -152,7 +223,7 @@ class MayoDroplet:
 @export_range(0.0, 60.0, 1.0, "suffix:°") var stumble_body_roll_degrees := 17.0
 @export_range(0.0, 30.0, 0.5, "suffix:°") var stumble_camera_roll_degrees := 7.0
 @export_range(0.0, 20.0, 0.5, "suffix:°") var stumble_camera_pitch_degrees := 3.0
-@export_range(0.05, 1.0, 0.01, "suffix:m") var fall_camera_height := 0.28
+@export_range(0.05, 2.0, 0.01, "suffix:m") var fall_camera_height := 0.56
 
 @export_group("Weapon Hold")
 @export_range(-0.6, 0.6, 0.01, "suffix:m") var weapon_offset_right := 0.155
@@ -209,8 +280,6 @@ var _weapon: Node3D:
 	get: return _local.weapon
 var _air_visual: StreamVisual:
 	get: return _local.air_visual
-var _wall_visual: StreamVisual:
-	get: return _local.wall_visual
 var _landing_visual: StreamVisual:
 	get: return _local.landing_visual
 var _shadow_visual: StreamVisual:
@@ -234,15 +303,25 @@ var debug_input_override := false
 var debug_input_move := Vector2.ZERO
 var debug_input_run := false
 var debug_input_firing := false
+var debug_input_jump := false
 var debug_profile_enabled := false
 var debug_profile_frames := 0
 var debug_raycast_count := 0
 var debug_max_points := 0
+## Splats queued this run, and landings that threw droplets. Both are per-hit
+## quantities, which is what makes them worth counting against point density.
+var debug_splats := 0
+var debug_droplet_spawns := 0
+## Droplets replaced while still alive, and how much life they had left. A pool
+## that is full is only a problem if this second number is not near zero.
+var debug_droplet_overwrites := 0
+var debug_droplet_overwritten_life := 0.0
 var debug_timings_us := {
 	"emit_follow": 0,
 	"point_physics": 0,
 	"constraint": 0,
 	"ribbon_update": 0,
+	"net_send": 0,
 	"total": 0,
 }
 
@@ -280,12 +359,15 @@ func _physics_process(delta: float) -> void:
 
 	for shooter in _shooters.values():
 		_simulate_points(delta, shooter)
+		_update_connections(shooter)
 	_simulate_droplets(delta)
 	if debug_profile_enabled:
 		debug_timings_us.point_physics += Time.get_ticks_usec() - step_started
 		step_started = Time.get_ticks_usec()
 	for shooter in _shooters.values():
-		if shooter.firing:
+		# was_firing is the held state _advance_strand settled on, not the raw
+		# trigger: a tap's points want holding together too.
+		if shooter.was_firing:
 			_enforce_spacing_constraint(shooter)
 	if debug_profile_enabled:
 		debug_timings_us.constraint += Time.get_ticks_usec() - step_started
@@ -295,20 +377,52 @@ func _physics_process(delta: float) -> void:
 		_update_visuals(shooter)
 	if debug_profile_enabled:
 		debug_timings_us.ribbon_update += Time.get_ticks_usec() - step_started
-		debug_timings_us.total += Time.get_ticks_usec() - frame_started
-		debug_profile_frames += 1
-		debug_max_points = maxi(debug_max_points, _points.size())
+		step_started = Time.get_ticks_usec()
 	if _is_authority():
 		_finish_wipes()
+	if debug_profile_enabled:
+		debug_splats += _pending_splats.size() / SPLAT_STRIDE
 	if is_instance_valid(_net):
 		_net.end_of_frame(_pending_splats)
 	_pending_splats.clear()
+	# Sending the frame's splats and player states is part of the frame, and was
+	# being left out of it: the total used to be taken before this ran.
+	if debug_profile_enabled:
+		debug_timings_us.net_send += Time.get_ticks_usec() - step_started
+		debug_timings_us.total += Time.get_ticks_usec() - frame_started
+		debug_profile_frames += 1
+		debug_max_points = maxi(debug_max_points, _points.size())
 
 
 ## Emission and the trigger edges, for one shooter. Split out of the frame loop
 ## so remote shooters go through exactly the same path as the local one.
 func _advance_strand(shooter: Shooter, delta: float) -> void:
-	if shooter.firing:
+	# A press buys a minimum of stream whether or not it is held, and the
+	# trigger is then dead for a moment. Every peer runs this off the same
+	# press, so nobody has to be told about it.
+	if not shooter.firing:
+		shooter.trigger_released = true
+	var firing := false
+	if shooter.fire_cooldown > 0.0:
+		# Locked: the trigger does nothing at all.
+		shooter.fire_cooldown = maxf(shooter.fire_cooldown - delta, 0.0)
+		shooter.fire_hold = 0.0
+	elif shooter.fire_hold > 0.0:
+		# A squirt is under way. Still holding carries it on; let go and it
+		# runs out what is left of its minimum and then locks.
+		if shooter.firing and not shooter.trigger_released:
+			shooter.fire_hold = minimum_fire_time
+		else:
+			shooter.fire_hold = maxf(shooter.fire_hold - delta, 0.0)
+		firing = shooter.fire_hold > 0.0
+		if not firing:
+			shooter.fire_cooldown = fire_cooldown_time
+	elif shooter.firing:
+		shooter.fire_hold = minimum_fire_time
+		shooter.trigger_released = false
+		firing = true
+
+	if firing:
 		if not shooter.was_firing:
 			shooter.burst_index += 1
 		_apply_inertial_follow(shooter.player.frame_movement, shooter)
@@ -320,7 +434,7 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		shooter.emit_distance = 0.0
 		if shooter.was_firing:
 			_apply_release_pressure_loss(shooter)
-	shooter.was_firing = shooter.firing
+	shooter.was_firing = firing
 
 
 ## The local player's own keyboard and mouse. Their aim is applied immediately,
@@ -338,19 +452,23 @@ func _read_local_input() -> void:
 		_local.player.use_injected_input = true
 		_local.player.input_move = debug_input_move
 		_local.player.input_run = debug_input_run
+		_local.player.input_jump = debug_input_jump
 	if not is_instance_valid(_net) or not _net.is_online():
 		return
 	if _net.is_server():
 		return
 	var move := Vector2.ZERO
 	var run := false
+	var jump := false
 	if debug_input_override:
 		move = debug_input_move
 		run = debug_input_run
+		jump = debug_input_jump
 	elif _input_enabled:
 		move = Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
 		run = Input.is_action_pressed("run")
-	_net.send_input(move, run, _local.firing, _local.aim_yaw, _local.aim_pitch)
+		jump = Input.is_action_pressed("jump")
+	_net.send_input(move, run, jump, _local.firing, _local.aim_yaw, _local.aim_pitch)
 
 
 func _fire_held() -> bool:
@@ -360,12 +478,23 @@ func _fire_held() -> bool:
 
 
 ## Stands in for the keyboard in the headless checks, the way debug_set_aim
-## stands in for the mouse.
-func debug_set_input(move: Vector2, run: bool, firing: bool) -> void:
+## stands in for the mouse. The two-player harness uses it to hold whichever
+## player is not being driven still.
+func debug_set_input(move: Vector2, run: bool, firing: bool, jump := false) -> void:
 	debug_input_override = true
 	debug_input_move = move
 	debug_input_run = run
 	debug_input_firing = firing
+	debug_input_jump = jump
+
+
+## Hands the body back to the real keyboard.
+func debug_clear_input_override() -> void:
+	debug_input_override = false
+	debug_input_move = Vector2.ZERO
+	debug_input_run = false
+	debug_input_firing = false
+	debug_input_jump = false
 
 
 ## True when this peer decides slips and grid paint: the server, or offline,
@@ -468,6 +597,11 @@ func _ensure_input_actions() -> void:
 		var run := InputEventKey.new()
 		run.physical_keycode = KEY_SHIFT
 		InputMap.action_add_event("run", run)
+	if not InputMap.has_action("jump"):
+		InputMap.add_action("jump")
+		var jump := InputEventKey.new()
+		jump.physical_keycode = KEY_SPACE
+		InputMap.action_add_event("jump", jump)
 	if not InputMap.has_action("wipe_screen"):
 		InputMap.add_action("wipe_screen")
 		var wipe := InputEventKey.new()
@@ -491,7 +625,9 @@ func _build_world() -> void:
 
 	_floor = FloorScript.new()
 	_floor.name = "FloorContamination"
-	_floor.floor_size = Vector2(12.0, 12.0)
+	# Nine times the area it was. The walls are not scaled with it, so they sit
+	# in it as obstacles rather than as its edges.
+	_floor.floor_size = Vector2(48.0, 48.0)
 	_floor.cell_size = grid_cell_size
 	_floor.brush_radius = contamination_brush_radius
 	add_child(_floor)
@@ -552,7 +688,8 @@ func _body_color(is_local: bool) -> Color:
 ## Spawn point for the nth player to join. Fixed by join order so both peers
 ## place everyone the same way.
 func spawn_position_for(slot: int) -> Vector3:
-	const SPAWNS := [Vector3(0.0, 0.64, 1.55), Vector3(1.35, 0.64, 2.6)]
+	# y is half the capsule's height, so it stands on the floor rather than in it.
+	const SPAWNS := [Vector3(0.0, 1.28, 1.55), Vector3(1.35, 1.28, 2.6)]
 	return SPAWNS[slot % SPAWNS.size()]
 
 
@@ -571,8 +708,7 @@ func create_avatar(peer_id: int, slot: int, is_local: bool) -> Shooter:
 	# ordering of the join messages can leave a body simulating itself.
 	shooter.player.authority = _is_authority()
 	if is_local:
-		_local = shooter
-		set_first_person(_first_person)
+		_adopt_local(shooter)
 	return shooter
 
 
@@ -596,9 +732,9 @@ func reset_for_join() -> void:
 ## playable rather than left with an empty world.
 func reset_to_offline() -> void:
 	reset_for_join()
-	_local = _create_shooter(1, true)
-	_build_shooter_visuals(_local)
-	set_first_person(_first_person)
+	var shooter := _create_shooter(1, true)
+	_build_shooter_visuals(shooter)
+	_adopt_local(shooter)
 
 
 ## Marks which of the spawned bodies this peer is looking out of.
@@ -607,11 +743,18 @@ func claim_avatar(peer_id: int, slot := 0) -> void:
 	if shooter == null:
 		shooter = create_avatar(peer_id, slot, true)
 	shooter.is_local = true
-	_local = shooter
 	shooter.player.use_injected_input = false
 	var material := shooter.body_mesh.material_override as ShaderMaterial
 	if material != null:
 		material.set_shader_parameter("clean_color", _body_color(true))
+	_adopt_local(shooter)
+
+
+## The one place the local player changes hands. Everything bound to the body
+## the player is looking out of is rebound here.
+func _adopt_local(shooter: Shooter) -> void:
+	_local = shooter
+	_rebind_visor_overlay()
 	set_first_person(_first_person)
 
 
@@ -622,7 +765,7 @@ func set_avatar_authority(peer_id: int, authority: bool) -> void:
 
 
 func _free_shooter(shooter: Shooter) -> void:
-	for node in [shooter.player, shooter.air_visual, shooter.wall_visual,
+	for node in [shooter.player, shooter.air_visual,
 			shooter.landing_visual, shooter.shadow_visual]:
 		if is_instance_valid(node):
 			# Detached before freeing so the node name is free again this frame:
@@ -662,7 +805,6 @@ func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
 func _build_shooter_visuals(shooter: Shooter) -> void:
 	var suffix := str(shooter.peer_id)
 	shooter.air_visual = _make_stream_visual("AirRibbon" + suffix, _mayo_material)
-	shooter.wall_visual = _make_stream_visual("WallFixedRibbon" + suffix, _mayo_material)
 	shooter.landing_visual = _make_stream_visual("LandingRibbon" + suffix, _landing_material)
 	shooter.shadow_visual = _make_stream_visual("ProjectedShadow" + suffix, _shadow_material)
 
@@ -674,8 +816,7 @@ func _build_crosshair() -> void:
 	_visor_overlay = VisorOverlayScript.new() as VisorOverlay
 	_visor_overlay.name = "VisorOverlay"
 	layer.add_child(_visor_overlay)
-	if _local != null:
-		_visor_overlay.bind(_local.player.visor)
+	_rebind_visor_overlay()
 	# Above the sauce, so there is always something to aim with.
 	_crosshair = CrosshairScript.new()
 	_crosshair.visible = show_crosshair
@@ -690,6 +831,17 @@ func _build_network_panel() -> void:
 	_net_panel.bind(_net)
 	_net_panel.visible = false
 	_hud_layer.add_child(_net_panel)
+
+
+## The overlay draws whichever lenses the local player is currently wearing.
+## Joining a session replaces their body, and with it the visor and the texture
+## the overlay samples, so this has to be redone every time the local player
+## changes -- otherwise the screen keeps showing the mask of a body that no
+## longer exists, which is to say nothing at all.
+func _rebind_visor_overlay() -> void:
+	if _visor_overlay == null or _local == null or _local.player.visor == null:
+		return
+	_visor_overlay.bind(_local.player.visor)
 
 
 func set_network_panel_open(open: bool) -> void:
@@ -727,16 +879,19 @@ func _build_environment() -> void:
 func _build_player_body(shooter: Shooter) -> void:
 	var collision := CollisionShape3D.new()
 	var capsule_shape := CapsuleShape3D.new()
-	capsule_shape.radius = 0.32
-	capsule_shape.height = 1.28
+	# Everything measured against the body scales with these: the eye height and
+	# the spawn height below it, the lens quad, the self-hit distance, and the
+	# shoulder camera's framing. The contamination grid takes them directly.
+	capsule_shape.radius = 0.64
+	capsule_shape.height = 2.56
 	collision.shape = capsule_shape
 	shooter.player.add_child(collision)
 
 	var body_mesh := MeshInstance3D.new()
 	body_mesh.name = "CapsuleBody"
 	var capsule_mesh := CapsuleMesh.new()
-	capsule_mesh.radius = 0.32
-	capsule_mesh.height = 1.28
+	capsule_mesh.radius = 0.64
+	capsule_mesh.height = 2.56
 	body_mesh.mesh = capsule_mesh
 	shooter.player.add_child(body_mesh)
 	shooter.body_mesh = body_mesh
@@ -747,7 +902,7 @@ func _build_player_body(shooter: Shooter) -> void:
 	var contamination := BodyContaminationScript.new() as BodyContamination
 	contamination.name = "BodyContamination"
 	contamination.cell_size = body_cell_size
-	contamination.brush_radius = body_brush_radius
+	contamination.brush_radius = contamination_brush_radius
 	shooter.player.add_child(contamination)
 	shooter.player.contamination = contamination
 	contamination.configure(shooter.player, body_mesh, capsule_shape.radius,
@@ -765,6 +920,9 @@ func _build_player_body(shooter: Shooter) -> void:
 	# so they move with the camera rather than with the body.
 	var visor := VisorScript.new() as VisorContamination
 	visor.name = "Visor"
+	# The world's brush, converted into the view units the lenses use: a splat
+	# is the same size on them as on a wall.
+	visor.configure_brush(contamination_brush_radius)
 	aim_pivot.add_child(visor)
 	shooter.player.visor = visor
 
@@ -967,12 +1125,34 @@ func _emit_point(shooter: Shooter = null) -> void:
 ## Two array-adjacent points are one continuous strand only if they came from
 ## the same trigger press and have not been pulled apart into separate blobs.
 func _points_connected(front: MayoPoint, back: MayoPoint) -> bool:
-	return front.burst_index == back.burst_index \
-		and front.position.distance_squared_to(back.position) <= _break_distance_squared()
+	return front.burst_index == back.burst_index and not back.severed
 
 
-func _break_distance_squared() -> float:
-	var break_distance := point_spacing * strand_break_spacing
+## Walks each shooter's strand once a frame and latches the pairs that have come
+## apart. Evaluated here rather than wherever a break is asked about, so the
+## answer cannot change between the constraint, the ribbon and the shadow, and
+## cannot change back.
+func _update_connections(shooter: Shooter) -> void:
+	var points := shooter.points
+	for i in range(1, points.size()):
+		var back := points[i]
+		if back.severed:
+			continue
+		var front := points[i - 1]
+		if front.burst_index != back.burst_index:
+			back.severed = true
+			continue
+		if front.position.distance_squared_to(back.position) \
+				> _break_distance_squared(front, back):
+			back.severed = true
+
+
+## Which threshold a pair is held to: the taut one while either end is still
+## under pressure, the slack one once both are falling.
+func _break_distance_squared(front: MayoPoint = null, back: MayoPoint = null) -> float:
+	var break_distance := strand_break_distance
+	if front != null and back != null and not front.powered and not back.powered:
+		break_distance = falling_break_distance
 	return break_distance * break_distance
 
 
@@ -1050,9 +1230,6 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 	var physics_frame := int(Engine.get_physics_frames())
 	var stride := maxi(raycast_frame_stride, 1)
 	for point in points:
-		if point.phase == PointPhase.WALL_FIXED:
-			point.fixed_age += delta
-			continue
 		if point.phase == PointPhase.LANDING:
 			point.landing_age += delta
 			continue
@@ -1084,20 +1261,18 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 				debug_raycast_count += 1
 			var hit := space_state.intersect_ray(query)
 			if not hit.is_empty():
+				# Everything the strand touches is landed on. Only the server's
+				# copy marks anything: every peer runs this same code for every
+				# shooter, but a client's splats would be its own guess, so it
+				# waits for the broadcast.
 				var collider := hit.collider as Node
-				if collider != null and collider.is_in_group("mayo_floor"):
-					_begin_landing(point, hit.position)
-				else:
-					# Only the server's copy of the strand marks anything. Every
-					# peer runs this same code for every shooter, but a client's
-					# splats would be its own guess; it waits for the broadcast.
-					if _is_authority() and collider != null \
-							and collider.is_in_group("mayo_contaminable"):
+				var on_floor: bool = collider != null and collider.is_in_group("mayo_floor")
+				if _is_authority() and collider != null:
+					if on_floor:
+						_record_floor_splat(hit.position)
+					elif collider.is_in_group("mayo_contaminable"):
 						_record_splat(collider, hit.position, hit.normal)
-					point.position = hit.position + hit.normal * (strand_thickness * 0.5)
-					point.last_collision_position = point.position
-					point.velocity = Vector3.ZERO
-					point.phase = PointPhase.WALL_FIXED
+				_begin_landing(point, hit.position, hit.normal, on_floor)
 			else:
 				point.position = next
 				point.last_collision_position = next
@@ -1107,23 +1282,29 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 	for i in range(points.size() - 1, -1, -1):
 		var point := points[i]
 		if point.phase == PointPhase.LANDING and point.landing_age >= landing_transition_time:
-			_spawn_landing_droplets(point.position)
-			points.remove_at(i)
-		elif point.phase == PointPhase.WALL_FIXED and point.fixed_age >= wall_fixed_hold_time:
+			if droplets_on_floor if point.landed_on_floor else droplets_on_surfaces:
+				_spawn_landing_droplets(point.position)
 			points.remove_at(i)
 		elif point.position.y < -1.0:
 			points.remove_at(i)
 
 
-func _begin_landing(point: MayoPoint, hit_position: Vector3) -> void:
-	point.position = hit_position + Vector3.UP * 0.008
+## Settles a point onto whatever it hit. The offset is along the surface's own
+## normal rather than straight up, which is the same thing on a floor and the
+## difference between hugging a wall and sinking into it.
+func _begin_landing(point: MayoPoint, hit_position: Vector3, hit_normal: Vector3,
+		on_floor: bool) -> void:
+	point.position = hit_position + hit_normal * 0.008
+	point.landed_on_floor = on_floor
 	point.last_collision_position = point.position
 	point.velocity = Vector3.ZERO
 	point.powered = false
 	point.phase = PointPhase.LANDING
 	point.landing_age = 0.0
-	if not _is_authority():
-		return
+
+
+## The server paints the floor and queues the same splat for the peers.
+func _record_floor_splat(hit_position: Vector3) -> void:
 	var cell := _floor.paint_mayo(hit_position)
 	if cell.x >= 0:
 		_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR, 0, cell.x, cell.y]))
@@ -1187,6 +1368,15 @@ func apply_splats(data: PackedInt32Array) -> void:
 ## A hit that lands in front of a player's eyes goes on their glasses as well
 ## as on their body. Decided by the server off the same hit, so the mask that
 ## blinds them and the mask everyone else sees on their face are one thing.
+##
+## One impact deliberately marks two surfaces. The lenses have no collider --
+## the ray always hits the capsule -- so a hit on the forehead marks the
+## forehead and is then projected onto the lenses in front of it, where
+## physically the lenses would have caught it first. Giving them a collider
+## would be truer and would also shield the body and the floor behind the head,
+## which is a bigger change than the doubling is worth. What keeps it honest is
+## the filtering below: anything level with the lenses or behind them, and
+## anything projecting outside the field of view, marks nothing.
 func _record_visor_splat(player: MayoPlayer, hit_position: Vector3) -> void:
 	if player.visor == null:
 		return
@@ -1318,15 +1508,12 @@ func _enforce_spacing_constraint(shooter: Shooter = null) -> void:
 	var points := shooter.points
 	if points.size() < 2:
 		return
-	var break_distance_squared := _break_distance_squared()
 	for _pass in spacing_constraint_passes:
 		for i in points.size() - 1:
 			var front := points[i]
 			var back := points[i + 1]
 			# Inlined _points_connected: this runs once per pair per pass.
-			if front.burst_index != shooter.burst_index \
-					or front.burst_index != back.burst_index \
-					or front.position.distance_squared_to(back.position) > break_distance_squared:
+			if front.burst_index != shooter.burst_index or back.severed:
 				continue
 			var direction := (front.launch_direction + back.launch_direction).normalized()
 			if direction.length_squared() < 0.000001:
@@ -1361,12 +1548,10 @@ func _update_visuals(shooter: Shooter = null) -> void:
 	var camera_position := _camera.global_position
 	var camera_forward := -_camera.global_basis.z
 	var air_segments := _segments_for_phase(PointPhase.AIR, camera_position, shooter)
-	var wall_segments := _segments_for_phase(PointPhase.WALL_FIXED, camera_position, shooter)
 	var landing_segments := _segments_for_phase(PointPhase.LANDING, camera_position, shooter)
 	var shadow_segments := _shadow_segments(camera_position, shooter)
 	var mayo_tint := Color("fff0a8")
 	shooter.air_visual.update_ribbon(air_segments, camera_position, camera_forward, strand_thickness, mayo_tint)
-	shooter.wall_visual.update_ribbon(wall_segments, camera_position, camera_forward, strand_thickness, mayo_tint)
 	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, strand_thickness, mayo_tint, 0.004)
 	shooter.shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward, strand_thickness * 0.72,
 		Color(0.08, 0.07, 0.055, 0.18), 0.012)
@@ -1389,7 +1574,6 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: S
 	# Points skipped here are not array-adjacent to the next kept one, so the
 	# run breaks and `previous` is cleared; within a run adjacency holds.
 	var previous: MayoPoint = null
-	var break_distance_squared := _break_distance_squared()
 	for point in shooter.points:
 		if point.phase != phase or _is_near_camera(point, camera_position):
 			if not current.is_empty():
@@ -1398,7 +1582,7 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: S
 			previous = null
 			continue
 		if previous != null and (previous.burst_index != point.burst_index \
-				or previous.position.distance_squared_to(point.position) > break_distance_squared):
+				or point.severed):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []
@@ -1421,16 +1605,15 @@ func _shadow_segments(camera_position: Vector3, shooter: Shooter = null) -> Arra
 	var result: Array = []
 	var current: Array = []
 	var previous: MayoPoint = null
-	var break_distance_squared := _break_distance_squared()
 	for point in shooter.points:
-		if point.phase == PointPhase.WALL_FIXED or _is_near_camera(point, camera_position):
+		if _is_near_camera(point, camera_position):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []
 			previous = null
 			continue
 		if previous != null and (previous.burst_index != point.burst_index \
-				or previous.position.distance_squared_to(point.position) > break_distance_squared):
+				or point.severed):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []
@@ -1448,6 +1631,22 @@ func _shadow_segments(camera_position: Vector3, shooter: Shooter = null) -> Arra
 
 
 func _build_droplet_pool(mayo_material: Material) -> void:
+	# One pool per world, shared by every player in it, and a landing takes its
+	# droplets whether or not there is room: a full pool replaces the droplet
+	# taken longest ago, which is fine only while that one was about to expire
+	# anyway. What it has to hold is
+	#
+	#     needed = landings per second x droplets_per_landing x droplet_lifetime
+	#
+	# A landing is one point reaching the floor, so the rate follows
+	# extend_speed / point_spacing: 156 a second per player at the current
+	# density. Two players firing: 311 x 4 x 0.40 = 498, inside 512.
+	#
+	# MAX_CLIENTS caps a session at two players, which is what this is sized
+	# for. Raise it and this needs recomputing -- at four players the same
+	# settings need 1369, and droplets start being thrown away with two thirds
+	# of their life left. debug_droplet_overwrites and
+	# debug_droplet_overwritten_life measure exactly that.
 	const POOL_SIZE := 512
 	var droplet_mesh := SphereMesh.new()
 	droplet_mesh.radius = 0.5
@@ -1478,11 +1677,20 @@ func _build_droplet_pool(mayo_material: Material) -> void:
 func _spawn_landing_droplets(position: Vector3) -> void:
 	if _droplet_multimesh == null:
 		return
-	var expires_at := Time.get_ticks_msec() * 0.001 + droplet_lifetime
-	for _i in 7:
+	debug_droplet_spawns += 1
+	var now := Time.get_ticks_msec() * 0.001
+	var expires_at := now + droplet_lifetime
+	for _i in droplets_per_landing:
 		var droplet := _droplets[_droplet_cursor]
 		if not droplet.active:
 			_active_droplet_indices.push_back(_droplet_cursor)
+		else:
+			# The cursor walks the pool in order and every droplet is given the
+			# same lifetime, so the slot it arrives at is always the one taken
+			# longest ago. Recorded so that can be checked rather than assumed:
+			# if it holds, what is overwritten was about to expire anyway.
+			debug_droplet_overwrites += 1
+			debug_droplet_overwritten_life += maxf(droplet.expires_at - now, 0.0)
 		_droplet_cursor = (_droplet_cursor + 1) % _droplets.size()
 		var angle := _rng.randf_range(0.0, TAU)
 		var spread_radius := sqrt(_rng.randf()) * 0.12
@@ -1533,6 +1741,10 @@ func debug_reset_profile() -> void:
 	debug_profile_frames = 0
 	debug_raycast_count = 0
 	debug_max_points = 0
+	debug_splats = 0
+	debug_droplet_spawns = 0
+	debug_droplet_overwrites = 0
+	debug_droplet_overwritten_life = 0.0
 	for key in debug_timings_us:
 		debug_timings_us[key] = 0
 	if is_instance_valid(_floor):
