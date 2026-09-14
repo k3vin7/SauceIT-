@@ -99,7 +99,7 @@ class MayoDroplet:
 
 @export_group("Mayo Stream — Reference Values")
 @export_range(0.2, 6.0, 0.01, "suffix:m") var stream_range := 2.94
-@export_range(0.5, 15.0, 0.1, "suffix:m/s") var extend_speed := 10.0
+@export_range(0.5, 25.0, 0.1, "suffix:m/s") var extend_speed := 14.0
 ## A tap keeps firing for at least this long. Emission is a couple of points a
 ## frame, so a click held for one frame put out two of them -- not enough to be
 ## a strand, or to leave anything but a dot.
@@ -115,8 +115,8 @@ class MayoDroplet:
 @export_range(0.02, 0.2, 0.001, "suffix:m") var strand_thickness := 0.093
 @export_range(0.0, 0.5, 0.01, "suffix:m") var muzzle_forward_offset := 0.15
 ## Matched to stream_range at extend_speed, so neither silently cuts first:
-## 2.94 m at 10 m/s is 0.294 s.
-@export_range(0.02, 1.5, 0.001, "suffix:s") var point_time_lifetime := 0.294
+## 2.94 m at 14 m/s is 0.21 s.
+@export_range(0.02, 1.5, 0.001, "suffix:s") var point_time_lifetime := 0.21
 @export var use_time_lifetime := true
 @export var use_distance_lifetime := true
 @export_range(0.0, 30.0, 0.1, "suffix:m/s²") var gravity_acceleration := 9.8
@@ -129,7 +129,11 @@ class MayoDroplet:
 ## with the spacing, so the ratio is what it was.
 @export_range(0.0, 0.05, 0.001, "suffix:m") var lateral_position_jitter := 0.0045
 @export_range(0.0, 0.08, 0.001, "suffix:rad") var yaw_angle_jitter := 0.009
-@export_range(0.0, 0.5, 0.01) var speed_magnitude_jitter := 0.10
+## A fraction of the launch speed, so what it does depends on that speed: at
+## 7 m/s a tenth was a spread of 0.7 m/s, and at 14 it was 1.4, which pulled
+## neighbouring points apart faster than the strand could hold and tore it with
+## the aim standing still. Halved with the speed, so the spread is what it was.
+@export_range(0.0, 0.5, 0.01) var speed_magnitude_jitter := 0.05
 @export_range(0.0, 1.0, 0.01) var inherited_player_velocity := 0.22
 ## Scales with the density above: at 0.045 a strand carries twice the points,
 ## and a cap left at 192 would cut it short instead of letting it run its range.

@@ -57,7 +57,10 @@ func _run() -> void:
 	# --- 1b. short pause: gap stays under the distance threshold, so only the
 	# burst index can separate them
 	await _settle(scene)
-	var short_pause := await _two_bursts(scene, 3)
+	# One frame: at the speed the strand leaves at, a longer pause carries the
+	# first burst's tail more than the break distance away on its own, and the
+	# burst index would not be the thing under test.
+	var short_pause := await _two_bursts(scene, 1)
 	print("short pause: gap %.3f m (threshold %.3f m) -> AIR segments = %d, sizes %s" % [
 		short_pause.gap, short_pause.threshold, short_pause.segments.size(),
 		str(short_pause.segments.map(func(seg): return seg.size()))])

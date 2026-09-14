@@ -39,18 +39,22 @@ func _run() -> void:
 	_check(steady.segments == 1, "a steady aim tore the strand into %d pieces" % steady.segments)
 	_check(steady.over_threshold == 0, "a steady aim already stretched a pair past the threshold")
 
-	# Turning fast must tear it, and harder turns must tear it into more pieces.
-	var previous := 1
+	# Turning fast must tear it, and harder turns must pull it apart harder.
+	# Measured by how far the widest pair has been stretched rather than by how
+	# many pieces come out: at the extreme rates the pieces are single points
+	# that leave the strand as fast as they are made, so counting them is not
+	# monotonic even while the tearing plainly worsens.
+	var previous := 0.0
 	for rate in [480.0, 720.0, 1080.0]:
 		var result := await _whip(scene, rate, threshold)
 		print("%6.0f deg/s -> %d AIR segments, largest gap %.3f m, %d pairs past the threshold" % [
 			rate, result.segments, result.largest_gap, result.over_threshold])
 		_check(result.segments > 1,
 			"turning at %.0f deg/s did not tear the strand" % rate)
-		_check(result.segments >= previous,
-			"turning at %.0f deg/s tore the strand into fewer pieces (%d) than the slower turn (%d)" % [
-				rate, result.segments, previous])
-		previous = result.segments
+		_check(result.largest_gap > previous,
+			"turning at %.0f deg/s stretched the strand less (%.3f m) than the slower turn (%.3f m)" % [
+				rate, result.largest_gap, previous])
+		previous = result.largest_gap
 
 	if failures.is_empty():
 		print("MAYO_WHIP_OK")
