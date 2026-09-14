@@ -297,6 +297,7 @@ var debug_input_override := false
 var debug_input_move := Vector2.ZERO
 var debug_input_run := false
 var debug_input_firing := false
+var debug_input_jump := false
 var debug_profile_enabled := false
 var debug_profile_frames := 0
 var debug_raycast_count := 0
@@ -445,19 +446,23 @@ func _read_local_input() -> void:
 		_local.player.use_injected_input = true
 		_local.player.input_move = debug_input_move
 		_local.player.input_run = debug_input_run
+		_local.player.input_jump = debug_input_jump
 	if not is_instance_valid(_net) or not _net.is_online():
 		return
 	if _net.is_server():
 		return
 	var move := Vector2.ZERO
 	var run := false
+	var jump := false
 	if debug_input_override:
 		move = debug_input_move
 		run = debug_input_run
+		jump = debug_input_jump
 	elif _input_enabled:
 		move = Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
 		run = Input.is_action_pressed("run")
-	_net.send_input(move, run, _local.firing, _local.aim_yaw, _local.aim_pitch)
+		jump = Input.is_action_pressed("jump")
+	_net.send_input(move, run, jump, _local.firing, _local.aim_yaw, _local.aim_pitch)
 
 
 func _fire_held() -> bool:
@@ -469,11 +474,12 @@ func _fire_held() -> bool:
 ## Stands in for the keyboard in the headless checks, the way debug_set_aim
 ## stands in for the mouse. The two-player harness uses it to hold whichever
 ## player is not being driven still.
-func debug_set_input(move: Vector2, run: bool, firing: bool) -> void:
+func debug_set_input(move: Vector2, run: bool, firing: bool, jump := false) -> void:
 	debug_input_override = true
 	debug_input_move = move
 	debug_input_run = run
 	debug_input_firing = firing
+	debug_input_jump = jump
 
 
 ## Hands the body back to the real keyboard.
@@ -482,6 +488,7 @@ func debug_clear_input_override() -> void:
 	debug_input_move = Vector2.ZERO
 	debug_input_run = false
 	debug_input_firing = false
+	debug_input_jump = false
 
 
 ## True when this peer decides slips and grid paint: the server, or offline,
@@ -584,6 +591,11 @@ func _ensure_input_actions() -> void:
 		var run := InputEventKey.new()
 		run.physical_keycode = KEY_SHIFT
 		InputMap.action_add_event("run", run)
+	if not InputMap.has_action("jump"):
+		InputMap.add_action("jump")
+		var jump := InputEventKey.new()
+		jump.physical_keycode = KEY_SPACE
+		InputMap.action_add_event("jump", jump)
 	if not InputMap.has_action("wipe_screen"):
 		InputMap.add_action("wipe_screen")
 		var wipe := InputEventKey.new()
@@ -607,10 +619,9 @@ func _build_world() -> void:
 
 	_floor = FloorScript.new()
 	_floor.name = "FloorContamination"
-	# Wide enough for the players standing on it: from a 2.2 m muzzle a level
-	# spray carries about 7.6 m, and at 12 m across it landed just past the
-	# edge from the spawn -- nothing was painted at all.
-	_floor.floor_size = Vector2(16.0, 16.0)
+	# Nine times the area it was. The walls are not scaled with it, so they sit
+	# in it as obstacles rather than as its edges.
+	_floor.floor_size = Vector2(48.0, 48.0)
 	_floor.cell_size = grid_cell_size
 	_floor.brush_radius = contamination_brush_radius
 	add_child(_floor)

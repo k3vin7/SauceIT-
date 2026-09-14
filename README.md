@@ -6,7 +6,7 @@ Godot 4 3D prototype for validating one continuous viscous mayonnaise strand, pe
 
 1. Open this directory in Godot 4.4 or newer.
 2. Run the project (`F6`/`F5`). The main scene is already configured.
-3. Move with `WASD`, hold `Shift` to run, aim with the mouse, and hold the left mouse button to fire. `R` wipes sauce off your screen. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
+3. Move with `WASD`, hold `Shift` to run, `Space` to jump, aim with the mouse, and hold the left mouse button to fire. `R` wipes sauce off your screen. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
 4. Spray the floor, then run across your own mayo. Running over a painted cell knocks you down; walking over it does not.
 5. `F2` opens the LAN panel; without it the game is the single-player one it has always been.
 

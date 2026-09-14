@@ -147,7 +147,7 @@ func _run() -> void:
 	for _f in 40:
 		await physics_frame
 		client_world._net._submit_input.rpc_id(1,
-			Vector2(NAN, INF), true, true, NAN, INF)
+			Vector2(NAN, INF), true, false, true, NAN, INF)
 	await _wait(4)
 	var after_nan: Vector3 = target.global_position
 	print("hostile: %d NaN packets rejected, B at %.2v (started %.2v), speed %.2f m/s" % [
@@ -173,7 +173,7 @@ func _run() -> void:
 	for _f in 90:
 		await physics_frame
 		client_world._net._submit_input.rpc_id(1,
-			Vector2(0.0, -100.0), true, false, 0.0, 0.0)
+			Vector2(0.0, -100.0), true, false, false, 0.0, 0.0)
 		# The peak over the run, not the speed at the end of it: B has a wall
 		# ahead of them and stalls against it, which says nothing about whether
 		# the clamp held.
