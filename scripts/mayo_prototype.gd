@@ -99,7 +99,7 @@ class MayoDroplet:
 
 @export_group("Mayo Stream — Reference Values")
 @export_range(0.2, 6.0, 0.01, "suffix:m") var stream_range := 2.94
-@export_range(0.5, 15.0, 0.1, "suffix:m/s") var extend_speed := 7.0
+@export_range(0.5, 15.0, 0.1, "suffix:m/s") var extend_speed := 10.0
 ## A tap keeps firing for at least this long. Emission is a couple of points a
 ## frame, so a click held for one frame put out two of them -- not enough to be
 ## a strand, or to leave anything but a dot.
@@ -114,7 +114,9 @@ class MayoDroplet:
 @export_range(0.025, 0.25, 0.005, "suffix:m") var point_spacing := 0.045
 @export_range(0.02, 0.2, 0.001, "suffix:m") var strand_thickness := 0.093
 @export_range(0.0, 0.5, 0.01, "suffix:m") var muzzle_forward_offset := 0.15
-@export_range(0.02, 1.5, 0.01, "suffix:s") var point_time_lifetime := 0.42
+## Matched to stream_range at extend_speed, so neither silently cuts first:
+## 2.94 m at 10 m/s is 0.294 s.
+@export_range(0.02, 1.5, 0.001, "suffix:s") var point_time_lifetime := 0.294
 @export var use_time_lifetime := true
 @export var use_distance_lifetime := true
 @export_range(0.0, 30.0, 0.1, "suffix:m/s²") var gravity_acceleration := 9.8
