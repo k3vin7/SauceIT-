@@ -65,6 +65,9 @@ class Shooter:
 	var burst_index := 0
 	var was_firing := false
 	var firing := false
+	## Counts down after the trigger is let go, so a tap still puts out a
+	## stream rather than a couple of points.
+	var fire_hold := 0.0
 	var next_collision_slot := 0
 	var aim_yaw := 0.0
 	var aim_pitch := 0.0
@@ -83,6 +86,10 @@ class MayoDroplet:
 @export_group("Mayo Stream — Reference Values")
 @export_range(0.2, 6.0, 0.01, "suffix:m") var stream_range := 2.94
 @export_range(0.5, 15.0, 0.1, "suffix:m/s") var extend_speed := 7.0
+## A tap keeps firing for at least this long. Emission is a couple of points a
+## frame, so a click held for one frame put out two of them -- not enough to be
+## a strand, or to leave anything but a dot.
+@export_range(0.0, 0.5, 0.01, "suffix:s") var minimum_fire_time := 0.1
 ## How far apart the strand's points are, which is also how finely it samples
 ## what it hits: a sweep across someone's face only marks them where a point
 ## lands, so at 0.09 a quick flick left three dots rather than a line.
@@ -95,8 +102,13 @@ class MayoDroplet:
 @export_range(0.0, 30.0, 0.1, "suffix:m/s²") var gravity_acceleration := 9.8
 
 @export_group("Emission Shape")
-@export_range(0.0, 0.05, 0.001, "suffix:m") var lateral_position_jitter := 0.009
-@export_range(0.0, 0.08, 0.001, "suffix:rad") var yaw_angle_jitter := 0.018
+## Both are absolute, while the spacing between points is not, so what they do
+## to the look of the line depends on the density: at 0.045 m spacing the old
+## values threw each point sideways by 40% of the step to the next one, and the
+## strand read as a zigzag rather than as a line with some life in it. Halved
+## with the spacing, so the ratio is what it was.
+@export_range(0.0, 0.05, 0.001, "suffix:m") var lateral_position_jitter := 0.0045
+@export_range(0.0, 0.08, 0.001, "suffix:rad") var yaw_angle_jitter := 0.009
 @export_range(0.0, 0.5, 0.01) var speed_magnitude_jitter := 0.10
 @export_range(0.0, 1.0, 0.01) var inherited_player_velocity := 0.22
 ## Scales with the density above: at 0.045 a strand carries twice the points,
@@ -327,7 +339,9 @@ func _physics_process(delta: float) -> void:
 		debug_timings_us.point_physics += Time.get_ticks_usec() - step_started
 		step_started = Time.get_ticks_usec()
 	for shooter in _shooters.values():
-		if shooter.firing:
+		# was_firing is the held state _advance_strand settled on, not the raw
+		# trigger: a tap's points want holding together too.
+		if shooter.was_firing:
 			_enforce_spacing_constraint(shooter)
 	if debug_profile_enabled:
 		debug_timings_us.constraint += Time.get_ticks_usec() - step_started
@@ -357,7 +371,15 @@ func _physics_process(delta: float) -> void:
 ## Emission and the trigger edges, for one shooter. Split out of the frame loop
 ## so remote shooters go through exactly the same path as the local one.
 func _advance_strand(shooter: Shooter, delta: float) -> void:
+	# A press buys a minimum of stream whether or not it is held. Every peer
+	# runs this off the same press, so nobody has to be told about it.
 	if shooter.firing:
+		shooter.fire_hold = minimum_fire_time
+	else:
+		shooter.fire_hold = maxf(shooter.fire_hold - delta, 0.0)
+	var firing: bool = shooter.firing or shooter.fire_hold > 0.0
+
+	if firing:
 		if not shooter.was_firing:
 			shooter.burst_index += 1
 		_apply_inertial_follow(shooter.player.frame_movement, shooter)
@@ -369,7 +391,7 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		shooter.emit_distance = 0.0
 		if shooter.was_firing:
 			_apply_release_pressure_loss(shooter)
-	shooter.was_firing = shooter.firing
+	shooter.was_firing = firing
 
 
 ## The local player's own keyboard and mouse. Their aim is applied immediately,
