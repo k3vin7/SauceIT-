@@ -40,6 +40,12 @@ class MayoPoint:
 	## True when this point settled on the floor rather than on a wall or a
 	## player. Only the floor throws droplets by default.
 	var landed_on_floor := false
+	## True once this point has come away from the one before it in the array.
+	## Latched: sauce that has parted does not join back up, and without the
+	## latch it did -- the threshold a pair is held to loosens when the pressure
+	## leaves it, so a strand torn by a whip healed the moment it stopped being
+	## a jet.
+	var severed := false
 	var burst_index := 0
 
 class RibbonPoint:
@@ -68,6 +74,14 @@ class Shooter:
 	## Counts down after the trigger is let go, so a tap still puts out a
 	## stream rather than a couple of points.
 	var fire_hold := 0.0
+	## And counts down after that, with the trigger dead, so hammering the
+	## button gives separate squirts rather than one stream.
+	var fire_cooldown := 0.0
+	## Whether the trigger has come up since this squirt began. A squirt that is
+	## still being held carries on; one that was let go runs out its minimum and
+	## then locks. Without this, hammering re-armed the minimum on every press
+	## and the stream never ended, so the lock never started either.
+	var trigger_released := true
 	var next_collision_slot := 0
 	var aim_yaw := 0.0
 	var aim_pitch := 0.0
@@ -90,6 +104,10 @@ class MayoDroplet:
 ## frame, so a click held for one frame put out two of them -- not enough to be
 ## a strand, or to leave anything but a dot.
 @export_range(0.0, 0.5, 0.01, "suffix:s") var minimum_fire_time := 0.1
+## And the trigger is dead for this long afterwards. Without it the minimum
+## above re-arms on every press, so holding the button down and hammering it
+## came out the same: one unbroken stream. With it, taps are separate squirts.
+@export_range(0.0, 1.0, 0.01, "suffix:s") var fire_cooldown_time := 0.15
 ## How far apart the strand's points are, which is also how finely it samples
 ## what it hits: a sweep across someone's face only marks them where a point
 ## lands, so at 0.09 a quick flick left three dots rather than a line.
@@ -334,6 +352,7 @@ func _physics_process(delta: float) -> void:
 
 	for shooter in _shooters.values():
 		_simulate_points(delta, shooter)
+		_update_connections(shooter)
 	_simulate_droplets(delta)
 	if debug_profile_enabled:
 		debug_timings_us.point_physics += Time.get_ticks_usec() - step_started
@@ -371,13 +390,30 @@ func _physics_process(delta: float) -> void:
 ## Emission and the trigger edges, for one shooter. Split out of the frame loop
 ## so remote shooters go through exactly the same path as the local one.
 func _advance_strand(shooter: Shooter, delta: float) -> void:
-	# A press buys a minimum of stream whether or not it is held. Every peer
-	# runs this off the same press, so nobody has to be told about it.
-	if shooter.firing:
+	# A press buys a minimum of stream whether or not it is held, and the
+	# trigger is then dead for a moment. Every peer runs this off the same
+	# press, so nobody has to be told about it.
+	if not shooter.firing:
+		shooter.trigger_released = true
+	var firing := false
+	if shooter.fire_cooldown > 0.0:
+		# Locked: the trigger does nothing at all.
+		shooter.fire_cooldown = maxf(shooter.fire_cooldown - delta, 0.0)
+		shooter.fire_hold = 0.0
+	elif shooter.fire_hold > 0.0:
+		# A squirt is under way. Still holding carries it on; let go and it
+		# runs out what is left of its minimum and then locks.
+		if shooter.firing and not shooter.trigger_released:
+			shooter.fire_hold = minimum_fire_time
+		else:
+			shooter.fire_hold = maxf(shooter.fire_hold - delta, 0.0)
+		firing = shooter.fire_hold > 0.0
+		if not firing:
+			shooter.fire_cooldown = fire_cooldown_time
+	elif shooter.firing:
 		shooter.fire_hold = minimum_fire_time
-	else:
-		shooter.fire_hold = maxf(shooter.fire_hold - delta, 0.0)
-	var firing: bool = shooter.firing or shooter.fire_hold > 0.0
+		shooter.trigger_released = false
+		firing = true
 
 	if firing:
 		if not shooter.was_firing:
@@ -1072,8 +1108,26 @@ func _emit_point(shooter: Shooter = null) -> void:
 ## Two array-adjacent points are one continuous strand only if they came from
 ## the same trigger press and have not been pulled apart into separate blobs.
 func _points_connected(front: MayoPoint, back: MayoPoint) -> bool:
-	return front.burst_index == back.burst_index \
-		and front.position.distance_squared_to(back.position) <= _break_distance_squared(front, back)
+	return front.burst_index == back.burst_index and not back.severed
+
+
+## Walks each shooter's strand once a frame and latches the pairs that have come
+## apart. Evaluated here rather than wherever a break is asked about, so the
+## answer cannot change between the constraint, the ribbon and the shadow, and
+## cannot change back.
+func _update_connections(shooter: Shooter) -> void:
+	var points := shooter.points
+	for i in range(1, points.size()):
+		var back := points[i]
+		if back.severed:
+			continue
+		var front := points[i - 1]
+		if front.burst_index != back.burst_index:
+			back.severed = true
+			continue
+		if front.position.distance_squared_to(back.position) \
+				> _break_distance_squared(front, back):
+			back.severed = true
 
 
 ## Which threshold a pair is held to: the taut one while either end is still
@@ -1442,10 +1496,7 @@ func _enforce_spacing_constraint(shooter: Shooter = null) -> void:
 			var front := points[i]
 			var back := points[i + 1]
 			# Inlined _points_connected: this runs once per pair per pass.
-			if front.burst_index != shooter.burst_index \
-					or front.burst_index != back.burst_index \
-					or front.position.distance_squared_to(back.position) \
-						> _break_distance_squared(front, back):
+			if front.burst_index != shooter.burst_index or back.severed:
 				continue
 			var direction := (front.launch_direction + back.launch_direction).normalized()
 			if direction.length_squared() < 0.000001:
@@ -1514,8 +1565,7 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: S
 			previous = null
 			continue
 		if previous != null and (previous.burst_index != point.burst_index \
-				or previous.position.distance_squared_to(point.position) \
-					> _break_distance_squared(previous, point)):
+				or point.severed):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []
@@ -1546,8 +1596,7 @@ func _shadow_segments(camera_position: Vector3, shooter: Shooter = null) -> Arra
 			previous = null
 			continue
 		if previous != null and (previous.burst_index != point.burst_index \
-				or previous.position.distance_squared_to(point.position) \
-					> _break_distance_squared(previous, point)):
+				or point.severed):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []

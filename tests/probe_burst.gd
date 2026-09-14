@@ -27,6 +27,15 @@ func _run() -> void:
 	scene.debug_set_aim(0.0, 0.0)
 
 	# --- 2. a released burst must fall the same whether or not you fire again
+	# The trigger timing is turned off for the burst-index checks below: they
+	# are about whether two bursts stay separate, and a minimum squirt and a
+	# lock after it decide when a second burst may start at all. That is its
+	# own behaviour, checked at the end.
+	var real_minimum: float = scene.minimum_fire_time
+	var real_cooldown: float = scene.fire_cooldown_time
+	scene.minimum_fire_time = 0.0
+	scene.fire_cooldown_time = 0.0
+
 	var free_fall := await _tail_travel(scene, false)
 	await _settle(scene)
 	var with_second := await _tail_travel(scene, true)
@@ -68,6 +77,51 @@ func _run() -> void:
 	_check(trailing_bow > lone_bow * 0.6,
 		"an older burst in the array flattened the new strand's bend: %.4f m vs %.4f m alone" % [
 			trailing_bow, lone_bow])
+
+	# --- 4. the trigger's own timing: a tap is a squirt, a held button is one
+	# stream, and hammering is separate squirts rather than one long one.
+	scene.minimum_fire_time = real_minimum
+	scene.fire_cooldown_time = real_cooldown
+	await _settle(scene)
+	var tap_points := 0
+	var tap_bursts := {}
+	for f in 40:
+		Input.action_press("fire_mayo") if f == 0 else Input.action_release("fire_mayo")
+		await physics_frame
+		tap_points = maxi(tap_points, scene._points.size())
+		for point in scene._points:
+			tap_bursts[point.burst_index] = true
+	print("one frame of trigger: %d points, %d burst (minimum %.2f s)" % [
+		tap_points, tap_bursts.size(), scene.minimum_fire_time])
+	_check(tap_points >= 8,
+		"a tap put out %d points, barely more than the two a single frame emits" % tap_points)
+	_check(tap_bursts.size() == 1, "a tap made %d bursts" % tap_bursts.size())
+
+	await _settle(scene)
+	var held_bursts := {}
+	for _f in 120:
+		Input.action_press("fire_mayo")
+		await physics_frame
+		for point in scene._points:
+			held_bursts[point.burst_index] = true
+	Input.action_release("fire_mayo")
+	await _settle(scene)
+	var hammered := {}
+	for f in 120:
+		if f % 2 == 0:
+			Input.action_press("fire_mayo")
+		else:
+			Input.action_release("fire_mayo")
+		await physics_frame
+		for point in scene._points:
+			hammered[point.burst_index] = true
+	Input.action_release("fire_mayo")
+	print("two seconds: holding it down -> %d burst, hammering -> %d bursts" % [
+		held_bursts.size(), hammered.size()])
+	_check(held_bursts.size() == 1,
+		"holding the trigger broke into %d bursts" % held_bursts.size())
+	_check(hammered.size() >= 4,
+		"hammering the trigger made %d bursts: the lock is not separating them" % hammered.size())
 
 	if failures.is_empty():
 		print("MAYO_BURST_OK")
