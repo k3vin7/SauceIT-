@@ -93,9 +93,9 @@ func _run() -> void:
 				far += 1
 	print("marks on the side facing the shooter: %d, on the far side: %d" % [near, far])
 	_check(near > 0, "nothing was marked on the side the strand came from")
-	# Not zero: the brush is the world's, 40 cells across a body only 101 cells
-	# round, so it genuinely reaches a little past the quarter that counts as
-	# "the near side". What matters is that the far side is a rounding error.
+	# Not zero: the brush is the world's, four cells across a body only forty
+	# cells round, so it genuinely reaches a little past the quarter that counts
+	# as "the near side". What matters is that the far side is a rounding error.
 	_check(float(far) / float(maxi(near + far, 1)) < 0.05,
 		"%d of %d marked cells landed on the side away from the strand" % [far, near + far])
 

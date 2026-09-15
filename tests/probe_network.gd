@@ -307,10 +307,13 @@ func _run() -> void:
 	var client_body: String = client_world.body_md5(client_id)
 	var host_body_cells: int = server_world.shooter_for(client_id).player.contamination.painted_cell_count()
 	var client_body_cells: int = client_world.shooter_for(client_id).player.contamination.painted_cell_count()
-	print("B's body after A sprays them: %d cells on the host, %d on B's screen" % [
-		host_body_cells, client_body_cells])
-	_check(host_body_cells > 20,
-		"A sprayed B and only %d cells of B's body were marked" % host_body_cells)
+	var host_body_coverage: float = server_world.shooter_for(client_id).player.contamination.coverage()
+	print("B's body after A sprays them: %d cells on the host (%.1f%%), %d on B's screen" % [
+		host_body_cells, host_body_coverage * 100.0, client_body_cells])
+	# As a fraction of the body rather than a cell count: the grid is deliberately
+	# coarse, and how many cells a splat covers is a property of that coarseness.
+	_check(host_body_coverage > 0.005,
+		"A sprayed B and only %.2f%% of B's body was marked" % (host_body_coverage * 100.0))
 	_check(host_body == client_body,
 		"the two screens disagree about B's body (%d vs %d cells)" % [
 			host_body_cells, client_body_cells])
