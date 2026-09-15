@@ -37,7 +37,9 @@ func _press(keycode: Key) -> void:
 
 ## One world per peer, each in its own SubViewport so it gets its own physics
 ## space, and its own MultiplayerAPI so it is as separate as another process.
-func _session(count: int, port: int) -> Array:
+## `codes` is one lobby code per peer, host first; an empty array means an open
+## session.
+func _session(count: int, port: int, codes: Array = []) -> Array:
 	var worlds := []
 	for i in count:
 		var viewport := SubViewport.new()
@@ -53,6 +55,8 @@ func _session(count: int, port: int) -> Array:
 	await physics_frame
 	for i in count:
 		set_multiplayer(SceneMultiplayer.new(), worlds[i].get_path())
+	for i in count:
+		worlds[i]._net.lobby_code = str(codes[i]) if i < codes.size() else ""
 	worlds[0]._net.host(port)
 	for i in range(1, count):
 		worlds[i]._net.join("127.0.0.1", port)
@@ -198,6 +202,25 @@ func _run() -> void:
 	_check(door_host.shooter_ids().size() == 2,
 		"after ten rejoins the host has %d players, expected 2" % door_host.shooter_ids().size())
 	await _close(revolving)
+
+	# --- a guest that does not know the code never becomes a player ---
+	var gated := await _session(3, 24733, ["mayo", "mayo", "ketchup"])
+	var gate_host = gated[0]
+	var welcome = gated[1]
+	var refused = gated[2]
+	print("lobby code: host sees %d players, right code online %s, wrong code online %s (%s), refused %d" % [
+		gate_host.shooter_ids().size(), str(welcome._net.is_online()),
+		str(refused._net.is_online()), refused._net.status(),
+		gate_host._net.refused_peers])
+	_check(gate_host.shooter_ids().size() == 2,
+		"the host has %d players: the wrong code got in" % gate_host.shooter_ids().size())
+	_check(welcome._net.is_online(), "the right code was refused as well")
+	_check(not refused._net.is_online(), "the wrong code is still connected")
+	_check(gate_host._net.refused_peers == 1,
+		"the host refused %d peers, expected 1" % gate_host._net.refused_peers)
+	_check(refused._net.status().contains("code"),
+		"the refused guest was told '%s' rather than that its code was wrong" % refused._net.status())
+	await _close(gated)
 
 	_finish()
 

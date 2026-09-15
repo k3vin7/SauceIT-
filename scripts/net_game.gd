@@ -37,6 +37,8 @@ const INPUT_PACKETS_PER_TICK := 1
 ## five leaves room for mashing the key and for retries without leaving the
 ## reliable channel open to abuse.
 const WIPE_REQUESTS_PER_SECOND := 5.0
+## How long a peer has to prove it knows the code before it is dropped.
+const AUTH_TIMEOUT := 3.0
 ## Three guests and the host: four players. The droplet pool and the state
 ## packet are both sized against this -- see POOL_SIZE in mayo_prototype.gd.
 const MAX_CLIENTS := 3
@@ -48,6 +50,11 @@ const STATE_STRIDE := 12
 
 signal status_changed(message: String)
 
+## The lobby code both ends must agree on. Checked during the handshake, before
+## a peer is a peer at all: a guest that gets it wrong is disconnected without
+## ever reaching the world, so none of the RPCs above are exposed to it. Empty
+## means an open session.
+var lobby_code := ""
 var world: Node
 
 var _peer: ENetMultiplayerPeer
@@ -72,6 +79,11 @@ var debug_state_packets := 0
 var rejected_packets := 0
 ## And thrown away for arriving faster than a peer is allowed to send.
 var dropped_packets := 0
+## Peers turned away at the handshake for not knowing the code.
+var refused_peers := 0
+var _refused_for_code := false
+## Whether this peer got past the handshake into the session.
+var _joined := false
 
 
 func bind(new_world: Node) -> void:
@@ -111,9 +123,11 @@ func host(port := DEFAULT_PORT) -> bool:
 	_peer = peer
 	multiplayer.multiplayer_peer = peer
 	_online = true
+	_arm_authentication()
 	_connect_signals()
 	# The host keeps the body it already had; it just stops being the only one.
-	_set_status("hosting on port %d, waiting for a player" % port)
+	_set_status("hosting on port %d%s, waiting for a player" % [
+		port, "" if lobby_code.is_empty() else ", code '%s'" % lobby_code])
 	return true
 
 
@@ -128,6 +142,7 @@ func join(address: String, port := DEFAULT_PORT) -> bool:
 	_peer = peer
 	multiplayer.multiplayer_peer = peer
 	_online = true
+	_arm_authentication()
 	_connect_signals()
 	_set_status("connecting to %s:%d" % [address, port])
 	return true
@@ -143,7 +158,60 @@ func leave() -> void:
 	_input_this_tick.clear()
 	_wipe_budget.clear()
 	_slots = {1: 0}
+	_refused_for_code = false
+	_joined = false
 	_set_status("offline")
+
+
+## Both ends send their code the moment the other is seen, and the host is the
+## one that judges. Godot holds the peer in authenticating until it is let
+## through, so a wrong code never becomes a player.
+func _arm_authentication() -> void:
+	var scene_multiplayer := multiplayer as SceneMultiplayer
+	if scene_multiplayer == null:
+		return
+	scene_multiplayer.auth_timeout = AUTH_TIMEOUT
+	scene_multiplayer.auth_callback = _check_code
+	if not scene_multiplayer.peer_authenticating.is_connected(_on_peer_authenticating):
+		scene_multiplayer.peer_authenticating.connect(_on_peer_authenticating)
+		scene_multiplayer.peer_authentication_failed.connect(_on_authentication_failed)
+
+
+## Tagged rather than sent bare, so an open session still has something to send:
+## an empty payload is not a message, and the handshake would sit there.
+func _auth_payload() -> PackedByteArray:
+	return ("mayo1:" + lobby_code).to_utf8_buffer()
+
+
+func _on_peer_authenticating(id: int) -> void:
+	var scene_multiplayer := multiplayer as SceneMultiplayer
+	if scene_multiplayer != null:
+		scene_multiplayer.send_auth(id, _auth_payload())
+
+
+## The host decides; a guest accepts whatever the host says, since the host has
+## already checked the guest by the time it answers.
+func _check_code(id: int, data: PackedByteArray) -> void:
+	var scene_multiplayer := multiplayer as SceneMultiplayer
+	if scene_multiplayer == null:
+		return
+	if not multiplayer.is_server():
+		scene_multiplayer.complete_auth(id)
+		return
+	if data == _auth_payload():
+		scene_multiplayer.complete_auth(id)
+		return
+	refused_peers += 1
+	_set_status("a player was turned away: wrong code")
+	multiplayer.multiplayer_peer.disconnect_peer(id)
+
+
+func _on_authentication_failed(_id: int) -> void:
+	# The guest is told nothing but that it was refused, so the failure has to be
+	# remembered here: the connection_failed that follows would otherwise report
+	# it as an unreachable host.
+	if not multiplayer.is_server():
+		_refused_for_code = true
 
 
 func _connect_signals() -> void:
@@ -207,20 +275,26 @@ func _on_peer_disconnected(id: int) -> void:
 
 
 func _on_connected_to_server() -> void:
+	_joined = true
 	# The world is not touched here: the server's first message does that, so
 	# that a spawn cannot land before the reset and be wiped by it.
 	_set_status("connected as player %d" % multiplayer.get_unique_id())
 
 
 func _on_connection_failed() -> void:
+	var refused := _refused_for_code
 	leave()
-	_set_status("connection failed")
+	_set_status("wrong lobby code" if refused else "connection failed")
 
 
 func _on_server_disconnected() -> void:
+	# A guest that never got as far as being in the session was refused at the
+	# handshake, which is the only thing the host drops a peer over before it has
+	# a body. Once it is in, the same signal means what it always did.
+	var refused := _refused_for_code or not _joined
 	leave()
 	world.reset_to_offline()
-	_set_status("host closed the session")
+	_set_status("wrong lobby code" if refused else "host closed the session")
 
 
 func _set_status(message: String) -> void:

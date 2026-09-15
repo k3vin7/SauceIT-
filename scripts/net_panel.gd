@@ -8,6 +8,7 @@ const PORT_HINT := "24565"
 
 var _net: MayoNet
 var _address_field: LineEdit
+var _code_field: LineEdit
 var _port_field: LineEdit
 var _status_label: Label
 var _host_button: Button
@@ -55,8 +56,24 @@ func _ready() -> void:
 	margin.add_child(column)
 
 	var title := Label.new()
-	title.text = "LAN 2인 플레이"
+	title.text = "LAN 플레이 (최대 4인)"
 	column.add_child(title)
+
+	# The same code on both ends. It is checked during the handshake, so a guest
+	# that types it wrong is dropped before it is a player at all. Left empty on
+	# the host, the session is open to anyone who can reach the port.
+	var code_row := HBoxContainer.new()
+	code_row.add_theme_constant_override("separation", 8)
+	column.add_child(code_row)
+
+	var code_label := Label.new()
+	code_label.text = "로비 코드"
+	code_row.add_child(code_label)
+
+	_code_field = LineEdit.new()
+	_code_field.placeholder_text = "비우면 누구나 접속"
+	_code_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	code_row.add_child(_code_field)
 
 	_host_button = Button.new()
 	_host_button.text = "호스트 시작"
@@ -107,12 +124,14 @@ func _ready() -> void:
 
 
 func _on_host_pressed() -> void:
+	_net.lobby_code = _code_field.text.strip_edges()
 	if _net.host(_port()):
 		_close_on_success()
 	_refresh()
 
 
 func _on_join_pressed() -> void:
+	_net.lobby_code = _code_field.text.strip_edges()
 	if _net.join(_address_field.text.strip_edges(), _port()):
 		_close_on_success()
 	_refresh()
@@ -147,5 +166,6 @@ func _refresh() -> void:
 	_host_button.disabled = online
 	_join_button.disabled = online
 	_address_field.editable = not online
+	_code_field.editable = not online
 	_port_field.editable = not online
 	_leave_button.disabled = not online
