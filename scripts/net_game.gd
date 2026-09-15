@@ -37,7 +37,9 @@ const INPUT_PACKETS_PER_TICK := 1
 ## five leaves room for mashing the key and for retries without leaving the
 ## reliable channel open to abuse.
 const WIPE_REQUESTS_PER_SECOND := 5.0
-const MAX_CLIENTS := 1
+## Three guests and the host: four players. The droplet pool and the state
+## packet are both sized against this -- see POOL_SIZE in mayo_prototype.gd.
+const MAX_CLIENTS := 3
 ## Floats per player in a state packet: position xyz, yaw, velocity xz, firing,
 ## aim pitch, fall state, fall timer, fall direction, wipe timer. The peer ids
 ## travel alongside as ints -- a peer id is a full 32-bit random number and does

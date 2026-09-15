@@ -698,7 +698,15 @@ func _body_color(is_local: bool) -> Color:
 ## place everyone the same way.
 func spawn_position_for(slot: int) -> Vector3:
 	# y is half the capsule's height, so it stands on the floor rather than in it.
-	const SPAWNS := [Vector3(0.0, 1.28, 1.55), Vector3(1.35, 1.28, 2.6)]
+	# One per player the session holds. Far enough apart that nobody starts
+	# inside anyone else -- the capsules are 1.28 m across -- and clear of the
+	# three walls, which a spawn inside leaves the player stuck.
+	const SPAWNS := [
+		Vector3(0.0, 1.28, 1.55),
+		Vector3(-2.2, 1.28, 4.2),
+		Vector3(2.6, 1.28, 4.6),
+		Vector3(0.0, 1.28, 6.4),
+	]
 	return SPAWNS[slot % SPAWNS.size()]
 
 
@@ -1651,13 +1659,17 @@ func _build_droplet_pool(mayo_material: Material) -> void:
 	#
 	# A landing is one point reaching the floor, so the rate follows
 	# extend_speed / point_spacing: 187 a second per player at the current
-	# speed and density. Two players firing: 374 x 4 x 0.34 = 509, inside 512.
+	# speed and density.
 	#
-	# MAX_CLIENTS caps a session at two players, which is what this is sized
-	# for. Raise it and this needs recomputing -- at four players the same
-	# settings need 1369, and droplets start being thrown away with two thirds
-	# of their life left. debug_droplet_overwrites and
-	# debug_droplet_overwritten_life measure exactly that.
+	#   two players firing:    374 x 4 x 0.34 =  509, inside 512
+	#   three players firing:  561 x 4 x 0.34 =  763, over
+	#   four players firing:   748 x 4 x 0.34 = 1015, over
+	#
+	# MAX_CLIENTS now allows four, so a full session firing at the floor asks
+	# for twice what this holds and droplets are replaced with about half their
+	# life left. Holding four would want a pool of 1024, or a lifetime of
+	# 0.17 s, or two droplets a landing. debug_droplet_overwrites and
+	# debug_droplet_overwritten_life are what measure it.
 	const POOL_SIZE := 512
 	var droplet_mesh := SphereMesh.new()
 	droplet_mesh.radius = 0.5

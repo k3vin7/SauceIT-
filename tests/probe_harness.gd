@@ -147,7 +147,43 @@ func _run() -> void:
 			"only %d of 600 wipe requests were dropped" % wipe_dropped)
 	await _close(flood)
 
+	# --- four players at once, each in their own body ---
+	var party := await _session(4, 24731)
+	var party_host = party[0]
+	var ids := {}
+	for world in party:
+		ids[world._net.local_id()] = true
+	print("four peers: host sees %d players, ids seen %d, statuses %s" % [
+		party_host.shooter_ids().size(), ids.size(),
+		str(party.map(func(w): return w._net.is_online()))])
+	_check(party_host.shooter_ids().size() == 4,
+		"the host has %d players, expected 4" % party_host.shooter_ids().size())
+	_check(ids.size() == 4, "the four peers do not have four distinct ids")
+	var spawns := {}
+	var overlapping := 0
+	for id in party_host.shooter_ids():
+		var here: Vector3 = party_host.shooter_for(id).player.global_position
+		for other in party_host.shooter_ids():
+			if other != id and party_host.shooter_for(other).player.global_position.distance_to(here) < 1.28:
+				overlapping += 1
+		spawns[id] = here
+	print("  spawns %.0f m apart at the closest" % _closest(spawns.values()))
+	_check(overlapping == 0, "%d players spawned inside another" % overlapping)
+	for world in party:
+		_check(world.shooter_ids().size() == 4,
+			"a peer sees %d players, expected 4" % world.shooter_ids().size())
+	await _close(party)
+
 	_finish()
+
+
+## Closest distance between any two of the given positions.
+func _closest(positions: Array) -> float:
+	var nearest := INF
+	for i in positions.size():
+		for j in range(i + 1, positions.size()):
+			nearest = minf(nearest, positions[i].distance_to(positions[j]))
+	return nearest
 
 
 func _finish() -> void:
