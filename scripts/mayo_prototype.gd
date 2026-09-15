@@ -111,7 +111,7 @@ class MayoDroplet:
 ## How far apart the strand's points are, which is also how finely it samples
 ## what it hits: a sweep across someone's face only marks them where a point
 ## lands, so at 0.09 a quick flick left three dots rather than a line.
-@export_range(0.025, 0.25, 0.005, "suffix:m") var point_spacing := 0.045
+@export_range(0.025, 0.25, 0.005, "suffix:m") var point_spacing := 0.075
 @export_range(0.02, 0.2, 0.001, "suffix:m") var strand_thickness := 0.093
 @export_range(0.0, 0.5, 0.01, "suffix:m") var muzzle_forward_offset := 0.15
 ## Matched to stream_range at extend_speed, so neither silently cuts first:
@@ -135,9 +135,11 @@ class MayoDroplet:
 ## the aim standing still. Halved with the speed, so the spread is what it was.
 @export_range(0.0, 0.5, 0.01) var speed_magnitude_jitter := 0.05
 @export_range(0.0, 1.0, 0.01) var inherited_player_velocity := 0.22
-## Scales with the density above: at 0.045 a strand carries twice the points,
-## and a cap left at 192 would cut it short instead of letting it run its range.
-@export_range(32, 768, 1) var maximum_point_count := 384
+## What the nozzle may have in the air at once, and so how long an arc can be
+## before the stream has to wait for some of it to land. Worth reading in
+## seconds: at the current density it is 640 / (14 / 0.075) = 3.4 s of stream,
+## which covers everything but a near-vertical shot.
+@export_range(32, 1024, 1) var maximum_point_count := 640
 ## Adjacent points further apart than this are treated as separate strands: the
 ## ribbon breaks there and no spacing correction is applied. In metres, not in
 ## point spacings -- as a multiple it moved with the point density, so doubling
@@ -188,7 +190,7 @@ class MayoDroplet:
 @export_range(0.05, 0.5, 0.01, "suffix:s") var landing_transition_time := 0.16
 ## Kept at what the droplet pool can hold for two players firing at once. See
 ## the note on POOL_SIZE before raising it.
-@export_range(0.1, 2.0, 0.05, "suffix:s") var droplet_lifetime := 0.40
+@export_range(0.1, 2.0, 0.01, "suffix:s") var droplet_lifetime := 0.34
 ## Droplets thrown by one landing. The pool they come from is one per world, not
 ## one per player, so this is multiplied by every strand landing at once: at
 ## seven, two players firing filled all 512 slots and began overwriting droplets
@@ -1653,8 +1655,8 @@ func _build_droplet_pool(mayo_material: Material) -> void:
 	#     needed = landings per second x droplets_per_landing x droplet_lifetime
 	#
 	# A landing is one point reaching the floor, so the rate follows
-	# extend_speed / point_spacing: 156 a second per player at the current
-	# density. Two players firing: 311 x 4 x 0.40 = 498, inside 512.
+	# extend_speed / point_spacing: 187 a second per player at the current
+	# speed and density. Two players firing: 374 x 4 x 0.34 = 509, inside 512.
 	#
 	# MAX_CLIENTS caps a session at two players, which is what this is sized
 	# for. Raise it and this needs recomputing -- at four players the same
