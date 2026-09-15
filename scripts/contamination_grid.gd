@@ -35,8 +35,7 @@ var cells := PackedByteArray()
 ## carries. Kept alongside rather than converted on upload, which would be a
 ## pass over the whole grid every frame it changes.
 var _image_data := PackedByteArray()
-## How big a cell is in metres. The same as cell_size for a surface measured in
-## metres, which is all of them but the visor, whose grid is in view units.
+## How big a cell is in metres. Every contamination surface uses metre units.
 var metres_per_cell := 0.1
 var image: Image
 var texture: ImageTexture

@@ -2,9 +2,9 @@ shader_type canvas_item;
 
 // The visor's mask, drawn straight onto the screen.
 //
-// The grid is defined in view units -- 16 by 9 across the field of view -- so
-// there is no projection here at all: a cell is a piece of the screen. v is
-// flipped because the grid counts upwards and a Control's UV counts down.
+// The physical lens has the same 16:9 shape as the screen, so there is no
+// projection here: the mask is sampled 1:1. v is flipped because the grid
+// counts upwards and a Control's UV counts down.
 //
 // The 0.5 cut is the same marching-squares boundary the floor uses; see the
 // note in contamination.gdshader.

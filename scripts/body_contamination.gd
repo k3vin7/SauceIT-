@@ -13,14 +13,13 @@ extends Node
 ##
 ## Two things differ from a flat face. The u axis is a loop, so the grid wraps
 ## there (`wrap_x`) and a splat near the seam carries on round the far side.
-## And the body is small, so the same 0.4 m brush that is a patch on a wall is a
-## drenching on a player -- which is the point: being hit reads the same either
-## way, and the edge roughness, being a fraction of the radius, comes out
-## identical in metres too.
+## And the body is small, so the same world brush that is a patch on a wall is a
+## large mark on a player -- which is the point: being hit reads the same either
+## way, and the edge roughness comes out in the same metre scale too.
 
 ## The stain is purely cosmetic. Nothing reads this grid back -- slipping is
 ## decided by the floor, and it is the floor alone.
-@export_range(0.005, 0.2, 0.001, "suffix:m") var cell_size := 0.02
+@export_range(0.005, 0.2, 0.001, "suffix:m") var cell_size := 0.1
 ## The world's brush, not one of its own: a splat is the same size on a person
 ## as on a wall.
 @export_range(0.01, 1.5, 0.005, "suffix:m") var brush_radius := 0.4

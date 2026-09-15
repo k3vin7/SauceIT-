@@ -148,26 +148,27 @@ func _run() -> void:
 		"the replay test only marked %d cells" % source_body.painted_cell_count())
 
 	# --- sauce in front of the eyes lands on the glasses ---
-	# The visor is a grid like any other, but measured in view units, so what is
-	# painted on it is what the player cannot see through.
+	# The visor is a metre grid like the body. The same mask is also what the
+	# player cannot see through.
 	var visor = target_player.visor
 	_check(visor != null, "the player has no glasses")
+	_check(is_equal_approx(visor.cell_size, body.cell_size),
+		"the glasses do not use the body's cell size")
+	_check(is_equal_approx(visor.brush_radius, body.brush_radius),
+		"the glasses do not use the body's brush radius")
 	_check(visor.painted_cell_count() == 0, "the glasses started out dirty")
-	# Straight ahead, a quarter of the way up the view.
-	visor.paint_from_view(Vector3(0.0, 0.25, -1.0), scene.camera_fov)
+	# Straight ahead and above the centre of the physical lens.
+	visor.paint_from_hit(Vector3(0.0, 0.25, -1.0))
 	var ahead: int = visor.painted_cell_count()
 	# And from behind: not in front of your eyes, so it does not blind you.
-	visor.paint_from_view(Vector3(0.0, 0.0, 1.0), scene.camera_fov)
+	visor.paint_from_hit(Vector3(0.0, 0.0, 1.0))
 	print("glasses: %d cells from a hit ahead, %d after one from behind, %.0f%% blind" % [
 		ahead, visor.painted_cell_count(), visor.coverage() * 100.0])
 	_check(ahead > 0, "a hit in front of the eyes did not reach the glasses")
 	_check(visor.painted_cell_count() == ahead,
 		"a hit from behind the head put sauce on the lenses")
-	# One splat fills them. The lenses are a hand's breadth across and the brush
-	# is the world's, the same one that leaves a patch on a wall, so a hit in
-	# the face blinds you outright and the wipe is what you do about it.
-	# Enough to be worth wiping, and not so much that one hit is the whole
-	# screen: the point of the brush being what it is.
+	# The world's brush marks a substantial part of the physical lens: enough to
+	# be worth wiping, but not so much that one hit covers the whole screen.
 	_check(visor.coverage() > 0.1 and visor.coverage() < 0.5,
 		"a splat in the face left the player %.0f%% blind" % (visor.coverage() * 100.0))
 

@@ -3,11 +3,10 @@ extends Node3D
 
 ## The player's glasses: a contamination grid worn on the face.
 ##
-## Sauce that lands inside the field of view is painted here, and this mask is
-## what blinds you -- there is no separate screen effect to keep in step with
-## it. The grid is measured in view units rather than metres, 16 by 9 across the
-## field of view, which makes the screen a 1:1 sample of it: no projection, no
-## cap, no eviction.
+## Sauce that lands on the lenses is painted here, and this mask is what blinds
+## you -- there is no separate screen effect to keep in step with it. Like the
+## body, the grid and brush are measured in metres. The lens has the same 16:9
+## shape as the screen, so the mask can still be sampled 1:1 by the overlay.
 ##
 ## It hangs off the aim pivot, which already carries the aim pitch, so it moves
 ## exactly with the camera -- sauce on your lenses stays where it landed on the
@@ -15,21 +14,15 @@ extends Node3D
 ## on the head, it is also visible to everyone else: they can see your lenses
 ## are filthy, and see you stop to wipe them.
 
-## Half the grid in view units. 4.5 up and down is the camera's own field of
-## view; 8 across is that at 16:9.
-const HALF_HEIGHT := 4.5
-const HALF_WIDTH := 8.0
 ## The lenses as an object: as wide as the head is at eye height, and 16:9, the
-## shape of the mask they carry. The grid spans the whole of this, so it is also
-## what converts the world's brush into view units.
+## shape of the mask they carry. The contamination grid spans this physical size.
 const LENS_SIZE := Vector2(1.00, 0.56)
+const LENS_DISTANCE := 0.54
 
-## 0.08 of a view unit is about six screen pixels across at 720p: fine enough
-## that the boundary reads as a splat edge rather than as steps.
-@export_range(0.02, 1.0, 0.01) var cell_size := 0.08
-## In view units, worked out by `configure_brush` from the world's brush so that
-## a splat is the same size on the lenses as on a wall. Not set by hand.
-var brush_radius := 1.2
+## Configured from the body's cell size, so both surfaces use the same metre grid.
+@export_range(0.005, 0.2, 0.001, "suffix:m") var cell_size := 0.1
+## The world's brush in metres, shared with the body, floor and walls.
+@export_range(0.01, 1.5, 0.005, "suffix:m") var brush_radius := 0.4
 @export var mayo_color := Color("fff0a8")
 @export var lens_color := Color(0.12, 0.15, 0.19, 1.0)
 ## How far the lenses tip up while they are being wiped.
@@ -44,21 +37,14 @@ var _lens: MeshInstance3D
 var _hinge: Node3D
 
 
-## The brush the floor and the walls use, in metres, converted into the view
-## units the lenses are measured in. Done here rather than given a value of its
-## own so that a splat covers the same amount of lens as it does of a wall --
-## and the lenses are a hand's breadth across, so what is a patch on a wall
-## fills them.
-func configure_brush(world_brush_radius: float) -> void:
-	brush_radius = world_brush_radius * (HALF_HEIGHT * 2.0) / LENS_SIZE.y
+## Uses the same cell size and brush radius as the body. Both are in metres.
+func configure(new_cell_size: float, new_brush_radius: float) -> void:
+	cell_size = new_cell_size
+	brush_radius = new_brush_radius
 
 
 func _ready() -> void:
-	grid.configure(Vector2(HALF_WIDTH * 2.0, HALF_HEIGHT * 2.0), cell_size,
-		lens_color, mayo_color)
-	# The grid is in view units, not metres, so it has to be told how big a cell
-	# really is or its edges would be roughened at the wrong scale.
-	grid.metres_per_cell = LENS_SIZE.y / float(grid.height)
+	grid.configure(LENS_SIZE, cell_size, lens_color, mayo_color)
 	_build_lens()
 
 
@@ -66,19 +52,15 @@ func _process(_delta: float) -> void:
 	grid.upload_if_dirty()
 
 
-## Sauce arriving from `direction`, given in the visor's own space with -Z
-## straight ahead. Anything level with the lenses or behind them misses: it is
-## not in front of your eyes, so it does not blind you.
-func paint_from_view(direction: Vector3, fov_degrees: float) -> Vector2i:
+## Projects a body hit from the eye onto the physical lens plane, then paints in
+## the lens's local X/Y metres. Anything level with the lenses or behind them
+## misses: it is not in front of your eyes, so it does not blind you.
+func paint_from_hit(direction: Vector3) -> Vector2i:
 	if direction.z >= -0.001:
 		return Vector2i(-1, -1)
-	var extent := tan(deg_to_rad(fov_degrees) * 0.5)
-	if extent <= 0.0:
-		return Vector2i(-1, -1)
-	var view := Vector2(
-		direction.x / -direction.z / extent * HALF_HEIGHT,
-		direction.y / -direction.z / extent * HALF_HEIGHT)
-	return grid.paint(view, brush_radius)
+	var scale := LENS_DISTANCE / -direction.z
+	var lens_position := Vector2(direction.x, direction.y) * scale
+	return grid.paint(lens_position, brush_radius)
 
 
 func paint_cell(cell: Vector2i) -> void:
@@ -142,7 +124,7 @@ func _build_lens() -> void:
 	_lens.mesh = quad
 	# Clear of the head. The capsule is 0.64 at its waist but only about 0.50
 	# across at eye height, which is up in the rounded end of it.
-	_lens.position = Vector3(0.0, 0.0, -0.54)
+	_lens.position = Vector3(0.0, 0.0, -LENS_DISTANCE)
 	# The plane faces +Z and the player looks down -Z, so it is turned to face
 	# out of the front of the head. About X, not Y: both turns face it forward,
 	# but turning about Y takes the mesh's +X with it, and the mask would come

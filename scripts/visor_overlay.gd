@@ -1,10 +1,9 @@
 class_name VisorOverlay
 extends ColorRect
 
-## What the local player sees through their own lenses. The visor grid is in
-## view units, so this is a straight 1:1 sample of it -- the overlay owns no
-## state of its own and cannot drift from the mask everyone else can see on
-## the player's face.
+## What the local player sees through their own lenses. The physical lens and
+## screen are both 16:9, so this is a straight 1:1 sample of the same mask -- the
+## overlay owns no state of its own and cannot drift from what others see.
 
 func bind(visor: VisorContamination) -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)

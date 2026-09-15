@@ -177,16 +177,12 @@ class MayoDroplet:
 ## Splat radius in metres. Converted to cells internally, so changing the
 ## cell size does not change how big a splat is.
 ## Every surface that can take sauce uses this, so a splat is the same size on
-## all of them. Its cost is the square of how many cells it spans, and the visor
-## has the finest cells of any of them: at 0.4 m it spanned 160 of them and a
-## second of being sprayed in the face cost 5.9 ms a frame on its own.
+## all of them. Its cost is the square of how many cells it spans.
 @export_range(0.05, 1.5, 0.01, "suffix:m") var contamination_brush_radius := 0.2
-## Bodies carry a much finer grid than the world does, because they are small:
-## 0.1 m cells would be ten of them across a player. The brush is not theirs
-## though -- a splat is the same size in metres on a person as on a wall, which
-## with the edge roughness being a fraction of the radius makes the two
-## indistinguishable.
-@export_range(0.005, 0.2, 0.001, "suffix:m") var body_cell_size := 0.02
+## Bodies carry their own grid size, independently of the floor and walls. The
+## brush is still shared, so a splat stays the same size in metres on every
+## surface even when this cell size changes.
+@export_range(0.005, 0.2, 0.001, "suffix:m") var body_cell_size := 0.1
 @export_range(0.05, 0.5, 0.01, "suffix:s") var landing_transition_time := 0.16
 ## Kept at what the droplet pool can hold for two players firing at once. See
 ## the note on POOL_SIZE before raising it.
@@ -933,9 +929,8 @@ func _build_player_body(shooter: Shooter) -> void:
 	# so they move with the camera rather than with the body.
 	var visor := VisorScript.new() as VisorContamination
 	visor.name = "Visor"
-	# The world's brush, converted into the view units the lenses use: a splat
-	# is the same size on them as on a wall.
-	visor.configure_brush(contamination_brush_radius)
+	# The lenses use the same metre-sized cells and brush as the body.
+	visor.configure(body_cell_size, contamination_brush_radius)
 	aim_pivot.add_child(visor)
 	shooter.player.visor = visor
 
@@ -1389,12 +1384,12 @@ func apply_splats(data: PackedInt32Array) -> void:
 ## would be truer and would also shield the body and the floor behind the head,
 ## which is a bigger change than the doubling is worth. What keeps it honest is
 ## the filtering below: anything level with the lenses or behind them, and
-## anything projecting outside the field of view, marks nothing.
+## anything projecting outside the physical lens, marks nothing.
 func _record_visor_splat(player: MayoPlayer, hit_position: Vector3) -> void:
 	if player.visor == null:
 		return
 	var direction := player.visor.to_local(hit_position)
-	var cell := player.visor.paint_from_view(direction, camera_fov)
+	var cell := player.visor.paint_from_hit(direction)
 	if cell.x < 0:
 		return
 	_pending_splats.append_array(PackedInt32Array([
