@@ -221,6 +221,85 @@ func _run() -> void:
 		"after ten rejoins the host has %d players, expected 2" % door_host.shooter_ids().size())
 	await _close(revolving)
 
+	# --- a stain lands in the cell it was aimed at, on any screen ---
+	print("stain placement, worst error in cells (want 0,0):")
+	for shape in [
+			["16:9", 16.0 / 9.0, Vector2i(1280, 720)],
+			["16:10", 16.0 / 10.0, Vector2i(1280, 800)],
+			["21:9", 21.0 / 9.0, Vector2i(1260, 540)]]:
+		var table := await _mapping_errors(74.0, shape[1], shape[2])
+		print("  %-6s %s at 74 deg -> %s" % [shape[0], str(shape[2]), str(table.worst)])
+		_check(table.worst == Vector2i.ZERO,
+			"%s is off by %s cells: %s" % [shape[0], str(table.worst), str(table.rows)])
+	for fov in [60.0, 74.0, 110.0]:
+		var table := await _mapping_errors(fov, 16.0 / 9.0, Vector2i(1280, 720))
+		print("  16:9   at %.0f deg -> %s" % [fov, str(table.worst)])
+		_check(table.worst == Vector2i.ZERO,
+			"%.0f deg is off by %s cells: %s" % [fov, str(table.worst), str(table.rows)])
+
+	# --- a peer's camera is what it declared, whatever it sends ---
+	var seen := await _session(2, 24734)
+	var seen_host = seen[0]
+	var looker = seen[1]
+	var looker_id: int = looker._net.local_id()
+	for _f in 20:
+		await physics_frame
+	var honest: Vector2 = seen_host._net.view_for(looker_id)
+	looker._net._submit_view.rpc_id(1, 200.0, 0.0)
+	for _f in 20:
+		await physics_frame
+	var clamped: Vector2 = seen_host._net.view_for(looker_id)
+	print("view clamp: honest %s, after sending (200, 0) host has %s, client renders (%.1f, %.3f)" % [
+		str(honest), str(clamped), looker.camera_fov, looker._view_aspect])
+	_check(is_equal_approx(clamped.x, MayoNet.MAX_FOV_DEGREES),
+		"a 200 degree claim was stored as %.1f" % clamped.x)
+	_check(is_equal_approx(clamped.y, MayoNet.MIN_ASPECT),
+		"a zero aspect was stored as %.3f" % clamped.y)
+	_check(is_equal_approx(looker.camera_fov, clamped.x)
+			and is_equal_approx(looker._view_aspect, clamped.y),
+		"the client renders (%.1f, %.3f) but the host paints (%s)" % [
+			looker.camera_fov, looker._view_aspect, str(clamped)])
+	var before_rejected: int = seen_host._net.rejected_packets
+	var before_view: Vector2 = seen_host._net.view_for(looker_id)
+	looker._net._submit_view.rpc_id(1, NAN, INF)
+	for _f in 20:
+		await physics_frame
+	print("view NaN: rejected %d -> %d, stored view %s -> %s" % [
+		before_rejected, seen_host._net.rejected_packets,
+		str(before_view), str(seen_host._net.view_for(looker_id))])
+	_check(seen_host._net.rejected_packets > before_rejected,
+		"a NaN view was not counted as rejected")
+	_check(seen_host._net.view_for(looker_id) == before_view,
+		"a NaN view changed the stored one")
+	await _close(seen)
+
+	# --- two peers on different cameras are each painted on their own ---
+	var pair := await _session(3, 24735)
+	var pair_host = pair[0]
+	var narrow_id: int = pair[1]._net.local_id()
+	var wide_id: int = pair[2]._net.local_id()
+	pair[1]._net._submit_view.rpc_id(1, 60.0, 16.0 / 9.0)
+	pair[2]._net._submit_view.rpc_id(1, 110.0, 16.0 / 9.0)
+	for _f in 20:
+		await physics_frame
+	# The same direction off the eye, half way to the edge of a 74 degree screen.
+	var look := Vector3(0.0, tan(deg_to_rad(37.0)) * 0.5, -1.0)
+	var narrow_visor = pair_host.shooter_for(narrow_id).player.visor
+	var wide_visor = pair_host.shooter_for(wide_id).player.visor
+	narrow_visor.clear()
+	wide_visor.clear()
+	var narrow_cell: Vector2i = narrow_visor.paint_from_hit(look)
+	var wide_cell: Vector2i = wide_visor.paint_from_hit(look)
+	print("two cameras: 60 deg peer -> row %d, 110 deg peer -> row %d (same hit)" % [
+		narrow_cell.y, wide_cell.y])
+	_check(narrow_cell.y > wide_cell.y,
+		"the narrow camera did not put the hit higher up the screen: %d vs %d" % [
+			narrow_cell.y, wide_cell.y])
+	_check(pair_host._net.view_for(narrow_id).x == 60.0
+			and pair_host._net.view_for(wide_id).x == 110.0,
+		"the host is not holding a separate view per peer")
+	await _close(pair)
+
 	# --- a guest that does not know the code never becomes a player ---
 	var gated := await _session(3, 24733, ["mayo", "mayo", "ketchup"])
 	var gate_host = gated[0]
@@ -241,6 +320,61 @@ func _run() -> void:
 	await _close(gated)
 
 	_finish()
+
+
+## Builds one world in a viewport of the given size, points its camera at the
+## given view, and reports where a hit aimed at each of nine screen points is
+## actually painted on the lenses.
+##
+## The aiming is done through the camera's own projection rather than through the
+## mapping under test: a screen pixel is unprojected to a world point and that
+## point is handed to the ordinary hit path. In first person the camera sits at
+## the eye the lenses hang off, so the two see the same frustum and the cell the
+## splat lands in has to be the cell that pixel falls in.
+func _mapping_errors(fov: float, aspect: float, size: Vector2i) -> Dictionary:
+	var viewport := SubViewport.new()
+	viewport.name = "View_%d_%d" % [size.x, size.y]
+	viewport.own_world_3d = true
+	viewport.size = size
+	root.add_child(viewport)
+	var world = load("res://main.tscn").instantiate()
+	viewport.add_child(world)
+	world.set_process_unhandled_input(false)
+	await physics_frame
+	world.set_first_person(true)
+	world.camera_fov = fov
+	world.apply_view(fov, aspect)
+	world.debug_set_aim(0.0, 0.0)
+	for _f in 4:
+		await physics_frame
+	var camera: Camera3D = world._camera
+	var player = world._local.player
+	var visor = player.visor
+	var width: int = visor.grid.width
+	var height: int = visor.grid.height
+	var worst := Vector2i.ZERO
+	var rows := []
+	# 1% in from each edge, so a corner point is inside the corner cell rather
+	# than exactly on the boundary between it and nothing.
+	for v in [0.01, 0.5, 0.99]:
+		for u in [0.01, 0.5, 0.99]:
+			visor.clear()
+			var pixel := Vector2(u * size.x, v * size.y)
+			var point := camera.project_position(pixel, 3.0)
+			world._pending_splats.clear()
+			world._record_visor_splat(player, point)
+			var expected := Vector2i(
+				clampi(floori(u * width), 0, width - 1),
+				clampi(floori((1.0 - v) * height), 0, height - 1))
+			var actual := Vector2i(-1, -1)
+			if world._pending_splats.size() >= 4:
+				actual = Vector2i(world._pending_splats[2], world._pending_splats[3])
+			var error := Vector2i(99, 99) if actual.x < 0 else actual - expected
+			worst = Vector2i(maxi(worst.x, absi(error.x)), maxi(worst.y, absi(error.y)))
+			rows.push_back("(%.2f,%.2f) want %s got %s" % [u, v, str(expected), str(actual)])
+	viewport.queue_free()
+	await physics_frame
+	return {"worst": worst, "rows": rows}
 
 
 ## Closest distance between any two of the given positions.

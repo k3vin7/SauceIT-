@@ -37,6 +37,22 @@ const INPUT_PACKETS_PER_TICK := 1
 ## five leaves room for mashing the key and for retries without leaving the
 ## reliable channel open to abuse.
 const WIPE_REQUESTS_PER_SECOND := 5.0
+## The same idea for view reports. A report is state, not an event: only the
+## latest one matters, and it changes when a player resizes their window, which
+## is the only thing that can produce a run of them. A resize drag emits an event
+## a frame, so the client coalesces to the current value and sends at most this
+## often; four a second leaves the mask at most a quarter of a second stale after
+## a drag ends -- far below noticing -- while a peer that sends more is ignored.
+const VIEW_REPORTS_PER_SECOND := 4.0
+## What a peer is allowed to claim its camera is. Outside this the value is
+## brought to the edge rather than dropped: an unusual window is not an attack,
+## and a session that refuses to draw on it would be worse than one that draws
+## on it slightly wrongly. 21:9 is the widest shipped desktop ratio; 4:3 the
+## narrowest anything is still sold in.
+const MIN_FOV_DEGREES := 60.0
+const MAX_FOV_DEGREES := 110.0
+const MIN_ASPECT := 4.0 / 3.0
+const MAX_ASPECT := 21.0 / 9.0
 ## How long a peer has to prove it knows the code before it is dropped.
 const AUTH_TIMEOUT := 3.0
 ## Three guests and the host: four players. The droplet pool and the state
@@ -84,6 +100,16 @@ var _client_input: Dictionary = {}
 ## nothing is sent back, so flooding costs the flooder and not the host.
 var _input_this_tick: Dictionary = {}
 var _wipe_budget: Dictionary = {}
+var _view_budget: Dictionary = {}
+## Peer id -> the clamped Vector2(fov degrees, aspect) the host is painting that
+## peer's lenses with.
+var _views: Dictionary = {}
+## The last view this peer sent, and the one it wants to send. Held apart so a
+## resize that arrives while the budget is spent is still sent afterwards rather
+## than lost.
+var _view_sent := Vector2.ZERO
+var _view_pending := Vector2.ZERO
+var _view_cooldown := 0.0
 ## Which spawn each peer has. The host is always slot 0. Slots are handed back
 ## when a peer leaves and reused by the next one, so a session someone keeps
 ## rejoining does not walk its spawns off into the distance -- a counter that
@@ -178,6 +204,10 @@ func leave() -> void:
 	_client_input.clear()
 	_input_this_tick.clear()
 	_wipe_budget.clear()
+	_view_budget.clear()
+	_views.clear()
+	_view_sent = Vector2.ZERO
+	_view_pending = Vector2.ZERO
 	_slots = {1: 0}
 	_refused_for_code = false
 	_joined = false
@@ -288,6 +318,8 @@ func _on_peer_disconnected(id: int) -> void:
 	_client_input.erase(id)
 	_input_this_tick.erase(id)
 	_wipe_budget.erase(id)
+	_view_budget.erase(id)
+	_views.erase(id)
 	_slots.erase(id)
 	if multiplayer.is_server():
 		world.remove_avatar(id)
@@ -359,6 +391,13 @@ static func clamp_direction(value: Vector2) -> Vector2:
 	return value if value.length_squared() <= 1.0 else value.normalized()
 
 
+## The plain range check, for a number that has a floor and a ceiling and no
+## angle wrapping to think about. Out of range is brought to the edge; the caller
+## decides whether that is the right answer or whether the packet should go.
+static func clamp_range(value: float, low: float, high: float) -> float:
+	return clampf(value, low, high)
+
+
 ## For an angle with a stop at each end, like the aim pitch.
 static func clamp_angle(value: float, limit: float) -> float:
 	return clampf(value, -limit, limit)
@@ -418,6 +457,74 @@ func _request_wipe() -> void:
 	world.begin_wipe_for(sender)
 
 
+## Called every frame with whatever the local camera currently is. Sends only
+## when it has changed, and no more often than the host will listen, so the host
+## never has to drop a report an honest client sent.
+func report_view(fov_degrees: float, aspect: float, delta: float) -> void:
+	_view_cooldown = maxf(_view_cooldown - delta, 0.0)
+	# The host has nobody to ask, so it clamps its own camera the same way and
+	# paints its own lenses with the answer. Offline is the same case.
+	if not _online or multiplayer.is_server():
+		var mine := _clamp_view(fov_degrees, aspect)
+		var id := local_id()
+		if _views.get(id, Vector2.ZERO) != mine:
+			_views[id] = mine
+			world.set_view_for(id, mine.x, mine.y)
+			world.apply_view(mine.x, mine.y)
+		return
+	if _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+	_view_pending = Vector2(fov_degrees, aspect)
+	if _view_pending.is_equal_approx(_view_sent) or _view_cooldown > 0.0:
+		return
+	_view_sent = _view_pending
+	_view_cooldown = 1.0 / VIEW_REPORTS_PER_SECOND
+	_submit_view.rpc_id(1, fov_degrees, aspect)
+
+
+## A client saying what its camera is. Two floats, so they go through the same
+## finite check every other client input does; then to the edges of what a camera
+## may be, and back to the sender as the values it has to render with.
+@rpc("any_peer", "call_remote", "reliable")
+func _submit_view(fov_degrees: float, aspect: float) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if _view_budget.get(sender, VIEW_REPORTS_PER_SECOND) < 1.0:
+		dropped_packets += 1
+		return
+	_view_budget[sender] = _view_budget.get(sender, VIEW_REPORTS_PER_SECOND) - 1.0
+	if not all_finite([fov_degrees, aspect]):
+		rejected_packets += 1
+		return
+	var view := _clamp_view(fov_degrees, aspect)
+	_views[sender] = view
+	world.set_view_for(sender, view.x, view.y)
+	_accept_view.rpc_id(sender, view.x, view.y)
+
+
+## The host's answer, which is not advice. A client that renders something else
+## is drawing its blindness in the wrong place on its own screen, and the mask
+## everyone sees is the host's either way.
+@rpc("authority", "call_remote", "reliable")
+func _accept_view(fov_degrees: float, aspect: float) -> void:
+	if multiplayer.is_server():
+		return
+	world.apply_view(fov_degrees, aspect)
+
+
+func _clamp_view(fov_degrees: float, aspect: float) -> Vector2:
+	return Vector2(
+		clamp_range(fov_degrees, MIN_FOV_DEGREES, MAX_FOV_DEGREES),
+		clamp_range(aspect, MIN_ASPECT, MAX_ASPECT))
+
+
+## What the host is painting a peer's lenses with, for the checks.
+func view_for(peer_id: int) -> Vector2:
+	return _views.get(peer_id, Vector2(
+		VisorContamination.DEFAULT_FOV_DEGREES, VisorContamination.DEFAULT_ASPECT))
+
+
 ## One input a tick per peer. The rest are dropped where they arrive, so a
 ## flood costs the flooder its bandwidth and the host a dictionary lookup.
 func _within_budget(sender: int) -> bool:
@@ -451,6 +558,9 @@ func apply_client_input() -> void:
 	for id in _wipe_budget:
 		_wipe_budget[id] = minf(_wipe_budget[id] + WIPE_REQUESTS_PER_SECOND / 60.0,
 			WIPE_REQUESTS_PER_SECOND)
+	for id in _view_budget:
+		_view_budget[id] = minf(_view_budget[id] + VIEW_REPORTS_PER_SECOND / 60.0,
+			VIEW_REPORTS_PER_SECOND)
 	for id in _client_input:
 		var shooter = world.shooter_for(id)
 		if shooter == null:

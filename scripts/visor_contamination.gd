@@ -14,10 +14,19 @@ extends Node3D
 ## on the head, it is also visible to everyone else: they can see your lenses
 ## are filthy, and see you stop to wipe them.
 
-## The lenses as an object: as wide as the head is at eye height, and 16:9, the
-## shape of the mask they carry. The contamination grid spans this physical size.
-const LENS_SIZE := Vector2(1.00, 0.56)
+## The lenses as an object: as wide as the head is at eye height, and the shape
+## of the mask they carry. The height is a whole number of 0.1 m cells on
+## purpose -- 0.56 rounded to six rows and the mask was then drawn across 0.56 m,
+## so every row sat 7% away from where it was painted.
+const LENS_SIZE := Vector2(1.00, 0.60)
 const LENS_DISTANCE := 0.54
+
+## What the wearer's camera shows, which is what the mask has to line up with.
+## The defaults are the game's own until the wearer says otherwise; on the host
+## they are replaced by the values that wearer reported, so a hit is painted
+## where it appeared on *their* screen rather than on a guessed one.
+const DEFAULT_FOV_DEGREES := 74.0
+const DEFAULT_ASPECT := 16.0 / 9.0
 
 ## Configured from the body's cell size, so both surfaces use the same metre grid.
 @export_range(0.005, 0.2, 0.001, "suffix:m") var cell_size := 0.1
@@ -29,6 +38,8 @@ const LENS_DISTANCE := 0.54
 @export_range(0.0, 90.0, 1.0, "suffix:°") var wipe_lift_degrees := 55.0
 
 var grid := ContaminationGrid.new()
+var view_fov_degrees := DEFAULT_FOV_DEGREES
+var view_aspect := DEFAULT_ASPECT
 
 var _lens: MeshInstance3D
 ## The lenses swing on this rather than on the mesh itself: the mesh's own
@@ -52,15 +63,35 @@ func _process(_delta: float) -> void:
 	grid.upload_if_dirty()
 
 
-## Projects a body hit from the eye onto the physical lens plane, then paints in
-## the lens's local X/Y metres. Anything level with the lenses or behind them
-## misses: it is not in front of your eyes, so it does not blind you.
+## The wearer's camera, as the host has been told it is. Called on whichever
+## machine owns the painting, so the mask is built against the screen it will be
+## drawn on.
+func set_view(fov_degrees: float, aspect: float) -> void:
+	view_fov_degrees = fov_degrees
+	view_aspect = aspect
+
+
+## Projects a body hit through the wearer's camera frustum and paints where it
+## lands on their screen. Anything level with the eyes or behind them misses: it
+## is not in front of you, so it does not blind you.
+##
+## The lens plane itself is not what the hit is projected onto any more. It
+## covers 86 degrees across and 55 up and down, where a 74-degree 16:9 camera
+## covers 106 and 74, so a hit came out 1.45 times further from the centre than
+## it looked on screen and anything past two thirds of the way out was thrown
+## away entirely. The mask is the screen, so the screen's own frustum is what it
+## has to be divided by.
 func paint_from_hit(direction: Vector3) -> Vector2i:
-	if direction.z >= -0.001:
+	var depth := -direction.z
+	if depth <= 0.001:
 		return Vector2i(-1, -1)
-	var scale := LENS_DISTANCE / -direction.z
-	var lens_position := Vector2(direction.x, direction.y) * scale
-	return grid.paint(lens_position, brush_radius)
+	var tan_up := tan(deg_to_rad(view_fov_degrees) * 0.5)
+	var tan_across := tan_up * view_aspect
+	# -1 to 1 across the screen, then out to the mask's own metres.
+	var screen := Vector2(
+		direction.x / (depth * tan_across),
+		direction.y / (depth * tan_up))
+	return grid.paint(screen * LENS_SIZE * 0.5, brush_radius)
 
 
 func paint_cell(cell: Vector2i) -> void:

@@ -248,6 +248,17 @@ var _pending_splats := PackedInt32Array()
 var _wiping: Dictionary = {}
 var _crosshair: Control
 var _visor_overlay: VisorOverlay
+## The camera the host has agreed this peer is looking through: the vertical
+## field of view in degrees and the aspect. The mask is painted against it, so
+## what is rendered has to match it and not merely resemble it.
+var _view_aspect := 16.0 / 9.0
+## What the camera is actually given. The same as camera_fov whenever the window
+## is a shape the session allows, which is almost always; when it is not, the
+## frustum is widened and the extra is covered by bars, so the part that is left
+## showing is exactly the frustum the mask was painted against.
+var _rendered_fov := 74.0
+var _letterbox: Array[ColorRect] = []
+var _view_layout := Rect2()
 var _hud_layer: CanvasLayer
 var _mayo_material: Material
 var _landing_material: Material
@@ -516,6 +527,7 @@ func _process(_delta: float) -> void:
 	if _local == null:
 		return
 	_update_camera()
+	_report_view(_delta)
 	for shooter in _shooters.values():
 		_update_fallen_body(shooter)
 		_update_visor(shooter)
@@ -658,6 +670,7 @@ func _build_world() -> void:
 	_camera.name = "ThirdPersonCamera"
 	_camera.current = true
 	_camera.fov = camera_fov
+	_rendered_fov = camera_fov
 	_camera.near = 0.05
 	add_child(_camera)
 
@@ -775,6 +788,80 @@ func _adopt_local(shooter: Shooter) -> void:
 	set_first_person(_first_person)
 
 
+## Tells the network what this peer is looking through, every frame. The network
+## decides what to do with it: the host clamps its own and paints with it, a
+## client sends it and waits to be told what it may render.
+func _report_view(delta: float) -> void:
+	var size := get_viewport().get_visible_rect().size
+	_net.report_view(camera_fov, size.x / maxf(size.y, 1.0), delta)
+	_layout_view()
+
+
+## The host, marking which camera a peer's lenses are to be painted against.
+func set_view_for(peer_id: int, fov_degrees: float, aspect: float) -> void:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter != null and shooter.player.visor != null:
+		shooter.player.visor.set_view(fov_degrees, aspect)
+
+
+## The host's answer to this peer's report. It is not a suggestion: the camera is
+## set from it, and if the window is a shape the session does not allow, the part
+## of it outside the allowed frustum is covered rather than rendered into. A peer
+## that drew a wider view than it declared would see its own blindness in the
+## wrong places while everyone else saw it in the right ones.
+func apply_view(fov_degrees: float, aspect: float) -> void:
+	camera_fov = fov_degrees
+	_view_aspect = aspect
+	if _local != null and _local.player.visor != null:
+		_local.player.visor.set_view(fov_degrees, aspect)
+	_view_layout = Rect2()
+	_layout_view()
+
+
+## The largest rect of the approved aspect that fits the window, and the frustum
+## that fills exactly that rect. When the window already is that shape -- 16:9,
+## 16:10, 21:9, anything inside the band -- the rect is the whole window, the
+## frustum is the declared one and the bars have no size.
+func _layout_view() -> void:
+	var size := get_viewport().get_visible_rect().size
+	if size.x <= 0.0 or size.y <= 0.0:
+		return
+	var real := size.x / size.y
+	var inner := size
+	if real > _view_aspect:
+		inner.x = size.y * _view_aspect
+	elif real < _view_aspect:
+		inner.y = size.x / _view_aspect
+	var frame := Rect2((size - inner) * 0.5, inner)
+	if frame.is_equal_approx(_view_layout):
+		return
+	_view_layout = frame
+	# Widening the frustum by however much is being covered leaves what is still
+	# showing equal to the declared one.
+	var tan_up := tan(deg_to_rad(camera_fov) * 0.5) * maxf(1.0, _view_aspect / real)
+	_rendered_fov = rad_to_deg(atan(tan_up) * 2.0)
+	if _visor_overlay != null:
+		_visor_overlay.set_frame(frame)
+	_layout_letterbox(size, frame)
+
+
+func _layout_letterbox(size: Vector2, frame: Rect2) -> void:
+	if _letterbox.is_empty():
+		return
+	var sides := [
+		Rect2(0.0, 0.0, size.x, frame.position.y),
+		Rect2(0.0, frame.end.y, size.x, size.y - frame.end.y),
+		Rect2(0.0, 0.0, frame.position.x, size.y),
+		Rect2(frame.end.x, 0.0, size.x - frame.end.x, size.y),
+	]
+	for i in _letterbox.size():
+		var bar := _letterbox[i]
+		var side: Rect2 = sides[i]
+		bar.position = side.position
+		bar.size = side.size.max(Vector2.ZERO)
+		bar.visible = bar.size.x > 0.5 and bar.size.y > 0.5
+
+
 func set_avatar_authority(peer_id: int, authority: bool) -> void:
 	var shooter: Shooter = _shooters.get(peer_id)
 	if shooter != null:
@@ -830,6 +917,16 @@ func _build_crosshair() -> void:
 	var layer := CanvasLayer.new()
 	layer.name = "HUD"
 	add_child(layer)
+	# Behind the lenses: the window outside the frustum the mask was painted
+	# against is covered, not drawn on.
+	for i in 4:
+		var bar := ColorRect.new()
+		bar.name = "Letterbox%d" % i
+		bar.color = Color(0.0, 0.0, 0.0, 1.0)
+		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		bar.visible = false
+		layer.add_child(bar)
+		_letterbox.push_back(bar)
 	_visor_overlay = VisorOverlayScript.new() as VisorOverlay
 	_visor_overlay.name = "VisorOverlay"
 	layer.add_child(_visor_overlay)
@@ -1046,7 +1143,7 @@ func _aim_basis(shooter: Shooter = null) -> Basis:
 func _update_camera() -> void:
 	if _local == null or not is_instance_valid(_camera) or not is_instance_valid(_player):
 		return
-	_camera.fov = camera_fov
+	_camera.fov = _rendered_fov
 	var aim_basis := _aim_basis()
 	var eye := _player.global_position + Vector3.UP * eye_height
 	var tilt := _player.fall_tilt()

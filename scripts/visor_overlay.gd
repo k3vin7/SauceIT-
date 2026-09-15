@@ -14,3 +14,12 @@ func bind(visor: VisorContamination) -> void:
 	shader_material.set_shader_parameter("mask_texture", visor.grid.texture)
 	shader_material.set_shader_parameter("mayo_color", visor.mayo_color)
 	material = shader_material
+
+
+## The part of the window the mask covers. The whole of it whenever the window is
+## a shape the session allows; the rest is behind the bars, and the mask must not
+## be stretched over it or the stains would sit where they were not painted.
+func set_frame(frame: Rect2) -> void:
+	set_anchors_preset(Control.PRESET_TOP_LEFT, true)
+	position = frame.position
+	size = frame.size
