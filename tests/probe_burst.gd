@@ -196,6 +196,13 @@ func _two_bursts(scene, pause_frames: int) -> Dictionary:
 ## Bow of a burst fired while strafing. With `trailing`, an earlier burst is
 ## left falling in the array first, which must not change the result.
 func _strafe_bow(scene, trailing: bool) -> float:
+	# From the same spot and the same aim each time. Each call strafes the
+	# player a little further right, and the two runs have to be measured from
+	# the same place or the second one ends up firing into a wall and the arc
+	# is cut short rather than flattened.
+	scene._player.global_position = Vector3(-10.0, scene.spawn_position_for(0).y, 8.0)
+	scene.debug_set_aim(0.0, -6.0)
+	await physics_frame
 	if trailing:
 		Input.action_press("fire_mayo")
 		for _f in 18:

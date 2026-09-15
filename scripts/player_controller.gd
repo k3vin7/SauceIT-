@@ -12,9 +12,12 @@ extends CharacterBody3D
 enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 
 @export_group("Movement")
-@export_range(0.5, 12.0, 0.1, "suffix:m/s") var walk_speed := 2.6
-@export_range(0.5, 14.0, 0.1, "suffix:m/s") var run_speed := 5.2
-@export_range(1.0, 40.0, 0.5) var acceleration := 18.0
+@export_range(0.5, 24.0, 0.1, "suffix:m/s") var walk_speed := 5.2
+@export_range(0.5, 28.0, 0.1, "suffix:m/s") var run_speed := 10.4
+## Doubled with the speeds, so getting up to them still takes the time it did:
+## left alone, twice the top speed would take twice as long to reach and the
+## player would feel heavier rather than faster.
+@export_range(1.0, 80.0, 0.5) var acceleration := 36.0
 ## Jump. The body is 2.56 m, so these are scaled for it: 8 m/s against 20 m/s^2
 ## clears about 1.6 m, a little over half its own height. Gravity here is the
 ## body's own, not the sauce's -- a player that floated like a droplet would be
