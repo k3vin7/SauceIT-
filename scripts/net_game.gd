@@ -26,6 +26,17 @@ extends Node
 ##     Clients only ever see the resulting fall state.
 
 const DEFAULT_PORT := 24565
+## What one peer may send per tick. A client sends one input a tick and no more
+## -- there is nothing a second one could say that the first did not -- so any
+## extra is either a duplicate or someone flooding, and either way the first is
+## the one to keep.
+const INPUT_PACKETS_PER_TICK := 1
+## Wipes are rarer and travel reliably, which makes them the more expensive
+## thing to flood. A wipe takes wipe_duration to finish and cannot be started
+## during one, so nobody can legitimately complete more than about 1.4 a second;
+## five leaves room for mashing the key and for retries without leaving the
+## reliable channel open to abuse.
+const WIPE_REQUESTS_PER_SECOND := 5.0
 const MAX_CLIENTS := 1
 ## Floats per player in a state packet: position xyz, yaw, velocity xz, firing,
 ## aim pitch, fall state, fall timer, fall direction, wipe timer. The peer ids
@@ -43,12 +54,19 @@ var _status := "offline"
 ## peer id -> the last input packet from that client, applied every tick until
 ## the next one arrives so a dropped packet coasts instead of stuttering.
 var _client_input: Dictionary = {}
+## peer id -> how many input packets it has sent this tick, and how much wipe
+## budget it has left. A peer that goes over is ignored rather than answered:
+## nothing is sent back, so flooding costs the flooder and not the host.
+var _input_this_tick: Dictionary = {}
+var _wipe_budget: Dictionary = {}
 ## Join order, which is what decides spawn points. The host is always slot 0.
 var _slots: Dictionary = {1: 0}
 var _next_slot := 1
 var debug_state_packets := 0
 ## Client packets thrown away for carrying a value that is not a number.
 var rejected_packets := 0
+## And thrown away for arriving faster than a peer is allowed to send.
+var dropped_packets := 0
 
 
 func bind(new_world: Node) -> void:
@@ -161,6 +179,8 @@ func _on_peer_connected(id: int) -> void:
 
 func _on_peer_disconnected(id: int) -> void:
 	_client_input.erase(id)
+	_input_this_tick.erase(id)
+	_wipe_budget.erase(id)
 	_slots.erase(id)
 	if multiplayer.is_server():
 		world.remove_avatar(id)
@@ -274,7 +294,23 @@ func request_wipe() -> void:
 func _request_wipe() -> void:
 	if not multiplayer.is_server():
 		return
-	world.begin_wipe_for(multiplayer.get_remote_sender_id())
+	var sender := multiplayer.get_remote_sender_id()
+	if _wipe_budget.get(sender, WIPE_REQUESTS_PER_SECOND) < 1.0:
+		dropped_packets += 1
+		return
+	_wipe_budget[sender] = _wipe_budget.get(sender, WIPE_REQUESTS_PER_SECOND) - 1.0
+	world.begin_wipe_for(sender)
+
+
+## One input a tick per peer. The rest are dropped where they arrive, so a
+## flood costs the flooder its bandwidth and the host a dictionary lookup.
+func _within_budget(sender: int) -> bool:
+	var sent: int = _input_this_tick.get(sender, 0)
+	if sent >= INPUT_PACKETS_PER_TICK:
+		dropped_packets += 1
+		return false
+	_input_this_tick[sender] = sent + 1
+	return true
 
 
 func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
@@ -293,6 +329,12 @@ func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
 func apply_client_input() -> void:
 	if not _online or not multiplayer.is_server():
 		return
+	# A fresh allowance every tick. Anything a peer sent past last tick's was
+	# dropped as it arrived, so there is nothing here to catch up on.
+	_input_this_tick.clear()
+	for id in _wipe_budget:
+		_wipe_budget[id] = minf(_wipe_budget[id] + WIPE_REQUESTS_PER_SECOND / 60.0,
+			WIPE_REQUESTS_PER_SECOND)
 	for id in _client_input:
 		var shooter = world.shooter_for(id)
 		if shooter == null:
@@ -327,6 +369,8 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
 		yaw: float, pitch: float) -> void:
 	if not multiplayer.is_server():
+		return
+	if not _within_budget(multiplayer.get_remote_sender_id()):
 		return
 	# The bools need no range check -- there is no wrong value for a key being
 	# down -- but the floats do, and they go through the same helpers as before.
