@@ -47,6 +47,22 @@ const MAX_CLIENTS := 3
 ## travel alongside as ints -- a peer id is a full 32-bit random number and does
 ## not survive a round trip through a 32-bit float.
 const STATE_STRIDE := 12
+## What that costs the host. One player is 12 floats plus a 4-byte id, so 52
+## bytes; a four-player session is 208 bytes of state a frame, and the host sends
+## it to each of the three guests at the physics rate:
+##
+##     4 x 52 x 3 guests x 60 Hz = 37.4 kB/s of state
+##
+## The splats ride alongside on the reliable channel, 16 bytes each. Four players
+## all hosing the floor land about 750 points a second between them:
+##
+##     750 x 16 x 3 guests      = 36.0 kB/s of splats
+##
+## so roughly 75 kB/s of payload, near 0.6 Mbit/s up once ENet, UDP and IP
+## headers are on it -- with every player firing without pause, which is the
+## worst case rather than the usual one. Measured, four peers doing exactly
+## that: 36.6 kB/s of state and 30.5 kB/s of splats, 67 kB/s in all.
+## state_bytes_sent and splat_bytes_sent count it; probe_harness prints both.
 
 signal status_changed(message: String)
 
@@ -81,6 +97,11 @@ var rejected_packets := 0
 var dropped_packets := 0
 ## Peers turned away at the handshake for not knowing the code.
 var refused_peers := 0
+## Payload the host has put on the wire, in bytes, for the two broadcasts that
+## scale with the session. Headers are not counted: this is what the game asks
+## for, not what the socket ends up sending.
+var state_bytes_sent := 0
+var splat_bytes_sent := 0
 var _refused_for_code := false
 ## Whether this peer got past the handshake into the session.
 var _joined := false
@@ -358,13 +379,16 @@ static func wrap_angle(value: float) -> float:
 func end_of_frame(splats: PackedInt32Array) -> void:
 	if not _online or not multiplayer.is_server():
 		return
+	var guests := multiplayer.get_peers().size()
 	if not splats.is_empty():
 		_apply_splats.rpc(splats)
-	if multiplayer.get_peers().is_empty():
+		splat_bytes_sent += splats.size() * 4 * guests
+	if guests == 0:
 		return
 	var ids := PackedInt32Array()
 	var state := _collect_state(ids)
 	_apply_state.rpc(ids, state)
+	state_bytes_sent += (ids.size() + state.size()) * 4 * guests
 
 
 ## R, on a client. The wipe is a change everyone sees, so the client asks and

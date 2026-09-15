@@ -176,6 +176,24 @@ func _run() -> void:
 	for world in party:
 		_check(world.shooter_ids().size() == 4,
 			"a peer sees %d players, expected 4" % world.shooter_ids().size())
+
+	# What a four-player session actually costs the host: all four hosing the
+	# floor at once, which is the worst case rather than the usual one.
+	var before_state: int = party_host._net.state_bytes_sent
+	var before_splat: int = party_host._net.splat_bytes_sent
+	for world in party:
+		world.debug_set_aim(0.0, -30.0)
+		world.debug_set_input(Vector2.ZERO, false, true)
+	for _f in 120:
+		await physics_frame
+	for world in party:
+		world.debug_clear_input_override()
+	var state_rate: float = (party_host._net.state_bytes_sent - before_state) / 2048.0
+	var splat_rate: float = (party_host._net.splat_bytes_sent - before_splat) / 2048.0
+	print("  four firing, host upload: state %.1f kB/s, splats %.1f kB/s, total %.1f kB/s" % [
+		state_rate, splat_rate, state_rate + splat_rate])
+	_check(state_rate + splat_rate < 200.0,
+		"a four-player host is pushing %.1f kB/s" % (state_rate + splat_rate))
 	await _close(party)
 
 	# --- a peer rejoining over and over gets its spawn back ---
