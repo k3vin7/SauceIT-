@@ -33,7 +33,8 @@ func _ready() -> void:
 	_build_ui()
 	# The host opens first; the client is given a moment so its connection
 	# attempt does not race the socket being bound.
-	_worlds[0]._net.host(PORT)
+	# No code: the harness is one process talking to itself.
+	_worlds[0]._net.host(PORT, true)
 	await get_tree().process_frame
 	_worlds[1]._net.join("127.0.0.1", PORT)
 	_set_active(0)

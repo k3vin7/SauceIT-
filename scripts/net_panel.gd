@@ -9,6 +9,7 @@ const PORT_HINT := "24565"
 var _net: MayoNet
 var _address_field: LineEdit
 var _code_field: LineEdit
+var _open_box: CheckBox
 var _port_field: LineEdit
 var _status_label: Label
 var _host_button: Button
@@ -71,9 +72,15 @@ func _ready() -> void:
 	code_row.add_child(code_label)
 
 	_code_field = LineEdit.new()
-	_code_field.placeholder_text = "비우면 누구나 접속"
+	_code_field.placeholder_text = "비우면 자동 생성"
 	_code_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	code_row.add_child(_code_field)
+
+	# Opening without a code is a choice, not what happens when the field is
+	# left alone: the port is reachable by anything that can find it.
+	_open_box = CheckBox.new()
+	_open_box.text = "코드 없이 열기"
+	column.add_child(_open_box)
 
 	_host_button = Button.new()
 	_host_button.text = "호스트 시작"
@@ -125,7 +132,10 @@ func _ready() -> void:
 
 func _on_host_pressed() -> void:
 	_net.lobby_code = _code_field.text.strip_edges()
-	if _net.host(_port()):
+	if _net.host(_port(), _open_box.button_pressed):
+		# A generated code has to be readable back off the panel, so it is put in
+		# the field rather than only in the status line.
+		_code_field.text = _net.lobby_code
 		_close_on_success()
 	_refresh()
 
@@ -167,5 +177,6 @@ func _refresh() -> void:
 	_join_button.disabled = online
 	_address_field.editable = not online
 	_code_field.editable = not online
+	_open_box.disabled = online
 	_port_field.editable = not online
 	_leave_button.disabled = not online

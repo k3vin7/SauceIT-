@@ -102,7 +102,7 @@ func _run() -> void:
 	set_multiplayer(server_api, ^"/root/ServerView/World")
 	set_multiplayer(client_api, ^"/root/ClientView/World")
 
-	_check(server_world._net.host(PORT), "the host could not open the port")
+	_check(server_world._net.host(PORT, true), "the host could not open the port")
 	_check(client_world._net.join("127.0.0.1", PORT), "the client could not start connecting")
 	await _wait(60)
 

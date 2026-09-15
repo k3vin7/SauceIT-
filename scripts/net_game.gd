@@ -55,6 +55,18 @@ const MIN_ASPECT := 4.0 / 3.0
 const MAX_ASPECT := 21.0 / 9.0
 ## How long a peer has to prove it knows the code before it is dropped.
 const AUTH_TIMEOUT := 3.0
+## What a generated code is made of. No 0 or O, no 1, I or L: the code is read
+## off one screen and typed into another, and those are the pairs that get read
+## wrong. Five characters of this is about 28 million codes, which is far more
+## than guessing gets through at five tries a minute.
+const CODE_ALPHABET := "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+const CODE_LENGTH := 5
+## Wrong codes allowed from one address before it is made to wait. Five a minute
+## leaves room for typing it wrong and reading it back off a chat window; it does
+## not leave room for working through the alphabet.
+const CODE_ATTEMPTS := 5
+const CODE_ATTEMPT_WINDOW := 60.0
+const CODE_BLOCK_SECONDS := 300.0
 ## Three guests and the host: four players. The droplet pool and the state
 ## packet are both sized against this -- see POOL_SIZE in mayo_prototype.gd.
 const MAX_CLIENTS := 3
@@ -123,6 +135,13 @@ var rejected_packets := 0
 var dropped_packets := 0
 ## Peers turned away at the handshake for not knowing the code.
 var refused_peers := 0
+## And those turned away without being asked, because their address is waiting
+## out a run of wrong ones.
+var blocked_attempts := 0
+## Address -> [wrong codes so far, when that run started]. Address -> when it may
+## try again.
+var _code_failures: Dictionary = {}
+var _blocked_until: Dictionary = {}
 ## Payload the host has put on the wire, in bytes, for the two broadcasts that
 ## scale with the session. Headers are not counted: this is what the game asks
 ## for, not what the socket ends up sending.
@@ -159,9 +178,14 @@ func local_id() -> int:
 # Session setup
 # --------------------------------------------------------------------------
 
-func host(port := DEFAULT_PORT) -> bool:
+## `open_to_anyone` is the deliberate choice to run without a code. Left alone, a
+## session that was given no code makes one rather than opening the port to
+## whoever finds it.
+func host(port := DEFAULT_PORT, open_to_anyone := false) -> bool:
 	if _online:
 		return false
+	if lobby_code.is_empty() and not open_to_anyone:
+		lobby_code = generate_code()
 	var peer := ENetMultiplayerPeer.new()
 	var error := peer.create_server(port, MAX_CLIENTS)
 	if error != OK:
@@ -208,6 +232,10 @@ func leave() -> void:
 	_views.clear()
 	_view_sent = Vector2.ZERO
 	_view_pending = Vector2.ZERO
+	# The block list belongs to the session that was running, not to the process:
+	# opening a new room starts everyone even.
+	_code_failures.clear()
+	_blocked_until.clear()
 	_slots = {1: 0}
 	_refused_for_code = false
 	_joined = false
@@ -249,12 +277,64 @@ func _check_code(id: int, data: PackedByteArray) -> void:
 	if not multiplayer.is_server():
 		scene_multiplayer.complete_auth(id)
 		return
+	var address := _address_of(id)
+	if _blocked_until.get(address, 0.0) > _now():
+		blocked_attempts += 1
+		_set_status("a player was turned away: too many wrong codes")
+		multiplayer.multiplayer_peer.disconnect_peer(id)
+		return
 	if data == _auth_payload():
+		# Getting it right clears the slate: a player who mistyped it twice and
+		# then got in is not working towards a block.
+		_code_failures.erase(address)
 		scene_multiplayer.complete_auth(id)
 		return
 	refused_peers += 1
+	_record_failure(_address_of(id))
 	_set_status("a player was turned away: wrong code")
 	multiplayer.multiplayer_peer.disconnect_peer(id)
+
+
+## A code worth reading aloud.
+static func generate_code() -> String:
+	var code := ""
+	for _i in CODE_LENGTH:
+		code += CODE_ALPHABET[randi() % CODE_ALPHABET.length()]
+	return code
+
+
+func _now() -> float:
+	return Time.get_ticks_msec() / 1000.0
+
+
+## Which machine a peer is on. Peers are blocked by address rather than by id:
+## an id is new on every attempt, so counting those would count nothing.
+func _address_of(id: int) -> String:
+	var enet := _peer as ENetMultiplayerPeer
+	if enet == null:
+		return ""
+	var packet_peer := enet.get_peer(id)
+	return "" if packet_peer == null else packet_peer.get_remote_address()
+
+
+func _record_failure(address: String) -> void:
+	var now := _now()
+	var record: Array = _code_failures.get(address, [0, now])
+	# A run that has gone quiet for the window is over; this is the start of a
+	# new one rather than the sixth of an old one.
+	if now - float(record[1]) > CODE_ATTEMPT_WINDOW:
+		record = [0, now]
+	record[0] = int(record[0]) + 1
+	_code_failures[address] = record
+	if int(record[0]) >= CODE_ATTEMPTS:
+		_blocked_until[address] = now + CODE_BLOCK_SECONDS
+		_code_failures.erase(address)
+
+
+## How long this address still has to wait, in seconds. For the checks and for
+## anything that wants to say so.
+func block_remaining(address: String) -> float:
+	return maxf(_blocked_until.get(address, 0.0) - _now(), 0.0)
 
 
 func _on_authentication_failed(_id: int) -> void:

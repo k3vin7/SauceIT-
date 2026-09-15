@@ -57,7 +57,7 @@ func _session(count: int, port: int, codes: Array = []) -> Array:
 		set_multiplayer(SceneMultiplayer.new(), worlds[i].get_path())
 	for i in count:
 		worlds[i]._net.lobby_code = str(codes[i]) if i < codes.size() else ""
-	worlds[0]._net.host(port)
+	worlds[0]._net.host(port, codes.is_empty())
 	for i in range(1, count):
 		worlds[i]._net.join("127.0.0.1", port)
 	for _f in 90:
@@ -318,6 +318,62 @@ func _run() -> void:
 	_check(refused._net.status().contains("code"),
 		"the refused guest was told '%s' rather than that its code was wrong" % refused._net.status())
 	await _close(gated)
+
+	# --- an empty code is a generated one, not an open door ---
+	var made := await _session(1, 24736, ["", ""])
+	var made_code: String = made[0]._net.lobby_code
+	var alphabet := MayoNet.CODE_ALPHABET
+	var legible := true
+	for character in made_code:
+		legible = legible and alphabet.contains(character)
+	print("generated code: '%s' (%d chars, only legible characters %s)" % [
+		made_code, made_code.length(), str(legible)])
+	_check(made_code.length() == MayoNet.CODE_LENGTH,
+		"a generated code is %d characters, expected %d" % [
+			made_code.length(), MayoNet.CODE_LENGTH])
+	_check(legible, "the generated code '%s' has a character that reads wrong" % made_code)
+	await _close(made)
+
+	# --- and guessing at it gets the address shut out ---
+	var door := await _session(1, 24737, ["thecode"])
+	var locked_host = door[0]
+	var tries := 0
+	var blocked_at := 0
+	for attempt in MayoNet.CODE_ATTEMPTS + 2:
+		var knocker := await _session(1, 24738)
+		knocker[0]._net.leave()
+		knocker[0]._net.lobby_code = "wrong%d" % attempt
+		knocker[0]._net.join("127.0.0.1", 24737)
+		for _f in 40:
+			await physics_frame
+		tries += 1
+		if blocked_at == 0 and locked_host._net.blocked_attempts > 0:
+			blocked_at = tries
+		_check(not knocker[0]._net.is_online(),
+			"a wrong code got in on try %d" % tries)
+		await _close(knocker)
+	print("wrong codes: %d tries -> %d refused, %d turned away unasked (blocked from try %d), 127.0.0.1 waits %.0f s" % [
+		tries, locked_host._net.refused_peers, locked_host._net.blocked_attempts,
+		blocked_at, locked_host._net.block_remaining("127.0.0.1")])
+	_check(locked_host._net.refused_peers == MayoNet.CODE_ATTEMPTS,
+		"the host checked %d codes, expected to stop asking after %d" % [
+			locked_host._net.refused_peers, MayoNet.CODE_ATTEMPTS])
+	_check(locked_host._net.blocked_attempts == 2,
+		"%d tries were turned away unasked, expected 2" % locked_host._net.blocked_attempts)
+	_check(locked_host._net.block_remaining("127.0.0.1") > 0.0,
+		"the address is not waiting out a block")
+	# And the right code is no use while the address is shut out.
+	var latecomer := await _session(1, 24739)
+	latecomer[0]._net.leave()
+	latecomer[0]._net.lobby_code = "thecode"
+	latecomer[0]._net.join("127.0.0.1", 24737)
+	for _f in 40:
+		await physics_frame
+	print("  the right code during a block: online %s" % str(latecomer[0]._net.is_online()))
+	_check(not latecomer[0]._net.is_online(),
+		"the block let the right code straight through")
+	await _close(latecomer)
+	await _close(door)
 
 	_finish()
 
