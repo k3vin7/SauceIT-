@@ -316,6 +316,9 @@ var debug_droplet_spawns := 0
 ## that is full is only a problem if this second number is not near zero.
 var debug_droplet_overwrites := 0
 var debug_droplet_overwritten_life := 0.0
+## Points thrown away by the cap rather than landing. Anything but zero means
+## sauce vanished in mid-air.
+var debug_points_trimmed := 0
 var debug_timings_us := {
 	"emit_follow": 0,
 	"point_physics": 0,
@@ -429,6 +432,14 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		shooter.emit_distance += extend_speed * delta
 		while shooter.emit_distance >= point_spacing:
 			shooter.emit_distance -= point_spacing
+			# Full: the nozzle stops until some of what is already out lands.
+			# The strand used to keep being made and the cap threw away the
+			# oldest point to make room, which is the one furthest along -- so
+			# sauce fired upward lost its leading end in mid-air rather than
+			# coming down. Holding off reads as running out of pressure, and
+			# nothing disappears.
+			if shooter.points.size() >= maximum_point_count:
+				break
 			_emit_point(shooter)
 	else:
 		shooter.emit_distance = 0.0
@@ -1533,11 +1544,14 @@ func _enforce_spacing_constraint(shooter: Shooter = null) -> void:
 				back.position += correction
 
 
+## A backstop only: emission stops at the cap, so this should have nothing to
+## do. It still drops the oldest if the cap is lowered while a strand is out.
 func _trim_safety_cap(shooter: Shooter = null) -> void:
 	if shooter == null:
 		shooter = _local
 	while shooter.points.size() > maximum_point_count:
 		shooter.points.pop_front()
+		debug_points_trimmed += 1
 
 
 func _update_visuals(shooter: Shooter = null) -> void:
@@ -1745,6 +1759,7 @@ func debug_reset_profile() -> void:
 	debug_droplet_spawns = 0
 	debug_droplet_overwrites = 0
 	debug_droplet_overwritten_life = 0.0
+	debug_points_trimmed = 0
 	for key in debug_timings_us:
 		debug_timings_us[key] = 0
 	if is_instance_valid(_floor):
