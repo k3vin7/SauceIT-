@@ -66,7 +66,27 @@ const CODE_LENGTH := 5
 ## not leave room for working through the alphabet.
 const CODE_ATTEMPTS := 5
 const CODE_ATTEMPT_WINDOW := 60.0
-const CODE_BLOCK_SECONDS := 300.0
+## How long each block lasts, in order. An address is blocked every time it gets
+## another five wrong, and each block is longer than the last.
+##
+## The first one is short on purpose. Players behind one router share an address,
+## so a friend reading the code off a chat window and mistyping it can put the
+## whole house behind the same block; half a minute is an annoyance, five minutes
+## is the evening. An address that comes back and does it again is not somebody
+## mistyping, and the wait climbs accordingly.
+##
+## NOTE: when the session moves to the Steam relay, this is keyed on the Steam ID
+## instead of the address. That is the right key and the reason for this one --
+## an address is all ENet knows about who is knocking -- and it takes the
+## shared-router problem with it.
+const CODE_BLOCK_LADDER := [30.0, 120.0, 300.0]
+## How long after a block runs out the address is remembered for. Come back
+## inside this and the next block is the next rung; stay away and the ladder
+## starts again from the bottom.
+const CODE_BLOCK_MEMORY := 900.0
+## How often expired records are swept, so neither dictionary grows with every
+## address that ever knocked.
+const CODE_SWEEP_SECONDS := 60.0
 ## Three guests and the host: four players. The droplet pool and the state
 ## packet are both sized against this -- see POOL_SIZE in mayo_prototype.gd.
 const MAX_CLIENTS := 3
@@ -138,10 +158,11 @@ var refused_peers := 0
 ## And those turned away without being asked, because their address is waiting
 ## out a run of wrong ones.
 var blocked_attempts := 0
-## Address -> [wrong codes so far, when that run started]. Address -> when it may
-## try again.
+## Address -> [wrong codes so far, when that run started].
 var _code_failures: Dictionary = {}
-var _blocked_until: Dictionary = {}
+## Address -> [when it may try again, how many times it has been blocked].
+var _blocks: Dictionary = {}
+var _next_sweep := 0.0
 ## Payload the host has put on the wire, in bytes, for the two broadcasts that
 ## scale with the session. Headers are not counted: this is what the game asks
 ## for, not what the socket ends up sending.
@@ -235,7 +256,8 @@ func leave() -> void:
 	# The block list belongs to the session that was running, not to the process:
 	# opening a new room starts everyone even.
 	_code_failures.clear()
-	_blocked_until.clear()
+	_blocks.clear()
+	_next_sweep = 0.0
 	_slots = {1: 0}
 	_refused_for_code = false
 	_joined = false
@@ -278,7 +300,7 @@ func _check_code(id: int, data: PackedByteArray) -> void:
 		scene_multiplayer.complete_auth(id)
 		return
 	var address := _address_of(id)
-	if _blocked_until.get(address, 0.0) > _now():
+	if block_remaining(address) > 0.0:
 		blocked_attempts += 1
 		_set_status("a player was turned away: too many wrong codes")
 		multiplayer.multiplayer_peer.disconnect_peer(id)
@@ -317,8 +339,9 @@ func _address_of(id: int) -> String:
 	return "" if packet_peer == null else packet_peer.get_remote_address()
 
 
-func _record_failure(address: String) -> void:
-	var now := _now()
+## `now` is a parameter rather than a reading so the ladder can be walked in a
+## check without waiting out the blocks it hands down.
+func _record_failure(address: String, now := _now()) -> void:
 	var record: Array = _code_failures.get(address, [0, now])
 	# A run that has gone quiet for the window is over; this is the start of a
 	# new one rather than the sixth of an old one.
@@ -326,15 +349,40 @@ func _record_failure(address: String) -> void:
 		record = [0, now]
 	record[0] = int(record[0]) + 1
 	_code_failures[address] = record
-	if int(record[0]) >= CODE_ATTEMPTS:
-		_blocked_until[address] = now + CODE_BLOCK_SECONDS
-		_code_failures.erase(address)
+	if int(record[0]) < CODE_ATTEMPTS:
+		return
+	var rung: int = int(_blocks.get(address, [0.0, 0])[1])
+	var seconds: float = CODE_BLOCK_LADDER[mini(rung, CODE_BLOCK_LADDER.size() - 1)]
+	_blocks[address] = [now + seconds, rung + 1]
+	_code_failures.erase(address)
 
 
 ## How long this address still has to wait, in seconds. For the checks and for
 ## anything that wants to say so.
-func block_remaining(address: String) -> float:
-	return maxf(_blocked_until.get(address, 0.0) - _now(), 0.0)
+func block_remaining(address: String, now := _now()) -> float:
+	return maxf(float(_blocks.get(address, [0.0, 0])[0]) - now, 0.0)
+
+
+## Which rung of the ladder this address is on: 0 before its first block, 1 after
+## it, and so on. For the checks.
+func block_count(address: String) -> int:
+	return int(_blocks.get(address, [0.0, 0])[1])
+
+
+## Drops records nothing is waiting on any more: runs of wrong codes that went
+## quiet, and blocks that ran out long enough ago that the ladder has reset. Both
+## dictionaries are keyed by address, so without this a host left running would
+## keep a row for every address that ever got the code wrong.
+func _sweep_blocks(now := _now()) -> void:
+	if now < _next_sweep:
+		return
+	_next_sweep = now + CODE_SWEEP_SECONDS
+	for address in _code_failures.keys():
+		if now - float(_code_failures[address][1]) > CODE_ATTEMPT_WINDOW:
+			_code_failures.erase(address)
+	for address in _blocks.keys():
+		if now - float(_blocks[address][0]) > CODE_BLOCK_MEMORY:
+			_blocks.erase(address)
 
 
 func _on_authentication_failed(_id: int) -> void:
@@ -641,6 +689,7 @@ func apply_client_input() -> void:
 	for id in _view_budget:
 		_view_budget[id] = minf(_view_budget[id] + VIEW_REPORTS_PER_SECOND / 60.0,
 			VIEW_REPORTS_PER_SECOND)
+	_sweep_blocks()
 	for id in _client_input:
 		var shooter = world.shooter_for(id)
 		if shooter == null:

@@ -362,6 +362,15 @@ func _run() -> void:
 		"%d tries were turned away unasked, expected 2" % locked_host._net.blocked_attempts)
 	_check(locked_host._net.block_remaining("127.0.0.1") > 0.0,
 		"the address is not waiting out a block")
+	_check(locked_host._net.block_count("127.0.0.1") == 1,
+		"the address is on rung %d after one block" % locked_host._net.block_count("127.0.0.1"))
+	# What is left of it, since the two attempts that followed took a few seconds
+	# of it. That it is the bottom rung and not one of the long ones is the point
+	# here; the exact lengths are walked through below.
+	var first_block: float = locked_host._net.block_remaining("127.0.0.1")
+	_check(first_block > 0.0 and first_block <= MayoNet.CODE_BLOCK_LADDER[0],
+		"the first block has %.0f s left, which is not inside the bottom rung of %.0f" % [
+			first_block, MayoNet.CODE_BLOCK_LADDER[0]])
 	# And the right code is no use while the address is shut out.
 	var latecomer := await _session(1, 24739)
 	latecomer[0]._net.leave()
@@ -374,6 +383,50 @@ func _run() -> void:
 		"the block let the right code straight through")
 	await _close(latecomer)
 	await _close(door)
+
+	# --- and each block is longer than the last ---
+	# Walked through the same _record_failure the handshake calls, with the clock
+	# passed in: the blocks are minutes long and a check cannot sit through them.
+	var ladder := await _session(1, 24740)
+	var counter = ladder[0]._net
+	var clock := 1000.0
+	var handed := []
+	for round in MayoNet.CODE_BLOCK_LADDER.size() + 1:
+		for _try in MayoNet.CODE_ATTEMPTS:
+			counter._record_failure("10.0.0.7", clock)
+		handed.push_back(counter.block_remaining("10.0.0.7", clock))
+		# Wait the block out, then come back: inside the memory, so the next one
+		# is the next rung up.
+		clock += handed[handed.size() - 1] + 1.0
+	print("block ladder: %s s (rungs %s), address is on rung %d" % [
+		str(handed), str(MayoNet.CODE_BLOCK_LADDER), counter.block_count("10.0.0.7")])
+	var expected_ladder := []
+	for round in MayoNet.CODE_BLOCK_LADDER.size() + 1:
+		expected_ladder.push_back(MayoNet.CODE_BLOCK_LADDER[
+			mini(round, MayoNet.CODE_BLOCK_LADDER.size() - 1)])
+	for i in handed.size():
+		_check(is_equal_approx(handed[i], expected_ladder[i]),
+			"block %d lasted %.0f s, expected %.0f" % [i + 1, handed[i], expected_ladder[i]])
+
+	# And nothing is remembered once it is over.
+	var quiet := clock + MayoNet.CODE_BLOCK_MEMORY + MayoNet.CODE_SWEEP_SECONDS + 1.0
+	counter._record_failure("10.0.0.8", quiet)
+	counter._next_sweep = 0.0
+	counter._sweep_blocks(quiet)
+	print("sweep: %d blocks and %d failure runs left after %.0f s of quiet" % [
+		counter._blocks.size(), counter._code_failures.size(), MayoNet.CODE_BLOCK_MEMORY])
+	_check(not counter._blocks.has("10.0.0.7"),
+		"an expired block was still on the books %.0f s later" % MayoNet.CODE_BLOCK_MEMORY)
+	_check(counter._code_failures.has("10.0.0.8"),
+		"the sweep threw away a run of wrong codes that is still going")
+	counter._next_sweep = 0.0
+	counter._sweep_blocks(quiet + MayoNet.CODE_ATTEMPT_WINDOW + 1.0)
+	_check(not counter._code_failures.has("10.0.0.8"),
+		"a run of wrong codes that went quiet was kept")
+	_check(counter._blocks.is_empty() and counter._code_failures.is_empty(),
+		"the sweep left %d blocks and %d runs behind" % [
+			counter._blocks.size(), counter._code_failures.size()])
+	await _close(ladder)
 
 	_finish()
 
