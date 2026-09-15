@@ -174,6 +174,31 @@ func _run() -> void:
 			"a peer sees %d players, expected 4" % world.shooter_ids().size())
 	await _close(party)
 
+	# --- a peer rejoining over and over gets its spawn back ---
+	var revolving := await _session(2, 24732)
+	var door_host = revolving[0]
+	var comer = revolving[1]
+	var slots_seen := {}
+	var spawns_seen := {}
+	for round in 10:
+		var id: int = comer._net.local_id()
+		if door_host._net._slots.has(id):
+			slots_seen[door_host._net._slots[id]] = true
+			spawns_seen[str(door_host.spawn_position_for(door_host._net._slots[id]))] = true
+		comer._net.leave()
+		for _f in 20:
+			await physics_frame
+		comer._net.join("127.0.0.1", 24732)
+		for _f in 40:
+			await physics_frame
+	print("ten rejoins: slots handed out %s, distinct spawns %d, host sees %d players" % [
+		str(slots_seen.keys()), spawns_seen.size(), door_host.shooter_ids().size()])
+	_check(slots_seen.size() == 1,
+		"ten rejoins used %d different slots: %s" % [slots_seen.size(), str(slots_seen.keys())])
+	_check(door_host.shooter_ids().size() == 2,
+		"after ten rejoins the host has %d players, expected 2" % door_host.shooter_ids().size())
+	await _close(revolving)
+
 	_finish()
 
 

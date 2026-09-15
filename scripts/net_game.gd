@@ -61,9 +61,12 @@ var _client_input: Dictionary = {}
 ## nothing is sent back, so flooding costs the flooder and not the host.
 var _input_this_tick: Dictionary = {}
 var _wipe_budget: Dictionary = {}
-## Join order, which is what decides spawn points. The host is always slot 0.
+## Which spawn each peer has. The host is always slot 0. Slots are handed back
+## when a peer leaves and reused by the next one, so a session someone keeps
+## rejoining does not walk its spawns off into the distance -- a counter that
+## only went up ran out of spawn points after four joins however few players
+## were actually in.
 var _slots: Dictionary = {1: 0}
-var _next_slot := 1
 var debug_state_packets := 0
 ## Client packets thrown away for carrying a value that is not a number.
 var rejected_packets := 0
@@ -137,6 +140,9 @@ func leave() -> void:
 	_peer = null
 	_online = false
 	_client_input.clear()
+	_input_this_tick.clear()
+	_wipe_budget.clear()
+	_slots = {1: 0}
 	_set_status("offline")
 
 
@@ -152,8 +158,7 @@ func _connect_signals() -> void:
 func _on_peer_connected(id: int) -> void:
 	if not multiplayer.is_server():
 		return
-	var slot := _next_slot
-	_next_slot += 1
+	var slot := _free_slot()
 	_slots[id] = slot
 	world.create_avatar(id, slot, false)
 	# The newcomer is told first, and that message is what ends their offline
@@ -177,6 +182,17 @@ func _on_peer_connected(id: int) -> void:
 		if not visor.is_empty():
 			_load_visor_grid.rpc_id(id, existing_id, visor)
 	_set_status("player %d connected" % id)
+
+
+## The lowest spawn nobody is standing on.
+func _free_slot() -> int:
+	var taken := {}
+	for id in _slots:
+		taken[_slots[id]] = true
+	var slot := 0
+	while taken.has(slot):
+		slot += 1
+	return slot
 
 
 func _on_peer_disconnected(id: int) -> void:
