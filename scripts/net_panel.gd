@@ -128,6 +128,14 @@ func _ready() -> void:
 	column.add_child(hint)
 
 	_refresh()
+	# The wait counts down in front of the player rather than sitting at the
+	# number it was when they were turned away.
+	set_process(true)
+
+
+func _process(_delta: float) -> void:
+	if _net != null and _net.blocked_seconds() > 0:
+		_refresh()
 
 
 func _on_host_pressed() -> void:
@@ -172,6 +180,11 @@ func _refresh() -> void:
 	if _status_label == null:
 		return
 	_status_label.text = _net.status() if _net != null else "offline"
+	# Being made to wait is the one thing the panel says in its own words: it is
+	# an instruction to the player, not a report of what the session is doing.
+	var waiting: int = 0 if _net == null else _net.blocked_seconds()
+	if waiting > 0:
+		_status_label.text = "잠시 후 다시 시도하세요 (%d초)" % waiting
 	var online: bool = _net != null and _net.is_online()
 	_host_button.disabled = online
 	_join_button.disabled = online

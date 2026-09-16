@@ -87,6 +87,15 @@ const CODE_BLOCK_MEMORY := 900.0
 ## How often expired records are swept, so neither dictionary grows with every
 ## address that ever knocked.
 const CODE_SWEEP_SECONDS := 60.0
+## What a blocked address is told, and how long it has left. Saying so beats
+## dropping it without a word: a player who mistyped the code should find out
+## that they have to wait rather than that the game is broken.
+const AUTH_BLOCKED_PREFIX := "mayo1-blocked:"
+## How often one address is worth answering. A blocked address can reconnect as
+## fast as its machine allows, and an answer to each would be a packet out for
+## every packet in -- a reflector pointed at whoever the attacker claims to be.
+## One a second is plenty for a person pressing a button.
+const BLOCK_REPLIES_PER_SECOND := 1.0
 ## Three guests and the host: four players. The droplet pool and the state
 ## packet are both sized against this -- see POOL_SIZE in mayo_prototype.gd.
 const MAX_CLIENTS := 3
@@ -160,6 +169,14 @@ var refused_peers := 0
 var blocked_attempts := 0
 ## Address -> [wrong codes so far, when that run started].
 var _code_failures: Dictionary = {}
+## Blocked peers that were answered rather than merely dropped.
+var blocked_replies := 0
+## Address -> when it was last answered, so answering cannot be made into a flood.
+var _block_replies: Dictionary = {}
+## Peers that have been told why and are dropped on the next frame.
+var _pending_drops: Array[int] = []
+## On a guest: when the host says it may knock again.
+var _blocked_until_local := 0.0
 ## Address -> [when it may try again, how many times it has been blocked].
 var _blocks: Dictionary = {}
 var _next_sweep := 0.0
@@ -207,6 +224,8 @@ func host(port := DEFAULT_PORT, open_to_anyone := false) -> bool:
 		return false
 	if lobby_code.is_empty() and not open_to_anyone:
 		lobby_code = generate_code()
+	# Somebody else's door, and no longer the one in front of this player.
+	_blocked_until_local = 0.0
 	var peer := ENetMultiplayerPeer.new()
 	var error := peer.create_server(port, MAX_CLIENTS)
 	if error != OK:
@@ -257,6 +276,8 @@ func leave() -> void:
 	# opening a new room starts everyone even.
 	_code_failures.clear()
 	_blocks.clear()
+	_block_replies.clear()
+	_pending_drops.clear()
 	_next_sweep = 0.0
 	_slots = {1: 0}
 	_refused_for_code = false
@@ -286,8 +307,37 @@ func _auth_payload() -> PackedByteArray:
 
 func _on_peer_authenticating(id: int) -> void:
 	var scene_multiplayer := multiplayer as SceneMultiplayer
-	if scene_multiplayer != null:
-		scene_multiplayer.send_auth(id, _auth_payload())
+	if scene_multiplayer == null:
+		return
+	# A blocked address is not asked for the code at all: it is told how long it
+	# has left and dropped, before either side has said anything else.
+	if multiplayer.is_server():
+		var address := _address_of(id)
+		var remaining := block_remaining(address)
+		if remaining > 0.0:
+			blocked_attempts += 1
+			_set_status("a player was turned away: blocked for %d s" % ceili(remaining))
+			if _may_answer_block(address):
+				blocked_replies += 1
+				scene_multiplayer.send_auth(id,
+					(AUTH_BLOCKED_PREFIX + str(ceili(remaining))).to_utf8_buffer())
+				# Dropped next frame rather than now: disconnecting inside this
+				# call takes the answer with it and the guest is left with a
+				# silent failure, which is the thing being fixed.
+				_pending_drops.push_back(id)
+				return
+			multiplayer.multiplayer_peer.disconnect_peer(id)
+			return
+	scene_multiplayer.send_auth(id, _auth_payload())
+
+
+## One answer an address a second. Past that a blocked address is dropped without
+## one, which is what it was before there were any.
+func _may_answer_block(address: String, now := _now()) -> bool:
+	if now - float(_block_replies.get(address, -INF)) < 1.0 / BLOCK_REPLIES_PER_SECOND:
+		return false
+	_block_replies[address] = now
+	return true
 
 
 ## The host decides; a guest accepts whatever the host says, since the host has
@@ -297,14 +347,20 @@ func _check_code(id: int, data: PackedByteArray) -> void:
 	if scene_multiplayer == null:
 		return
 	if not multiplayer.is_server():
+		var message := data.get_string_from_utf8()
+		if message.begins_with(AUTH_BLOCKED_PREFIX):
+			# Not completed: there is nothing to join. The host is about to drop
+			# this peer, and the wait is what there is to report.
+			_blocked_until_local = _now() + float(
+				message.trim_prefix(AUTH_BLOCKED_PREFIX).to_int())
+			return
 		scene_multiplayer.complete_auth(id)
 		return
-	var address := _address_of(id)
-	if block_remaining(address) > 0.0:
-		blocked_attempts += 1
-		_set_status("a player was turned away: too many wrong codes")
-		multiplayer.multiplayer_peer.disconnect_peer(id)
+	# Already told why it is not coming in, and waiting on the drop. Whatever it
+	# sent after that is not a guess at the code.
+	if _pending_drops.has(id):
 		return
+	var address := _address_of(id)
 	if data == _auth_payload():
 		# Getting it right clears the slate: a player who mistyped it twice and
 		# then got in is not working towards a block.
@@ -312,7 +368,7 @@ func _check_code(id: int, data: PackedByteArray) -> void:
 		scene_multiplayer.complete_auth(id)
 		return
 	refused_peers += 1
-	_record_failure(_address_of(id))
+	_record_failure(address)
 	_set_status("a player was turned away: wrong code")
 	multiplayer.multiplayer_peer.disconnect_peer(id)
 
@@ -363,6 +419,13 @@ func block_remaining(address: String, now := _now()) -> float:
 	return maxf(float(_blocks.get(address, [0.0, 0])[0]) - now, 0.0)
 
 
+## How long this peer was told to wait, in whole seconds, counting down as it
+## does. Zero when it was not turned away for knocking too often. What the panel
+## puts in front of the player.
+func blocked_seconds() -> int:
+	return maxi(ceili(_blocked_until_local - _now()), 0)
+
+
 ## Which rung of the ladder this address is on: 0 before its first block, 1 after
 ## it, and so on. For the checks.
 func block_count(address: String) -> int:
@@ -383,6 +446,9 @@ func _sweep_blocks(now := _now()) -> void:
 	for address in _blocks.keys():
 		if now - float(_blocks[address][0]) > CODE_BLOCK_MEMORY:
 			_blocks.erase(address)
+	for address in _block_replies.keys():
+		if now - float(_block_replies[address]) > CODE_SWEEP_SECONDS:
+			_block_replies.erase(address)
 
 
 func _on_authentication_failed(_id: int) -> void:
@@ -457,6 +523,7 @@ func _on_peer_disconnected(id: int) -> void:
 
 func _on_connected_to_server() -> void:
 	_joined = true
+	_blocked_until_local = 0.0
 	# The world is not touched here: the server's first message does that, so
 	# that a spawn cannot land before the reset and be wiped by it.
 	_set_status("connected as player %d" % multiplayer.get_unique_id())
@@ -464,7 +531,11 @@ func _on_connected_to_server() -> void:
 
 func _on_connection_failed() -> void:
 	var refused := _refused_for_code
+	var waiting := blocked_seconds()
 	leave()
+	if waiting > 0:
+		_set_status("blocked, %d s left" % waiting)
+		return
 	_set_status("wrong lobby code" if refused else "connection failed")
 
 
@@ -473,8 +544,12 @@ func _on_server_disconnected() -> void:
 	# handshake, which is the only thing the host drops a peer over before it has
 	# a body. Once it is in, the same signal means what it always did.
 	var refused := _refused_for_code or not _joined
+	var waiting := blocked_seconds()
 	leave()
 	world.reset_to_offline()
+	if waiting > 0:
+		_set_status("blocked, %d s left" % waiting)
+		return
 	_set_status("wrong lobby code" if refused else "host closed the session")
 
 
@@ -814,4 +889,15 @@ func _ready() -> void:
 
 
 func _physics_process(_delta: float) -> void:
+	_drop_pending()
 	apply_client_input()
+
+
+## Peers that were answered last frame. Whatever was said to them has had a frame
+## to leave the host by now.
+func _drop_pending() -> void:
+	if _pending_drops.is_empty() or not _online:
+		return
+	for id in _pending_drops:
+		multiplayer.multiplayer_peer.disconnect_peer(id)
+	_pending_drops.clear()

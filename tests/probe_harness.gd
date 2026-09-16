@@ -371,6 +371,43 @@ func _run() -> void:
 	_check(first_block > 0.0 and first_block <= MayoNet.CODE_BLOCK_LADDER[0],
 		"the first block has %.0f s left, which is not inside the bottom rung of %.0f" % [
 			first_block, MayoNet.CODE_BLOCK_LADDER[0]])
+	# A blocked address is told how long it has, rather than dropped without a
+	# word.
+	var before_replies: int = locked_host._net.blocked_replies
+	var caller := await _session(1, 24741)
+	caller[0]._net.leave()
+	# Past the second the tries above have already used up this address's answer.
+	for _f in 80:
+		await physics_frame
+	caller[0]._net.lobby_code = "wrong"
+	caller[0]._net.join("127.0.0.1", 24737)
+	for _f in 40:
+		await physics_frame
+	print("  turned away: told '%s', %d s to wait" % [
+		caller[0]._net.status(), caller[0]._net.blocked_seconds()])
+	_check(caller[0]._net.blocked_seconds() > 0,
+		"the blocked peer was told nothing: '%s'" % caller[0]._net.status())
+	_check(caller[0]._net.blocked_seconds() <= MayoNet.CODE_BLOCK_LADDER[0],
+		"the peer was told to wait %d s, longer than the bottom rung" %
+			caller[0]._net.blocked_seconds())
+	_check(locked_host._net.blocked_replies - before_replies == 1,
+		"the host sent %d answers to one knock" % (
+			locked_host._net.blocked_replies - before_replies))
+	await _close(caller)
+
+	# And the answer is worth one packet a second per address, not one per knock.
+	# Driven on an injected clock: a knock takes a handshake and the machine
+	# running this decides how long that is, which is not a thing to measure a
+	# per-second limit against.
+	var limiter = locked_host._net
+	var beat := 5000.0
+	var answers := []
+	for step in [0.0, 0.2, 0.5, 1.1, 1.2]:
+		answers.push_back(limiter._may_answer_block("10.0.0.9", beat + step))
+	print("  reply limit at +0.0/+0.2/+0.5/+1.1/+1.2 s: %s" % str(answers))
+	_check(answers == [true, false, false, true, false],
+		"the reply limit answered %s, expected one a second" % str(answers))
+
 	# And the right code is no use while the address is shut out.
 	var latecomer := await _session(1, 24739)
 	latecomer[0]._net.leave()
