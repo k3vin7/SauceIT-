@@ -144,6 +144,16 @@ static func floor_plane() -> Dictionary:
 	}
 
 
+## Centre of the arena floor. It is the widest open space on the map, which is
+## what a strand test wants when it needs nothing in the way: the boss room is
+## comfortably wider than the stream's range in both directions, and the street
+## is not.
+static func arena_centre() -> Vector3:
+	var rect: Rect2i = SEGMENTS[SEGMENTS.size() - 1]
+	return cell_corner(rect.position) + Vector3(
+		float(rect.size.x) * CELL * 0.5, 0.0, float(rect.size.y) * CELL * 0.5)
+
+
 ## The walls, as merged boxes. A wall cell is any cell within `WALL_DEPTH_CELLS`
 ## of the street that is not street itself; the adjacency test is Chebyshev, so
 ## a diagonal corner is sealed rather than left as a gap a strand could fly out

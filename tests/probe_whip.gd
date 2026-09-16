@@ -29,6 +29,14 @@ func _run() -> void:
 	root.add_child(scene)
 	await process_frame
 	scene.set_process_unhandled_input(false)
+	# Whipping sweeps the strand through a full turn at close to its full range,
+	# so this has to happen somewhere with nothing in the way: a point that hits
+	# a wall settles, leaves the AIR phase, and takes the stretched pair being
+	# measured with it. The start plaza is not that place -- the arena is the
+	# only space on the map wider than the stream reaches.
+	scene._player.global_position = StreetMap.arena_centre() \
+		+ Vector3(0.0, scene.spawn_position_for(0).y, 0.0)
+	await physics_frame
 	var threshold: float = scene.strand_break_distance
 	print("break threshold = %.3f m" % threshold)
 
