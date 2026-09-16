@@ -49,7 +49,10 @@ func _run() -> void:
 	# Everything else here reads `cells`, which is why an upload that wrote 1
 	# into an R8 texture -- read back as 1/255, far under the 0.5 cut -- left
 	# every surface in the game blank without a single check noticing.
-	floor_node.paint_mayo(Vector3(2.0, 0.0, 2.0))
+	# Grid coordinates are the floor's own, and the floor no longer sits at the
+	# world origin now that it carries the whole street, so every world point
+	# here is built from the local one rather than assumed equal to it.
+	floor_node.paint_mayo(floor_node.to_global(Vector3(2.0, 0.0, 2.0)))
 	grid.upload_if_dirty()
 	# grid.image is what is handed to texture.update. Reading the texture back
 	# would be closer to what the shader sees, but headless has no GPU to read
@@ -104,7 +107,7 @@ func _run() -> void:
 				continue
 			total += 1
 			var rendered := grid.sample_bilinear(local) >= 0.5
-			if rendered != floor_node.is_mayo_at(probe):
+			if rendered != floor_node.is_mayo_at(floor_node.to_global(probe)):
 				mismatch += 1
 				worst = maxf(worst, _distance_to_cell_edge(grid, local))
 	print("rendered vs slip test over %d samples: %d disagree (%.3f%%), all within %.4f m of a cell edge" % [

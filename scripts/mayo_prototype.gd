@@ -644,20 +644,32 @@ func _capture_mouse() -> void:
 func _build_world() -> void:
 	_build_environment()
 
+	# One grid under the whole street. It has to be one: the slip test, the
+	# network snapshot and the determinism hash all read `_floor` and nothing
+	# else, so a street stitched out of per-segment floors would be a rewrite of
+	# the sync rather than a map. The plane is sized to the map's bounding box
+	# and offset onto it instead of sitting at the origin.
+	var plane: Dictionary = StreetMap.floor_plane()
 	_floor = FloorScript.new()
 	_floor.name = "FloorContamination"
-	# Nine times the area it was. The walls are not scaled with it, so they sit
-	# in it as obstacles rather than as its edges.
-	_floor.floor_size = Vector2(48.0, 48.0)
+	_floor.floor_size = plane["size"]
+	_floor.position = plane["centre"]
 	_floor.cell_size = grid_cell_size
 	_floor.brush_radius = contamination_brush_radius
 	add_child(_floor)
 
 	# The default centre aim is left open for the ballistic-to-floor test. Aim to
 	# the right-hand slab to validate wall attachment and trailing-point pressure.
+	# These three stand in the start plaza, which is why the plaza is wider than
+	# the road: they are what the probes fire at, and they are also the first
+	# thing to spray in a tutorial. They are built before the street so their
+	# indices in `_walls` -- which is what the splat protocol puts on the wire --
+	# stay 0, 1, 2 whatever the map does.
 	_create_wall("ImpactWall", Vector3(2.35, 1.1, -0.72), Vector3(1.65, 2.2, 0.18), Color("886b61"))
 	_create_wall("LeftGuide", Vector3(-3.6, 0.75, 0.8), Vector3(0.16, 1.5, 4.0), Color("6b7b84"))
 	_create_wall("RightBlock", Vector3(3.0, 0.7, 2.1), Vector3(0.9, 1.4, 0.9), Color("6b7b84"))
+
+	_build_street()
 
 	_net = MayoNet.new()
 	_net.name = "Net"
@@ -1112,6 +1124,142 @@ func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3,
 	wall.brush_radius = contamination_brush_radius
 	add_child(wall)
 	_walls.push_back(wall)
+
+
+## Builds the street from `StreetMap`: the walls that bound it, the stalls
+## lining it, and the vending machines. The boss arena is walled and empty --
+## the boss itself is deliberately not here yet.
+func _build_street() -> void:
+	var wall_color := Color("6f7a84")
+	var index := 0
+	for box in StreetMap.wall_boxes():
+		_create_wall("StreetWall%02d" % index, box["position"], box["size"], wall_color)
+		index += 1
+
+	# The sketch's cyan blocks. Solid boxes for now, as asked -- a stall is a
+	# thing to hide behind and to get mayo on, and both of those work already.
+	index = 0
+	for box in StreetMap.stall_boxes():
+		_create_wall("Stall%02d" % index, box["position"], box["size"], Color("3fc3d4"))
+		index += 1
+
+	index = 0
+	for box in StreetMap.vending_boxes():
+		_create_vending_machine("VendingMachine%02d" % index, box)
+		index += 1
+
+	_build_start_marker()
+
+
+## The sketch's red blocks. A chassis that takes sauce like any other surface,
+## with a lit display front and a delivery slot under it so it reads as a
+## vending machine rather than as a red box -- and so which way it faces is
+## obvious from across the street. It dispenses nothing yet: there is no
+## pick-up system to hand anything to.
+func _create_vending_machine(machine_name: String, box: Dictionary) -> void:
+	var holder := Node3D.new()
+	holder.name = machine_name
+	add_child(holder)
+
+	var size: Vector3 = box["size"]
+	var facing: Vector3 = box["facing"]
+
+	var chassis := WallScript.new() as ContaminableObject
+	chassis.name = "Chassis"
+	chassis.position = box["position"]
+	chassis.size = size
+	chassis.body_color = Color("23282e")
+	chassis.cell_size = grid_cell_size
+	chassis.brush_radius = contamination_brush_radius
+	holder.add_child(chassis)
+	# Registered like any other wall: the splat protocol addresses it by its
+	# index here, and nesting it under the holder changes nothing, because
+	# `paint_mayo` works in the object's own local space.
+	_walls.push_back(chassis)
+
+	# Depth along the facing axis, so the panel can be laid just proud of the
+	# front face whichever way the machine is turned.
+	var depth: float = size.x if absf(facing.x) > 0.5 else size.z
+	var across: float = size.z if absf(facing.x) > 0.5 else size.x
+
+	_add_machine_panel(holder, "Display", box["position"], facing,
+		depth, Vector2(across * 0.78, size.y * 0.58), size.y * 0.62,
+		Color("e2483c"), 1.6)
+	_add_machine_panel(holder, "Slot", box["position"], facing,
+		depth, Vector2(across * 0.6, size.y * 0.1), size.y * 0.2,
+		Color("0c0e10"), 0.0)
+
+
+## One flat quad standing 1 cm off the machine's front face. Separate meshes
+## rather than children of the chassis: `ContaminableObject` clears its own
+## children whenever it rebuilds its grids, which would take these with it.
+func _add_machine_panel(holder: Node3D, panel_name: String, machine_position: Vector3,
+		facing: Vector3, depth: float, panel_size: Vector2, height: float,
+		color: Color, emission: float) -> void:
+	var panel := MeshInstance3D.new()
+	panel.name = panel_name
+	var quad := QuadMesh.new()
+	quad.size = panel_size
+	panel.mesh = quad
+
+	var material := StandardMaterial3D.new()
+	material.albedo_color = color
+	if emission > 0.0:
+		material.emission_enabled = true
+		material.emission = color
+		material.emission_energy_multiplier = emission
+	panel.material_override = material
+
+	var at := machine_position + facing * (depth * 0.5 + 0.01)
+	at.y = height
+	# A QuadMesh's face is its +z, and `look_at` aims -z, so the target is
+	# behind the panel: that leaves the printed side turned out to the street.
+	panel.look_at_from_position(at, at - facing, Vector3.UP)
+	holder.add_child(panel)
+
+
+## The yellow arrow off the sketch, flat on the ground in the start plaza,
+## pointing the way out. Meshes only, no collider: it is a sign, and a strand
+## that crosses it has to reach the floor grid underneath.
+func _build_start_marker() -> void:
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color("f0a500")
+	material.emission_enabled = true
+	material.emission = Color("f0a500")
+	material.emission_energy_multiplier = 0.6
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+
+	var marker := Node3D.new()
+	marker.name = "StartArrow"
+	add_child(marker)
+
+	# Painted on the road, so it is sized by the road rather than in metres.
+	var scale: float = StreetMap.SCALE
+
+	var shaft := MeshInstance3D.new()
+	shaft.name = "Shaft"
+	var shaft_mesh := BoxMesh.new()
+	shaft_mesh.size = Vector3(1.1 * scale, 0.04, 4.2 * scale)
+	shaft.mesh = shaft_mesh
+	shaft.position = Vector3(0.0, 0.02, 3.0 * scale)
+	marker.add_child(shaft)
+
+	var head := MeshInstance3D.new()
+	head.name = "Head"
+	var head_mesh := CylinderMesh.new()
+	head_mesh.top_radius = 0.0
+	head_mesh.bottom_radius = 1.5 * scale
+	head_mesh.height = 0.04
+	head_mesh.radial_segments = 3
+	head.mesh = head_mesh
+	head.position = Vector3(0.0, 0.02, 0.4 * scale)
+	# A 3-sided cylinder points +x in its own frame; turn the point north.
+	head.rotation_degrees = Vector3(0.0, 90.0, 0.0)
+	marker.add_child(head)
+
+	for child in marker.get_children():
+		(child as MeshInstance3D).material_override = material
+		(child as MeshInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 
 func _make_stream_visual(visual_name: String, material: Material) -> StreamVisual:
