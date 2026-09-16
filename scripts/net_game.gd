@@ -151,6 +151,11 @@ var _views: Dictionary = {}
 var _view_sent := Vector2.ZERO
 var _view_pending := Vector2.ZERO
 var _view_cooldown := 0.0
+## Whether the host has answered the last report. Until it has, the report is
+## sent again: the first one goes out the moment the connection comes up, which
+## is exactly when a packet is most likely to go nowhere, and a peer whose report
+## was lost is painted on a camera it is not using.
+var _view_acked := false
 ## Which spawn each peer has. The host is always slot 0. Slots are handed back
 ## when a peer leaves and reused by the next one, so a session someone keeps
 ## rejoining does not walk its spawns off into the distance -- a counter that
@@ -272,6 +277,7 @@ func leave() -> void:
 	_views.clear()
 	_view_sent = Vector2.ZERO
 	_view_pending = Vector2.ZERO
+	_view_acked = false
 	# The block list belongs to the session that was running, not to the process:
 	# opening a new room starts everyone even.
 	_code_failures.clear()
@@ -474,6 +480,10 @@ func _on_peer_connected(id: int) -> void:
 	var slot := _free_slot()
 	_slots[id] = slot
 	world.create_avatar(id, slot, false)
+	# The lenses exist as of now; whatever camera this peer has already claimed
+	# has to be put on them, or it waits for the peer to change its window.
+	var view := view_for(id)
+	world.set_view_for(id, view.x, view.y)
 	# The newcomer is told first, and that message is what ends their offline
 	# game: everything after it describes the session they are now in. Doing it
 	# in this order means no join message can arrive before the reset that would
@@ -678,9 +688,11 @@ func report_view(fov_degrees: float, aspect: float, delta: float) -> void:
 	if _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
 	_view_pending = Vector2(fov_degrees, aspect)
-	if _view_pending.is_equal_approx(_view_sent) or _view_cooldown > 0.0:
+	var unchanged := _view_pending.is_equal_approx(_view_sent)
+	if (unchanged and _view_acked) or _view_cooldown > 0.0:
 		return
 	_view_sent = _view_pending
+	_view_acked = false
 	_view_cooldown = 1.0 / VIEW_REPORTS_PER_SECOND
 	_submit_view.rpc_id(1, fov_degrees, aspect)
 
@@ -713,6 +725,7 @@ func _submit_view(fov_degrees: float, aspect: float) -> void:
 func _accept_view(fov_degrees: float, aspect: float) -> void:
 	if multiplayer.is_server():
 		return
+	_view_acked = true
 	world.apply_view(fov_degrees, aspect)
 
 

@@ -244,7 +244,20 @@ func _run() -> void:
 	var looker_id: int = looker._net.local_id()
 	for _f in 20:
 		await physics_frame
+	# The report has to arrive on its own. The first one goes out as the
+	# connection comes up, which is exactly when a packet is most likely to go
+	# nowhere, and nothing else will ever send another until the player resizes
+	# their window.
 	var honest: Vector2 = seen_host._net.view_for(looker_id)
+	print("first report: host holds %s for the guest, guest renders (%.1f, %.3f), pane aspect %.3f" % [
+		str(honest), looker.camera_fov, looker._view_aspect,
+		looker.get_viewport().get_visible_rect().size.aspect()])
+	_check(seen_host._net._views.has(looker_id),
+		"the guest's first view report never reached the host")
+	_check(is_equal_approx(looker._view_aspect, honest.y)
+			and is_equal_approx(looker.camera_fov, honest.x),
+		"the guest renders (%.1f, %.3f) while the host paints it on %s" % [
+			looker.camera_fov, looker._view_aspect, str(honest)])
 	looker._net._submit_view.rpc_id(1, 200.0, 0.0)
 	for _f in 20:
 		await physics_frame
