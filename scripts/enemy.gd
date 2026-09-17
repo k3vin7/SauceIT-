@@ -152,18 +152,25 @@ func _bones() -> Array:
 	var hand_x := radius - arm_radius
 	var head_radius := h * 0.075
 	var leg_radius := h * 0.045
+	# How far the hands come forward. Enough to read as reaching for you from
+	# down the street, short of turning the figure into a slab.
+	var reach := h * 0.13
 	return [
 		# Head: a capsule with no barrel is a sphere, and its crown is the top
 		# of the whole figure.
 		[Vector3(0.0, half - head_radius, 0.0), Vector3(0.0, half - head_radius, 0.0), head_radius],
 		[Vector3(0.0, h * 0.30, 0.0), Vector3(0.0, 0.0, 0.0), h * 0.09],
 		[Vector3(-h * 0.055, 0.0, 0.0), Vector3(h * 0.055, 0.0, 0.0), h * 0.07],
-		# Arms, shoulder to hand, hanging out and down.
-		[Vector3(-h * 0.10, h * 0.27, 0.0), Vector3(-hand_x, h * 0.02, 0.0), arm_radius],
-		[Vector3(h * 0.10, h * 0.27, 0.0), Vector3(hand_x, h * 0.02, 0.0), arm_radius],
-		# Legs, hip to sole. Their feet are the bottom of the figure.
-		[Vector3(-h * 0.05, 0.0, 0.0), Vector3(-h * 0.06, -half + leg_radius, 0.0), leg_radius],
-		[Vector3(h * 0.05, 0.0, 0.0), Vector3(h * 0.06, -half + leg_radius, 0.0), leg_radius],
+		# Arms, shoulder to hand, out and down and reaching forward. The reach
+		# is what gives the figure a front at all: every other bone is on the
+		# x-y plane, so without it the body is symmetric back to front and there
+		# is no way to tell which way it is facing until it falls over.
+		[Vector3(-h * 0.10, h * 0.27, 0.0), Vector3(-hand_x, h * 0.02, -reach), arm_radius],
+		[Vector3(h * 0.10, h * 0.27, 0.0), Vector3(hand_x, h * 0.02, -reach), arm_radius],
+		# Legs, hip to sole. Their feet are the bottom of the figure, and are
+		# set a little forward of the hips for the same reason.
+		[Vector3(-h * 0.05, 0.0, 0.0), Vector3(-h * 0.06, -half + leg_radius, -h * 0.02), leg_radius],
+		[Vector3(h * 0.05, 0.0, 0.0), Vector3(h * 0.06, -half + leg_radius, -h * 0.02), leg_radius],
 	]
 
 
@@ -343,7 +350,13 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		velocity.z = direction.z * move_speed
 		# Turned toward the player rather than snapped: a snap makes it read as
 		# a camera-facing sprite, and the stain on its back is worth seeing.
-		facing_yaw = rotate_toward(facing_yaw, atan2(direction.x, direction.z), turn_speed * delta)
+		# A body's front is its -z, so facing a direction is atan2 of its
+		# negation -- the same form `debug_aim_at` uses to point the player at
+		# something. Facing `atan2(direction.x, direction.z)` instead turns its
+		# *back* to the target: it walks at you backwards, and then topples onto
+		# that back, which looks for all the world like falling forwards.
+		facing_yaw = rotate_toward(facing_yaw,
+			atan2(-direction.x, -direction.z), turn_speed * delta)
 		_apply_pose()
 	else:
 		velocity.x = 0.0

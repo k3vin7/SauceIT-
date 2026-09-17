@@ -61,8 +61,9 @@ func _run() -> void:
 	_check(absf(envelope.size.y - station.y * 2.0) < 0.02,
 		"the figure is %.2f m tall, not the %.2f m it claims" % [
 			envelope.size.y, station.y * 2.0])
-	# A person, not a pillar: taller than wide and much thinner than wide.
-	_check(envelope.size.z < envelope.size.x * 0.5,
+	# A person, not a pillar: much thinner front to back than it is wide, even
+	# with its arms out in front of it.
+	_check(envelope.size.z < envelope.size.x * 0.6,
 		"the figure is %.2f m deep against %.2f m wide, which is not a body shape" % [
 			envelope.size.z, envelope.size.x])
 	# One collider per bone, so what you can see is what you can hit.
@@ -103,6 +104,28 @@ func _run() -> void:
 	var chase := enemy.global_position - before_turn
 	print("player stepped 18 m sideways; the enemy's next second went %.2v" % chase)
 	_check(chase.x > 0.5, "the enemy did not turn after the player, moving %.2f m on x" % chase.x)
+
+	# It has to be looking where it is going. Checked against the player rather
+	# than against its own -z, because its own axes cannot catch a yaw that is
+	# half a turn out -- they are wrong in exactly the same way. It walked at the
+	# player backwards for a while and every check here still passed.
+	var to_player: Vector3 = player.global_position - enemy.global_position
+	to_player.y = 0.0
+	var front: Vector3 = -enemy.global_transform.basis.z
+	var facing_dot := front.dot(to_player.normalized())
+	print("it is looking %.0f deg off the player it is walking at" % rad_to_deg(acos(clampf(facing_dot, -1.0, 1.0))))
+	_check(facing_dot > 0.9,
+		"the enemy walks at the player with its front %.0f deg away: it is going backwards"
+			% rad_to_deg(acos(clampf(facing_dot, -1.0, 1.0))))
+	# And the figure has to have a front to look with, or none of that is visible.
+	var shape: AABB = enemy._body_mesh.mesh.get_aabb()
+	print("silhouette reaches %.2f m forward of its spine and %.2f m behind it" % [
+		-shape.position.z, shape.end.z])
+	# It reaches further forward than its own back is thick, which is what makes
+	# the facing readable from down the street rather than only in the numbers.
+	_check(-shape.position.z - shape.end.z > enemy._rest_radius * 0.5,
+		"the figure reaches %.2f m forward and %.2f m back: which way it faces cannot be seen"
+			% [-shape.position.z, shape.end.z])
 
 	# --- sauce marks it and hurts it, off the same hit ---
 	var full: float = enemy.health
@@ -200,7 +223,11 @@ func _run() -> void:
 
 	# --- killing it puts it on its back, over its own feet ---
 	var standing_sole: Vector3 = enemy.global_transform * Vector3(0.0, -enemy.height * 0.5, 0.0)
-	var facing: Vector3 = -enemy.global_transform.basis.z
+	# Which way "backwards" is, taken from the player it is facing rather than
+	# from its own axes: away from the player is the direction its back is in.
+	var away: Vector3 = enemy.global_position - player.global_position
+	away.y = 0.0
+	away = away.normalized()
 	enemy.health = enemy.sauce_damage_per_hit
 	_check(enemy.take_sauce_hit(), "the last point of health did not kill it")
 	_check(not enemy.is_alive(), "it is still alive at zero health")
@@ -212,18 +239,20 @@ func _run() -> void:
 	var sole: Vector3 = enemy.global_transform * Vector3(0.0, -enemy.height * 0.5, 0.0)
 	var crown: Vector3 = enemy.global_transform * Vector3(0.0, enemy.height * 0.5, 0.0)
 	var drift := Vector2(sole.x - standing_sole.x, sole.z - standing_sole.z).length()
-	var backwards: float = (crown - sole).dot(facing)
-	print("went over in %d frames: angle %.1f deg, soles moved %.2f m, crown %.1f m %s of them, at y=%.2f" % [
+	var backwards: float = (crown - sole).dot(away)
+	print("went over in %d frames: angle %.1f deg, soles moved %.2f m, crown %.1f m %s from the player, at y=%.2f" % [
 		falling_frames, rad_to_deg(enemy.fall_angle), drift, absf(backwards),
-		"behind" if backwards < 0.0 else "ahead", crown.y])
+		"away" if backwards > 0.0 else "toward", crown.y])
 	_check(falling_frames > 1, "it snapped flat instead of toppling over %.2f s" % enemy.fall_duration)
 	_check(is_equal_approx(enemy.fall_angle, MayoEnemy.FLAT),
 		"it stopped at %.1f degrees rather than flat" % rad_to_deg(enemy.fall_angle))
 	# The feet are the axis: they stay put while everything above them swings.
 	_check(drift < 0.05, "its feet slid %.2f m instead of staying planted" % drift)
-	# And it goes over backwards, so its back takes the floor.
-	_check(backwards < -enemy.height * 0.8,
-		"its head ended %.2f m along its facing; it did not fall onto its back" % backwards)
+	# And it goes over backwards, so its back takes the floor: away from what it
+	# was facing, which is the player.
+	_check(backwards > enemy.height * 0.8,
+		"its head ended %.2f m toward the player; it fell on its face, not its back"
+			% -backwards)
 	# Resting on the ground rather than sunk into it or hovering over it.
 	print("at rest the body centre is %.2f m up, torso half-thickness %.2f m" % [
 		enemy.global_position.y, enemy._rest_radius])
