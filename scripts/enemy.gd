@@ -3,11 +3,18 @@ extends CharacterBody3D
 
 ## The thing that walks at you.
 ##
-## It is a capsule for the same reason the players are: a capsule unwraps about
-## its own axis into a rectangle, so `BodyContamination` -- the same grid, the
-## same shader, the same two-int network splat -- wraps around it unchanged, and
-## sauce sticks to it exactly the way it sticks to a player. Being contaminable
-## is not decoration here: it is how you can see what you have already hit.
+## It is built out of capsules -- head, torso, two arms, two legs -- welded into
+## one mesh, and that welding is the whole trick. `BodyContamination` unwraps a
+## body about its own axis, and the shader derives the same coordinate from the
+## vertex position in the mesh's own space, so the two agree only while there is
+## one mesh whose vertices are in the body's space. Six separate MeshInstances
+## would each unwrap about their own centre and slide every stain. So the parts
+## are baked into a single `ArrayMesh` with their offsets folded into the
+## vertices, and the grid, the shader and the two-int network splat all carry on
+## working exactly as they do on a player.
+##
+## Sauce sticking to it is not decoration: it is how you see what you have
+## already hit.
 ##
 ## Everything that decides anything runs on the authority only. A client's
 ## enemies are placed by the packets the server sends, the same way its players
@@ -48,15 +55,31 @@ const HEIGHT_MULTIPLE := 2.0
 ## for them.
 @export_range(0.0, 3.0, 0.05, "suffix:m") var contact_reach := 0.5
 
+@export_group("Going down")
+## Long enough to read as toppling rather than as being deleted.
+@export_range(0.1, 4.0, 0.05, "suffix:s") var fall_duration := 0.9
+
 var health := 240.0
 ## Clients simulate no enemies at all, exactly as they simulate no bodies.
 var authority := true
 var contamination: BodyContamination
+## Half the silhouette's width: the arms reach this far out, so it is also the
+## capsule that the unwrap wraps around.
 var radius := 1.15
 var height := 4.1
+## Where it is looking, kept separately from `rotation.y` because a body part
+## way through falling over is turned about two axes and the yaw can no longer
+## be read back off the node.
+var facing_yaw := 0.0
+## 0 standing, TAU/4 flat on its back.
+var fall_angle := 0.0
 
 var _contact_cooldown := 0.0
 var _body_mesh: MeshInstance3D
+## World point the feet were planted on when it died -- the axis it goes over.
+var _fall_pivot := Vector3.ZERO
+## Half the thickness of the torso: what it comes to rest on.
+var _rest_radius := 0.37
 
 
 func _ready() -> void:
@@ -65,28 +88,37 @@ func _ready() -> void:
 	add_to_group("mayo_contaminable")
 
 
-## Capsule sized off the sauce refill station, its collider, its mesh, and the
-## contamination grid wrapped round it. `body_color` is the grid's clean colour,
-## so the stain and the skin are one material.
+## The body: its bones as colliders, its bones welded into one mesh, and the
+## contamination grid wrapped round the whole silhouette. `body_color` is the
+## grid's clean colour, so the stain and the skin are one material.
 func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	var station: Vector3 = StreetMap.VENDING_SIZE
 	radius = station.x * WIDTH_MULTIPLE * 0.5
 	height = station.y * HEIGHT_MULTIPLE
 
-	var shape := CapsuleShape3D.new()
-	shape.radius = radius
-	shape.height = height
-	var collision := CollisionShape3D.new()
-	collision.name = "EnemyCollision"
-	collision.shape = shape
-	add_child(collision)
+	var bones := _bones()
+	_rest_radius = bones[BONE_TORSO][2]
+
+	# One collider per bone rather than one capsule around the lot. A single
+	# capsule wide enough to cover the outstretched arms is a fat pill that
+	# nothing could walk past, and sauce aimed at an arm would land on thin air
+	# a metre outside it. Per bone, the silhouette you can see is the silhouette
+	# you can hit.
+	for index in bones.size():
+		var bone: Array = bones[index]
+		var shape := CapsuleShape3D.new()
+		shape.radius = bone[2]
+		var span: Vector3 = bone[1] - bone[0]
+		shape.height = span.length() + bone[2] * 2.0
+		var collision := CollisionShape3D.new()
+		collision.name = "Bone%d" % index
+		collision.shape = shape
+		collision.transform = Transform3D(_aligned_basis(span), (bone[0] + bone[1]) * 0.5)
+		add_child(collision)
 
 	_body_mesh = MeshInstance3D.new()
 	_body_mesh.name = "EnemyBody"
-	var capsule := CapsuleMesh.new()
-	capsule.radius = radius
-	capsule.height = height
-	_body_mesh.mesh = capsule
+	_body_mesh.mesh = _welded_mesh(bones)
 	add_child(_body_mesh)
 
 	contamination = BodyContamination.new()
@@ -97,6 +129,90 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	contamination.configure(self, _body_mesh, radius, height, body_color)
 
 	health = max_health
+
+
+## Index of the torso in `_bones()`. It is what the body comes to rest on, so
+## its radius is the one measurement the fall needs back out of the skeleton.
+const BONE_TORSO := 1
+## Flat on its back: a quarter turn from standing.
+const FLAT := TAU * 0.25
+
+## The skeleton, in the body's own space: y runs from -height/2 at the soles to
+## +height/2 at the crown, and x is its right. Each bone is a capsule given as
+## two end points and a radius, so the proportions are all fractions of the one
+## height and the whole figure scales with the size it was told to be.
+##
+## The arms set the width: their hands reach exactly `radius` out, so the
+## silhouette really is as wide as the size it claims rather than that wide plus
+## whatever a cuff happened to add.
+func _bones() -> Array:
+	var h := height
+	var half := h * 0.5
+	var arm_radius := h * 0.035
+	var hand_x := radius - arm_radius
+	var head_radius := h * 0.075
+	var leg_radius := h * 0.045
+	return [
+		# Head: a capsule with no barrel is a sphere, and its crown is the top
+		# of the whole figure.
+		[Vector3(0.0, half - head_radius, 0.0), Vector3(0.0, half - head_radius, 0.0), head_radius],
+		[Vector3(0.0, h * 0.30, 0.0), Vector3(0.0, 0.0, 0.0), h * 0.09],
+		[Vector3(-h * 0.055, 0.0, 0.0), Vector3(h * 0.055, 0.0, 0.0), h * 0.07],
+		# Arms, shoulder to hand, hanging out and down.
+		[Vector3(-h * 0.10, h * 0.27, 0.0), Vector3(-hand_x, h * 0.02, 0.0), arm_radius],
+		[Vector3(h * 0.10, h * 0.27, 0.0), Vector3(hand_x, h * 0.02, 0.0), arm_radius],
+		# Legs, hip to sole. Their feet are the bottom of the figure.
+		[Vector3(-h * 0.05, 0.0, 0.0), Vector3(-h * 0.06, -half + leg_radius, 0.0), leg_radius],
+		[Vector3(h * 0.05, 0.0, 0.0), Vector3(h * 0.06, -half + leg_radius, 0.0), leg_radius],
+	]
+
+
+## Every bone's capsule baked into one mesh, in the body's space. Baked rather
+## than parented: the shader reads `VERTEX`, which is the mesh's own space, so a
+## part left sitting on its own node transform would unwrap about its own centre
+## and slide its share of the stain.
+func _welded_mesh(bones: Array) -> ArrayMesh:
+	var vertices := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+	for bone in bones:
+		var span: Vector3 = bone[1] - bone[0]
+		var bone_radius: float = bone[2]
+		var capsule := CapsuleMesh.new()
+		capsule.radius = bone_radius
+		capsule.height = span.length() + bone_radius * 2.0
+		capsule.radial_segments = 12
+		capsule.rings = 6
+		var arrays: Array = capsule.get_mesh_arrays()
+		var placement := Transform3D(_aligned_basis(span), (bone[0] + bone[1]) * 0.5)
+		var offset := vertices.size()
+		for vertex in arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array:
+			vertices.push_back(placement * vertex)
+		for normal in arrays[Mesh.ARRAY_NORMAL] as PackedVector3Array:
+			normals.push_back(placement.basis * normal)
+		for index in arrays[Mesh.ARRAY_INDEX] as PackedInt32Array:
+			indices.push_back(index + offset)
+
+	var surface := []
+	surface.resize(Mesh.ARRAY_MAX)
+	surface[Mesh.ARRAY_VERTEX] = vertices
+	surface[Mesh.ARRAY_NORMAL] = normals
+	surface[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, surface)
+	return mesh
+
+
+## Orthonormal basis whose +y runs along `span`, which is the axis a capsule is
+## built on. Right-handed, so the baked normals and winding stay the way the
+## capsule generated them.
+func _aligned_basis(span: Vector3) -> Basis:
+	if span.length_squared() < 0.0000001:
+		return Basis()
+	var y_axis := span.normalized()
+	var reference := Vector3.FORWARD if absf(y_axis.z) < 0.9 else Vector3.RIGHT
+	var x_axis := reference.cross(y_axis).normalized()
+	return Basis(x_axis, y_axis, x_axis.cross(y_axis))
 
 
 ## Half of whatever the players walk at.
@@ -123,7 +239,40 @@ func take_sauce_hit() -> bool:
 	if not is_alive():
 		return false
 	health = maxf(health - sauce_damage_per_hit, 0.0)
-	return not is_alive()
+	if is_alive():
+		return false
+	# The soles it is standing on, on the ground: the line it goes over.
+	_fall_pivot = global_position - Vector3.UP * (height * 0.5)
+	return true
+
+
+## Goes over backwards about its own feet. The feet stay where they were planted
+## and the body swings up and back over them, so it lands on its back with its
+## soles still on the spot it died on -- rather than rotating about its middle,
+## which drives its head through the floor and slides its feet out behind it.
+##
+## The extra lift is what keeps it resting on the ground rather than sunk into
+## it: standing, the body's centre is half its height above the soles; flat, it
+## is the torso's own thickness above them, and the sine carries it between the
+## two in step with the rotation.
+func _advance_fall(delta: float) -> void:
+	if fall_angle >= FLAT:
+		return
+	fall_angle = minf(fall_angle + FLAT / maxf(fall_duration, 0.01) * delta, FLAT)
+	_apply_pose()
+
+
+## Writes `facing_yaw` and `fall_angle` onto the node. The yaw is applied first
+## and the topple second, so the topple is about the body's own right axis --
+## it falls onto its own back whichever way it happened to be looking.
+func _apply_pose() -> void:
+	var pose := Basis(Vector3.UP, facing_yaw) * Basis(Vector3.RIGHT, fall_angle)
+	if fall_angle <= 0.0:
+		global_transform = Transform3D(pose, global_position)
+		return
+	global_transform = Transform3D(pose, _fall_pivot
+		+ pose.y * (height * 0.5)
+		+ Vector3.UP * (_rest_radius * sin(fall_angle)))
 
 
 func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
@@ -149,24 +298,36 @@ func restore_cells(cells: PackedByteArray) -> bool:
 	return contamination != null and contamination.restore_cells(cells)
 
 
-## Where the server puts it and how hurt it is. The same shape as the player's
-## state packet and for the same reason: enough to place the body, plus what the
-## other screens have to agree about.
+## Where the server puts it, which way it is looking, how hurt it is, and how
+## far over it has gone. The same shape as the player's state packet and for the
+## same reason: enough to place the body, plus what the other screens have to
+## agree about. The topple travels as its angle rather than as a "it died" flag,
+## so a peer that joins or drops a packet mid-fall picks it up where it is
+## instead of snapping it upright or flat.
 func network_state() -> Array:
-	return [global_position, rotation.y, health]
+	return [global_position, facing_yaw, health, fall_angle]
 
 
-func apply_network_state(new_position: Vector3, yaw: float, new_health: float) -> void:
-	global_position = new_position
-	rotation.y = yaw
+func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
+		new_fall_angle: float) -> void:
+	facing_yaw = yaw
+	fall_angle = new_fall_angle
 	health = new_health
+	# The position is the server's outright, so the pose is written around it
+	# rather than derived from a pivot this peer never saw.
+	global_transform = Transform3D(
+		Basis(Vector3.UP, facing_yaw) * Basis(Vector3.RIGHT, fall_angle), new_position)
 
 
 ## Walks at `targets`' nearest member and hits it when it gets there. Returns
 ## the player it damaged this frame, or null -- the world owns what damage does,
 ## because on a client the answer is "nothing, wait for the packet".
 func advance(delta: float, targets: Array) -> MayoPlayer:
-	if not authority or not is_alive():
+	if not authority:
+		return null
+	if not is_alive():
+		# Dead ones are not skipped -- they are still going over.
+		_advance_fall(delta)
 		return null
 	_contact_cooldown = maxf(_contact_cooldown - delta, 0.0)
 
@@ -182,7 +343,8 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		velocity.z = direction.z * move_speed
 		# Turned toward the player rather than snapped: a snap makes it read as
 		# a camera-facing sprite, and the stain on its back is worth seeing.
-		rotation.y = rotate_toward(rotation.y, atan2(direction.x, direction.z), turn_speed * delta)
+		facing_yaw = rotate_toward(facing_yaw, atan2(direction.x, direction.z), turn_speed * delta)
+		_apply_pose()
 	else:
 		velocity.x = 0.0
 		velocity.z = 0.0

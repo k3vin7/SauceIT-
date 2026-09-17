@@ -45,6 +45,34 @@ func _run() -> void:
 	_check(is_equal_approx(enemy.height, station.y * 2.0),
 		"the enemy is %.2f m tall, not twice the station's %.2f m" % [enemy.height, station.y])
 
+	# The silhouette is the mesh's, not the declared numbers': the bones are
+	# fractions of the height, and an arm reaching a finger's width too far
+	# would make the figure wider than the size it claims to be.
+	var envelope: AABB = enemy._body_mesh.mesh.get_aabb()
+	print("welded mesh: %d surface(s), %.2f m wide, %.2f m tall, %.2f m deep" % [
+		enemy._body_mesh.mesh.get_surface_count(), envelope.size.x, envelope.size.y,
+		envelope.size.z])
+	_check(enemy._body_mesh.mesh.get_surface_count() == 1,
+		"the body is %d surfaces; the unwrap needs one mesh in the body's space"
+			% enemy._body_mesh.mesh.get_surface_count())
+	_check(absf(envelope.size.x - station.x * 2.0) < 0.02,
+		"the figure is %.2f m across, not the %.2f m it claims" % [
+			envelope.size.x, station.x * 2.0])
+	_check(absf(envelope.size.y - station.y * 2.0) < 0.02,
+		"the figure is %.2f m tall, not the %.2f m it claims" % [
+			envelope.size.y, station.y * 2.0])
+	# A person, not a pillar: taller than wide and much thinner than wide.
+	_check(envelope.size.z < envelope.size.x * 0.5,
+		"the figure is %.2f m deep against %.2f m wide, which is not a body shape" % [
+			envelope.size.z, envelope.size.x])
+	# One collider per bone, so what you can see is what you can hit.
+	var colliders := 0
+	for child in enemy.get_children():
+		if child is CollisionShape3D:
+			colliders += 1
+	print("colliders: %d (one per bone)" % colliders)
+	_check(colliders >= 6, "the figure has %d colliders; the limbs are not hittable" % colliders)
+
 	# --- speed, and that it is actually chasing ---
 	print("player walks %.2f m/s, enemy moves %.2f m/s (%.2fx)" % [
 		player.walk_speed, enemy.move_speed, enemy.move_speed / player.walk_speed])
@@ -144,6 +172,66 @@ func _run() -> void:
 		"the player came back with %.0f health" % player.health)
 	_check(player.contamination.painted_cell_count() == 0,
 		"the player came back still covered in sauce")
+
+	# --- its health bar actually lands on screen ---
+	# The bar is drawn in the window's pixels and was briefly being scaled by a
+	# Control size that is zero under a CanvasLayer, which collapsed every one
+	# of them into the corner. Nothing looked broken -- the bar was simply not
+	# where anyone was looking -- so the rect is checked rather than the drawing.
+	var hud: HealthHud = scene._health_hud
+	var camera: Camera3D = scene._camera
+	player.global_position = enemy.global_position + Vector3(0.0, 0.0, 14.0)
+	player.global_position.y = scene.spawn_position_for(0).y
+	scene.debug_aim_at(enemy.global_position)
+	await physics_frame
+	await process_frame
+	var bar: Rect2 = hud.enemy_bar_rect(enemy, camera)
+	print("health bar at %.0v size %.0v, inside the view %s of %s" % [
+		bar.position, bar.size, str(hud.frame.encloses(bar)), str(hud.frame)])
+	_check(bar.size.x > 0.0, "the enemy in front of the player gets no health bar at all")
+	_check(hud.frame.encloses(bar),
+		"the health bar sits at %.0v, outside the %s being drawn" % [bar.position, str(hud.frame)])
+	# Over the enemy rather than anywhere on screen: a bar in the corner is the
+	# failure this is here to catch.
+	var on_body: Vector2 = camera.unproject_position(enemy.global_position)
+	_check(bar.get_center().distance_to(on_body) < hud.frame.size.y * 0.5,
+		"the bar is %.0f px from the enemy it belongs to" % bar.get_center().distance_to(on_body))
+	_check(bar.get_center().y < on_body.y, "the bar is under the enemy rather than over it")
+
+	# --- killing it puts it on its back, over its own feet ---
+	var standing_sole: Vector3 = enemy.global_transform * Vector3(0.0, -enemy.height * 0.5, 0.0)
+	var facing: Vector3 = -enemy.global_transform.basis.z
+	enemy.health = enemy.sauce_damage_per_hit
+	_check(enemy.take_sauce_hit(), "the last point of health did not kill it")
+	_check(not enemy.is_alive(), "it is still alive at zero health")
+	var falling_frames := 0
+	for _f in int(enemy.fall_duration * 60.0) + 30:
+		await physics_frame
+		if enemy.fall_angle < MayoEnemy.FLAT:
+			falling_frames += 1
+	var sole: Vector3 = enemy.global_transform * Vector3(0.0, -enemy.height * 0.5, 0.0)
+	var crown: Vector3 = enemy.global_transform * Vector3(0.0, enemy.height * 0.5, 0.0)
+	var drift := Vector2(sole.x - standing_sole.x, sole.z - standing_sole.z).length()
+	var backwards: float = (crown - sole).dot(facing)
+	print("went over in %d frames: angle %.1f deg, soles moved %.2f m, crown %.1f m %s of them, at y=%.2f" % [
+		falling_frames, rad_to_deg(enemy.fall_angle), drift, absf(backwards),
+		"behind" if backwards < 0.0 else "ahead", crown.y])
+	_check(falling_frames > 1, "it snapped flat instead of toppling over %.2f s" % enemy.fall_duration)
+	_check(is_equal_approx(enemy.fall_angle, MayoEnemy.FLAT),
+		"it stopped at %.1f degrees rather than flat" % rad_to_deg(enemy.fall_angle))
+	# The feet are the axis: they stay put while everything above them swings.
+	_check(drift < 0.05, "its feet slid %.2f m instead of staying planted" % drift)
+	# And it goes over backwards, so its back takes the floor.
+	_check(backwards < -enemy.height * 0.8,
+		"its head ended %.2f m along its facing; it did not fall onto its back" % backwards)
+	# Resting on the ground rather than sunk into it or hovering over it.
+	print("at rest the body centre is %.2f m up, torso half-thickness %.2f m" % [
+		enemy.global_position.y, enemy._rest_radius])
+	_check(absf(enemy.global_position.y - enemy._rest_radius) < 0.02,
+		"flat on its back the body sits %.2f m up rather than on its %.2f m torso" % [
+			enemy.global_position.y, enemy._rest_radius])
+	_check(hud.enemy_bar_rect(enemy, camera).size.x == 0.0,
+		"a dead enemy still has a health bar over it")
 
 	# --- the splat replays into the same cells elsewhere ---
 	var replay: MayoEnemy = MayoEnemy.new()

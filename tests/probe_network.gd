@@ -54,6 +54,16 @@ func _make_world(view_name: String, world_name: String):
 	return world
 
 
+## Both peers holding both players, and the client actually taking state.
+func _settled(server_world, client_world, frames := 900) -> void:
+	for _f in frames:
+		if server_world.shooter_ids().size() == 2 \
+				and client_world.shooter_ids().size() == 2 \
+				and client_world._net.debug_state_packets > 0:
+			return
+		await physics_frame
+
+
 func _wait(frames: int) -> void:
 	for _f in frames:
 		await physics_frame
@@ -104,7 +114,13 @@ func _run() -> void:
 
 	_check(server_world._net.host(PORT, true), "the host could not open the port")
 	_check(client_world._net.join("127.0.0.1", PORT), "the client could not start connecting")
-	await _wait(60)
+	# Waits for the session rather than for a fixed 60 frames. The handshake,
+	# the avatar spawns and the first state packet are all RPCs, delivered one
+	# `multiplayer.poll()` per rendered frame -- and a heavy level runs several
+	# physics steps per rendered frame, so a physics-frame count is really a
+	# poll count divided by whatever the level costs. It held at 60 frames until
+	# the street went in, and then failed about one run in ten.
+	await _settled(server_world, client_world)
 
 	var client_id: int = client_world._net.local_id()
 	print("session: server=%s / client=%s, ids server%s client%s" % [

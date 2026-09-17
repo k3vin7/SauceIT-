@@ -76,13 +76,13 @@ func _draw_enemies() -> void:
 	var camera := world.get("_camera") as Camera3D
 	if camera == null or not is_instance_valid(camera):
 		return
-	# The camera renders the whole window and the frame is a crop of it, so a
-	# projected point is in window pixels and needs no rescaling -- only the
-	# frame test below, which is what keeps a bar out of the letterbox.
-	var window := get_viewport().get_visible_rect().size
-	var to_control := Vector2.ONE
-	if window.x > 0.0 and window.y > 0.0:
-		to_control = size / window
+	# `unproject_position` gives window pixels, `frame` is in window pixels, and
+	# this Control sits at the window origin -- so a projected point is already
+	# in the space being drawn in. It used to be scaled by `size / window`
+	# first, which looks like it belongs but does not: a Control under a
+	# CanvasLayer reports `size` as zero, so every bar was multiplied to (0, 0)
+	# and drawn in the screen corner. The player's bar is laid out from `frame`
+	# and never went through it, which is why it was the only one showing.
 	# Asked of the world rather than of the tree: groups are tree-wide, and the
 	# harness runs several worlds in one tree, so a group lookup would hang
 	# every world's enemies over every screen.
@@ -91,16 +91,28 @@ func _draw_enemies() -> void:
 		var enemy := world.enemy_at(index) as MayoEnemy
 		if enemy == null or not is_instance_valid(enemy) or not enemy.is_alive():
 			continue
-		var head := enemy.global_position + Vector3.UP * (enemy.stand_height() + ENEMY_LIFT)
-		if camera.is_position_behind(head):
+		var bar := enemy_bar_rect(enemy, camera)
+		if bar.size.x <= 0.0:
 			continue
-		if camera.global_position.distance_to(enemy.global_position) > ENEMY_DRAW_RANGE:
-			continue
-		var at: Vector2 = camera.unproject_position(head) * to_control
-		if not frame.has_point(at):
-			continue
-		var origin := at - Vector2(ENEMY_BAR.x * 0.5, ENEMY_BAR.y)
-		_draw_bar(Rect2(origin, ENEMY_BAR), enemy.health_fraction(), ENEMY_FULL, ENEMY_LOW, 1.0)
+		_draw_bar(bar, enemy.health_fraction(), ENEMY_FULL, ENEMY_LOW, 1.0)
+
+
+## Where this enemy's bar goes, or a zero rect if it does not get one. Split out
+## of `_draw_enemies` so it can be asked the question directly: a bar that ends
+## up in the wrong place is invisible rather than wrong-looking, and a drawing
+## call answers nothing about where it went.
+func enemy_bar_rect(enemy: MayoEnemy, camera: Camera3D) -> Rect2:
+	if enemy == null or camera == null or not enemy.is_alive():
+		return Rect2()
+	var head := enemy.global_position + Vector3.UP * (enemy.stand_height() + ENEMY_LIFT)
+	if camera.is_position_behind(head):
+		return Rect2()
+	if camera.global_position.distance_to(enemy.global_position) > ENEMY_DRAW_RANGE:
+		return Rect2()
+	var at: Vector2 = camera.unproject_position(head)
+	if not frame.has_point(at):
+		return Rect2()
+	return Rect2(at - Vector2(ENEMY_BAR.x * 0.5, ENEMY_BAR.y), ENEMY_BAR)
 
 
 ## Backing, fill, then outline. The fill is inset by the border so a full bar

@@ -24,8 +24,9 @@ const SPLAT_VISOR_CLEAR := 4
 ## Addressed by the enemy's index in `_enemies`, which every peer builds in the
 ## same order from the same spawn list, exactly as the walls are.
 const SPLAT_ENEMY := 5
-## Floats per enemy in an enemy state packet: position xyz, yaw, health.
-const ENEMY_STATE_STRIDE := 5
+## Floats per enemy in an enemy state packet: position xyz, yaw, health, and
+## how far over it has fallen.
+const ENEMY_STATE_STRIDE := 6
 ## Ints per entry in a splat batch: kind, target, cell x, cell y.
 const SPLAT_STRIDE := 4
 const FACES_PER_WALL := 6
@@ -1284,8 +1285,7 @@ func _advance_enemies(delta: float) -> void:
 	for shooter in _shooters.values():
 		targets.push_back(shooter.player)
 	for enemy in _enemies:
-		if not enemy.is_alive():
-			continue
+		# Dead ones are advanced too: they are still toppling.
 		var hit := enemy.advance(delta, targets)
 		if hit != null:
 			_damage_player(hit, enemy.contact_damage)
@@ -1335,7 +1335,7 @@ func enemy_state() -> PackedFloat32Array:
 		var state: Array = enemy.network_state()
 		var position: Vector3 = state[0]
 		data.append_array(PackedFloat32Array([
-			position.x, position.y, position.z, state[1], state[2]]))
+			position.x, position.y, position.z, state[1], state[2], state[3]]))
 	return data
 
 
@@ -1345,7 +1345,8 @@ func apply_enemy_state(data: PackedFloat32Array) -> void:
 		if at + ENEMY_STATE_STRIDE > data.size():
 			return
 		_enemies[index].apply_network_state(
-			Vector3(data[at], data[at + 1], data[at + 2]), data[at + 3], data[at + 4])
+			Vector3(data[at], data[at + 1], data[at + 2]),
+			data[at + 3], data[at + 4], data[at + 5])
 
 
 func set_enemy_authority(authority: bool) -> void:
@@ -1731,10 +1732,12 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3) ->
 	if surface is MayoEnemy:
 		var enemy := surface as MayoEnemy
 		var index := _enemies.find(enemy)
-		if index < 0 or not enemy.is_alive():
+		if index < 0:
 			return
 		# The damage and the stain come off the same hit, so what you can see on
-		# it is what you have actually done to it.
+		# it is what you have actually done to it. A body already on the floor
+		# still takes the stain -- `take_sauce_hit` is what refuses to hurt it
+		# twice -- because sauce landing on something has to leave a mark on it.
 		enemy.take_sauce_hit()
 		var enemy_cell := enemy.paint_mayo(hit_position, hit_normal)
 		if enemy_cell.x < 0:
