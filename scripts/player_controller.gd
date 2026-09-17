@@ -25,6 +25,9 @@ enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 @export_range(0.0, 20.0, 0.1, "suffix:m/s") var jump_speed := 8.0
 @export_range(1.0, 60.0, 0.5, "suffix:m/s²") var fall_gravity := 20.0
 
+@export_group("Health")
+@export_range(10.0, 1000.0, 1.0) var max_health := 100.0
+
 @export_group("Slip and Fall")
 ## Catching your balance before you actually go over. Controls are already
 ## locked here; this is where an arm-flailing animation would go.
@@ -49,6 +52,7 @@ enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 ## had, and goes over forwards instead of backwards.
 @export_range(0.0, 3.0, 0.05, "suffix:s") var recovery_window := 0.7
 
+var health := 100.0
 var frame_movement := Vector3.ZERO
 ## False on a client for every player including their own: the body is placed
 ## by the server. Aim stays local -- see MayoPrototype._read_local_input.
@@ -87,6 +91,25 @@ var wipe_timer := 0.0
 func _ready() -> void:
 	process_physics_priority = -10
 	add_to_group("mayo_contaminable")
+	health = max_health
+
+
+## Damage only ever lands on the authority; everyone else is told the result in
+## the next state packet. Returns true when this was the hit that emptied the
+## bar, so whoever dealt it can respond once rather than poll.
+func take_damage(amount: float) -> bool:
+	if health <= 0.0:
+		return false
+	health = maxf(health - amount, 0.0)
+	return health <= 0.0
+
+
+func heal_to_full() -> void:
+	health = max_health
+
+
+func health_fraction() -> float:
+	return clampf(health / maxf(max_health, 0.001), 0.0, 1.0)
 
 
 ## The strand marks a body the same way it marks a wall. Purely cosmetic: the
@@ -211,7 +234,8 @@ func _advance_wipe(delta: float) -> void:
 ## timer comes over the wire too, so the stumble, the fall, the slide and
 ## standing up line up frame for frame on both machines.
 func apply_network_state(new_position: Vector3, yaw: float, new_velocity: Vector3,
-		new_state: int, timer: float, direction: float, wipe: float) -> void:
+		new_state: int, timer: float, direction: float, wipe: float,
+		new_health: float) -> void:
 	global_position = new_position
 	rotation.y = yaw
 	velocity = new_velocity
@@ -219,12 +243,15 @@ func apply_network_state(new_position: Vector3, yaw: float, new_velocity: Vector
 	_state_timer = timer
 	fall_direction = direction
 	wipe_timer = wipe
+	health = new_health
 
 
-## What the server sends: enough to place the body and to replay the fall.
+## What the server sends: enough to place the body and to replay the fall, and
+## the health, which the server owns outright -- a client that decided its own
+## would disagree with the bar everyone else is watching.
 func network_state() -> Array:
 	return [global_position, rotation.y, velocity, int(state), _state_timer,
-		fall_direction, wipe_timer]
+		fall_direction, wipe_timer, health]
 
 
 func is_incapacitated() -> bool:

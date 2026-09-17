@@ -100,20 +100,24 @@ const BLOCK_REPLIES_PER_SECOND := 1.0
 ## packet are both sized against this -- see POOL_SIZE in mayo_prototype.gd.
 const MAX_CLIENTS := 3
 ## Floats per player in a state packet: position xyz, yaw, velocity xz, firing,
-## aim pitch, fall state, fall timer, fall direction, wipe timer. The peer ids
-## travel alongside as ints -- a peer id is a full 32-bit random number and does
-## not survive a round trip through a 32-bit float.
-const STATE_STRIDE := 12
-## What that costs the host. One player is 12 floats plus a 4-byte id, so 52
-## bytes; a four-player session is 208 bytes of state a frame, and the host sends
+## aim pitch, fall state, fall timer, fall direction, wipe timer, health. The
+## peer ids travel alongside as ints -- a peer id is a full 32-bit random number
+## and does not survive a round trip through a 32-bit float.
+const STATE_STRIDE := 13
+## What that costs the host. One player is 13 floats plus a 4-byte id, so 56
+## bytes; a four-player session is 224 bytes of state a frame, and the host sends
 ## it to each of the three guests at the physics rate:
 ##
-##     4 x 52 x 3 guests x 60 Hz = 37.4 kB/s of state
+##     4 x 56 x 3 guests x 60 Hz = 40.3 kB/s of state
 ##
 ## The splats ride alongside on the reliable channel, 16 bytes each. Four players
 ## all hosing the floor land about 750 points a second between them:
 ##
 ##     750 x 16 x 3 guests      = 36.0 kB/s of splats
+##
+## The enemies ride along on the same tick, 5 floats each, which at one enemy is
+## 20 bytes a frame per guest -- 3.6 kB/s for a full session, and a rounding
+## error next to the two above until there are dozens of them.
 ##
 ## so roughly 75 kB/s of payload, near 0.6 Mbit/s up once ENet, UDP and IP
 ## headers are on it -- with every player firing without pause, which is the
@@ -142,6 +146,8 @@ var _client_input: Dictionary = {}
 var _input_this_tick: Dictionary = {}
 var _wipe_budget: Dictionary = {}
 var _view_budget: Dictionary = {}
+## When the two budgets above were last topped up, on the wall clock.
+var _budget_clock := 0.0
 ## Peer id -> the clamped Vector2(fov degrees, aspect) the host is painting that
 ## peer's lenses with.
 var _views: Dictionary = {}
@@ -274,6 +280,7 @@ func leave() -> void:
 	_input_this_tick.clear()
 	_wipe_budget.clear()
 	_view_budget.clear()
+	_budget_clock = _now()
 	_views.clear()
 	_view_sent = Vector2.ZERO
 	_view_pending = Vector2.ZERO
@@ -641,6 +648,13 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 	var state := _collect_state(ids)
 	_apply_state.rpc(ids, state)
 	state_bytes_sent += (ids.size() + state.size()) * 4 * guests
+	# Enemies are the server's outright -- clients simulate none of them -- so
+	# they are sent, never asked for. Unreliable like the player state: a
+	# dropped frame is corrected by the next one.
+	var enemies: PackedFloat32Array = world.enemy_state()
+	if not enemies.is_empty():
+		_apply_enemy_state.rpc(enemies)
+		state_bytes_sent += enemies.size() * 4 * guests
 
 
 ## R, on a client. The wipe is a change everyone sees, so the client asks and
@@ -771,11 +785,24 @@ func apply_client_input() -> void:
 	# A fresh allowance every tick. Anything a peer sent past last tick's was
 	# dropped as it arrived, so there is nothing here to catch up on.
 	_input_this_tick.clear()
+	# The two rate limits below refill on the wall clock rather than by a fixed
+	# 1/60th per tick. What they are limiting is measured in real seconds at the
+	# other end -- a client's cooldown between view reports is decremented with
+	# the frame delta, from `_process` -- and the two only agree while the game
+	# is running at exactly 60 fps. Below that the client asks faster than a
+	# per-tick allowance grows, so every report it sends is dropped for being
+	# over budget, and the host never learns what camera that peer is using:
+	# their lenses get painted against the wrong frustum for the whole session.
+	# A heavier level was all it took to fall off 60 and expose it.
+	var now := _now()
+	# Clamped so a long hitch or a paused window does not hand out a burst.
+	var elapsed := clampf(now - _budget_clock, 0.0, 1.0)
+	_budget_clock = now
 	for id in _wipe_budget:
-		_wipe_budget[id] = minf(_wipe_budget[id] + WIPE_REQUESTS_PER_SECOND / 60.0,
+		_wipe_budget[id] = minf(_wipe_budget[id] + WIPE_REQUESTS_PER_SECOND * elapsed,
 			WIPE_REQUESTS_PER_SECOND)
 	for id in _view_budget:
-		_view_budget[id] = minf(_view_budget[id] + VIEW_REPORTS_PER_SECOND / 60.0,
+		_view_budget[id] = minf(_view_budget[id] + VIEW_REPORTS_PER_SECOND * elapsed,
 			VIEW_REPORTS_PER_SECOND)
 	_sweep_blocks()
 	for id in _client_input:
@@ -804,7 +831,7 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			position.x, position.y, position.z, state[1],
 			velocity.x, velocity.z,
 			1.0 if shooter.firing else 0.0, shooter.aim_pitch,
-			float(state[3]), state[4], state[5], state[6]]))
+			float(state[3]), state[4], state[5], state[6], state[7]]))
 	return data
 
 
@@ -840,7 +867,7 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 			data[index + 3],
 			Vector3(data[index + 4], 0.0, data[index + 5]),
 			int(data[index + 8]), data[index + 9], data[index + 10],
-			data[index + 11])
+			data[index + 11], data[index + 12])
 		# The local player's own aim is never taken back from the server: it is
 		# already ahead of this packet.
 		if not shooter.is_local:
@@ -853,6 +880,11 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 			shooter.aim_yaw = data[index + 3]
 		else:
 			shooter.player.rotation.y = shooter.aim_yaw
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _apply_enemy_state(data: PackedFloat32Array) -> void:
+	world.apply_enemy_state(data)
 
 
 @rpc("authority", "call_remote", "reliable")

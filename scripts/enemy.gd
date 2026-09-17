@@ -1,0 +1,226 @@
+class_name MayoEnemy
+extends CharacterBody3D
+
+## The thing that walks at you.
+##
+## It is a capsule for the same reason the players are: a capsule unwraps about
+## its own axis into a rectangle, so `BodyContamination` -- the same grid, the
+## same shader, the same two-int network splat -- wraps around it unchanged, and
+## sauce sticks to it exactly the way it sticks to a player. Being contaminable
+## is not decoration here: it is how you can see what you have already hit.
+##
+## Everything that decides anything runs on the authority only. A client's
+## enemies are placed by the packets the server sends, the same way its players
+## are, so the enemy that is about to hit you is in the same place on every
+## screen.
+
+## Fixed by the sauce refill station: twice its width and twice its height.
+## Taking them from `StreetMap.VENDING_SIZE` rather than writing the metres out
+## means the two cannot drift apart.
+const WIDTH_MULTIPLE := 2.0
+const HEIGHT_MULTIPLE := 2.0
+
+@export_group("Health")
+@export_range(10.0, 2000.0, 1.0) var max_health := 240.0
+## Per strand point that lands on it. The nozzle emits `extend_speed /
+## point_spacing` points a second -- about 187 at the reference values -- so a
+## per-hit figure this small is still roughly 75 damage a second of accurate,
+## sustained fire, and about three and a half seconds to put one down. Anything
+## per-hit that reads like a normal damage number melts it instantly.
+@export_range(0.01, 20.0, 0.01) var sauce_damage_per_hit := 0.4
+
+@export_group("Movement")
+## Half the player's walking speed. Set from `MayoPlayer.walk_speed` when the
+## world builds one, so it stays half of whatever that becomes.
+@export_range(0.1, 20.0, 0.1, "suffix:m/s") var move_speed := 2.6
+@export_range(1.0, 60.0, 0.5, "suffix:m/s²") var fall_gravity := 20.0
+## How fast it swings round to face where you have moved to. It is not a turret:
+## running past one should leave it briefly pointed at where you were.
+@export_range(0.5, 20.0, 0.1, "suffix:rad/s") var turn_speed := 2.4
+
+@export_group("Its attack")
+## Weak on purpose. At one hit every `contact_interval` this is about 7 damage a
+## second, so a player who walks into one and stays there has a good while to
+## notice and get out.
+@export_range(0.0, 100.0, 0.5) var contact_damage := 6.0
+@export_range(0.1, 5.0, 0.05, "suffix:s") var contact_interval := 0.8
+## Beyond the two capsule radii. Its arms are not modelled, so this stands in
+## for them.
+@export_range(0.0, 3.0, 0.05, "suffix:m") var contact_reach := 0.5
+
+var health := 240.0
+## Clients simulate no enemies at all, exactly as they simulate no bodies.
+var authority := true
+var contamination: BodyContamination
+var radius := 1.15
+var height := 4.1
+
+var _contact_cooldown := 0.0
+var _body_mesh: MeshInstance3D
+
+
+func _ready() -> void:
+	add_to_group("mayo_enemy")
+	# What the strand looks for. Being in this group is what makes sauce stick.
+	add_to_group("mayo_contaminable")
+
+
+## Capsule sized off the sauce refill station, its collider, its mesh, and the
+## contamination grid wrapped round it. `body_color` is the grid's clean colour,
+## so the stain and the skin are one material.
+func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
+	var station: Vector3 = StreetMap.VENDING_SIZE
+	radius = station.x * WIDTH_MULTIPLE * 0.5
+	height = station.y * HEIGHT_MULTIPLE
+
+	var shape := CapsuleShape3D.new()
+	shape.radius = radius
+	shape.height = height
+	var collision := CollisionShape3D.new()
+	collision.name = "EnemyCollision"
+	collision.shape = shape
+	add_child(collision)
+
+	_body_mesh = MeshInstance3D.new()
+	_body_mesh.name = "EnemyBody"
+	var capsule := CapsuleMesh.new()
+	capsule.radius = radius
+	capsule.height = height
+	_body_mesh.mesh = capsule
+	add_child(_body_mesh)
+
+	contamination = BodyContamination.new()
+	contamination.name = "BodyContamination"
+	contamination.cell_size = cell_size
+	contamination.brush_radius = brush_radius
+	add_child(contamination)
+	contamination.configure(self, _body_mesh, radius, height, body_color)
+
+	health = max_health
+
+
+## Half of whatever the players walk at.
+func match_player_speed(walk_speed: float) -> void:
+	move_speed = walk_speed * 0.5
+
+
+## Standing height off the floor, for dropping one in without burying it.
+func stand_height() -> float:
+	return height * 0.5
+
+
+func is_alive() -> bool:
+	return health > 0.0
+
+
+func health_fraction() -> float:
+	return clampf(health / maxf(max_health, 0.001), 0.0, 1.0)
+
+
+## A strand point landed on it. Returns true if that was the hit that killed it,
+## so the world can take it out of the fight in one place rather than polling.
+func take_sauce_hit() -> bool:
+	if not is_alive():
+		return false
+	health = maxf(health - sauce_damage_per_hit, 0.0)
+	return not is_alive()
+
+
+func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
+	if contamination == null:
+		return Vector2i(-1, -1)
+	return contamination.paint_mayo(world_position, world_normal)
+
+
+func paint_mayo_cell(cell: Vector2i) -> void:
+	if contamination != null:
+		contamination.paint_mayo_cell(cell)
+
+
+func cells_md5() -> String:
+	return contamination.cells_md5() if contamination != null else ""
+
+
+func snapshot_cells() -> PackedByteArray:
+	return contamination.snapshot_cells() if contamination != null else PackedByteArray()
+
+
+func restore_cells(cells: PackedByteArray) -> bool:
+	return contamination != null and contamination.restore_cells(cells)
+
+
+## Where the server puts it and how hurt it is. The same shape as the player's
+## state packet and for the same reason: enough to place the body, plus what the
+## other screens have to agree about.
+func network_state() -> Array:
+	return [global_position, rotation.y, health]
+
+
+func apply_network_state(new_position: Vector3, yaw: float, new_health: float) -> void:
+	global_position = new_position
+	rotation.y = yaw
+	health = new_health
+
+
+## Walks at `targets`' nearest member and hits it when it gets there. Returns
+## the player it damaged this frame, or null -- the world owns what damage does,
+## because on a client the answer is "nothing, wait for the packet".
+func advance(delta: float, targets: Array) -> MayoPlayer:
+	if not authority or not is_alive():
+		return null
+	_contact_cooldown = maxf(_contact_cooldown - delta, 0.0)
+
+	var target := _nearest(targets)
+	var flat := Vector3.ZERO
+	if target != null:
+		flat = target.global_position - global_position
+		flat.y = 0.0
+
+	if flat.length_squared() > 0.000001:
+		var direction := flat.normalized()
+		velocity.x = direction.x * move_speed
+		velocity.z = direction.z * move_speed
+		# Turned toward the player rather than snapped: a snap makes it read as
+		# a camera-facing sprite, and the stain on its back is worth seeing.
+		rotation.y = rotate_toward(rotation.y, atan2(direction.x, direction.z), turn_speed * delta)
+	else:
+		velocity.x = 0.0
+		velocity.z = 0.0
+
+	if is_on_floor():
+		velocity.y = 0.0
+	else:
+		velocity.y -= fall_gravity * delta
+	move_and_slide()
+
+	if target == null or _contact_cooldown > 0.0:
+		return null
+	# Measured between the capsule axes, flat: both bodies are capsules, so the
+	# gap between their surfaces is the axis distance less the two radii.
+	var reach := radius + _target_radius(target) + contact_reach
+	var gap := Vector3(target.global_position.x - global_position.x, 0.0,
+		target.global_position.z - global_position.z)
+	if gap.length() > reach:
+		return null
+	_contact_cooldown = contact_interval
+	return target
+
+
+func _nearest(targets: Array) -> MayoPlayer:
+	var best: MayoPlayer = null
+	var best_distance := INF
+	for candidate in targets:
+		var player := candidate as MayoPlayer
+		if player == null or not is_instance_valid(player):
+			continue
+		var distance := global_position.distance_squared_to(player.global_position)
+		if distance < best_distance:
+			best_distance = distance
+			best = player
+	return best
+
+
+func _target_radius(player: MayoPlayer) -> float:
+	if player.contamination != null:
+		return player.contamination.radius
+	return 0.64

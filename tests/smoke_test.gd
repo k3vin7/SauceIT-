@@ -84,7 +84,12 @@ func _run() -> void:
 	await process_frame
 	_check(scene._floor.debug_texture_uploads() == 1, "grid writes were not batched to one frame upload")
 
-	# Isolate and run the wall route with the same per-point physics code.
+	# Isolate and run the wall route with the same per-point physics code. The
+	# slab is built here rather than found in the level: the start plaza's three
+	# sandbox slabs are gone, and a target that belongs to the level moves
+	# whenever the level does.
+	scene._create_wall("ImpactWall", Vector3(2.35, 1.1, -0.72),
+		Vector3(1.65, 2.2, 0.18), Color("886b61"))
 	scene.debug_aim_at(Vector3(2.35, 1.1, -0.72))
 	var accumulator := 0.0
 	for _frame in 70:

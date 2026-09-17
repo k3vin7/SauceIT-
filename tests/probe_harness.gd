@@ -60,9 +60,51 @@ func _session(count: int, port: int, codes: Array = []) -> Array:
 	worlds[0]._net.host(port, codes.is_empty())
 	for i in range(1, count):
 		worlds[i]._net.join("127.0.0.1", port)
-	for _f in 90:
+	# Waits for the session to settle rather than for a fixed 90 frames. The
+	# handshake and the avatar spawns are reliable RPCs, delivered one poll per
+	# rendered frame, and a heavy level runs several physics steps per rendered
+	# frame -- so a physics-frame count is a poll count divided by something the
+	# level decides, and the host could be holding four players while a guest
+	# had only heard about two.
+	await _until(func() -> bool: return _settled(worlds), 600)
+	# And a little past it, so anything still in flight lands before the checks.
+	for _f in 10:
 		await physics_frame
 	return worlds
+
+
+## True once the host and every peer that actually got in agree on who is in the
+## session. A peer refused for a wrong code never comes online, and is not
+## waited for -- that is the case the code-gate checks are about.
+func _settled(worlds: Array) -> bool:
+	var host = worlds[0]
+	var online := 0
+	for world in worlds:
+		if world._net.is_online():
+			online += 1
+	if online == 0 or host.shooter_ids().size() != online:
+		return false
+	for world in worlds:
+		if world._net.is_online() and world.shooter_ids().size() != online:
+			return false
+	return true
+
+
+## Waits for something to be true rather than for a fixed number of frames.
+##
+## A reliable RPC round trip takes at least two `multiplayer.poll()`s, and polls
+## happen once per rendered frame -- not once per physics step. On a heavy level
+## the engine runs several physics steps per rendered frame, so "20 physics
+## frames" can be two or three polls and the answer simply has not come back
+## yet. Every fixed frame count in a network test is that assumption written
+## down; waiting on the answer instead makes the test independent of how
+## expensive the level happens to be.
+func _until(condition: Callable, frames := 900) -> bool:
+	for _f in frames:
+		if condition.call():
+			return true
+		await physics_frame
+	return false
 
 
 func _close(worlds: Array) -> void:
@@ -242,8 +284,10 @@ func _run() -> void:
 	var seen_host = seen[0]
 	var looker = seen[1]
 	var looker_id: int = looker._net.local_id()
-	for _f in 20:
-		await physics_frame
+	# Both halves of the round trip: the host has stored it and the guest has
+	# been told what it is rendering with.
+	await _until(func() -> bool: return (
+		seen_host._net._views.has(looker_id) and looker._net._view_acked))
 	# The report has to arrive on its own. The first one goes out as the
 	# connection comes up, which is exactly when a packet is most likely to go
 	# nowhere, and nothing else will ever send another until the player resizes
@@ -259,8 +303,9 @@ func _run() -> void:
 		"the guest renders (%.1f, %.3f) while the host paints it on %s" % [
 			looker.camera_fov, looker._view_aspect, str(honest)])
 	looker._net._submit_view.rpc_id(1, 200.0, 0.0)
-	for _f in 20:
-		await physics_frame
+	await _until(func() -> bool: return (
+		is_equal_approx(seen_host._net.view_for(looker_id).x, MayoNet.MAX_FOV_DEGREES)
+		and is_equal_approx(looker.camera_fov, MayoNet.MAX_FOV_DEGREES)))
 	var clamped: Vector2 = seen_host._net.view_for(looker_id)
 	print("view clamp: honest %s, after sending (200, 0) host has %s, client renders (%.1f, %.3f)" % [
 		str(honest), str(clamped), looker.camera_fov, looker._view_aspect])
@@ -275,6 +320,10 @@ func _run() -> void:
 	var before_rejected: int = seen_host._net.rejected_packets
 	var before_view: Vector2 = seen_host._net.view_for(looker_id)
 	looker._net._submit_view.rpc_id(1, NAN, INF)
+	await _until(func() -> bool: return (
+		seen_host._net.rejected_packets > before_rejected))
+	# A rejected packet changes nothing, so give any change that was going to
+	# happen a chance to show up before declaring that none did.
 	for _f in 20:
 		await physics_frame
 	print("view NaN: rejected %d -> %d, stored view %s -> %s" % [
@@ -293,8 +342,9 @@ func _run() -> void:
 	var wide_id: int = pair[2]._net.local_id()
 	pair[1]._net._submit_view.rpc_id(1, 60.0, 16.0 / 9.0)
 	pair[2]._net._submit_view.rpc_id(1, 110.0, 16.0 / 9.0)
-	for _f in 20:
-		await physics_frame
+	await _until(func() -> bool: return (
+		is_equal_approx(pair_host._net.view_for(narrow_id).x, 60.0)
+		and is_equal_approx(pair_host._net.view_for(wide_id).x, 110.0)))
 	# The same direction off the eye, half way to the edge of a 74 degree screen.
 	var look := Vector3(0.0, tan(deg_to_rad(37.0)) * 0.5, -1.0)
 	var narrow_visor = pair_host.shooter_for(narrow_id).player.visor

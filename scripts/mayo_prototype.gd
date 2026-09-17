@@ -9,6 +9,7 @@ const NetPanelScript := preload("res://scripts/net_panel.gd")
 const BodyContaminationScript := preload("res://scripts/body_contamination.gd")
 const VisorScript := preload("res://scripts/visor_contamination.gd")
 const VisorOverlayScript := preload("res://scripts/visor_overlay.gd")
+const HealthHudScript := preload("res://scripts/health_hud.gd")
 
 # Splat batch entry kinds. Four ints per splat: kind, target, cell x, cell y.
 # What `target` means is the kind's business -- a wall packs its index and the
@@ -20,6 +21,11 @@ const SPLAT_BODY := 2
 ## is a grid change like any other, so it travels the same way the splats do.
 const SPLAT_VISOR := 3
 const SPLAT_VISOR_CLEAR := 4
+## Addressed by the enemy's index in `_enemies`, which every peer builds in the
+## same order from the same spawn list, exactly as the walls are.
+const SPLAT_ENEMY := 5
+## Floats per enemy in an enemy state packet: position xyz, yaw, health.
+const ENEMY_STATE_STRIDE := 5
 ## Ints per entry in a splat batch: kind, target, cell x, cell y.
 const SPLAT_STRIDE := 4
 const FACES_PER_WALL := 6
@@ -266,6 +272,8 @@ var _shadow_material: Material
 var _camera: Camera3D
 var _floor: FloorContamination
 var _walls: Array[ContaminableObject] = []
+var _enemies: Array[MayoEnemy] = []
+var _health_hud: HealthHud
 
 # The single-player fields the checks and the rest of this file grew up with,
 # now views onto the local player's Shooter. Nothing assigns through them.
@@ -364,6 +372,9 @@ func _physics_process(delta: float) -> void:
 	if _is_authority():
 		for shooter in _shooters.values():
 			_update_slip(shooter)
+		# After the slip test and before the strand: an enemy that shoved a
+		# player this frame should be where the strand is aimed from.
+		_advance_enemies(delta)
 	for shooter in _shooters.values():
 		_advance_strand(shooter, delta)
 	if debug_profile_enabled:
@@ -659,17 +670,10 @@ func _build_world() -> void:
 	_floor.brush_radius = contamination_brush_radius
 	add_child(_floor)
 
-	# The default centre aim is left open for the ballistic-to-floor test. Aim to
-	# the right-hand slab to validate wall attachment and trailing-point pressure.
-	# These three stand in the start plaza, which is why the plaza is wider than
-	# the road: they are what the probes fire at, and they are also the first
-	# thing to spray in a tutorial. They are built before the street so their
-	# indices in `_walls` -- which is what the splat protocol puts on the wire --
-	# stay 0, 1, 2 whatever the map does.
-	_create_wall("ImpactWall", Vector3(2.35, 1.1, -0.72), Vector3(1.65, 2.2, 0.18), Color("886b61"))
-	_create_wall("LeftGuide", Vector3(-3.6, 0.75, 0.8), Vector3(0.16, 1.5, 4.0), Color("6b7b84"))
-	_create_wall("RightBlock", Vector3(3.0, 0.7, 2.1), Vector3(0.9, 1.4, 0.9), Color("6b7b84"))
-
+	# The three sandbox slabs that used to stand here are gone: the start plaza
+	# is a place to stand, and the street has walls and stalls to spray. The
+	# probes that fired at them build their own slab now, where they want it,
+	# which also stops a level change from moving a test's target.
 	_build_street()
 
 	_net = MayoNet.new()
@@ -712,6 +716,7 @@ func _build_world() -> void:
 	_build_droplet_pool(mayo_material)
 	_build_crosshair()
 	_build_network_panel()
+	_build_enemies()
 
 
 ## The other player is a different colour, so it is obvious which capsule on
@@ -769,6 +774,10 @@ func reset_for_join() -> void:
 		_free_shooter(_shooters[peer_id])
 	_shooters.clear()
 	_local = null
+	# The enemies stay -- every peer built the same ones in the same order, and
+	# that order is how a splat addresses them -- but this peer no longer
+	# decides where they are.
+	_refresh_enemy_authority()
 
 
 ## Back to a session of one after the host goes away, so the game is still
@@ -778,6 +787,7 @@ func reset_to_offline() -> void:
 	var shooter := _create_shooter(1, true)
 	_build_shooter_visuals(shooter)
 	_adopt_local(shooter)
+	_refresh_enemy_authority()
 
 
 ## Marks which of the spawned bodies this peer is looking out of.
@@ -855,6 +865,8 @@ func _layout_view() -> void:
 	_rendered_fov = rad_to_deg(atan(tan_up) * 2.0)
 	if _visor_overlay != null:
 		_visor_overlay.set_frame(frame)
+	if _health_hud != null:
+		_health_hud.set_frame(frame)
 	_layout_letterbox(size, frame)
 
 
@@ -873,6 +885,12 @@ func _layout_letterbox(size: Vector2, frame: Rect2) -> void:
 		bar.position = side.position
 		bar.size = side.size.max(Vector2.ZERO)
 		bar.visible = bar.size.x > 0.5 and bar.size.y > 0.5
+
+
+## Joining or leaving a session changes who simulates the enemies, the same way
+## it changes who simulates the bodies.
+func _refresh_enemy_authority() -> void:
+	set_enemy_authority(_is_authority())
 
 
 func set_avatar_authority(peer_id: int, authority: bool) -> void:
@@ -944,6 +962,12 @@ func _build_crosshair() -> void:
 	_visor_overlay.name = "VisorOverlay"
 	layer.add_child(_visor_overlay)
 	_rebind_visor_overlay()
+	# Under the crosshair and over the sauce: a bar you cannot read through the
+	# mayo on your glasses is not telling you anything.
+	_health_hud = HealthHudScript.new() as HealthHud
+	_health_hud.world = self
+	_health_hud.set_frame(_view_layout)
+	layer.add_child(_health_hud)
 	# Above the sauce, so there is always something to aim with.
 	_crosshair = CrosshairScript.new()
 	_crosshair.visible = show_crosshair
@@ -1217,6 +1241,116 @@ func _add_machine_panel(holder: Node3D, panel_name: String, machine_position: Ve
 	# behind the panel: that leaves the printed side turned out to the street.
 	panel.look_at_from_position(at, at - facing, Vector3.UP)
 	holder.add_child(panel)
+
+
+## Where the enemies stand at the start, as sketch pixels along the route --
+## the same coordinates the stalls use, so they can be read off the drawing.
+## One for now; the list is what makes a second one a line rather than a change.
+const ENEMY_SPAWNS := [
+	[223, 800],
+]
+
+
+## Drops the enemies in. They are built after the local player so their speed
+## can be set from that player's walk speed rather than from a number here that
+## would quietly stop being half of it.
+func _build_enemies() -> void:
+	for index in ENEMY_SPAWNS.size():
+		var spawn: Array = ENEMY_SPAWNS[index]
+		var enemy := MayoEnemy.new()
+		enemy.name = "Enemy%02d" % index
+		enemy.authority = _is_authority()
+		add_child(enemy)
+		enemy.build(body_cell_size, contamination_brush_radius, Color("4d3f6b"))
+		if _local != null:
+			enemy.match_player_speed(_local.player.walk_speed)
+		enemy.position = StreetMap.from_pixels(spawn[0], spawn[1]) \
+			+ Vector3(0.0, enemy.stand_height(), 0.0)
+		_enemies.push_back(enemy)
+
+
+## One step of the fight, on the authority: every enemy walks, and whatever it
+## reached gets hurt. Clients run none of this -- their enemies are placed by
+## the state packet, like their players.
+func _advance_enemies(delta: float) -> void:
+	if _enemies.is_empty():
+		return
+	# This world's own players, not `get_nodes_in_group`. Groups are tree-wide,
+	# and the two-player harness runs four whole worlds side by side in one
+	# tree: a group lookup hands this world's enemies the other worlds' players
+	# to chase, walk at and knock about. Physics groups are safe because the
+	# raycast is already scoped to a world; tree groups are not.
+	var targets: Array = []
+	for shooter in _shooters.values():
+		targets.push_back(shooter.player)
+	for enemy in _enemies:
+		if not enemy.is_alive():
+			continue
+		var hit := enemy.advance(delta, targets)
+		if hit != null:
+			_damage_player(hit, enemy.contact_damage)
+
+
+## An empty bar puts the player back at the start, clean and whole. There is no
+## death or respawn system to hook into and inventing one is a bigger decision
+## than this is -- but leaving the player alive at zero with nothing happening
+## would make the bar a decoration, so they lose their ground instead.
+func _damage_player(player: MayoPlayer, amount: float) -> void:
+	if not player.take_damage(amount):
+		return
+	player.heal_to_full()
+	player.velocity = Vector3.ZERO
+	player.global_position = spawn_position_for(_slot_of(player))
+	if player.contamination != null:
+		player.contamination.clear()
+	if player.visor != null:
+		player.visor.clear()
+
+
+func _slot_of(player: MayoPlayer) -> int:
+	var slot := 0
+	for id in _shooters:
+		var shooter: Shooter = _shooters[id]
+		if shooter.player == player:
+			return slot
+		slot += 1
+	return 0
+
+
+func enemy_count() -> int:
+	return _enemies.size()
+
+
+func enemy_at(index: int) -> MayoEnemy:
+	if index < 0 or index >= _enemies.size():
+		return null
+	return _enemies[index]
+
+
+## Position, yaw and health for every enemy, in index order -- the order every
+## peer built them in.
+func enemy_state() -> PackedFloat32Array:
+	var data := PackedFloat32Array()
+	for enemy in _enemies:
+		var state: Array = enemy.network_state()
+		var position: Vector3 = state[0]
+		data.append_array(PackedFloat32Array([
+			position.x, position.y, position.z, state[1], state[2]]))
+	return data
+
+
+func apply_enemy_state(data: PackedFloat32Array) -> void:
+	for index in _enemies.size():
+		var at := index * ENEMY_STATE_STRIDE
+		if at + ENEMY_STATE_STRIDE > data.size():
+			return
+		_enemies[index].apply_network_state(
+			Vector3(data[at], data[at + 1], data[at + 2]), data[at + 3], data[at + 4])
+
+
+func set_enemy_authority(authority: bool) -> void:
+	for enemy in _enemies:
+		enemy.authority = authority
 
 
 ## The yellow arrow off the sketch, flat on the ground in the start plaza,
@@ -1593,6 +1727,20 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3) ->
 		_pending_splats.append_array(PackedInt32Array([
 			SPLAT_BODY, player.peer_id, cell.x, cell.y]))
 		_record_visor_splat(player, hit_position)
+		return
+	if surface is MayoEnemy:
+		var enemy := surface as MayoEnemy
+		var index := _enemies.find(enemy)
+		if index < 0 or not enemy.is_alive():
+			return
+		# The damage and the stain come off the same hit, so what you can see on
+		# it is what you have actually done to it.
+		enemy.take_sauce_hit()
+		var enemy_cell := enemy.paint_mayo(hit_position, hit_normal)
+		if enemy_cell.x < 0:
+			return
+		_pending_splats.append_array(PackedInt32Array([
+			SPLAT_ENEMY, index, enemy_cell.x, enemy_cell.y]))
 
 
 ## Replays a batch of splat centre cells from the server. `paint_cell` depends
@@ -1612,6 +1760,10 @@ func apply_splats(data: PackedInt32Array) -> void:
 			var body_shooter: Shooter = _shooters.get(target)
 			if body_shooter != null:
 				body_shooter.player.paint_mayo_cell(cell)
+			continue
+		if kind == SPLAT_ENEMY:
+			if target >= 0 and target < _enemies.size():
+				_enemies[target].paint_mayo_cell(cell)
 			continue
 		if kind == SPLAT_VISOR or kind == SPLAT_VISOR_CLEAR:
 			var visor_shooter: Shooter = _shooters.get(target)

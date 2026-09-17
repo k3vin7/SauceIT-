@@ -12,6 +12,12 @@ func _run() -> void:
 	root.add_child(scene)
 	await process_frame
 	await physics_frame
+	# The start plaza used to have three sandbox slabs in it and this fired at
+	# one of them. They are gone, so the slab this test needs is built here,
+	# where the test can say where it is -- a target that belongs to the level
+	# moves whenever the level does.
+	scene._create_wall("ImpactWall", Vector3(2.35, 1.1, -0.72),
+		Vector3(1.65, 2.2, 0.18), Color("886b61"))
 	var wall: ContaminableObject = scene.get_node("ImpactWall")
 	# Aim at the wall through the normal aim path, so _update_aim keeps
 	# reproducing this direction every physics frame.
