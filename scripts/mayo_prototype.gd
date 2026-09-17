@@ -302,6 +302,7 @@ var _aim_yaw: float:
 var _aim_pitch: float:
 	get: return _local.aim_pitch
 var _droplet_multimesh: MultiMesh
+var _droplet_pool: MultiMeshInstance3D
 var _droplets: Array[MayoDroplet] = []
 var _active_droplet_indices := PackedInt32Array()
 var _droplet_buffer := PackedFloat32Array()
@@ -1934,7 +1935,12 @@ func _build_droplet_pool(mayo_material: Material) -> void:
 	instance.name = "LandingDropletPool"
 	instance.add_to_group("mayo_droplets")
 	instance.multimesh = _droplet_multimesh
-	instance.custom_aabb = AABB(Vector3(-12.0, -1.0, -12.0), Vector3(24.0, 5.0, 24.0))
+	# Like the strand ribbons, the pool's bounds are set by hand -- a MultiMesh
+	# whose buffer is written directly does not work them out -- and, like them,
+	# they used to be a fixed box around the origin from when the world was one
+	# 48 m floor. Now they follow the droplets that are actually alive.
+	_droplet_pool = instance
+	_update_droplet_bounds()
 	add_child(instance)
 
 	_droplets.resize(POOL_SIZE)
@@ -1985,7 +1991,28 @@ func _simulate_droplets(_delta: float) -> void:
 			_droplet_buffer_dirty = true
 	if _droplet_buffer_dirty:
 		_droplet_multimesh.buffer = _droplet_buffer
+		_update_droplet_bounds()
 		_droplet_buffer_dirty = false
+
+
+## Bounds over the live droplets only. Droplets land in bursts a few metres
+## across and last a third of a second, so this box is small and moves with the
+## fight rather than covering the map -- which is the point of having one.
+func _update_droplet_bounds() -> void:
+	if _droplet_pool == null:
+		return
+	if _active_droplet_indices.is_empty():
+		# An empty box draws nothing, which is what an empty pool should do.
+		_droplet_pool.custom_aabb = AABB()
+		return
+	var low := Vector3.INF
+	var high := -Vector3.INF
+	for i in _active_droplet_indices:
+		var droplet: MayoDroplet = _droplets[i]
+		var extent := Vector3.ONE * droplet.radius
+		low = low.min(droplet.position - extent)
+		high = high.max(droplet.position + extent)
+	_droplet_pool.custom_aabb = AABB(low, high - low)
 
 
 func _write_droplet_buffer(index: int, position: Vector3, uniform_scale: float) -> void:

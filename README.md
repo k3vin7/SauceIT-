@@ -38,6 +38,8 @@ The three slabs from the original sandbox (`ImpactWall`, `LeftGuide`, `RightBloc
 
 **One grid still covers the whole street, and it has to.** The slip test, the network snapshot and the determinism hash all read `_floor` and nothing else, so a street stitched out of per-segment floors would be a rewrite of the sync rather than a map. The cost is that the floor mask is now 1018 × 2016 cells — about 2 MB, up from 230 KB — and `upload_if_dirty` rebuilds and re-uploads the whole image on any frame where sauce lands. Script time per tick is unchanged (measured: 3.84 ms against 4.03 ms on the old sandbox floor); the upload is GPU bandwidth, which the headless profiler cannot see. If it turns out to matter, the fix is a dirty-rectangle upload inside `ContaminationGrid`, not a second floor.
 
+**Moving the world off the origin broke the strand's culling, which is worth recording because nothing failed loudly.** The ribbons and the droplet pool are dynamic meshes written straight into their GPU buffers, which does not recalculate the resource AABB, so both set one by hand — and both had a fixed box centred on the world origin, 48 m for the strand and 24 m for the droplets. That was the entire world when the world was one 48 m floor. On a street that runs 186 m the box sits nowhere near the player, so the renderer culls a stream that is directly in front of them: it blinks out as the view turns and the stale box leaves the frustum, while the stains keep landing, because painting is driven by the points and not by the mesh. Both now recompute their bounds each frame from the vertices and droplets actually written. `probe_visible.gd` checks the bounds against the very segments `_update_visuals` handed each ribbon, at both ends of the map, and also that the box stays strand-sized — a box big enough to cover the map would pass a containment test and defeat the purpose of having one.
+
 `probe_map.gd` checks what a generated level does not get for free: that every segment is at least the road width, that the arena is reachable on foot from the start zone by flood fill, that no cell touching the street — diagonals included — is neither street nor wall, that every prop faces the street with its back past the street's edge and leaves enough road to get past, and that all four spawns stand on open ground.
 
 ### Slipping
@@ -146,6 +148,7 @@ godot --headless --path . --script res://tests/probe_landing.gd -- nojitter    #
 godot --headless --path . --script res://tests/probe_landing.gd -- noloss      #           pressure loss off
 godot --headless --path . --script res://tests/probe_geom.gd                   # wall face/cell mapping
 godot --headless --path . --script res://tests/probe_map.gd                    # street width, reachability, sealed walls, props
+godot --headless --path . --script res://tests/probe_visible.gd                # strand/droplet mesh bounds follow the player
 godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
 godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states, hostile input
 godot --headless --path . --script res://tests/probe_panel.gd                  # the F2 panel is on screen and centred

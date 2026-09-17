@@ -12,6 +12,8 @@ var _vertex_cache := PackedVector3Array()
 var _max_vertices := 0
 var _used_vertices := 0
 var _previous_used_vertices := 0
+var _bounds_low := Vector3.ZERO
+var _bounds_high := Vector3.ZERO
 ## Below this distance the point-to-camera vector swings violently between
 ## frames and twists the ribbon, so the fixed view axis is used instead.
 var min_view_distance := 0.5
@@ -39,8 +41,14 @@ func setup(material: Material, maximum_points: int = 192) -> void:
 	)
 	_dynamic_mesh.surface_set_material(0, ribbon_material)
 	mesh = _dynamic_mesh
-	# Dynamic vertex updates do not recalculate the resource AABB.
-	custom_aabb = AABB(Vector3(-24.0, -4.0, -24.0), Vector3(48.0, 20.0, 48.0))
+	# Dynamic vertex updates do not recalculate the resource AABB, so it is set
+	# by hand in `update_ribbon` from the vertices actually written. It used to
+	# be a fixed 48 m box around the origin, which was the whole world when the
+	# world was one 48 m floor -- on a street that runs 186 m the box is nowhere
+	# near the strand, and the renderer culls a stream that is right in front of
+	# the player. Nothing else notices: the points still fly, still collide and
+	# still paint, so the stains keep landing while the strand blinks out as the
+	# view turns and the stale box leaves the frustum.
 	visible = false
 
 
@@ -53,6 +61,8 @@ func update_ribbon(
 		y_offset: float = 0.0
 	) -> void:
 	_used_vertices = 0
+	_bounds_low = Vector3.INF
+	_bounds_high = -Vector3.INF
 	for raw_segment in segments:
 		var segment: Array = raw_segment
 		if segment.is_empty():
@@ -72,6 +82,12 @@ func update_ribbon(
 	var vertex_bytes := _vertex_cache.slice(0, upload_vertices).to_byte_array()
 	_dynamic_mesh.surface_update_vertex_region(0, 0, vertex_bytes)
 	_previous_used_vertices = _used_vertices
+	# Vertices are written in world space and this node carries no transform of
+	# its own, so its local space is the world's and the bounds go straight in.
+	# Padded by half a strand width because the collapsed tail vertices sit on
+	# the first vertex, which is already inside.
+	var pad := Vector3.ONE * base_width * 0.5
+	custom_aabb = AABB(_bounds_low - pad, (_bounds_high - _bounds_low) + pad * 2.0)
 	visible = true
 
 
@@ -155,3 +171,5 @@ func _append_triangle(a: Vector3, b: Vector3, c: Vector3) -> void:
 	_vertex_cache[_used_vertices + 1] = b
 	_vertex_cache[_used_vertices + 2] = c
 	_used_vertices += 3
+	_bounds_low = _bounds_low.min(a).min(b).min(c)
+	_bounds_high = _bounds_high.max(a).max(b).max(c)
