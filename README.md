@@ -66,6 +66,22 @@ The two health bars are drawn in `scripts/health_hud.gd`, the player's pinned to
 
 The three sandbox slabs that used to stand in the start plaza are gone. `probe_wall`, `probe_geom` and `smoke_test` fired at one of them and now build their own where they want it, which also stops a level change from moving a test's target.
 
+### The tank, and how long one press lasts
+
+Holding the trigger no longer runs forever. A press gets an allowance in seconds, and when it is up the squirt runs itself out whether the button is still down or not. **Keeping it down does not buy another one** — letting go is what re-arms the trigger, which is the difference between a limit and a stutter.
+
+The allowance comes off the tank: `full_burst_seconds` (3.0) while it is full, falling to `low_burst_seconds` (1.0) by the time the tank is down to `burst_floor_at` (half), and flat at that from there to empty. The floor is the point of the shape rather than a rounding of it — a bottle with a mouthful left should still give a squirt that reaches something, not a puff. Measured end to end: 3.12 s of sauce on a full tank, 1.10 s on a half one, the extra tenth being the minimum squirt every press is owed.
+
+**The allowance is fixed when the press starts**, not re-derived each frame. The tank is draining *during* the press, so a live reading would shorten the allowance as the squirt spent it and a press promised three seconds would cut at about two and a half.
+
+`sauce_capacity_seconds` (12) is the whole tank in seconds of fire, so a full one is roughly eight squirts: 3.1 s, then 2.1, 1.4, and 1.0 s each after that.
+
+**Nothing goes over the wire for any of it.** The drain is driven by the firing flag every peer already has for every shooter, so it stays in step by exactly the argument the squirt's own `fire_hold` and `fire_cooldown` timers are already made on — these are the same class of per-peer float, and `STATE_STRIDE` is unchanged.
+
+Two things here are placeholders, both flagged in the code. `sauce_refill_per_second` trickles the tank back while not firing, because the refill stations still hand nothing out and without it the tank empties after eight squirts and the game has no weapon in it — set it to 0 the day they work. And a dry tank still gives the 0.1 s minimum squirt rather than nothing at all, since every press is owed that before anything else is checked; it reads as the last dregs.
+
+The tank is drawn under the health bar, with a notch at `burst_floor_at`. Without it the limit is invisible: a press cuts and there is nothing on screen saying why, or how much shorter the next one will be.
+
 ### Slipping
 
 `MayoPlayer` walks at 5.2 m/s and runs at 10.4 while `Shift` is held; acceleration is scaled with them, so reaching the top speed still takes the time it did. Both speeds are exported, along with the four beats of going down: a stumble spent catching your balance, the fall, the pause spent flat on the floor, and pushing back up. Stepping on mayo starts the stumble, not the fall — controls are already locked there while the capsule sways side to side and the view shakes, and it is where an arm-flailing animation would go once there is a character model. There is no grace period afterwards. Slipping already requires the run key and a direction to be held, so a player who keeps sprinting across mayo goes straight back down on the frame they stand up — and with no run-up there is no speed left to skid with, so they are pinned in place until they let go of the key. Letting go makes the same patch harmless. Running onto a painted cell trips the player: the test is a plain cell lookup on the same grid the floor draws, with no probability in it. Walking never trips, and standing still with `Shift` held is not running, so it cannot trip you either. The player keeps the speed they slipped at and skids forward while going over backwards, landing on their back looking up; `Slip Slide Friction` sets how far that skid runs, about 0.5 m at run speed. Going down again inside `Recovery Window` (0.7 s from standing up) is a different fall: sprinting the instant you are upright means your feet never take the weight, so there is no balance to catch and the player pitches straight forward with no stumble, landing face down. `Forward Slip Slide Friction` scrubs that one harder, since a forward skid runs under the body rather than out from under it and a long one reads as a slide tackle. Standing up clears the direction, so the next fall is a backwards one again. While down, movement and firing are both locked out, and input cannot steer the skid. The shoulder camera stays upright through all of it, so the fall can be watched; only the first-person view goes over with the player.
@@ -174,6 +190,7 @@ godot --headless --path . --script res://tests/probe_geom.gd                   #
 godot --headless --path . --script res://tests/probe_map.gd                    # street width, reachability, sealed walls, props
 godot --headless --path . --script res://tests/probe_visible.gd                # strand/droplet mesh bounds follow the player
 godot --headless --path . --script res://tests/probe_enemy.gd                  # enemy size, chase, sauce damage, contact damage, splat replay
+godot --headless --path . --script res://tests/probe_sauce.gd                  # squirt length limit, the allowance curve, tank drain
 godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
 godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states, hostile input
 godot --headless --path . --script res://tests/probe_panel.gd                  # the F2 panel is on screen and centred

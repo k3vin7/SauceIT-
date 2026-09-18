@@ -89,6 +89,19 @@ class Shooter:
 	## then locks. Without this, hammering re-armed the minimum on every press
 	## and the stream never ended, so the lock never started either.
 	var trigger_released := true
+	## How much is left in the tank, 1 at full and 0 dry.
+	var sauce := 1.0
+	## How long the squirt under way has been running.
+	var burst_time := 0.0
+	## How long it is allowed to run, fixed when it started. Worked out once
+	## rather than every frame because the tank is draining *during* the squirt:
+	## re-deriving it would shorten the allowance as the squirt spent it, so a
+	## press that was promised three seconds would cut at about two and a half.
+	var burst_allowance := 0.0
+	## Set when a squirt ends because it ran out its allowance, and cleared when
+	## the trigger comes up. Without it, holding the button just starts another
+	## squirt the moment the cooldown ends, which is not a limit at all.
+	var burst_locked := false
 	var next_collision_slot := 0
 	var aim_yaw := 0.0
 	var aim_pitch := 0.0
@@ -127,6 +140,22 @@ class MayoDroplet:
 @export var use_time_lifetime := true
 @export var use_distance_lifetime := true
 @export_range(0.0, 30.0, 0.1, "suffix:m/s²") var gravity_acceleration := 9.8
+
+@export_group("Sauce Supply")
+## Seconds of firing a full tank holds, every squirt added together.
+@export_range(1.0, 120.0, 0.5, "suffix:s") var sauce_capacity_seconds := 12.0
+## Longest one press can run while the tank is full.
+@export_range(0.2, 10.0, 0.1, "suffix:s") var full_burst_seconds := 3.0
+## What that falls to by the time the tank is down to `burst_floor_at`, and
+## stays at from there to empty -- so a nearly dry bottle still gives a usable
+## squirt rather than tailing off into nothing.
+@export_range(0.1, 10.0, 0.1, "suffix:s") var low_burst_seconds := 1.0
+@export_range(0.05, 1.0, 0.01) var burst_floor_at := 0.5
+## Refills while not firing. This is a placeholder standing in for the refill
+## stations, which do not hand anything out yet -- without it the tank empties
+## after about eight squirts and the game has no weapon in it. Set it to 0 the
+## day the stations work.
+@export_range(0.0, 1.0, 0.005, "suffix:tank/s") var sauce_refill_per_second := 0.12
 
 @export_group("Emission Shape")
 ## Both are absolute, while the spacing between points is not, so what they do
@@ -427,24 +456,34 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 	# press, so nobody has to be told about it.
 	if not shooter.firing:
 		shooter.trigger_released = true
+		# Letting go is what re-arms the trigger after a squirt ran itself out.
+		shooter.burst_locked = false
 	var firing := false
 	if shooter.fire_cooldown > 0.0:
 		# Locked: the trigger does nothing at all.
 		shooter.fire_cooldown = maxf(shooter.fire_cooldown - delta, 0.0)
 		shooter.fire_hold = 0.0
 	elif shooter.fire_hold > 0.0:
-		# A squirt is under way. Still holding carries it on; let go and it
-		# runs out what is left of its minimum and then locks.
-		if shooter.firing and not shooter.trigger_released:
+		# A squirt is under way. Still holding carries it on -- until it has had
+		# its allowance, and then it runs out whether the trigger is held or
+		# not. Let go and it runs out what is left of its minimum and then locks.
+		var spent := _burst_spent(shooter)
+		if shooter.firing and not shooter.trigger_released and not spent:
 			shooter.fire_hold = minimum_fire_time
 		else:
 			shooter.fire_hold = maxf(shooter.fire_hold - delta, 0.0)
 		firing = shooter.fire_hold > 0.0
 		if not firing:
 			shooter.fire_cooldown = fire_cooldown_time
-	elif shooter.firing:
+			# A squirt that ran dry cannot be restarted by keeping the button
+			# down; a squirt the player ended themselves can.
+			if spent:
+				shooter.burst_locked = true
+	elif shooter.firing and not shooter.burst_locked:
 		shooter.fire_hold = minimum_fire_time
 		shooter.trigger_released = false
+		shooter.burst_time = 0.0
+		shooter.burst_allowance = burst_seconds_at(shooter.sauce)
 		firing = true
 
 	if firing:
@@ -467,7 +506,40 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		shooter.emit_distance = 0.0
 		if shooter.was_firing:
 			_apply_release_pressure_loss(shooter)
+	_advance_sauce(shooter, delta, firing)
 	shooter.was_firing = firing
+
+
+## Drains the tank while firing and trickles it back while not. Driven by the
+## same firing flag every peer already has for every shooter, so it stays in
+## step across a session without a byte on the wire -- exactly the argument the
+## squirt's own timers are already made on.
+func _advance_sauce(shooter: Shooter, delta: float, firing: bool) -> void:
+	if firing:
+		shooter.burst_time += delta
+		shooter.sauce = maxf(
+			shooter.sauce - delta / maxf(sauce_capacity_seconds, 0.01), 0.0)
+		return
+	if sauce_refill_per_second > 0.0:
+		shooter.sauce = minf(shooter.sauce + sauce_refill_per_second * delta, 1.0)
+
+
+## How long a press may run at this tank level: `full_burst_seconds` at the top,
+## falling to `low_burst_seconds` by `burst_floor_at` and flat from there to
+## empty. The floor is the point of the shape -- a bottle with a mouthful left
+## still gives a usable squirt instead of a puff that cannot reach anything.
+func burst_seconds_at(sauce_fraction: float) -> float:
+	var span := 1.0 - burst_floor_at
+	if span <= 0.0:
+		return low_burst_seconds
+	var above_floor := clampf((sauce_fraction - burst_floor_at) / span, 0.0, 1.0)
+	return lerpf(low_burst_seconds, full_burst_seconds, above_floor)
+
+
+## True once this squirt has had everything it is getting: its allowance is up,
+## or the tank is dry.
+func _burst_spent(shooter: Shooter) -> bool:
+	return shooter.sauce <= 0.0 or shooter.burst_time >= shooter.burst_allowance
 
 
 ## The local player's own keyboard and mouse. Their aim is applied immediately,
@@ -1299,12 +1371,24 @@ func _damage_player(player: MayoPlayer, amount: float) -> void:
 	if not player.take_damage(amount):
 		return
 	player.heal_to_full()
+	var shooter := _shooter_of(player)
+	if shooter != null:
+		shooter.sauce = 1.0
+		shooter.burst_locked = false
 	player.velocity = Vector3.ZERO
 	player.global_position = spawn_position_for(_slot_of(player))
 	if player.contamination != null:
 		player.contamination.clear()
 	if player.visor != null:
 		player.visor.clear()
+
+
+func _shooter_of(player: MayoPlayer) -> Shooter:
+	for id in _shooters:
+		var shooter: Shooter = _shooters[id]
+		if shooter.player == player:
+			return shooter
+	return null
 
 
 func _slot_of(player: MayoPlayer) -> int:
@@ -1315,6 +1399,11 @@ func _slot_of(player: MayoPlayer) -> int:
 			return slot
 		slot += 1
 	return 0
+
+
+## What is left in the local player's tank, for the HUD.
+func local_sauce() -> float:
+	return _local.sauce if _local != null else 0.0
 
 
 func enemy_count() -> int:

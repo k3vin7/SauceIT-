@@ -15,6 +15,10 @@ extends Control
 
 const PLAYER_BAR := Vector2(320.0, 20.0)
 const PLAYER_MARGIN := 28.0
+## The tank, under the health bar. Slimmer, because it is the second thing you
+## look at rather than the first.
+const SAUCE_BAR := Vector2(320.0, 12.0)
+const SAUCE_GAP := 6.0
 const ENEMY_BAR := Vector2(120.0, 10.0)
 ## How far above the enemy's own top the bar floats, in metres.
 const ENEMY_LIFT := 0.9
@@ -26,6 +30,9 @@ const BACKING := Color(0.04, 0.05, 0.06, 0.78)
 const EDGE := Color(0.86, 0.90, 0.94, 0.5)
 const PLAYER_FULL := Color("6fd38a")
 const PLAYER_LOW := Color("d4564a")
+## Mayo, and mayo with nothing behind it.
+const SAUCE_FULL := Color("fff0a8")
+const SAUCE_LOW := Color("8a7a3c")
 const ENEMY_FULL := Color("e2683c")
 const ENEMY_LOW := Color("7a2a20")
 ## Below this fraction the bar has gone fully to its low colour.
@@ -68,8 +75,18 @@ func _draw_player() -> void:
 		return
 	var origin := Vector2(
 		frame.position.x + (frame.size.x - PLAYER_BAR.x) * 0.5,
-		frame.position.y + frame.size.y - PLAYER_MARGIN - PLAYER_BAR.y)
+		frame.position.y + frame.size.y - PLAYER_MARGIN - PLAYER_BAR.y - SAUCE_GAP - SAUCE_BAR.y)
 	_draw_bar(Rect2(origin, PLAYER_BAR), player.health_fraction(), PLAYER_FULL, PLAYER_LOW, 2.0)
+
+	# The tank, and a notch marking where the squirt length stops shrinking.
+	# Without the bar the limit is invisible: a press cuts and there is nothing
+	# on screen saying why, or how much shorter the next one will be.
+	var tank := Rect2(Vector2(origin.x, origin.y + PLAYER_BAR.y + SAUCE_GAP), SAUCE_BAR)
+	_draw_bar(tank, world.local_sauce(), SAUCE_FULL, SAUCE_LOW, 2.0)
+	var floor_at: float = world.get("burst_floor_at")
+	var notch_x := tank.position.x + tank.size.x * floor_at
+	draw_line(Vector2(notch_x, tank.position.y - 2.0),
+		Vector2(notch_x, tank.end.y + 2.0), EDGE, 1.0)
 
 
 func _draw_enemies() -> void:
