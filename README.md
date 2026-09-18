@@ -7,8 +7,9 @@ Godot 4 3D prototype for validating one continuous viscous mayonnaise strand, pe
 1. Open this directory in Godot 4.4 or newer.
 2. Run the project (`F6`/`F5`). The main scene is already configured.
 3. Move with `WASD`, hold `Shift` to run, `Space` to jump, aim with the mouse, and hold the left mouse button to fire. `R` wipes sauce off your screen. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
-4. Spray the floor, then run across your own mayo. Running over a painted cell knocks you down; walking over it does not.
-5. `F2` opens the LAN panel; without it the game is the single-player one it has always been.
+4. `E` at one of the red machines fills the sauce bottle. Holding fire runs about three seconds on a full bottle and about one on a half-empty one, so the machines are where you go when the squirts get short.
+5. Spray the floor, then run across your own mayo. Running over a painted cell knocks you down; walking over it does not.
+6. `F2` opens the LAN panel; without it the game is the single-player one it has always been.
 
 The mouse is captured and there is no on-screen cursor: aiming accumulates yaw and pitch from relative mouse motion, FPS-style, and a fixed crosshair marks the centre of the screen. `WASD` moves relative to where you are facing. Both camera modes run the same aim code and differ only in where the camera sits, so switching does not change how the weapon points.
 
@@ -74,11 +75,17 @@ The allowance comes off the tank: `full_burst_seconds` (3.0) while it is full, f
 
 **The allowance is fixed when the press starts**, not re-derived each frame. The tank is draining *during* the press, so a live reading would shorten the allowance as the squirt spent it and a press promised three seconds would cut at about two and a half.
 
-`sauce_capacity_seconds` (12) is the whole tank in seconds of fire, so a full one is roughly eight squirts: 3.1 s, then 2.1, 1.4, and 1.0 s each after that.
+`sauce_capacity_seconds` (12) is the whole tank in seconds of fire, so a full one is roughly eight squirts: 3.1 s, then 2.1, 1.4, and 1.0 s each after that — and then a walk to a machine.
 
 **Nothing goes over the wire for any of it.** The drain is driven by the firing flag every peer already has for every shooter, so it stays in step by exactly the argument the squirt's own `fire_hold` and `fire_cooldown` timers are already made on — these are the same class of per-peer float, and `STATE_STRIDE` is unchanged.
 
-Two things here are placeholders, both flagged in the code. `sauce_refill_per_second` trickles the tank back while not firing, because the refill stations still hand nothing out and without it the tank empties after eight squirts and the game has no weapon in it — set it to 0 the day they work. And a dry tank still gives the 0.1 s minimum squirt rather than nothing at all, since every press is owed that before anything else is checked; it reads as the last dregs.
+**The stations fill it.** `E` at one of the red machines fills the bottle and clears the trigger lock, and `sauce_refill_per_second` is 0 — the tank does not quietly fill itself while you stand around any more, so it is a thing you walk back to. That is what makes the map's two machines and its 186 m of street mean something: the distance between them is the distance you can afford to be away from one. The knob stays exported because turning it up is the one-line way to play without the walk.
+
+Reach is `refill_reach` (2.6 m), measured flat from the machine's centre, plus a front test — otherwise a station bolted to a wall could be used from behind, through that wall. A prompt appears over the tank while one is in reach, which doubles as the feedback saying you are close enough; without it the machine is a red box that silently does nothing until you happen to be in the right spot with the right key down.
+
+Over a session it goes the way the wipe does: a client asks, the host decides. **Where the player is standing is the host's own copy of them, never something the packet claims** — a client pressing `E` in the middle of the street gets nothing, which `probe_network` checks by asking from across the road before asking at the machine. The result is then broadcast as an event rather than added to the state packet, because unlike the drain — which every peer works out from the firing flag it already has — a refill is not something a peer can see coming. Rate-limited per peer like the wipe and the view report.
+
+One thing here is still a rough edge, flagged in the code: a dry tank gives the 0.1 s minimum squirt rather than nothing at all, since every press is owed that before anything else is checked. It reads as the last dregs.
 
 The tank is drawn under the health bar, with a notch at `burst_floor_at`. Without it the limit is invisible: a press cuts and there is nothing on screen saying why, or how much shorter the next one will be.
 

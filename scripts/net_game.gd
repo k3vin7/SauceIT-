@@ -37,6 +37,9 @@ const INPUT_PACKETS_PER_TICK := 1
 ## five leaves room for mashing the key and for retries without leaving the
 ## reliable channel open to abuse.
 const WIPE_REQUESTS_PER_SECOND := 5.0
+## Same idea for the refill key: a peer leaning on E costs itself the bandwidth
+## and the host a dictionary lookup.
+const REFILL_REQUESTS_PER_SECOND := 5.0
 ## The same idea for view reports. A report is state, not an event: only the
 ## latest one matters, and it changes when a player resizes their window, which
 ## is the only thing that can produce a run of them. A resize drag emits an event
@@ -145,6 +148,7 @@ var _client_input: Dictionary = {}
 ## nothing is sent back, so flooding costs the flooder and not the host.
 var _input_this_tick: Dictionary = {}
 var _wipe_budget: Dictionary = {}
+var _refill_budget: Dictionary = {}
 var _view_budget: Dictionary = {}
 ## When the two budgets above were last topped up, on the wall clock.
 var _budget_clock := 0.0
@@ -279,6 +283,7 @@ func leave() -> void:
 	_client_input.clear()
 	_input_this_tick.clear()
 	_wipe_budget.clear()
+	_refill_budget.clear()
 	_view_budget.clear()
 	_budget_clock = _now()
 	_views.clear()
@@ -529,6 +534,7 @@ func _on_peer_disconnected(id: int) -> void:
 	_client_input.erase(id)
 	_input_this_tick.erase(id)
 	_wipe_budget.erase(id)
+	_refill_budget.erase(id)
 	_view_budget.erase(id)
 	_views.erase(id)
 	_slots.erase(id)
@@ -684,6 +690,42 @@ func _request_wipe() -> void:
 	world.begin_wipe_for(sender)
 
 
+## E, on a client. Carries nothing but the fact that a key went down: where the
+## player is standing is the server's own copy of them, not something the packet
+## gets to claim.
+func request_refill() -> void:
+	if not _online or multiplayer.is_server():
+		return
+	if _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+	_request_refill.rpc_id(1)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_refill() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if _refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND) < 1.0:
+		dropped_packets += 1
+		return
+	_refill_budget[sender] = _refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND) - 1.0
+	world.refill_for(sender)
+
+
+## The host telling everyone a bottle was filled. An event, not a value in the
+## state packet: refills are rare and the drain is already derived everywhere.
+func broadcast_refill(peer_id: int) -> void:
+	if not _online or not multiplayer.is_server():
+		return
+	_apply_refill.rpc(peer_id)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _apply_refill(peer_id: int) -> void:
+	world.apply_refill(peer_id)
+
+
 ## Called every frame with whatever the local camera currently is. Sends only
 ## when it has changed, and no more often than the host will listen, so the host
 ## never has to drop a report an honest client sent.
@@ -801,6 +843,9 @@ func apply_client_input() -> void:
 	for id in _wipe_budget:
 		_wipe_budget[id] = minf(_wipe_budget[id] + WIPE_REQUESTS_PER_SECOND * elapsed,
 			WIPE_REQUESTS_PER_SECOND)
+	for id in _refill_budget:
+		_refill_budget[id] = minf(_refill_budget[id] + REFILL_REQUESTS_PER_SECOND * elapsed,
+			REFILL_REQUESTS_PER_SECOND)
 	for id in _view_budget:
 		_view_budget[id] = minf(_view_budget[id] + VIEW_REPORTS_PER_SECOND * elapsed,
 			VIEW_REPORTS_PER_SECOND)

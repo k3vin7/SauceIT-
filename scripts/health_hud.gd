@@ -38,6 +38,13 @@ const ENEMY_LOW := Color("7a2a20")
 ## Below this fraction the bar has gone fully to its low colour.
 const LOW_AT := 0.35
 
+## What a station says when you are close enough to use it.
+const PROMPT := "[E]  소스 채우기"
+const PROMPT_SIZE := 18
+const PROMPT_LIFT := 54.0
+const PROMPT_COLOR := Color("fff0a8")
+const PROMPT_SHADOW := Color(0.0, 0.0, 0.0, 0.7)
+
 var world: Node3D
 var frame := Rect2()
 
@@ -64,6 +71,7 @@ func _draw() -> void:
 		return
 	_draw_player()
 	_draw_enemies()
+	_draw_prompt()
 
 
 func _draw_player() -> void:
@@ -112,6 +120,24 @@ func _draw_enemies() -> void:
 		if bar.size.x <= 0.0:
 			continue
 		_draw_bar(bar, enemy.health_fraction(), ENEMY_FULL, ENEMY_LOW, 1.0)
+
+
+## The refill prompt, over the tank. Drawn only while a station is in reach, so
+## it doubles as the feedback that says you are close enough -- without it the
+## machine is a red box that silently does nothing until you happen to be in the
+## right spot with the right key down.
+func _draw_prompt() -> void:
+	if not world.local_at_station():
+		return
+	var font := ThemeDB.fallback_font
+	var width := font.get_string_size(PROMPT, HORIZONTAL_ALIGNMENT_LEFT, -1.0, PROMPT_SIZE).x
+	var at := Vector2(
+		frame.position.x + (frame.size.x - width) * 0.5,
+		frame.position.y + frame.size.y - PROMPT_LIFT)
+	# Drawn twice, offset: the street is dark but a wall behind it may not be.
+	draw_string(font, at + Vector2(1.0, 1.0), PROMPT, HORIZONTAL_ALIGNMENT_LEFT, -1.0,
+		PROMPT_SIZE, PROMPT_SHADOW)
+	draw_string(font, at, PROMPT, HORIZONTAL_ALIGNMENT_LEFT, -1.0, PROMPT_SIZE, PROMPT_COLOR)
 
 
 ## Where this enemy's bar goes, or a zero rect if it does not get one. Split out

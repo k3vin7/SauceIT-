@@ -376,6 +376,38 @@ func _run() -> void:
 	_check(server_world.shooter_for(client_id).player.contamination.painted_cell_count() > 0,
 		"wiping B's glasses washed the stain off their body as well")
 
+	# --- B refills at a station, and both screens agree the bottle is full ---
+	# The drain is derived everywhere from the firing flag, but a refill is an
+	# event: if the broadcast is missing, B fires a full bottle on their own
+	# screen and a near-empty one on the host's.
+	var b_on_client = client_world.shooter_for(client_id)
+	var b_on_server = server_world.shooter_for(client_id)
+	b_on_client.sauce = 0.15
+	b_on_server.sauce = 0.15
+	# Out of reach first: a client saying "I pressed E" is not proof of where it
+	# is standing, and the host tests that against its own copy of the body.
+	b_on_server.player.global_position = Vector3(-8.0, stand, 8.0)
+	client_world._net.request_refill()
+	await _wait(20)
+	print("refill from across the street: host %.2f, B's screen %.2f" % [
+		b_on_server.sauce, b_on_client.sauce])
+	_check(is_equal_approx(b_on_server.sauce, 0.15) and is_equal_approx(b_on_client.sauce, 0.15),
+		"a client refilled without standing at a station")
+
+	var station: Dictionary = server_world._refill_stations[0]
+	b_on_server.player.global_position = station["position"] \
+		+ station["facing"] * (server_world.refill_reach * 0.6)
+	b_on_server.player.global_position.y = stand
+	await _wait(4)
+	client_world._net.request_refill()
+	await _wait(20)
+	print("refill at the station: host %.2f, B's screen %.2f" % [
+		b_on_server.sauce, b_on_client.sauce])
+	_check(is_equal_approx(b_on_server.sauce, 1.0),
+		"the host did not fill B's bottle at a station: %.2f" % b_on_server.sauce)
+	_check(is_equal_approx(b_on_client.sauce, 1.0),
+		"B's own screen still shows %.2f after the host filled the bottle" % b_on_client.sauce)
+
 	# --- B runs through A's mayo and goes down ---
 	var patch := _painted_cell_position(server_world)
 	_check(server_world._floor.is_mayo_at(patch),

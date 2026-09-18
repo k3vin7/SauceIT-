@@ -151,11 +151,15 @@ class MayoDroplet:
 ## squirt rather than tailing off into nothing.
 @export_range(0.1, 10.0, 0.1, "suffix:s") var low_burst_seconds := 1.0
 @export_range(0.05, 1.0, 0.01) var burst_floor_at := 0.5
-## Refills while not firing. This is a placeholder standing in for the refill
-## stations, which do not hand anything out yet -- without it the tank empties
-## after about eight squirts and the game has no weapon in it. Set it to 0 the
-## day the stations work.
-@export_range(0.0, 1.0, 0.005, "suffix:tank/s") var sauce_refill_per_second := 0.12
+## Refills while not firing. Off: the stations hand the sauce out now, so the
+## tank is a thing you walk back to fill rather than something that quietly
+## fills itself while you stand around. Left exported because turning it up is
+## the one-line way to try the game without the walk.
+@export_range(0.0, 1.0, 0.005, "suffix:tank/s") var sauce_refill_per_second := 0.0
+## How close to a station you have to be to use it, measured flat from its
+## centre. The machine is 1.15 m across and the player is 1.28 m, so this is
+## arm's reach rather than a room-sized trigger.
+@export_range(0.5, 8.0, 0.1, "suffix:m") var refill_reach := 2.6
 
 @export_group("Emission Shape")
 ## Both are absolute, while the spacing between points is not, so what they do
@@ -303,6 +307,9 @@ var _camera: Camera3D
 var _floor: FloorContamination
 var _walls: Array[ContaminableObject] = []
 var _enemies: Array[MayoEnemy] = []
+## Where the refill stations are and which way they face, so the reach test
+## does not have to walk the scene tree every frame.
+var _refill_stations: Array[Dictionary] = []
 var _health_hud: HealthHud
 
 # The single-player fields the checks and the rest of this file grew up with,
@@ -660,6 +667,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("wipe_screen"):
 		_request_wipe()
 		return
+	if event.is_action_pressed("refill_sauce"):
+		_request_refill()
+		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		apply_look((event as InputEventMouseMotion).relative)
 
@@ -713,6 +723,11 @@ func _ensure_input_actions() -> void:
 		var wipe := InputEventKey.new()
 		wipe.physical_keycode = KEY_R
 		InputMap.action_add_event("wipe_screen", wipe)
+	if not InputMap.has_action("refill_sauce"):
+		InputMap.add_action("refill_sauce")
+		var refill := InputEventKey.new()
+		refill.physical_keycode = KEY_E
+		InputMap.action_add_event("refill_sauce", refill)
 	if not InputMap.has_action("toggle_network_panel"):
 		InputMap.add_action("toggle_network_panel")
 		var network := InputEventKey.new()
@@ -1286,6 +1301,14 @@ func _create_vending_machine(machine_name: String, box: Dictionary) -> void:
 	_add_machine_panel(holder, "Slot", box["position"], facing,
 		depth, Vector2(across * 0.6, size.y * 0.1), size.y * 0.2,
 		Color("0c0e10"), 0.0)
+
+	# What the reach test walks. Kept as plain data rather than as a node with
+	# an Area3D: there are two of them, the test is one dot product each, and an
+	# overlap body would also have to be kept out of the strand's way.
+	_refill_stations.push_back({
+		"position": box["position"],
+		"facing": facing,
+	})
 
 
 ## One flat quad standing 1 cm off the machine's front face. Separate meshes
@@ -1892,6 +1915,71 @@ func _record_visor_splat(player: MayoPlayer, hit_position: Vector3) -> void:
 		return
 	_pending_splats.append_array(PackedInt32Array([
 		SPLAT_VISOR, player.peer_id, cell.x, cell.y]))
+
+
+## Which refill station this player could use, or -1 for none. Flat distance,
+## because a station at the foot of a ramp is still the station you are at, and
+## then a front test -- otherwise you could refill through the wall it is bolted
+## to by standing behind it.
+func station_in_reach(player: MayoPlayer) -> int:
+	if player == null or not is_instance_valid(player):
+		return -1
+	var best := -1
+	var best_distance := refill_reach
+	for index in _refill_stations.size():
+		var station: Dictionary = _refill_stations[index]
+		var to_player: Vector3 = player.global_position - station["position"]
+		to_player.y = 0.0
+		var distance := to_player.length()
+		if distance > best_distance or distance <= 0.001:
+			continue
+		if to_player.normalized().dot(station["facing"]) < 0.25:
+			continue
+		best_distance = distance
+		best = index
+	return best
+
+
+## E. Like the wipe, this is a shared state change -- the tank a peer is firing
+## out of is one every peer is simulating -- so a client asks and the server
+## decides whether they are really standing at a machine.
+func _request_refill() -> void:
+	if _local == null:
+		return
+	if _is_authority():
+		refill_for(_local.peer_id)
+		return
+	_net.request_refill()
+
+
+## The authority's side of a refill request, wherever it came from. A client
+## asking is not proof it is standing at a station, so the reach is tested here
+## against the body the server is simulating.
+func refill_for(peer_id: int) -> bool:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null or station_in_reach(shooter.player) < 0:
+		return false
+	apply_refill(peer_id)
+	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
+		_net.broadcast_refill(peer_id)
+	return true
+
+
+## Everyone's side: that peer's bottle is full again. Broadcast as an event
+## rather than derived, because unlike the drain -- which every peer works out
+## from the firing flag it already has -- a refill is not something a peer can
+## see coming.
+func apply_refill(peer_id: int) -> void:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null:
+		return
+	shooter.sauce = 1.0
+	shooter.burst_locked = false
+
+
+## True when the local player is standing at a station, for the HUD prompt.
+func local_at_station() -> bool:
+	return _local != null and station_in_reach(_local.player) >= 0
 
 
 ## R. The wipe is a shared state change -- everyone watches the lenses come up

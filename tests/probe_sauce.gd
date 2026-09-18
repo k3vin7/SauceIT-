@@ -134,27 +134,85 @@ func _run() -> void:
 	_check(mid_tank < 1.0, "firing did not drain the tank")
 	scene.debug_set_input(Vector2.ZERO, false, false)
 
+	# --- the refill stations ---
+	# The tank does not fill itself any more, so a station has to actually work
+	# or the bottle is a one-use item.
+	_check(is_zero_approx(scene.sauce_refill_per_second),
+		"the tank still trickles back at %.3f/s; the stations are meant to be the refill"
+			% scene.sauce_refill_per_second)
+	var stations: Array = scene._refill_stations
+	print("refill stations: %d, reach %.1f m" % [stations.size(), scene.refill_reach])
+	_check(stations.size() > 0, "there are no refill stations on the map")
+
+	var station: Dictionary = stations[0]
+	var stand_y: float = scene.spawn_position_for(0).y
+	var player: MayoPlayer = scene._player
+
+	# Standing in front of one, within reach.
+	await _idle(scene, 0.2)
+	player.global_position = station["position"] \
+		+ station["facing"] * (scene.refill_reach * 0.6) + Vector3(0.0, stand_y, 0.0)
+	player.global_position.y = stand_y
+	await physics_frame
+	_check(scene.station_in_reach(player) == 0,
+		"standing %.1f m in front of a station is not in reach" % (scene.refill_reach * 0.6))
+	_check(scene.local_at_station(), "the prompt does not show at a station")
+	shooter.sauce = 0.2
+	shooter.burst_locked = true
+	_check(scene.refill_for(scene._local.peer_id), "the station refused to fill the bottle")
+	print("at the station: tank 0.20 -> %.2f, trigger re-armed %s" % [
+		shooter.sauce, str(not shooter.burst_locked)])
+	_check(is_equal_approx(shooter.sauce, 1.0),
+		"the station filled the tank to %.2f rather than full" % shooter.sauce)
+	_check(not shooter.burst_locked,
+		"the tank was filled but the trigger is still locked from running dry")
+	# And a full tank means a full-length squirt again.
+	var after_refill := await _hold(scene, scene.full_burst_seconds + 1.5)
+	print("after refilling, a long press put out %.2f s" % after_refill.seconds)
+	_check(after_refill.seconds >= scene.full_burst_seconds - 0.1,
+		"a refilled tank only gave %.2f s" % after_refill.seconds)
+
+	# Out of reach, and behind it, are both refused -- the second because a
+	# station bolted to a wall must not be usable through that wall.
+	await _idle(scene, 0.2)
+	player.global_position = station["position"] \
+		+ station["facing"] * (scene.refill_reach + 2.0)
+	player.global_position.y = stand_y
+	await physics_frame
+	_check(scene.station_in_reach(player) < 0,
+		"a station reached %.1f m away" % (scene.refill_reach + 2.0))
+	shooter.sauce = 0.2
+	_check(not scene.refill_for(scene._local.peer_id),
+		"a station filled the bottle from across the street")
+	_check(is_equal_approx(shooter.sauce, 0.2), "an out-of-reach station changed the tank")
+
+	player.global_position = station["position"] \
+		- station["facing"] * (scene.refill_reach * 0.6)
+	player.global_position.y = stand_y
+	await physics_frame
+	print("behind it at %.1f m: in reach %s" % [
+		scene.refill_reach * 0.6, str(scene.station_in_reach(player) >= 0)])
+	_check(scene.station_in_reach(player) < 0,
+		"the station can be used from behind, through the wall it is bolted to")
+
 	# --- the tank only drains while firing ---
 	await _idle(scene, 0.5)
 	shooter.sauce = 0.5
 	var quiet_before: float = shooter.sauce
 	await _idle(scene, 0.5)
-	print("half a second idle: tank %.3f -> %.3f (refill %.3f/s)" % [
-		quiet_before, shooter.sauce, scene.sauce_refill_per_second])
-	_check(shooter.sauce >= quiet_before,
-		"the tank drained %.3f while nothing was being fired" % (quiet_before - shooter.sauce))
+	print("half a second idle: tank %.3f -> %.3f" % [quiet_before, shooter.sauce])
+	_check(is_equal_approx(shooter.sauce, quiet_before),
+		"the tank moved by %.3f while nothing was being fired and nothing was refilling"
+			% absf(shooter.sauce - quiet_before))
 
 	# --- an empty tank fires nothing ---
 	await _idle(scene, 0.4)
-	var kept_refill: float = scene.sauce_refill_per_second
-	scene.sauce_refill_per_second = 0.0
 	shooter.sauce = 0.0
 	shooter.burst_locked = false
 	var dry := await _hold(scene, 1.5)
 	print("dry tank, 1.5 s on the button: %.2f s of sauce" % dry.seconds)
 	_check(dry.seconds <= scene.minimum_fire_time + 0.05,
 		"an empty tank still put out %.2f s of sauce" % dry.seconds)
-	scene.sauce_refill_per_second = kept_refill
 
 	if failures.is_empty():
 		print("MAYO_SAUCE_OK")
