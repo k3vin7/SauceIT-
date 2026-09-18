@@ -86,13 +86,13 @@ func _draw_player() -> void:
 		frame.position.y + frame.size.y - PLAYER_MARGIN - PLAYER_BAR.y - SAUCE_GAP - SAUCE_BAR.y)
 	_draw_bar(Rect2(origin, PLAYER_BAR), player.health_fraction(), PLAYER_FULL, PLAYER_LOW, 2.0)
 
-	# The tank, and a notch marking where the squirt length stops shrinking.
+	# The tank, and a notch at the half mark the squirt-length curve bends on.
 	# Without the bar the limit is invisible: a press cuts and there is nothing
 	# on screen saying why, or how much shorter the next one will be.
 	var tank := Rect2(Vector2(origin.x, origin.y + PLAYER_BAR.y + SAUCE_GAP), SAUCE_BAR)
 	_draw_bar(tank, world.local_sauce(), SAUCE_FULL, SAUCE_LOW, 2.0)
-	var floor_at: float = world.get("burst_floor_at")
-	var notch_x := tank.position.x + tank.size.x * floor_at
+	var midpoint: float = world.get("burst_midpoint")
+	var notch_x := tank.position.x + tank.size.x * midpoint
 	draw_line(Vector2(notch_x, tank.position.y - 2.0),
 		Vector2(notch_x, tank.end.y + 2.0), EDGE, 1.0)
 

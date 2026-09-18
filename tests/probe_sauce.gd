@@ -59,26 +59,47 @@ func _run() -> void:
 	scene.debug_input_override = true
 	var shooter = scene._local
 
-	print("tank holds %.0f s of fire; a press runs %.1f s at full, %.1f s from %.0f%% down" % [
-		scene.sauce_capacity_seconds, scene.full_burst_seconds,
-		scene.low_burst_seconds, scene.burst_floor_at * 100.0])
+	print("tank holds %.0f s of fire; a press runs %.2f s full, %.2f s at %.0f%%, %.2f s empty" % [
+		scene.sauce_capacity_seconds, scene.full_burst_seconds, scene.half_burst_seconds,
+		scene.burst_midpoint * 100.0, scene.empty_burst_seconds])
 
 	# --- the curve itself ---
+	# The three pinned points land where they are set to.
 	var full: float = scene.burst_seconds_at(1.0)
-	var floor_level: float = scene.burst_seconds_at(scene.burst_floor_at)
-	var nearly_dry: float = scene.burst_seconds_at(0.02)
-	var half_way: float = scene.burst_seconds_at((1.0 + scene.burst_floor_at) * 0.5)
-	print("allowance: full %.2f s, %.0f%% %.2f s, half of that %.2f s, nearly dry %.2f s" % [
-		full, scene.burst_floor_at * 100.0, floor_level, half_way, nearly_dry])
+	var middle: float = scene.burst_seconds_at(scene.burst_midpoint)
+	var empty: float = scene.burst_seconds_at(0.0)
+	print("allowance: full %.2f s, %.0f%% %.2f s, empty %.2f s" % [
+		full, scene.burst_midpoint * 100.0, middle, empty])
 	_check(is_equal_approx(full, scene.full_burst_seconds),
 		"a full tank allows %.2f s, not %.2f" % [full, scene.full_burst_seconds])
-	_check(is_equal_approx(floor_level, scene.low_burst_seconds),
-		"at the floor it allows %.2f s, not %.2f" % [floor_level, scene.low_burst_seconds])
-	_check(is_equal_approx(nearly_dry, scene.low_burst_seconds),
-		"nearly dry it allows %.2f s rather than holding the %.2f s floor" % [
-			nearly_dry, scene.low_burst_seconds])
-	_check(half_way > floor_level and half_way < full,
-		"the allowance does not fall smoothly between full and the floor")
+	_check(is_equal_approx(middle, scene.half_burst_seconds),
+		"a %.0f%% tank allows %.2f s, not %.2f" % [
+			scene.burst_midpoint * 100.0, middle, scene.half_burst_seconds])
+	_check(is_equal_approx(empty, scene.empty_burst_seconds),
+		"an empty tank allows %.2f s, not %.2f" % [empty, scene.empty_burst_seconds])
+
+	# And it falls the whole way down -- no level at which it stops shrinking,
+	# which is the difference between this curve and the one it replaced.
+	var steps := 40
+	var previous: float = scene.burst_seconds_at(1.0) + 1.0
+	var flat_spots := 0
+	var rises := 0
+	for step in steps + 1:
+		var level := 1.0 - float(step) / float(steps)
+		var allowance: float = scene.burst_seconds_at(level)
+		if allowance > previous + 0.0001:
+			rises += 1
+		elif allowance > previous - 0.0001:
+			flat_spots += 1
+		previous = allowance
+	print("walking the tank down in %d steps: %d rises, %d flat spots" % [steps, rises, flat_spots])
+	_check(rises == 0, "the allowance goes back up %d times as the tank empties" % rises)
+	_check(flat_spots == 0,
+		"the allowance stops shrinking for %d of %d steps down the tank" % [flat_spots, steps])
+	# The last squirt is still a squirt, not a puff the minimum swallows.
+	_check(scene.empty_burst_seconds > scene.minimum_fire_time,
+		"an empty tank allows %.2f s, under the %.2f s every press gets anyway" % [
+			scene.empty_burst_seconds, scene.minimum_fire_time])
 
 	# --- a full tank cuts at the allowance, with the button still down ---
 	shooter.sauce = 1.0
@@ -108,13 +129,21 @@ func _run() -> void:
 	shooter.sauce = 1.0
 	var at_full := await _hold(scene, 6.0)
 	await _idle(scene, 0.4)
-	shooter.sauce = scene.burst_floor_at
-	var at_floor := await _hold(scene, 6.0)
-	print("same press, full tank %.2f s vs %.0f%% tank %.2f s" % [
-		at_full.seconds, scene.burst_floor_at * 100.0, at_floor.seconds])
-	_check(at_floor.seconds < at_full.seconds - 0.5,
+	shooter.sauce = scene.burst_midpoint
+	var at_half := await _hold(scene, 6.0)
+	await _idle(scene, 0.4)
+	shooter.sauce = 0.05
+	var at_dregs := await _hold(scene, 6.0)
+	print("same press: full %.2f s, %.0f%% %.2f s, nearly dry %.2f s" % [
+		at_full.seconds, scene.burst_midpoint * 100.0, at_half.seconds, at_dregs.seconds])
+	_check(at_half.seconds < at_full.seconds - 0.2,
 		"a %.0f%% tank gave %.2f s against a full tank's %.2f: the tank is not shortening the squirt"
-			% [scene.burst_floor_at * 100.0, at_floor.seconds, at_full.seconds])
+			% [scene.burst_midpoint * 100.0, at_half.seconds, at_full.seconds])
+	# And it keeps shortening past the half mark, in the game rather than only
+	# in the curve.
+	_check(at_dregs.seconds < at_half.seconds - 0.1,
+		"a nearly dry tank gave %.2f s, no shorter than the %.2f s a half tank gave"
+			% [at_dregs.seconds, at_half.seconds])
 
 	# --- the allowance is fixed when the squirt starts ---
 	# Draining during the squirt must not shorten the squirt that is spending it.

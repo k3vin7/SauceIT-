@@ -210,14 +210,27 @@ func _run() -> void:
 	await _wait(30)
 
 	# --- A sprays the floor; both grids must agree cell for cell ---
-	server_world.debug_set_input(Vector2.ZERO, false, true)
 	client_world.debug_set_input(Vector2.ZERO, false, false)
 	# Swept a little while firing, so what lands is a stripe wide enough to run
 	# through rather than a single blob.
-	for frame in 120:
-		server_world.debug_set_aim(-9.0 + 18.0 * float(frame) / 120.0, -34.0)
-		await physics_frame
-	server_world.debug_set_input(Vector2.ZERO, false, false)
+	#
+	# Laid down in four presses rather than one long one. A press now cuts at
+	# its allowance and will not restart while the button is still down, so
+	# holding the trigger across the whole sweep paints the first stretch and
+	# nothing after it -- which is what a player gets too, and how this stopped
+	# painting enough floor to run through. The tank is filled first so the
+	# stripe does not depend on the tank economy, which `probe_sauce` owns.
+	server_world.shooter_for(1).sauce = 1.0
+	var sweep := 0
+	for press in 4:
+		server_world.debug_set_input(Vector2.ZERO, false, true)
+		for _frame in 30:
+			server_world.debug_set_aim(-9.0 + 18.0 * float(sweep) / 120.0, -34.0)
+			sweep += 1
+			await physics_frame
+		# Letting go is what re-arms the trigger for the next press.
+		server_world.debug_set_input(Vector2.ZERO, false, false)
+		await _wait(12)
 	await _wait(60)
 
 	var server_hash: String = server_world.grid_md5()

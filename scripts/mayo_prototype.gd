@@ -144,13 +144,17 @@ class MayoDroplet:
 @export_group("Sauce Supply")
 ## Seconds of firing a full tank holds, every squirt added together.
 @export_range(1.0, 120.0, 0.5, "suffix:s") var sauce_capacity_seconds := 12.0
-## Longest one press can run while the tank is full.
-@export_range(0.2, 10.0, 0.1, "suffix:s") var full_burst_seconds := 3.0
-## What that falls to by the time the tank is down to `burst_floor_at`, and
-## stays at from there to empty -- so a nearly dry bottle still gives a usable
-## squirt rather than tailing off into nothing.
-@export_range(0.1, 10.0, 0.1, "suffix:s") var low_burst_seconds := 1.0
-@export_range(0.05, 1.0, 0.01) var burst_floor_at := 0.5
+## The three points the squirt-length curve is pinned to: how long one press
+## runs on a full tank, on a half one, and on the last of it. Straight lines
+## between them, and it keeps getting shorter the whole way down -- there is no
+## level at which it stops falling and settles.
+@export_range(0.2, 10.0, 0.05, "suffix:s") var full_burst_seconds := 1.5
+@export_range(0.1, 10.0, 0.05, "suffix:s") var half_burst_seconds := 0.7
+## What is left at the very bottom. Kept clear of `minimum_fire_time`, which
+## every press is owed anyway, so the last squirt is still a squirt.
+@export_range(0.05, 10.0, 0.05, "suffix:s") var empty_burst_seconds := 0.3
+## Which tank level counts as "half" for the middle point above.
+@export_range(0.05, 0.95, 0.01) var burst_midpoint := 0.5
 ## Refills while not firing. Off: the stations hand the sauce out now, so the
 ## tank is a thing you walk back to fill rather than something that quietly
 ## fills itself while you stand around. Left exported because turning it up is
@@ -531,16 +535,17 @@ func _advance_sauce(shooter: Shooter, delta: float, firing: bool) -> void:
 		shooter.sauce = minf(shooter.sauce + sauce_refill_per_second * delta, 1.0)
 
 
-## How long a press may run at this tank level: `full_burst_seconds` at the top,
-## falling to `low_burst_seconds` by `burst_floor_at` and flat from there to
-## empty. The floor is the point of the shape -- a bottle with a mouthful left
-## still gives a usable squirt instead of a puff that cannot reach anything.
+## How long a press may run at this tank level: the three pinned points above
+## with straight lines between them. Two segments rather than one because the
+## curve bends at the middle point -- the drop from full to half is steeper than
+## the drop from half to empty, which is what keeps the last of the bottle
+## usable while still making every press shorter than the one before it.
 func burst_seconds_at(sauce_fraction: float) -> float:
-	var span := 1.0 - burst_floor_at
-	if span <= 0.0:
-		return low_burst_seconds
-	var above_floor := clampf((sauce_fraction - burst_floor_at) / span, 0.0, 1.0)
-	return lerpf(low_burst_seconds, full_burst_seconds, above_floor)
+	var level := clampf(sauce_fraction, 0.0, 1.0)
+	var middle := clampf(burst_midpoint, 0.01, 0.99)
+	if level >= middle:
+		return lerpf(half_burst_seconds, full_burst_seconds, (level - middle) / (1.0 - middle))
+	return lerpf(empty_burst_seconds, half_burst_seconds, level / middle)
 
 
 ## True once this squirt has had everything it is getting: its allowance is up,

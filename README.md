@@ -7,7 +7,7 @@ Godot 4 3D prototype for validating one continuous viscous mayonnaise strand, pe
 1. Open this directory in Godot 4.4 or newer.
 2. Run the project (`F6`/`F5`). The main scene is already configured.
 3. Move with `WASD`, hold `Shift` to run, `Space` to jump, aim with the mouse, and hold the left mouse button to fire. `R` wipes sauce off your screen. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
-4. `E` at one of the red machines fills the sauce bottle. Holding fire runs about three seconds on a full bottle and about one on a half-empty one, so the machines are where you go when the squirts get short.
+4. `E` at one of the red machines fills the sauce bottle. Holding fire runs about a second and a half on a full bottle and gets shorter with every press after that, so the machines are where you go when the squirts stop reaching.
 5. Spray the floor, then run across your own mayo. Running over a painted cell knocks you down; walking over it does not.
 6. `F2` opens the LAN panel; without it the game is the single-player one it has always been.
 
@@ -71,11 +71,11 @@ The three sandbox slabs that used to stand in the start plaza are gone. `probe_w
 
 Holding the trigger no longer runs forever. A press gets an allowance in seconds, and when it is up the squirt runs itself out whether the button is still down or not. **Keeping it down does not buy another one** — letting go is what re-arms the trigger, which is the difference between a limit and a stutter.
 
-The allowance comes off the tank: `full_burst_seconds` (3.0) while it is full, falling to `low_burst_seconds` (1.0) by the time the tank is down to `burst_floor_at` (half), and flat at that from there to empty. The floor is the point of the shape rather than a rounding of it — a bottle with a mouthful left should still give a squirt that reaches something, not a puff. Measured end to end: 3.12 s of sauce on a full tank, 1.10 s on a half one, the extra tenth being the minimum squirt every press is owed.
+The allowance comes off the tank, as a curve pinned at three points: `full_burst_seconds` (1.50 s) at the top, `half_burst_seconds` (0.70 s) at the half mark, and `empty_burst_seconds` (0.30 s) on the last of it, with straight lines between them. **It keeps falling the whole way down** — there is no level at which it settles, so every press is shorter than the one before it. Two segments rather than one because the curve bends at the middle: the drop from full to half is steeper than the drop from half to empty, which keeps the dregs usable while still making them worse. The last squirt is deliberately longer than `minimum_fire_time`, which every press is owed anyway, so it is still a squirt rather than a puff the minimum swallows. Measured end to end: 1.62 s of sauce on a full tank, 0.80 s on a half one, 0.45 s on a nearly dry one, the extra tenth being that minimum.
 
 **The allowance is fixed when the press starts**, not re-derived each frame. The tank is draining *during* the press, so a live reading would shorten the allowance as the squirt spent it and a press promised three seconds would cut at about two and a half.
 
-`sauce_capacity_seconds` (12) is the whole tank in seconds of fire, so a full one is roughly eight squirts: 3.1 s, then 2.1, 1.4, and 1.0 s each after that — and then a walk to a machine.
+`sauce_capacity_seconds` (12) is the whole tank in seconds of fire, which at these lengths is about fifteen presses: 1.60 s, then 1.39, 1.20, 1.04, 0.90, 0.79 and down, ending around 0.38 s — and then a walk to a machine.
 
 **Nothing goes over the wire for any of it.** The drain is driven by the firing flag every peer already has for every shooter, so it stays in step by exactly the argument the squirt's own `fire_hold` and `fire_cooldown` timers are already made on — these are the same class of per-peer float, and `STATE_STRIDE` is unchanged.
 
@@ -83,11 +83,13 @@ The allowance comes off the tank: `full_burst_seconds` (3.0) while it is full, f
 
 Reach is `refill_reach` (2.6 m), measured flat from the machine's centre, plus a front test — otherwise a station bolted to a wall could be used from behind, through that wall. A prompt appears over the tank while one is in reach, which doubles as the feedback saying you are close enough; without it the machine is a red box that silently does nothing until you happen to be in the right spot with the right key down.
 
+The limit reaches further than the trigger. `probe_network` lays a stripe of mayo down for a player to slip on, and used to do it by holding fire for two seconds — which now paints the first stretch and nothing after it, because the press cuts and will not restart while the button is still down. It sprays in four presses instead, which is what a player has to do; that is the shape of every spraying task in the game now.
+
 Over a session it goes the way the wipe does: a client asks, the host decides. **Where the player is standing is the host's own copy of them, never something the packet claims** — a client pressing `E` in the middle of the street gets nothing, which `probe_network` checks by asking from across the road before asking at the machine. The result is then broadcast as an event rather than added to the state packet, because unlike the drain — which every peer works out from the firing flag it already has — a refill is not something a peer can see coming. Rate-limited per peer like the wipe and the view report.
 
 One thing here is still a rough edge, flagged in the code: a dry tank gives the 0.1 s minimum squirt rather than nothing at all, since every press is owed that before anything else is checked. It reads as the last dregs.
 
-The tank is drawn under the health bar, with a notch at `burst_floor_at`. Without it the limit is invisible: a press cuts and there is nothing on screen saying why, or how much shorter the next one will be.
+The tank is drawn under the health bar, with a notch at `burst_midpoint` where the curve bends. Without it the limit is invisible: a press cuts and there is nothing on screen saying why, or how much shorter the next one will be.
 
 ### Slipping
 
