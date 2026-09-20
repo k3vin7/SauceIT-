@@ -51,7 +51,9 @@ func _run() -> void:
 				index, narrow, StreetMap.ROAD_CELLS])
 
 	# --- reachable on foot ---
-	var start_cell := StreetMap.cell_of_pixels(225.0, 1057.5)
+	# The start zone is the lattice origin by construction, and the square is
+	# asked of the map rather than by a pixel that only the drawing knows.
+	var start_cell := StreetMap.ORIGIN_CELL
 	_check(floor_set.has(start_cell), "the start zone is not on the street")
 	var seen := {start_cell: true}
 	var queue: Array[Vector2i] = [start_cell]
@@ -66,8 +68,26 @@ func _run() -> void:
 	_check(seen.size() == floor_set.size(),
 		"%d street cells are walled off from the start zone" % (floor_set.size() - seen.size()))
 
-	var arena_cell := StreetMap.cell_of_pixels(537.0, 142.0)
-	_check(seen.has(arena_cell), "the arena cannot be walked to from the start zone")
+	var square := StreetMap.arena_centre()
+	var square_cell := _cell_at(square)
+	_check(seen.has(square_cell),
+		"the festival square cannot be walked to from the start zone")
+
+	# The square has to be the open space the strand tests take it for: wider
+	# than the stream reaches, in both directions, with nothing in the middle.
+	var square_rect: Rect2i = StreetMap.SEGMENTS[StreetMap.SQUARE_SEGMENT]
+	var span := Vector2(float(square_rect.size.x), float(square_rect.size.y)) * StreetMap.CELL
+	print("festival square %.0f x %.0f m, stream reaches %.1f m" % [span.x, span.y, 14.9])
+	_check(minf(span.x, span.y) > 14.9 * 2.0,
+		"the square is %.0f x %.0f m, too tight for a strand to be fired across" % [span.x, span.y])
+
+	# The stage and the tower stand in it, not in a wall.
+	for landmark in [["stage", StreetMap.stage_position()], ["tower", StreetMap.tower_position()]]:
+		var name: String = landmark[0]
+		var at: Vector3 = landmark[1]
+		_check(floor_set.has(_cell_at(at)), "the %s is not standing on the street" % name)
+	print("stage at %.0v, tower at %.0v, square centre %.0v" % [
+		StreetMap.stage_position(), StreetMap.tower_position(), square])
 
 	# --- the walls seal it ---
 	var wall_set := {}
@@ -103,9 +123,16 @@ func _run() -> void:
 		_check(not floor_set.has(_cell_at(back)),
 			"a prop at %.1v stands in the road instead of against a wall" % position)
 		worst_clearance = minf(worst_clearance, StreetMap.ROAD_WIDTH - depth)
-	print("props=%d (%d stalls, %d vending), narrowest road left past one=%.2f m" % [
-		props.size(), StreetMap.stall_boxes().size(), StreetMap.vending_boxes().size(),
-		worst_clearance])
+	print("props=%d (%d stalls from %d markers, %d vending), narrowest road left past one=%.2f m" % [
+		props.size(), StreetMap.stall_boxes().size(), StreetMap.STALL_ANCHORS.size(),
+		StreetMap.vending_boxes().size(), worst_clearance])
+	# Stalls place themselves, so the thing to check is that placing them
+	# actually worked rather than that a number matches: markers whose
+	# footprints collide are dropped, and a bug in the snapping would drop most
+	# of them without any other check noticing.
+	_check(StreetMap.stall_boxes().size() > StreetMap.STALL_ANCHORS.size() * 0.7,
+		"only %d of %d markers became stalls" % [
+			StreetMap.stall_boxes().size(), StreetMap.STALL_ANCHORS.size()])
 	# Two players abreast is 2.56 m; anything under that turns a stall into a
 	# door rather than an obstacle.
 	_check(worst_clearance > 2.56,

@@ -1274,7 +1274,88 @@ func _build_street() -> void:
 		_create_vending_machine("VendingMachine%02d" % index, box)
 		index += 1
 
+	_build_stage()
+	_build_tower()
 	_build_start_marker()
+
+
+## LAVA on the festival map: the stage in the square. A low platform you can
+## walk up onto and spray off, built as a contaminable box like everything else,
+## so it takes sauce and joins the splat protocol without a special case.
+func _build_stage() -> void:
+	var size: Vector3 = StreetMap.STAGE_SIZE
+	var at: Vector3 = StreetMap.stage_position() + Vector3(0.0, size.y * 0.5, 0.0)
+	_create_wall("Stage", at, size, Color("241f2b"))
+
+	# A lip along the front edge so the platform reads as a stage rather than as
+	# a block dropped in the square.
+	var lip := MeshInstance3D.new()
+	lip.name = "StageLip"
+	var quad := QuadMesh.new()
+	quad.size = Vector2(size.x, size.y * 0.5)
+	lip.mesh = quad
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color("c0392b")
+	material.emission_enabled = true
+	material.emission = Color("c0392b")
+	material.emission_energy_multiplier = 0.8
+	lip.material_override = material
+	var front := at + Vector3(0.0, 0.0, size.z * 0.5 + 0.02)
+	front.y = size.y * 0.75
+	lip.look_at_from_position(front, front - Vector3.BACK, Vector3.UP)
+	add_child(lip)
+
+
+## Kodanike torn -- the Citizens' Tower. The one thing on the map tall enough to
+## steer by: the promenade is long and every junction looks like the last one,
+## so there has to be something visible over the rooftops that says which way
+## the square is. It is a landmark, not cover, which is why it is round and thin.
+func _build_tower() -> void:
+	var radius: float = StreetMap.TOWER_RADIUS
+	var height: float = StreetMap.TOWER_HEIGHT
+	var at: Vector3 = StreetMap.tower_position()
+
+	var tower := StaticBody3D.new()
+	tower.name = "KodanikeTorn"
+	tower.position = at + Vector3(0.0, height * 0.5, 0.0)
+	add_child(tower)
+
+	var shape := CylinderShape3D.new()
+	shape.radius = radius
+	shape.height = height
+	var collision := CollisionShape3D.new()
+	collision.name = "TowerCollision"
+	collision.shape = shape
+	tower.add_child(collision)
+
+	var shaft := MeshInstance3D.new()
+	shaft.name = "Shaft"
+	var cylinder := CylinderMesh.new()
+	cylinder.top_radius = radius * 0.86
+	cylinder.bottom_radius = radius
+	cylinder.height = height
+	cylinder.radial_segments = 16
+	shaft.mesh = cylinder
+	var stone := StandardMaterial3D.new()
+	stone.albedo_color = Color("8d8577")
+	stone.roughness = 0.85
+	shaft.material_override = stone
+	tower.add_child(shaft)
+
+	var roof := MeshInstance3D.new()
+	roof.name = "Roof"
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.0
+	cone.bottom_radius = radius * 1.15
+	cone.height = radius * 2.2
+	cone.radial_segments = 16
+	roof.mesh = cone
+	roof.position = Vector3(0.0, height * 0.5 + radius * 1.1, 0.0)
+	var tiles := StandardMaterial3D.new()
+	tiles.albedo_color = Color("7b3b34")
+	tiles.roughness = 0.7
+	roof.material_override = tiles
+	tower.add_child(roof)
 
 
 ## Records a box as somewhere the sauce can be topped up, keyed on the middle
@@ -1366,11 +1447,12 @@ func _add_machine_panel(holder: Node3D, panel_name: String, machine_position: Ve
 	holder.add_child(panel)
 
 
-## Where the enemies stand at the start, as sketch pixels along the route --
-## the same coordinates the stalls use, so they can be read off the drawing.
-## One for now; the list is what makes a second one a line rather than a change.
+## Where the enemies stand at the start, as map pixels -- the same coordinates
+## the stalls use, so they can be read off the drawing. One, halfway up Karja
+## tänav, so the walk north from the start zone runs into it. The list is what
+## makes a second one a line rather than a change.
 const ENEMY_SPAWNS := [
-	[223, 800],
+	[270, 420],
 ]
 
 

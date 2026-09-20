@@ -81,9 +81,15 @@ func _run() -> void:
 		"the enemy moves at %.2f m/s, not half the player's %.2f" % [
 			enemy.move_speed, player.walk_speed])
 
-	# Stood well clear so the walk can be measured before contact.
-	player.global_position = enemy.global_position + Vector3(0.0, 0.0, 26.0)
-	player.global_position.y = scene.spawn_position_for(0).y
+	# Both moved into the festival square for the walking checks. They need room
+	# to close a gap and then room to dodge sideways, and a street does not have
+	# it: the promenade is 18 m across, so an 18 m sidestep puts the player in a
+	# wall and the enemy has nowhere to follow them to. The square is the one
+	# open space on the map, which is what `arena_centre` is for.
+	var square: Vector3 = StreetMap.arena_centre()
+	var stand_y: float = scene.spawn_position_for(0).y
+	enemy.global_position = square + Vector3(0.0, enemy.stand_height(), -16.0)
+	player.global_position = square + Vector3(0.0, stand_y, 16.0)
 	await physics_frame
 	var opening := enemy.global_position.distance_to(player.global_position)
 	var travelled := enemy.global_position
@@ -97,12 +103,13 @@ func _run() -> void:
 		"it closed only %.2f m in a second at %.2f m/s" % [closed, enemy.move_speed])
 
 	# Move the player sideways: it has to follow, not walk at where they were.
+	# Twelve metres rather than eighteen, so the step stays inside the square.
 	var before_turn := enemy.global_position
-	player.global_position += Vector3(18.0, 0.0, 0.0)
+	player.global_position += Vector3(12.0, 0.0, 0.0)
 	for _f in 60:
 		await physics_frame
 	var chase := enemy.global_position - before_turn
-	print("player stepped 18 m sideways; the enemy's next second went %.2v" % chase)
+	print("player stepped 12 m sideways; the enemy's next second went %.2v" % chase)
 	_check(chase.x > 0.5, "the enemy did not turn after the player, moving %.2f m on x" % chase.x)
 
 	# It has to be looking where it is going. Checked against the player rather
@@ -133,7 +140,7 @@ func _run() -> void:
 	_check(clean == 0, "the enemy started out already covered in sauce")
 	scene._points.clear()
 	player.global_position = enemy.global_position + Vector3(0.0, 0.0, 9.0)
-	player.global_position.y = scene.spawn_position_for(0).y
+	player.global_position.y = stand_y
 	scene.debug_aim_at(enemy.global_position + Vector3(0.0, 0.4, 0.0))
 	await physics_frame
 	Input.action_press("fire_mayo")
@@ -159,7 +166,7 @@ func _run() -> void:
 	var health_before: float = player.health
 	player.global_position = enemy.global_position \
 		+ Vector3(0.0, 0.0, enemy.radius + 0.64)
-	player.global_position.y = scene.spawn_position_for(0).y
+	player.global_position.y = stand_y
 	var ticks := 0
 	var seconds := 1.5
 	for _f in int(seconds * 60.0):
@@ -204,7 +211,7 @@ func _run() -> void:
 	var hud: HealthHud = scene._health_hud
 	var camera: Camera3D = scene._camera
 	player.global_position = enemy.global_position + Vector3(0.0, 0.0, 14.0)
-	player.global_position.y = scene.spawn_position_for(0).y
+	player.global_position.y = stand_y
 	scene.debug_aim_at(enemy.global_position)
 	await physics_frame
 	await process_frame

@@ -1,27 +1,37 @@
 class_name StreetMap
 extends RefCounted
 
-## The tutorial street, traced off the hand sketch.
+## The tutorial street, traced off the Haapsalu "maitsete promenaad" map.
 ##
 ## The whole map lives on one lattice whose cell is exactly one person wide, so
 ## "the road is eight people wide" is the literal statement `ROAD_CELLS = 8`
 ## rather than a metre figure that drifts when the capsule changes. Every
-## segment below is given in lattice cells, which is why the corridors are all
-## the same width by construction: each one is 8 cells across, and a junction is
-## just two of them overlapping.
+## segment below is given in lattice cells, which is why the streets are all the
+## same width by construction: each one is 8 cells across, and a junction is just
+## two of them overlapping.
 ##
-## Sketch pixels map onto the lattice at `PX_PER_CELL`, which is how the stall
-## and vending-machine anchors stay traceable back to the drawing they came
-## from -- they are the pixel coordinates of the cyan and red marks.
+## Map pixels convert at `PX_PER_CELL`, which is how the stall anchors stay
+## traceable back to the drawing -- they are the pixel positions of the numbered
+## red markers, in the order they are numbered on it.
+##
+## What was traced, and what was not. The festival map is stylised: its streets
+## are drawn a good deal narrower than eight people relative to its blocks, so
+## tracing it at true proportions would need a map several times this one's area
+## and a floor mask to match (see the note on the grid below). The **topology**
+## is what is reproduced here -- Ehte across the top, Karja as the promenade
+## down the middle, Saue crossing it, Kalda along the bottom, and the festival
+## square with the stage and the tower hanging off Karja's east side -- with the
+## streets opened out to the eight-person width the game is built around. The
+## blocks between them are correspondingly thinner than on the drawing.
 
 ## How much bigger the street is than the lattice it was laid out on. The
 ## layout stays in whole cells whatever this is -- the scale is applied once,
-## here, when a cell is turned into metres -- so the corridors stay exactly as
+## here, when a cell is turned into metres -- so the streets stay exactly as
 ## wide as each other and the junctions stay square.
 ##
-## The stalls and the vending machines are deliberately NOT scaled by it: they
-## are furniture at a fixed real size, and leaving them alone is what makes the
-## street read as bigger rather than as the same street viewed closer.
+## The stalls are deliberately NOT scaled by it: they are furniture at a fixed
+## real size, and leaving them alone is what makes the street read as bigger
+## rather than as the same street viewed closer.
 const SCALE := 1.8
 
 ## One person wide, times the scale. The capsule is 0.64 m in radius, so the
@@ -32,63 +42,87 @@ const CELL := PERSON * SCALE
 const ROAD_CELLS := 8
 const ROAD_WIDTH := CELL * ROAD_CELLS
 
-## Tall enough that the arena's far side is not visible over a corridor wall
-## from anywhere a player can stand. Scaled with the rest: a wall that stayed
-## put while the street grew would start showing what is behind it.
+## Tall enough that the square's far side is not visible over a street wall from
+## anywhere a player can stand. Scaled with the rest: a wall that stayed put
+## while the street grew would start showing what is behind it.
 const WALL_HEIGHT := 7.0 * SCALE
 ## Walls are two cells deep so they read as building fronts rather than as
 ## cardboard: at one cell a corner shows its own thickness across the street.
 const WALL_DEPTH_CELLS := 2
 
-## The sketch's road came out 90 px across, which is this lattice's 8 cells.
-const PX_PER_CELL := 11.25
-## Lattice cell the start zone is centred on. Placing the origin here keeps the
-## spawns, and every probe that hard-codes a position near them, on open street.
-const ORIGIN_CELL := Vector2i(20, 94)
+## Ten map pixels to the cell. Chosen so the whole promenade comes out about the
+## size of the street it replaces rather than the four-times-larger one true
+## proportions would need -- the floor is one grid and its cost goes with area.
+const PX_PER_CELL := 10.0
+## Lattice cell the start zone sits on: the bottom of the map, on Kalda tänav,
+## so the promenade runs away north from where the player appears.
+const ORIGIN_CELL := Vector2i(29, 93)
 
 ## Ground beyond the outermost wall, so the floor plane does not end in mid-air
 ## where a player can see the seam.
 const FLOOR_MARGIN_CELLS := 4
 
-## The route, south (start) to north (arena), as lattice rectangles. Consecutive
-## segments overlap rather than abut: the overlap *is* the corner, so no junction
-## needs a special case and the walls fall out of the union.
+## The streets, as lattice rectangles. Consecutive ones overlap rather than
+## abut: the overlap *is* the junction, so no crossing needs a special case and
+## the walls fall out of the union. Named for the street each one is.
 const SEGMENTS: Array[Rect2i] = [
-	Rect2i(15, 92, 10, 8),   # start plaza, wider than the road it feeds
-	Rect2i(16, 54, 8, 42),   # the long run north
-	Rect2i(16, 54, 24, 8),   # east along the bottom
-	Rect2i(32, 38, 8, 20),   # north again
-	Rect2i(32, 34, 15, 8),   # east across the middle
-	Rect2i(39, 29, 8, 13),   # the first step of the zigzag
-	Rect2i(39, 25, 12, 8),   # the second
-	Rect2i(43, 22, 8, 8),    # the neck into the arena
-	Rect2i(35, 3, 25, 19),   # the arena
+	Rect2i(2, 14, 64, 8),    # Ehte tänav, along the top
+	Rect2i(23, 18, 8, 48),   # Karja tänav, the promenade
+	Rect2i(30, 45, 15, 21),  # the festival square: the stage and the tower
+	Rect2i(14, 60, 22, 8),   # Saue tänav, crossing the promenade
+	Rect2i(25, 66, 8, 28),   # the run down from Saue to Kalda
+	Rect2i(18, 89, 29, 8),   # Kalda tänav, along the bottom
 ]
 
-## Stalls, as their sketch pixel position and the wall they back onto. The
-## direction is the way the stall faces *into* -- (-1, 0) backs onto a west wall.
+## Which segment is the open square, for anything that wants somewhere with
+## nothing in the way.
+const SQUARE_SEGMENT := 2
+
+## The numbered red markers, as their pixel position on the map. Unlike the
+## hand-sketch version these carry no direction: which wall a stall backs onto
+## is worked out from the streets themselves, because fifty-one of them is far
+## too many to hand-label and a mislabelled one silently disappears.
 const STALL_ANCHORS := [
-	[410, 50, 0, -1], [663, 50, 0, -1],          # the arena's north corners
-	[410, 228, 0, 1], [663, 228, 0, 1],          # its south corners
-	[437, 400, 0, -1], [515, 460, 0, 1],         # across the middle
-	[378, 508, -1, 0], [432, 560, 1, 0],         # the second run north
-	[258, 630, 0, -1], [325, 680, 0, 1], [446, 692, 0, 1],
-	[184, 710, -1, 0], [264, 795, 1, 0],
-	[184, 808, -1, 0], [263, 885, 1, 0],
-	[181, 940, -1, 0], [181, 1030, -1, 0], [265, 1030, 1, 0],
+	[299, 190], [340, 172], [400, 172], [452, 172], [500, 152], [535, 133],
+	[492, 182], [543, 170], [508, 211], [433, 240], [367, 246], [345, 265],
+	[293, 268], [301, 232],
+	[259, 279], [249, 313], [281, 318], [269, 349], [267, 383], [240, 373],
+	[238, 394],
+	[285, 462], [252, 466], [248, 490], [283, 487], [245, 508], [307, 505],
+	[311, 521], [243, 530], [293, 558], [259, 580],
+	[322, 600], [330, 620], [338, 645], [305, 658],
+	[266, 618], [267, 634],
+	[265, 692], [272, 716], [298, 713], [268, 738], [292, 755], [296, 771],
+	[298, 789], [307, 800], [290, 828], [317, 828], [327, 845], [347, 855],
+	[302, 862],
 ]
 
 ## Fixed metres, not cells: a food stall is the size a food stall is, and it
 ## does not grow when the street does. Roughly three people of frontage and two
-## of depth at the unscaled size the sketch was traced at.
+## of depth at the unscaled size the map was traced at.
 const STALL_SIZE := Vector3(PERSON * 3.0, 2.8, PERSON * 2.0)
 
+## Two machines kept off the promenade. They hand nothing out -- the sauce comes
+## from the stalls -- but `MayoEnemy` is sized as a multiple of one, so the size
+## below is load-bearing even where the props are not.
 const VENDING_ANCHORS := [
-	[373, 440, -1, 0],
-	[265, 705, 1, 0],
+	[470, 190, 0, -1],
+	[210, 640, 0, -1],
 ]
 
 const VENDING_SIZE := Vector3(1.15, 2.05, 0.82)
+
+## LAVA on the map: the festival stage, in the square. A platform rather than a
+## wall -- it is a thing to stand on and spray off, and the square is the one
+## place with room for it.
+const STAGE_PIXELS := Vector2(357, 537)
+const STAGE_SIZE := Vector3(9.0, 1.1, 7.0)
+
+## Kodanike torn -- the Citizens' Tower. The one landmark tall enough to steer
+## by from the far end of the promenade, which is what it is here for.
+const TOWER_PIXELS := Vector2(400, 585)
+const TOWER_RADIUS := 3.2
+const TOWER_HEIGHT := 26.0
 
 
 static func road_width() -> float:
@@ -144,14 +178,25 @@ static func floor_plane() -> Dictionary:
 	}
 
 
-## Centre of the arena floor. It is the widest open space on the map, which is
-## what a strand test wants when it needs nothing in the way: the boss room is
-## comfortably wider than the stream's range in both directions, and the street
-## is not.
+## Centre of the festival square. It is the widest open space on the map, which
+## is what a strand test wants when it needs nothing in the way: the square is
+## comfortably wider than the stream's range in both directions, and a street is
+## not. Kept under the old name because the probes that want open ground ask for
+## it by that name.
 static func arena_centre() -> Vector3:
-	var rect: Rect2i = SEGMENTS[SEGMENTS.size() - 1]
+	var rect: Rect2i = SEGMENTS[SQUARE_SEGMENT]
 	return cell_corner(rect.position) + Vector3(
 		float(rect.size.x) * CELL * 0.5, 0.0, float(rect.size.y) * CELL * 0.5)
+
+
+## Where the stage stands, on the ground.
+static func stage_position() -> Vector3:
+	return from_pixels(STAGE_PIXELS.x, STAGE_PIXELS.y)
+
+
+## Where the tower stands, on the ground.
+static func tower_position() -> Vector3:
+	return from_pixels(TOWER_PIXELS.x, TOWER_PIXELS.y)
 
 
 ## The walls, as merged boxes. A wall cell is any cell within `WALL_DEPTH_CELLS`
@@ -188,30 +233,45 @@ static func vending_boxes() -> Array[Dictionary]:
 	return _anchored_boxes(VENDING_ANCHORS, VENDING_SIZE)
 
 
-## Places one box per anchor with its back flat against the wall the anchor
-## names. The sketch's marks sit roughly on the wall lines rather than exactly
-## on them, so the anchor picks the wall and the street decides the depth: walk
-## from the anchor until the street runs out, and that edge is the back face.
-## Doing it this way means a stall cannot end up floating in the road or buried
-## in a wall if the traced pixel is off by a cell.
+## Places one box per anchor with its back flat against a wall and its front
+## onto the street.
+##
+## Two things are worked out rather than declared, because fifty-one hand-made
+## entries is fifty-one chances to be quietly wrong. **Which cell** it stands on:
+## the traced pixel is only roughly where the marker sits, and markers on the
+## drawing sit on the buildings as often as on the road, so the anchor is snapped
+## to the nearest street cell. **Which way it faces**: the nearest wall from that
+## cell is the one it backs onto. A mislabelled direction used to make a stall
+## vanish without a word; there is no label to get wrong now.
+##
+## Stalls whose footprints would overlap are dropped rather than stacked -- the
+## map's markers cluster more tightly than a three-cell frontage allows, and two
+## boxes in the same place read as one broken one.
 static func _anchored_boxes(anchors: Array, size: Vector3) -> Array[Dictionary]:
 	var floor_set := floor_cells()
+	var taken := {}
 	var boxes: Array[Dictionary] = []
 	for anchor in anchors:
 		var px: float = anchor[0]
 		var py: float = anchor[1]
-		var dir := Vector2i(anchor[2], anchor[3])
-		var cell := cell_of_pixels(px, py)
-		# The mark is usually drawn on the wall line, which is one cell outside
-		# the street. Back off along -dir until it is on the street again.
-		var steps := 0
-		while not floor_set.has(cell) and steps < WALL_DEPTH_CELLS + 2:
-			cell -= dir
-			steps += 1
-		if not floor_set.has(cell):
+		var cell := _nearest_street(floor_set, cell_of_pixels(px, py))
+		if cell.x == INVALID.x and cell.y == INVALID.y:
+			continue
+		# A direction may be given -- the vending machines still carry one --
+		# and is used as the wall to back onto when it is.
+		var dir: Vector2i = Vector2i(anchor[2], anchor[3]) if anchor.size() >= 4 \
+			else _wall_direction(floor_set, cell)
+		if dir == Vector2i.ZERO:
 			continue
 		while floor_set.has(cell + dir):
 			cell += dir
+
+		var footprint := Vector3(
+			size.z if dir.x != 0 else size.x,
+			size.y,
+			size.z if dir.y != 0 else size.x)
+		if not _claim(taken, cell, dir, footprint):
+			continue
 
 		# Far edge of the last street cell, along dir: the wall face.
 		var corner := cell_corner(cell)
@@ -220,13 +280,9 @@ static func _anchored_boxes(anchors: Array, size: Vector3) -> Array[Dictionary]:
 			0.0,
 			CELL if dir.y > 0 else 0.0)
 		var facing := Vector3(float(dir.x), 0.0, float(dir.y))
-		# Along the wall the anchor is taken at face value -- that is the one
-		# axis the sketch actually pins down.
-		var along := from_pixels(px, py)
-		var footprint := Vector3(
-			size.z if dir.x != 0 else size.x,
-			size.y,
-			size.z if dir.y != 0 else size.x)
+		# Along the wall the stall is centred on the cell it ended up in, so two
+		# neighbours line up with each other instead of with the traced pixels.
+		var along := corner + Vector3(CELL * 0.5, 0.0, CELL * 0.5)
 		var centre := Vector3(
 			wall_face.x if dir.x != 0 else along.x,
 			size.y * 0.5,
@@ -238,6 +294,61 @@ static func _anchored_boxes(anchors: Array, size: Vector3) -> Array[Dictionary]:
 			"facing": -facing,
 		})
 	return boxes
+
+
+const INVALID := Vector2i(-99999, -99999)
+
+
+## The street cell nearest this one, or INVALID if the map has no streets at all.
+static func _nearest_street(floor_set: Dictionary, cell: Vector2i) -> Vector2i:
+	if floor_set.has(cell):
+		return cell
+	var best := INVALID
+	var best_distance := INF
+	for candidate in floor_set:
+		var offset := Vector2(candidate - cell)
+		var distance := offset.length_squared()
+		if distance < best_distance:
+			best_distance = distance
+			best = candidate
+	return best
+
+
+## Which way the nearest wall lies from this street cell. Walks each of the four
+## directions until the street runs out; the shortest walk wins, so a stall on a
+## narrow street backs onto its near side rather than crossing it.
+static func _wall_direction(floor_set: Dictionary, cell: Vector2i) -> Vector2i:
+	var best := Vector2i.ZERO
+	var best_distance := 1 << 30
+	for step in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i(0, -1), Vector2i(0, 1)]:
+		var distance := 0
+		var probe := cell
+		while floor_set.has(probe) and distance <= ROAD_CELLS * 4:
+			probe += step
+			distance += 1
+		if distance < best_distance:
+			best_distance = distance
+			best = step
+	return best
+
+
+## Marks the cells a stall of this footprint would stand on, or reports the spot
+## already taken. The frontage runs across `dir`, so it is the other axis.
+static func _claim(taken: Dictionary, cell: Vector2i, dir: Vector2i, footprint: Vector3) -> bool:
+	var across := Vector2i(1, 0) if dir.y != 0 else Vector2i(0, 1)
+	var frontage := int(round((footprint.z if dir.y != 0 else footprint.x) / CELL))
+	if dir.y != 0:
+		frontage = int(round(footprint.x / CELL))
+	var half := frontage / 2
+	var wanted: Array[Vector2i] = []
+	for step in range(-half, frontage - half):
+		var here := cell + across * step
+		if taken.has(here):
+			return false
+		wanted.push_back(here)
+	for here in wanted:
+		taken[here] = true
+	return true
 
 
 ## Greedy maximal-rectangle merge over a cell set: take the first free cell in
