@@ -10,6 +10,7 @@ const BodyContaminationScript := preload("res://scripts/body_contamination.gd")
 const VisorScript := preload("res://scripts/visor_contamination.gd")
 const VisorOverlayScript := preload("res://scripts/visor_overlay.gd")
 const HealthHudScript := preload("res://scripts/health_hud.gd")
+const MinimapScript := preload("res://scripts/minimap.gd")
 
 # Splat batch entry kinds. Four ints per splat: kind, target, cell x, cell y.
 # What `target` means is the kind's business -- a wall packs its index and the
@@ -320,6 +321,7 @@ var _enemies: Array[MayoEnemy] = []
 ## does not have to walk the scene tree every frame.
 var _refill_stations: Array[Dictionary] = []
 var _health_hud: HealthHud
+var _minimap: Minimap
 
 # The single-player fields the checks and the rest of this file grew up with,
 # now views onto the local player's Shooter. Nothing assigns through them.
@@ -817,6 +819,8 @@ func _build_world() -> void:
 	_build_crosshair()
 	_build_network_panel()
 	_build_enemies()
+	# After the street, because it bakes the street's own cells into a texture.
+	_minimap.build()
 
 
 ## The other player is a different colour, so it is obvious which capsule on
@@ -967,6 +971,8 @@ func _layout_view() -> void:
 		_visor_overlay.set_frame(frame)
 	if _health_hud != null:
 		_health_hud.set_frame(frame)
+	if _minimap != null:
+		_minimap.set_frame(frame)
 	_layout_letterbox(size, frame)
 
 
@@ -1062,6 +1068,13 @@ func _build_crosshair() -> void:
 	_visor_overlay.name = "VisorOverlay"
 	layer.add_child(_visor_overlay)
 	_rebind_visor_overlay()
+	# Over the sauce with the bars, for the same reason: a map you cannot read
+	# through the mayo on your glasses is not telling you anything.
+	_minimap = MinimapScript.new() as Minimap
+	_minimap.world = self
+	_minimap.set_frame(_view_layout)
+	layer.add_child(_minimap)
+
 	# Under the crosshair and over the sauce: a bar you cannot read through the
 	# mayo on your glasses is not telling you anything.
 	_health_hud = HealthHudScript.new() as HealthHud
