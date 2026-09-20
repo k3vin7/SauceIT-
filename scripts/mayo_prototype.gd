@@ -1265,7 +1265,7 @@ func _build_street() -> void:
 	# thing to hide behind and to get mayo on, and both of those work already.
 	index = 0
 	for box in StreetMap.stall_boxes():
-		_create_wall("Stall%02d" % index, box["position"], box["size"], Color("3fc3d4"))
+		_create_stall("Stall%02d" % index, box)
 		_add_refill_station(box)
 		index += 1
 
@@ -1356,6 +1356,124 @@ func _build_tower() -> void:
 	tiles.roughness = 0.7
 	roof.material_override = tiles
 	tower.add_child(roof)
+
+
+## One market stall: a 3 m x 3 m pop-up gazebo, which is what a festival pitch
+## actually is. Four legs, a canopy over them, and a serving counter across the
+## front -- rather than the solid block that stood here while the street was
+## being laid out.
+##
+## Two parts take sauce and are registered as walls: the **counter**, which is
+## the part at the height anything gets sprayed at and the part you can duck
+## behind, and the **canopy**, which is what catches a shot fired over it. The
+## legs are thin and get collision but no grid: a grid per leg would be four
+## more masks each a few cells across, for a stain nobody can see.
+##
+## The counter is waist-high on purpose. A solid box was cover you could hide
+## behind completely; a counter is cover you shoot *over*, which is the more
+## interesting half of what a market stall is for.
+func _create_stall(stall_name: String, box: Dictionary) -> void:
+	var holder := Node3D.new()
+	holder.name = stall_name
+	add_child(holder)
+
+	var ground: Vector3 = box["position"]
+	ground.y = 0.0
+	var facing: Vector3 = box["facing"]
+	var across := Vector3(facing.z, 0.0, -facing.x)
+
+	var width: float = StreetMap.stall_metre(StreetMap.STALL_FOOTPRINT_M)
+	var eaves: float = StreetMap.stall_metre(StreetMap.STALL_EAVES_M)
+	var peak: float = StreetMap.stall_metre(StreetMap.STALL_PEAK_M)
+	var counter_high: float = StreetMap.stall_metre(StreetMap.STALL_COUNTER_HEIGHT_M)
+	var counter_deep: float = StreetMap.stall_metre(StreetMap.STALL_COUNTER_DEPTH_M)
+	var leg: float = StreetMap.stall_metre(StreetMap.STALL_LEG_M)
+	var canopy_thick := leg * 1.6
+
+	# The counter, along the front edge where the queue stands.
+	var counter_size := _oriented_size(facing, width, counter_high, counter_deep)
+	var counter_at := ground + facing * (width - counter_deep) * 0.5
+	counter_at.y = counter_high * 0.5
+	var counter := _make_contaminable(holder, "Counter", counter_at, counter_size, Color("d8d2c4"))
+	_walls.push_back(counter)
+
+	# The canopy, a flat sheet on top of the legs. A pyramid would be truer to a
+	# gazebo but the grid unwraps a box, so the shape is carried by the roof mesh
+	# below and the sheet is what the sauce actually lands on.
+	var canopy_size := _oriented_size(facing, width, canopy_thick, width)
+	var canopy_at := ground
+	canopy_at.y = eaves + canopy_thick * 0.5
+	var canopy := _make_contaminable(holder, "Canopy", canopy_at, canopy_size, Color("3fc3d4"))
+	_walls.push_back(canopy)
+
+	# Four legs at the corners, holding it up.
+	var frame := StandardMaterial3D.new()
+	frame.albedo_color = Color("2f3438")
+	frame.roughness = 0.6
+	var inset := (width - leg) * 0.5
+	var corner := 0
+	for side_sign in [-1.0, 1.0]:
+		for depth_sign in [-1.0, 1.0]:
+			var post := StaticBody3D.new()
+			post.name = "Leg%d" % corner
+			post.position = ground + across * (inset * side_sign) \
+				+ facing * (inset * depth_sign) + Vector3(0.0, eaves * 0.5, 0.0)
+			holder.add_child(post)
+
+			var post_shape := BoxShape3D.new()
+			post_shape.size = Vector3(leg, eaves, leg)
+			var post_collision := CollisionShape3D.new()
+			post_collision.name = "LegCollision"
+			post_collision.shape = post_shape
+			post.add_child(post_collision)
+
+			var post_mesh := MeshInstance3D.new()
+			post_mesh.name = "LegMesh"
+			var post_box := BoxMesh.new()
+			post_box.size = post_shape.size
+			post_mesh.mesh = post_box
+			post_mesh.material_override = frame
+			post.add_child(post_mesh)
+			corner += 1
+
+	# The peaked roof over the canopy sheet: the shape that says "market stall"
+	# from down the street. Visual only -- the sheet under it is what is hit.
+	var roof := MeshInstance3D.new()
+	roof.name = "Roof"
+	var pyramid := CylinderMesh.new()
+	pyramid.top_radius = 0.0
+	pyramid.bottom_radius = width * 0.72
+	pyramid.height = peak - eaves
+	pyramid.radial_segments = 4
+	roof.mesh = pyramid
+	roof.position = ground + Vector3(0.0, eaves + canopy_thick + (peak - eaves) * 0.5, 0.0)
+	roof.rotation.y = atan2(facing.x, facing.z) + PI * 0.25
+	var awning := StandardMaterial3D.new()
+	awning.albedo_color = Color("3fc3d4")
+	awning.roughness = 0.75
+	roof.material_override = awning
+	holder.add_child(roof)
+
+
+## A box whose width runs across `facing` and whose depth runs along it.
+func _oriented_size(facing: Vector3, width: float, height: float, depth: float) -> Vector3:
+	if absf(facing.x) > 0.5:
+		return Vector3(depth, height, width)
+	return Vector3(width, height, depth)
+
+
+## A `ContaminableObject` under `holder`, sharing the world's cell and brush.
+func _make_contaminable(holder: Node3D, part_name: String, at: Vector3,
+		size: Vector3, color: Color) -> ContaminableObject:
+	var part := WallScript.new() as ContaminableObject
+	part.name = part_name
+	part.position = at
+	part.size = size
+	part.body_color = color
+	part.cell_size = grid_cell_size
+	part.brush_radius = contamination_brush_radius
+	holder.add_child(part)
+	return part
 
 
 ## Records a box as somewhere the sauce can be topped up, keyed on the middle

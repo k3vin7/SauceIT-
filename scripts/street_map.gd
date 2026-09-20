@@ -78,6 +78,29 @@ const SEGMENTS: Array[Rect2i] = [
 ## nothing in the way.
 const SQUARE_SEGMENT := 2
 
+## Round places, as centre cell and radius in cells. The map has one: the circle
+## drawn where Karja tänav meets Ehte tänav, at the head of the promenade.
+##
+## It is a filled circle rather than a ring with an island in it, and that is
+## read off the drawing rather than assumed. The circle there is about twice the
+## width of the street running into it -- so at the drawing's own proportions a
+## ring road around an island would leave an island of nothing. It is a place
+## that happens to be round, not a roundabout, and the radius below keeps that
+## same two-to-one against the street the game actually uses.
+##
+## Rectangles cannot express this, which is why it is a separate list: a circle
+## approximated by stacked `Rect2i`s is a staircase that the wall merger then
+## turns into a dozen boxes, and the edge you walk along is visibly square.
+## Centred so its rim just meets Ehte tänav rather than on the pixel the
+## drawing's circle sits at: the streets here are opened out to the eight-person
+## width and the circle is sized to keep the drawing's two-to-one against them,
+## so a circle placed at the original centre is swallowed whole by the widened
+## Ehte and reads as a bulge rather than a round place. Tangent below it is what
+## the drawing shows.
+const CIRCLES := [
+	[31, 31, 9],
+]
+
 ## The numbered red markers, as their pixel position on the map. Unlike the
 ## hand-sketch version these carry no direction: which wall a stall backs onto
 ## is worked out from the streets themselves, because fifty-one of them is far
@@ -94,13 +117,40 @@ const STALL_ANCHORS := [
 	[266, 618], [267, 634],
 	[265, 692], [272, 716], [298, 713], [268, 738], [292, 755], [296, 771],
 	[298, 789], [307, 800], [290, 828], [317, 828], [327, 845], [347, 855],
-	[302, 862],
+	[302, 862], [216, 548],
 ]
 
-## Fixed metres, not cells: a food stall is the size a food stall is, and it
-## does not grow when the street does. Roughly three people of frontage and two
-## of depth at the unscaled size the map was traced at.
-const STALL_SIZE := Vector3(PERSON * 3.0, 2.8, PERSON * 2.0)
+## A stall is a 3 m x 3 m pop-up gazebo, which is the standard market pitch and
+## what a festival like this one is actually made of: 3 x 3 m on the ground,
+## 3.27 m to the peak, eaves about 2.2 m, and a serving counter at waist height.
+##
+## Those are real metres, and this world is not built in them -- its people are
+## the prototype's 2.56 m capsule rather than a 1.75 m human. A literal 3.27 m
+## canopy over a 2.56 m player leaves 0.7 m of headroom and reads as a toy, so
+## the real figures are scaled by the ratio between the two. The numbers below
+## stay the real ones, and the conversion is stated once.
+const HUMAN_HEIGHT := 1.75
+const CAPSULE_HEIGHT := 2.56
+const HUMAN_SCALE := CAPSULE_HEIGHT / HUMAN_HEIGHT
+
+const STALL_FOOTPRINT_M := 3.0
+const STALL_PEAK_M := 3.27
+const STALL_EAVES_M := 2.2
+const STALL_COUNTER_HEIGHT_M := 0.95
+const STALL_COUNTER_DEPTH_M := 0.7
+const STALL_LEG_M := 0.08
+
+## Fixed metres, not cells: a stall is the size a stall is, and it does not grow
+## when the street does. The height here is the peak, which is what the placement
+## maths wants; the parts are built from the figures above.
+const STALL_SIZE := Vector3(
+	STALL_FOOTPRINT_M * HUMAN_SCALE,
+	STALL_PEAK_M * HUMAN_SCALE,
+	STALL_FOOTPRINT_M * HUMAN_SCALE)
+
+
+static func stall_metre(real_metres: float) -> float:
+	return real_metres * HUMAN_SCALE
 
 ## Two machines kept off the promenade. They hand nothing out -- the sauce comes
 ## from the stalls -- but `MayoEnemy` is sized as a multiple of one, so the size
@@ -156,6 +206,16 @@ static func floor_cells() -> Dictionary:
 		for j in range(rect.position.y, rect.end.y):
 			for i in range(rect.position.x, rect.end.x):
 				cells[Vector2i(i, j)] = true
+	for circle in CIRCLES:
+		var centre := Vector2i(circle[0], circle[1])
+		var radius: int = circle[2]
+		# Measured to the cell's middle, so the rim comes out as round as a
+		# lattice this size can make it rather than a cell prouder on the axes.
+		for j in range(centre.y - radius, centre.y + radius + 1):
+			for i in range(centre.x - radius, centre.x + radius + 1):
+				var offset := Vector2(float(i - centre.x), float(j - centre.y))
+				if offset.length() <= float(radius) + 0.5:
+					cells[Vector2i(i, j)] = true
 	return cells
 
 
@@ -163,7 +223,21 @@ static func bounds() -> Rect2i:
 	var rect := SEGMENTS[0]
 	for i in range(1, SEGMENTS.size()):
 		rect = rect.merge(SEGMENTS[i])
+	for circle in CIRCLES:
+		var radius: int = circle[2]
+		rect = rect.merge(Rect2i(
+			circle[0] - radius, circle[1] - radius, radius * 2 + 1, radius * 2 + 1))
 	return rect
+
+
+## Centre of the round place at the head of the promenade, in world space.
+static func circle_centre(index := 0) -> Vector3:
+	var circle: Array = CIRCLES[index]
+	return cell_corner(Vector2i(circle[0], circle[1])) + Vector3(CELL * 0.5, 0.0, CELL * 0.5)
+
+
+static func circle_radius(index := 0) -> float:
+	return float(CIRCLES[index][2]) * CELL
 
 
 ## Centre and size of the ground plane: the whole map plus enough margin to
@@ -244,9 +318,12 @@ static func vending_boxes() -> Array[Dictionary]:
 ## cell is the one it backs onto. A mislabelled direction used to make a stall
 ## vanish without a word; there is no label to get wrong now.
 ##
-## Stalls whose footprints would overlap are dropped rather than stacked -- the
-## map's markers cluster more tightly than a three-cell frontage allows, and two
-## boxes in the same place read as one broken one.
+## Every marker on the drawing is a food or drink stall, so every one of them
+## gets a stall. Where two would stand on the same cells -- the markers cluster
+## more tightly than a stall's frontage allows, and two boxes in one place read
+## as one broken one -- the second slides along its wall to the nearest free
+## frontage rather than being dropped. Sliding rather than dropping is the whole
+## reason a vendor cannot go missing without anyone noticing.
 static func _anchored_boxes(anchors: Array, size: Vector3) -> Array[Dictionary]:
 	var floor_set := floor_cells()
 	var taken := {}
@@ -270,8 +347,16 @@ static func _anchored_boxes(anchors: Array, size: Vector3) -> Array[Dictionary]:
 			size.z if dir.x != 0 else size.x,
 			size.y,
 			size.z if dir.y != 0 else size.x)
-		if not _claim(taken, cell, dir, footprint):
+		var spot := _free_frontage(floor_set, taken, cell, dir, footprint)
+		if spot.is_empty():
 			continue
+		cell = spot["cell"]
+		dir = spot["dir"]
+		var facing_now := Vector3(float(dir.x), 0.0, float(dir.y))
+		footprint = Vector3(
+			size.z if dir.x != 0 else size.x,
+			size.y,
+			size.z if dir.y != 0 else size.x)
 
 		# Far edge of the last street cell, along dir: the wall face.
 		var corner := cell_corner(cell)
@@ -332,22 +417,44 @@ static func _wall_direction(floor_set: Dictionary, cell: Vector2i) -> Vector2i:
 	return best
 
 
-## Marks the cells a stall of this footprint would stand on, or reports the spot
-## already taken. The frontage runs across `dir`, so it is the other axis.
-static func _claim(taken: Dictionary, cell: Vector2i, dir: Vector2i, footprint: Vector3) -> bool:
-	var across := Vector2i(1, 0) if dir.y != 0 else Vector2i(0, 1)
-	var frontage := int(round((footprint.z if dir.y != 0 else footprint.x) / CELL))
-	if dir.y != 0:
-		frontage = int(round(footprint.x / CELL))
+## The nearest spot along the wall whose frontage is free, starting at `cell`
+## and working outwards, as {cell, dir}. Empty if nothing within reach works.
+##
+## The wall is re-found at each candidate rather than assumed to be the one the
+## search started against. Around the round place the rim curves away after a
+## few cells, so a stall sliding along it runs off the end of "its" wall almost
+## immediately -- and insisting on the original direction left the last marker
+## on the map with nowhere to stand. Re-deriving it lets the stall follow the
+## rim round, facing out of it the whole way.
+static func _free_frontage(floor_set: Dictionary, taken: Dictionary, cell: Vector2i,
+		dir: Vector2i, footprint: Vector3) -> Dictionary:
+	var frontage := int(round((footprint.x if dir.y != 0 else footprint.z) / CELL))
+	for distance in range(0, 24):
+		for direction in ([0] if distance == 0 else [-1, 1]):
+			for axis in [Vector2i(1, 0), Vector2i(0, 1)]:
+				var candidate: Vector2i = cell + axis * (distance * direction)
+				if not floor_set.has(candidate):
+					continue
+				var here := dir if distance == 0 else _wall_direction(floor_set, candidate)
+				if here == Vector2i.ZERO or floor_set.has(candidate + here):
+					continue
+				var across := Vector2i(1, 0) if here.y != 0 else Vector2i(0, 1)
+				if _claim(taken, candidate, across, frontage):
+					return {"cell": candidate, "dir": here}
+				if distance == 0:
+					break
+	return {}
+
+
+## Marks the cells a stall of this frontage would stand on, or reports the spot
+## already taken.
+static func _claim(taken: Dictionary, cell: Vector2i, across: Vector2i, frontage: int) -> bool:
 	var half := frontage / 2
-	var wanted: Array[Vector2i] = []
 	for step in range(-half, frontage - half):
-		var here := cell + across * step
-		if taken.has(here):
+		if taken.has(cell + across * step):
 			return false
-		wanted.push_back(here)
-	for here in wanted:
-		taken[here] = true
+	for step in range(-half, frontage - half):
+		taken[cell + across * step] = true
 	return true
 
 

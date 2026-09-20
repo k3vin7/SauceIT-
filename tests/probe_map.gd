@@ -89,6 +89,53 @@ func _run() -> void:
 	print("stage at %.0v, tower at %.0v, square centre %.0v" % [
 		StreetMap.stage_position(), StreetMap.tower_position(), square])
 
+	# --- the round place at the head of the promenade ---
+	# A circle cannot be written as a Rect2i, so it is generated separately, and
+	# what makes it worth generating is that it is actually round: an approximation
+	# out of stacked rectangles gives a staircase you can see underfoot and that
+	# the wall merger turns into a dozen boxes. Checked by walking out from the
+	# centre along several headings and comparing how far the street lasts.
+	var circle_centre := StreetMap.circle_centre()
+	var circle_radius := StreetMap.circle_radius()
+	_check(floor_set.has(_cell_at(circle_centre)), "the round place's centre is not street")
+	var shortest := INF
+	var longest := 0.0
+	var rims := 0
+	var exits := 0
+	for step in 32:
+		var heading := TAU * float(step) / 32.0
+		var direction := Vector3(cos(heading), 0.0, sin(heading))
+		var reach := 0.0
+		while reach < circle_radius * 3.0:
+			if not floor_set.has(_cell_at(circle_centre + direction * (reach + 0.5))):
+				break
+			reach += 0.5
+		# A heading that leaves through one of the streets joining the circle
+		# never meets a rim, and says nothing about how round it is. Those run
+		# far past the radius; a rim sits within a cell or so of it.
+		if reach > circle_radius + StreetMap.CELL * 2.0:
+			exits += 1
+			continue
+		rims += 1
+		shortest = minf(shortest, reach)
+		longest = maxf(longest, reach)
+	print("round place: radius %.1f m, %d rim headings between %.1f and %.1f m, %d leading out" % [
+		circle_radius, rims, shortest, longest, exits])
+	_check(rims >= 16,
+		"only %d of 32 headings met a rim: the circle is mostly street, not a place" % rims)
+	_check(longest - shortest < StreetMap.CELL * 1.5,
+		"the rim runs from %.1f m to %.1f m out: that is a polygon, not a circle" % [
+			shortest, longest])
+	_check(absf(shortest - circle_radius) < StreetMap.CELL * 1.5,
+		"the rim sits %.1f m out against a declared radius of %.1f m" % [
+			shortest, circle_radius])
+	# And it has to be a *place*, wider than the street that leaves it.
+	_check(circle_radius * 2.0 > StreetMap.ROAD_WIDTH * 1.5,
+		"the round place is %.1f m across against a %.1f m street: it would not read as one"
+			% [circle_radius * 2.0, StreetMap.ROAD_WIDTH])
+	_check(seen.has(_cell_at(circle_centre)),
+		"the round place cannot be walked to from the start zone")
+
 	# --- the walls seal it ---
 	var wall_set := {}
 	for box in StreetMap.wall_boxes():
@@ -126,13 +173,39 @@ func _run() -> void:
 	print("props=%d (%d stalls from %d markers, %d vending), narrowest road left past one=%.2f m" % [
 		props.size(), StreetMap.stall_boxes().size(), StreetMap.STALL_ANCHORS.size(),
 		StreetMap.vending_boxes().size(), worst_clearance])
-	# Stalls place themselves, so the thing to check is that placing them
-	# actually worked rather than that a number matches: markers whose
-	# footprints collide are dropped, and a bug in the snapping would drop most
-	# of them without any other check noticing.
-	_check(StreetMap.stall_boxes().size() > StreetMap.STALL_ANCHORS.size() * 0.7,
+	# Every numbered marker on the drawing is a vendor, so every one of them has
+	# to become a stall. They place themselves, and a stall that cannot find a
+	# free frontage disappears silently -- which is exactly what this catches.
+	_check(StreetMap.stall_boxes().size() == StreetMap.STALL_ANCHORS.size(),
 		"only %d of %d markers became stalls" % [
 			StreetMap.stall_boxes().size(), StreetMap.STALL_ANCHORS.size()])
+	# And no two of them share ground.
+	var footprints := {}
+	var overlaps := 0
+	for stall in StreetMap.stall_boxes():
+		var at := _cell_at(stall["position"])
+		if footprints.has(at):
+			overlaps += 1
+		footprints[at] = true
+	_check(overlaps == 0, "%d stalls stand on the same cell as another" % overlaps)
+
+	# The stall is a 3 m x 3 m pitch at 3.27 m to the peak, in this world's
+	# units rather than real ones -- its people are the 2.56 m capsule, so a
+	# literal 3.27 m canopy would clear a player's head by 0.7 m.
+	var stall_size: Vector3 = StreetMap.STALL_SIZE
+	print("stall %.2f x %.2f m, %.2f m to the peak (%.1f m x %.1f m real, x%.2f for a %.2f m person)" % [
+		stall_size.x, stall_size.z, stall_size.y, StreetMap.STALL_FOOTPRINT_M,
+		StreetMap.STALL_FOOTPRINT_M, StreetMap.HUMAN_SCALE, StreetMap.CAPSULE_HEIGHT])
+	_check(stall_size.y > StreetMap.CAPSULE_HEIGHT * 1.4,
+		"the canopy peaks at %.2f m over a %.2f m player: they would be wearing it"
+			% [stall_size.y, StreetMap.CAPSULE_HEIGHT])
+	# The counter has to be something you shoot over rather than hide behind.
+	var counter: float = StreetMap.stall_metre(StreetMap.STALL_COUNTER_HEIGHT_M)
+	print("counter at %.2f m against a %.2f m player: %.0f%% of their height" % [
+		counter, StreetMap.CAPSULE_HEIGHT, 100.0 * counter / StreetMap.CAPSULE_HEIGHT])
+	_check(counter < StreetMap.CAPSULE_HEIGHT * 0.75,
+		"the counter is %.2f m of a %.2f m player: that is a wall, not a counter"
+			% [counter, StreetMap.CAPSULE_HEIGHT])
 	# Two players abreast is 2.56 m; anything under that turns a stall into a
 	# door rather than an obstacle.
 	_check(worst_clearance > 2.56,
