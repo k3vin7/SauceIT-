@@ -148,11 +148,13 @@ class MayoDroplet:
 ## runs on a full tank, on a half one, and on the last of it. Straight lines
 ## between them, and it keeps getting shorter the whole way down -- there is no
 ## level at which it stops falling and settles.
-@export_range(0.2, 10.0, 0.05, "suffix:s") var full_burst_seconds := 1.5
-@export_range(0.1, 10.0, 0.05, "suffix:s") var half_burst_seconds := 0.7
+@export_range(0.2, 10.0, 0.05, "suffix:s") var full_burst_seconds := 1.0
+@export_range(0.1, 10.0, 0.05, "suffix:s") var half_burst_seconds := 0.45
 ## What is left at the very bottom. Kept clear of `minimum_fire_time`, which
-## every press is owed anyway, so the last squirt is still a squirt.
-@export_range(0.05, 10.0, 0.05, "suffix:s") var empty_burst_seconds := 0.3
+## every press is owed anyway, so the last squirt is still a squirt -- there is
+## only 0.1 s between the two now, so shortening this much further would hand
+## the whole bottom of the curve over to the minimum.
+@export_range(0.05, 10.0, 0.05, "suffix:s") var empty_burst_seconds := 0.2
 ## Which tank level counts as "half" for the middle point above.
 @export_range(0.05, 0.95, 0.01) var burst_midpoint := 0.5
 ## Refills while not firing. Off: the stations hand the sauce out now, so the

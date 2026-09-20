@@ -445,28 +445,47 @@ func _run() -> void:
 	# allowance at a moment the test cannot know, so any fixed wait -- in frames
 	# or in seconds -- is a guess about when the allowance came back, and a
 	# knock that arrives a shade early is refused and the peer is told nothing.
+	# The allowance is per address, and every peer in this file is 127.0.0.1, so
+	# a straggler from a session that has just been closed can spend it between
+	# the gate below and this knock arriving -- and a knock that arrives a shade
+	# early is refused and the peer is told nothing. So: wait for the host's own
+	# record of its last answer to age out, knock, and if the answer does not
+	# come, wait and knock again.
+	#
+	# Knocking more than once is safe for what is being established here, which
+	# is only that a blocked peer is told something rather than dropped without
+	# a word. Whether the limiter itself counts correctly is settled a few lines
+	# below, directly against `_may_answer_block` with a clock the test controls,
+	# which is the right place for it -- asserting the arithmetic *through* a
+	# live session was asserting the race as well.
 	var replies: Dictionary = locked_host._net._block_replies
-	await _until(func() -> bool: return (
-		Time.get_ticks_msec() / 1000.0 - float(replies.get("127.0.0.1", -1000.0))
-			>= 1.0 / MayoNet.BLOCK_REPLIES_PER_SECOND + 0.15), 900)
-	caller[0]._net.lobby_code = "wrong"
-	caller[0]._net.join("127.0.0.1", 24737)
-	# The answer is a round trip, so it is waited for rather than counted out in
-	# frames -- one poll per rendered frame, and a heavier level runs several
-	# physics steps inside one of those. Forty frames was enough on the old map
-	# and intermittently short on this one.
-	await _until(func() -> bool: return (
-		caller[0]._net.blocked_seconds() > 0), 600)
-	print("  turned away: told '%s', %d s to wait" % [
-		caller[0]._net.status(), caller[0]._net.blocked_seconds()])
-	_check(caller[0]._net.blocked_seconds() > 0,
-		"the blocked peer was told nothing: '%s'" % caller[0]._net.status())
+	var told := false
+	var knocks := 0
+	for _attempt in 5:
+		await _until(func() -> bool: return (
+			Time.get_ticks_msec() / 1000.0 - float(replies.get("127.0.0.1", -1000.0))
+				>= 1.0 / MayoNet.BLOCK_REPLIES_PER_SECOND + 0.15), 900)
+		caller[0]._net.lobby_code = "wrong"
+		caller[0]._net.join("127.0.0.1", 24737)
+		knocks += 1
+		# The answer is a round trip, so it is waited for rather than counted
+		# out in frames -- one poll per rendered frame, and a heavier level runs
+		# several physics steps inside one of those.
+		told = await _until(func() -> bool: return (
+			caller[0]._net.blocked_seconds() > 0), 300)
+		if told:
+			break
+		caller[0]._net.leave()
+	print("  turned away: told '%s', %d s to wait (after %d knock(s))" % [
+		caller[0]._net.status(), caller[0]._net.blocked_seconds(), knocks])
+	_check(told, "the blocked peer was told nothing in %d knocks: '%s'" % [
+		knocks, caller[0]._net.status()])
 	_check(caller[0]._net.blocked_seconds() <= MayoNet.CODE_BLOCK_LADDER[0],
 		"the peer was told to wait %d s, longer than the bottom rung" %
 			caller[0]._net.blocked_seconds())
-	_check(locked_host._net.blocked_replies - before_replies == 1,
-		"the host sent %d answers to one knock" % (
-			locked_host._net.blocked_replies - before_replies))
+	_check(locked_host._net.blocked_replies - before_replies >= 1,
+		"the host answered %d of %d knocks" % [
+			locked_host._net.blocked_replies - before_replies, knocks])
 	await _close(caller)
 
 	# And the answer is worth one packet a second per address, not one per knock.

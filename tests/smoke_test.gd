@@ -32,6 +32,20 @@ func _run() -> void:
 	await process_frame
 	await physics_frame
 
+	# The strand checks below need one unbroken press of about two seconds: the
+	# stream has to reach its sustained range and settle there before letting go
+	# can be shown to drag it back. The bottle does not allow a press that long
+	# any more -- it cuts at its allowance -- so the allowance is opened up for
+	# this run. That is not papering over the limit: with the shipped 1.0 s the
+	# strand had already drained and retracted by the time the old code got
+	# round to releasing the trigger, so the check was reading a finished strand
+	# and comparing it with itself. What the limit actually does is `probe_sauce`'s
+	# subject; this file's is the strand pipeline.
+	scene.full_burst_seconds = 6.0
+	scene.half_burst_seconds = 6.0
+	scene.empty_burst_seconds = 6.0
+	scene.sauce_capacity_seconds = 600.0
+
 	# Aim straight down -Z, level. There is no cursor to warp any more.
 	scene.debug_set_aim(0.0, 0.0)
 	Input.action_press("fire_mayo")
