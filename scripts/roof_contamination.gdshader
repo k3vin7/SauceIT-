@@ -1,4 +1,8 @@
 shader_type spatial;
+// A canopy is a sheet, so both of its sides are there to be seen: without this
+// the roof vanishes when you walk under the stall and look up, because the only
+// faces it has point outwards.
+render_mode cull_disabled;
 
 // The roof's mask, sampled by unrolling the cone flat.
 //

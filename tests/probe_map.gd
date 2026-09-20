@@ -259,6 +259,51 @@ func _run() -> void:
 			StreetMap.STALL_PEAK_M - StreetMap.STALL_EAVES_M) * 0.9,
 		"the roof collider is only %.2f m tall" % (top - bottom))
 
+	# Four sloping faces and nothing else. `CylinderMesh` caps both ends by
+	# default, and that bottom cap is a flat square sealing the underside: stand
+	# under a stall, look up, and you see a ceiling instead of the roof. It is
+	# also degenerate in the unwrap, since every point of it is at one height.
+	var roof_mesh: MeshInstance3D = roof.get_node("RoofMesh")
+	var cone: CylinderMesh = roof_mesh.mesh
+	var triangles: PackedVector3Array = cone.get_faces()
+	var on_base := 0
+	for vertex in triangles:
+		if absf(vertex.y + roof.height * 0.5) < 0.001:
+			on_base += 1
+	# A capped pyramid has a whole fan of triangles lying flat on the base; an
+	# open one has only the bottom corners of its sloping faces.
+	var flat := 0
+	for index in range(0, triangles.size(), 3):
+		if absf(triangles[index].y - triangles[index + 1].y) < 0.001 				and absf(triangles[index].y - triangles[index + 2].y) < 0.001:
+			flat += 1
+	# Counted as faces, not triangles: `CylinderMesh` builds each side as a quad
+	# even when it has collapsed to a triangle, so four faces arrive as eight
+	# triangles of which four have no area. What matters is how many distinct
+	# planes there are.
+	var planes := {}
+	for index in range(0, triangles.size(), 3):
+		var normal := (triangles[index + 1] - triangles[index]).cross(
+			triangles[index + 2] - triangles[index])
+		if normal.length_squared() < 0.000001:
+			continue
+		normal = normal.normalized()
+		planes[Vector3(snappedf(normal.x, 0.01), snappedf(normal.y, 0.01),
+			snappedf(normal.z, 0.01))] = true
+	print("roof mesh: %d triangles -> %d face(s), %d lying flat, caps %s/%s" % [
+		triangles.size() / 3, planes.size(), flat,
+		str(cone.cap_bottom), str(cone.cap_top)])
+	_check(not cone.cap_bottom and not cone.cap_top,
+		"the roof mesh still has a cap on it")
+	_check(flat == 0,
+		"the roof has %d flat triangle(s) in it: that is a lid, not four sloping faces" % flat)
+	_check(planes.size() == 4,
+		"the roof is %d face(s) rather than the four of a pyramid" % planes.size())
+	# And it has to be visible from underneath, since that is where a player
+	# stands: with only outward-facing sides, culling would make it disappear.
+	var roof_material: ShaderMaterial = roof_mesh.material_override
+	_check(roof_material.shader.code.contains("cull_disabled"),
+		"the roof is culled from below, so it vanishes when you walk under it")
+
 	# Dropped on from directly above, the slope catches it lower the further out
 	# from the middle it lands -- which a flat lid would not do.
 	var space: PhysicsDirectSpaceState3D = scene.get_world_3d().direct_space_state

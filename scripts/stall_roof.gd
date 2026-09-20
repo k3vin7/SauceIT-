@@ -43,7 +43,15 @@ func build(base_radius: float, roof_height: float, cell_size: float,
 	# Four sides: a pyramid, not a cone. The unwrap does not care -- it maps by
 	# angle, and a square pyramid is a surface of revolution sampled four times.
 	cone.radial_segments = 4
-	cone.rings = 1
+	cone.rings = 0
+	# No lid. `CylinderMesh` caps both ends by default, and the bottom cap is a
+	# flat square sealing the underside of the roof -- so standing under a stall
+	# and looking up showed a ceiling rather than the four sloping faces. It is
+	# not just an eyesore either: every point of that cap is at the same height,
+	# so the unwrap sends the whole of it to a single circle at the rim of the
+	# net, which is its own smear on top of the one it was drawn into.
+	cone.cap_bottom = false
+	cone.cap_top = false
 
 	var mesh_instance := MeshInstance3D.new()
 	mesh_instance.name = "RoofMesh"

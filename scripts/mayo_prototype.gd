@@ -1376,13 +1376,13 @@ func _build_tower() -> void:
 
 
 ## One market stall: a 3 m x 3 m pop-up gazebo, which is what a festival pitch
-## actually is. Four legs, a canopy over them, and a serving counter across the
-## front -- rather than the solid block that stood here while the street was
-## being laid out.
+## actually is. Four legs, a pointed canopy over them, and a serving counter
+## across the front -- rather than the solid block that stood here while the
+## street was being laid out.
 ##
 ## Two parts take sauce and are registered as walls: the **counter**, which is
 ## the part at the height anything gets sprayed at and the part you can duck
-## behind, and the **canopy**, which is what catches a shot fired over it. The
+## behind, and the **roof**, which is what catches a shot fired over it. The
 ## legs are thin and get collision but no grid: a grid per leg would be four
 ## more masks each a few cells across, for a stain nobody can see.
 ##
@@ -1418,11 +1418,8 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 	var counter := _make_contaminable(holder, "Counter", counter_at, counter_size, Color("d8d2c4"))
 	_walls.push_back(counter)
 
-	# One canopy sheet per bay. A pyramid would be truer to a gazebo but the grid
-	# unwraps a box, so the shape is carried by the roof meshes below and the
-	# sheets are what the sauce actually lands on. Separate per bay rather than
-	# one long sheet so a double reads as two tents pushed together, which is
-	# what it is.
+	# One roof per bay rather than one long one, so a double reads as two tents
+	# pushed together, which is what it is.
 	var frame := StandardMaterial3D.new()
 	frame.albedo_color = Color("2f3438")
 	frame.roughness = 0.6
