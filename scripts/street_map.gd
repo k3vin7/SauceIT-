@@ -125,11 +125,14 @@ const STALL_ANCHORS := [
 ## 3.27 m to the peak, eaves about 2.2 m, and a serving counter at waist height.
 ##
 ## Those are real metres, and this world is not built in them -- its people are
-## the prototype's 2.56 m capsule rather than a 1.75 m human. A literal 3.27 m
-## canopy over a 2.56 m player leaves 0.7 m of headroom and reads as a toy, so
-## the real figures are scaled by the ratio between the two. The numbers below
-## stay the real ones, and the conversion is stated once.
-const HUMAN_HEIGHT := 1.75
+## the prototype's 2.56 m capsule. A literal 3.27 m canopy over a 2.56 m player
+## leaves 0.7 m of headroom and reads as a toy, so the real figures are scaled
+## by the ratio between the capsule and the height it is meant to *be*. The
+## numbers below stay the real ones, and the conversion is stated once.
+##
+## 1.80 m is the height the player is taken to be, so everything measured in
+## real metres is 2.56/1.80 larger here than it is in the world.
+const HUMAN_HEIGHT := 1.80
 const CAPSULE_HEIGHT := 2.56
 const HUMAN_SCALE := CAPSULE_HEIGHT / HUMAN_HEIGHT
 
@@ -140,17 +143,48 @@ const STALL_COUNTER_HEIGHT_M := 0.95
 const STALL_COUNTER_DEPTH_M := 0.7
 const STALL_LEG_M := 0.08
 
+## And then the bit that is not arithmetic. Game architecture is built larger
+## than its real counterpart, because a camera with a fixed field of view makes
+## a space read tighter than it measures and because a player who cannot judge
+## depth needs room the real user of the space does not. There is no canonical
+## multiplier for it -- the published guidance is all "build it, stand in it,
+## and trust what it looks like" -- so this is a knob rather than a derivation.
+##
+## There is a concrete reason for it here beyond the feel. At 1.0 the canopy
+## eaves sit 3.13 m up and the player is 2.56 m: 57 cm of headroom, which the
+## over-the-shoulder camera cannot fit through. At 1.25 that is 1.35 m.
+##
+## It also lifts the serving counter from 53% of the player's height to 66% --
+## waist-high to chest-high -- which changes what the counter is as cover. That
+## is the number to watch when tuning this.
+const PROP_SCALE := 1.25
+
+## The one conversion from real metres to this world's.
+const STALL_SCALE := HUMAN_SCALE * PROP_SCALE
+
+## Vendors that cook on the pitch get two gazebos rather than one -- the
+## standard catering layout is one over the cooking and a second over the
+## serving counter, which is why 3 x 6 m is a stock size alongside 3 x 3 m.
+## Listed by the marker number on the drawing, so it reads against the legend:
+## the food trucks, the grills and the burger and kebab stands.
+const DOUBLE_BAY_MARKERS := [2, 7, 13, 19, 20, 21, 23, 25, 27, 37, 50]
+
+## How many 3 m bays the stall at this marker has. Markers are numbered from 1
+## on the drawing; the anchor list is indexed from 0.
+static func bays_for_marker(index: int) -> int:
+	return 2 if DOUBLE_BAY_MARKERS.has(index + 1) else 1
+
 ## Fixed metres, not cells: a stall is the size a stall is, and it does not grow
 ## when the street does. The height here is the peak, which is what the placement
 ## maths wants; the parts are built from the figures above.
 const STALL_SIZE := Vector3(
-	STALL_FOOTPRINT_M * HUMAN_SCALE,
-	STALL_PEAK_M * HUMAN_SCALE,
-	STALL_FOOTPRINT_M * HUMAN_SCALE)
+	STALL_FOOTPRINT_M * STALL_SCALE,
+	STALL_PEAK_M * STALL_SCALE,
+	STALL_FOOTPRINT_M * STALL_SCALE)
 
 
 static func stall_metre(real_metres: float) -> float:
-	return real_metres * HUMAN_SCALE
+	return real_metres * STALL_SCALE
 
 ## Two machines kept off the promenade. They hand nothing out -- the sauce comes
 ## from the stalls -- but `MayoEnemy` is sized as a multiple of one, so the size
@@ -324,11 +358,17 @@ static func vending_boxes() -> Array[Dictionary]:
 ## as one broken one -- the second slides along its wall to the nearest free
 ## frontage rather than being dropped. Sliding rather than dropping is the whole
 ## reason a vendor cannot go missing without anyone noticing.
-static func _anchored_boxes(anchors: Array, size: Vector3) -> Array[Dictionary]:
+static func _anchored_boxes(anchors: Array, size_in: Vector3) -> Array[Dictionary]:
 	var floor_set := floor_cells()
 	var taken := {}
 	var boxes: Array[Dictionary] = []
-	for anchor in anchors:
+	var is_stalls := anchors == STALL_ANCHORS
+	for marker in anchors.size():
+		var anchor: Array = anchors[marker]
+		# A two-bay vendor needs twice the frontage, and needs it reserved
+		# before anything else claims the cell next door.
+		var bays := bays_for_marker(marker) if is_stalls else 1
+		var size := Vector3(size_in.x * float(bays), size_in.y, size_in.z)
 		var px: float = anchor[0]
 		var py: float = anchor[1]
 		var cell := _nearest_street(floor_set, cell_of_pixels(px, py))
@@ -348,11 +388,22 @@ static func _anchored_boxes(anchors: Array, size: Vector3) -> Array[Dictionary]:
 			size.y,
 			size.z if dir.y != 0 else size.x)
 		var spot := _free_frontage(floor_set, taken, cell, dir, footprint)
+		if spot.is_empty() and bays > 1:
+			# A double needs five cells of unbroken wall and some pitches do not
+			# have them -- a short frontage, or the round place, whose rim turns
+			# a corner every couple of cells. The vendor is still on the drawing,
+			# so it gets one tent rather than none.
+			bays = 1
+			size = Vector3(size_in.x, size_in.y, size_in.z)
+			footprint = Vector3(
+				size.z if dir.x != 0 else size.x,
+				size.y,
+				size.z if dir.y != 0 else size.x)
+			spot = _free_frontage(floor_set, taken, cell, dir, footprint)
 		if spot.is_empty():
 			continue
 		cell = spot["cell"]
 		dir = spot["dir"]
-		var facing_now := Vector3(float(dir.x), 0.0, float(dir.y))
 		footprint = Vector3(
 			size.z if dir.x != 0 else size.x,
 			size.y,
@@ -377,6 +428,7 @@ static func _anchored_boxes(anchors: Array, size: Vector3) -> Array[Dictionary]:
 			"position": centre,
 			"size": footprint,
 			"facing": -facing,
+			"bays": bays,
 		})
 	return boxes
 
@@ -417,32 +469,39 @@ static func _wall_direction(floor_set: Dictionary, cell: Vector2i) -> Vector2i:
 	return best
 
 
-## The nearest spot along the wall whose frontage is free, starting at `cell`
-## and working outwards, as {cell, dir}. Empty if nothing within reach works.
+## The nearest spot to `cell` that is against a wall with room for this stall,
+## as {cell, dir}. Empty if there is none within reach.
 ##
-## The wall is re-found at each candidate rather than assumed to be the one the
-## search started against. Around the round place the rim curves away after a
-## few cells, so a stall sliding along it runs off the end of "its" wall almost
-## immediately -- and insisting on the original direction left the last marker
-## on the map with nowhere to stand. Re-deriving it lets the stall follow the
-## rim round, facing out of it the whole way.
+## A breadth-first walk over street cells rather than a march along the wall.
+## Marching only reaches what lies on the two axes from where it started, so a
+## stall whose own wall is full could not cross the street to the other side, or
+## round a corner, and the last couple of markers on a crowded stretch had
+## nowhere to go. Spreading outwards finds the genuinely nearest free frontage,
+## whichever wall it belongs to, and the wall is re-derived at each candidate so
+## a stall that ends up on the far side faces back across the street correctly.
 static func _free_frontage(floor_set: Dictionary, taken: Dictionary, cell: Vector2i,
 		dir: Vector2i, footprint: Vector3) -> Dictionary:
-	var frontage := int(round((footprint.x if dir.y != 0 else footprint.z) / CELL))
-	for distance in range(0, 24):
-		for direction in ([0] if distance == 0 else [-1, 1]):
-			for axis in [Vector2i(1, 0), Vector2i(0, 1)]:
-				var candidate: Vector2i = cell + axis * (distance * direction)
-				if not floor_set.has(candidate):
-					continue
-				var here := dir if distance == 0 else _wall_direction(floor_set, candidate)
-				if here == Vector2i.ZERO or floor_set.has(candidate + here):
-					continue
-				var across := Vector2i(1, 0) if here.y != 0 else Vector2i(0, 1)
-				if _claim(taken, candidate, across, frontage):
-					return {"cell": candidate, "dir": here}
-				if distance == 0:
-					break
+	# Ceil, not round: a stall claims every cell its frontage actually covers,
+	# or neighbours end up spaced closer than they are wide and their meshes
+	# grow through each other.
+	var span: float = footprint.x if dir.y != 0 else footprint.z
+	var frontage := int(ceil(span / CELL - 0.001))
+	var seen := {cell: true}
+	var queue: Array[Vector2i] = [cell]
+	var head := 0
+	while head < queue.size() and head < 4096:
+		var here: Vector2i = queue[head]
+		head += 1
+		var wall := dir if here == cell else _wall_direction(floor_set, here)
+		if wall != Vector2i.ZERO and not floor_set.has(here + wall):
+			var across := Vector2i(1, 0) if wall.y != 0 else Vector2i(0, 1)
+			if _claim(taken, here, across, frontage):
+				return {"cell": here, "dir": wall}
+		for step in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i(0, -1), Vector2i(0, 1)]:
+			var next: Vector2i = here + step
+			if floor_set.has(next) and not seen.has(next):
+				seen[next] = true
+				queue.push_back(next)
 	return {}
 
 

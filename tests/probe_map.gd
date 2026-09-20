@@ -189,6 +189,19 @@ func _run() -> void:
 		footprints[at] = true
 	_check(overlaps == 0, "%d stalls stand on the same cell as another" % overlaps)
 
+	# The vendors that cook on the pitch get two gazebos. A pitch too short for
+	# a double falls back to one rather than losing the vendor, so the count can
+	# come in under the list -- but most of them should get what they asked for.
+	var doubles := 0
+	for stall in StreetMap.stall_boxes():
+		if int(stall.get("bays", 1)) == 2:
+			doubles += 1
+	print("two-bay stalls: %d placed of %d asked for" % [
+		doubles, StreetMap.DOUBLE_BAY_MARKERS.size()])
+	_check(doubles >= StreetMap.DOUBLE_BAY_MARKERS.size() - 2,
+		"only %d of %d cooking vendors got their second gazebo" % [
+			doubles, StreetMap.DOUBLE_BAY_MARKERS.size()])
+
 	# The stall is a 3 m x 3 m pitch at 3.27 m to the peak, in this world's
 	# units rather than real ones -- its people are the 2.56 m capsule, so a
 	# literal 3.27 m canopy would clear a player's head by 0.7 m.

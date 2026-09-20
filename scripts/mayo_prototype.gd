@@ -1382,7 +1382,12 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 	var facing: Vector3 = box["facing"]
 	var across := Vector3(facing.z, 0.0, -facing.x)
 
-	var width: float = StreetMap.stall_metre(StreetMap.STALL_FOOTPRINT_M)
+	var bays: int = box.get("bays", 1)
+	var bay: float = StreetMap.stall_metre(StreetMap.STALL_FOOTPRINT_M)
+	# A two-bay vendor is two gazebos side by side over one run of counter: the
+	# standard catering pitch is one tent over the cooking and a second over the
+	# serving, which is why 3 x 6 m is a stock size next to 3 x 3 m.
+	var width: float = bay * float(bays)
 	var eaves: float = StreetMap.stall_metre(StreetMap.STALL_EAVES_M)
 	var peak: float = StreetMap.stall_metre(StreetMap.STALL_PEAK_M)
 	var counter_high: float = StreetMap.stall_metre(StreetMap.STALL_COUNTER_HEIGHT_M)
@@ -1397,27 +1402,56 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 	var counter := _make_contaminable(holder, "Counter", counter_at, counter_size, Color("d8d2c4"))
 	_walls.push_back(counter)
 
-	# The canopy, a flat sheet on top of the legs. A pyramid would be truer to a
-	# gazebo but the grid unwraps a box, so the shape is carried by the roof mesh
-	# below and the sheet is what the sauce actually lands on.
-	var canopy_size := _oriented_size(facing, width, canopy_thick, width)
-	var canopy_at := ground
-	canopy_at.y = eaves + canopy_thick * 0.5
-	var canopy := _make_contaminable(holder, "Canopy", canopy_at, canopy_size, Color("3fc3d4"))
-	_walls.push_back(canopy)
-
-	# Four legs at the corners, holding it up.
+	# One canopy sheet per bay. A pyramid would be truer to a gazebo but the grid
+	# unwraps a box, so the shape is carried by the roof meshes below and the
+	# sheets are what the sauce actually lands on. Separate per bay rather than
+	# one long sheet so a double reads as two tents pushed together, which is
+	# what it is.
 	var frame := StandardMaterial3D.new()
 	frame.albedo_color = Color("2f3438")
 	frame.roughness = 0.6
-	var inset := (width - leg) * 0.5
+	var awning := StandardMaterial3D.new()
+	awning.albedo_color = Color("3fc3d4")
+	awning.roughness = 0.75
+
+	for index in bays:
+		var offset := (float(index) - (float(bays) - 1.0) * 0.5) * bay
+		var bay_centre := ground + across * offset
+
+		var canopy_size := _oriented_size(facing, bay * 0.98, canopy_thick, bay)
+		var canopy_at := bay_centre
+		canopy_at.y = eaves + canopy_thick * 0.5
+		var canopy := _make_contaminable(holder, "Canopy%d" % index,
+			canopy_at, canopy_size, Color("3fc3d4"))
+		_walls.push_back(canopy)
+
+		# The peaked roof over the sheet: the shape that says "market stall"
+		# from down the street. Visual only -- the sheet under it is what is hit.
+		var roof := MeshInstance3D.new()
+		roof.name = "Roof%d" % index
+		var pyramid := CylinderMesh.new()
+		pyramid.top_radius = 0.0
+		pyramid.bottom_radius = bay * 0.72
+		pyramid.height = peak - eaves
+		pyramid.radial_segments = 4
+		roof.mesh = pyramid
+		roof.position = bay_centre + Vector3(0.0,
+			eaves + canopy_thick + (peak - eaves) * 0.5, 0.0)
+		roof.rotation.y = atan2(facing.x, facing.z) + PI * 0.25
+		roof.material_override = awning
+		holder.add_child(roof)
+
+	# Legs down each bay division, so a double gets six rather than four and the
+	# span between them stays one tent wide.
+	var depth_inset := (bay - leg) * 0.5
 	var corner := 0
-	for side_sign in [-1.0, 1.0]:
+	for index in bays + 1:
+		var offset := (float(index) - float(bays) * 0.5) * bay
 		for depth_sign in [-1.0, 1.0]:
 			var post := StaticBody3D.new()
 			post.name = "Leg%d" % corner
-			post.position = ground + across * (inset * side_sign) \
-				+ facing * (inset * depth_sign) + Vector3(0.0, eaves * 0.5, 0.0)
+			post.position = ground + across * offset \
+				+ facing * (depth_inset * depth_sign) + Vector3(0.0, eaves * 0.5, 0.0)
 			holder.add_child(post)
 
 			var post_shape := BoxShape3D.new()
@@ -1435,24 +1469,6 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 			post_mesh.material_override = frame
 			post.add_child(post_mesh)
 			corner += 1
-
-	# The peaked roof over the canopy sheet: the shape that says "market stall"
-	# from down the street. Visual only -- the sheet under it is what is hit.
-	var roof := MeshInstance3D.new()
-	roof.name = "Roof"
-	var pyramid := CylinderMesh.new()
-	pyramid.top_radius = 0.0
-	pyramid.bottom_radius = width * 0.72
-	pyramid.height = peak - eaves
-	pyramid.radial_segments = 4
-	roof.mesh = pyramid
-	roof.position = ground + Vector3(0.0, eaves + canopy_thick + (peak - eaves) * 0.5, 0.0)
-	roof.rotation.y = atan2(facing.x, facing.z) + PI * 0.25
-	var awning := StandardMaterial3D.new()
-	awning.albedo_color = Color("3fc3d4")
-	awning.roughness = 0.75
-	roof.material_override = awning
-	holder.add_child(roof)
 
 
 ## A box whose width runs across `facing` and whose depth runs along it.
