@@ -90,15 +90,6 @@ func _settled(worlds: Array) -> bool:
 	return true
 
 
-## Waits in real seconds. For the parts of the session that are rate-limited on
-## the wall clock, where a frame count says nothing about how much of a second
-## has gone by.
-func _wait_seconds(seconds: float) -> void:
-	var until := Time.get_ticks_msec() + int(seconds * 1000.0)
-	while Time.get_ticks_msec() < until:
-		await physics_frame
-
-
 ## Waits for something to be true rather than for a fixed number of frames.
 ##
 ## A reliable RPC round trip takes at least two `multiplayer.poll()`s, and polls
@@ -449,16 +440,23 @@ func _run() -> void:
 	var caller := await _session(1, 24741)
 	caller[0]._net.leave()
 	# Past the second the tries above have already used up this address's answer.
-	# Waited on the clock rather than in frames: the block reply is limited to
-	# one a second per address on the wall clock, and a frame count is not a
-	# clock -- headless runs frames as fast as it can, and how fast that is
-	# depends on what the level costs to simulate. At 80 frames this passed on a
-	# bare floor and failed about half the time on the street.
-	await _wait_seconds(1.0 / MayoNet.BLOCK_REPLIES_PER_SECOND + 0.2)
+	# Waited on the host's own record of when it last answered this address,
+	# rather than for a stretch of clock: the knocking loop above spent that
+	# allowance at a moment the test cannot know, so any fixed wait -- in frames
+	# or in seconds -- is a guess about when the allowance came back, and a
+	# knock that arrives a shade early is refused and the peer is told nothing.
+	var replies: Dictionary = locked_host._net._block_replies
+	await _until(func() -> bool: return (
+		Time.get_ticks_msec() / 1000.0 - float(replies.get("127.0.0.1", -1000.0))
+			>= 1.0 / MayoNet.BLOCK_REPLIES_PER_SECOND + 0.15), 900)
 	caller[0]._net.lobby_code = "wrong"
 	caller[0]._net.join("127.0.0.1", 24737)
-	for _f in 40:
-		await physics_frame
+	# The answer is a round trip, so it is waited for rather than counted out in
+	# frames -- one poll per rendered frame, and a heavier level runs several
+	# physics steps inside one of those. Forty frames was enough on the old map
+	# and intermittently short on this one.
+	await _until(func() -> bool: return (
+		caller[0]._net.blocked_seconds() > 0), 600)
 	print("  turned away: told '%s', %d s to wait" % [
 		caller[0]._net.status(), caller[0]._net.blocked_seconds()])
 	_check(caller[0]._net.blocked_seconds() > 0,

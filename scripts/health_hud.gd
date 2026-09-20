@@ -38,7 +38,7 @@ const ENEMY_LOW := Color("7a2a20")
 ## Below this fraction the bar has gone fully to its low colour.
 const LOW_AT := 0.35
 
-## What a station says when you are close enough to use it.
+## What a stall says when you are close enough to be served.
 const PROMPT := "[E]  소스 채우기"
 const PROMPT_SIZE := 18
 const PROMPT_LIFT := 54.0
@@ -122,10 +122,10 @@ func _draw_enemies() -> void:
 		_draw_bar(bar, enemy.health_fraction(), ENEMY_FULL, ENEMY_LOW, 1.0)
 
 
-## The refill prompt, over the tank. Drawn only while a station is in reach, so
-## it doubles as the feedback that says you are close enough -- without it the
-## machine is a red box that silently does nothing until you happen to be in the
-## right spot with the right key down.
+## The refill prompt, over the tank. Drawn only while a stall is in reach, so it
+## doubles as the feedback that says you are close enough -- without it a stall
+## is a blue box that silently does nothing until you happen to be in the right
+## spot with the right key down.
 func _draw_prompt() -> void:
 	if not world.local_at_station():
 		return

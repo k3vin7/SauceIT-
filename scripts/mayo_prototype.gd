@@ -160,9 +160,9 @@ class MayoDroplet:
 ## fills itself while you stand around. Left exported because turning it up is
 ## the one-line way to try the game without the walk.
 @export_range(0.0, 1.0, 0.005, "suffix:tank/s") var sauce_refill_per_second := 0.0
-## How close to a station you have to be to use it, measured flat from its
-## centre. The machine is 1.15 m across and the player is 1.28 m, so this is
-## arm's reach rather than a room-sized trigger.
+## How close to a stall you have to be for it to serve you, measured flat from
+## the front of its counter. The player is 1.28 m across, so this is a step or
+## two back from the counter rather than a room-sized trigger.
 @export_range(0.5, 8.0, 0.1, "suffix:m") var refill_reach := 2.6
 
 @export_group("Emission Shape")
@@ -490,7 +490,11 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 			# down; a squirt the player ended themselves can.
 			if spent:
 				shooter.burst_locked = true
-	elif shooter.firing and not shooter.burst_locked:
+	elif shooter.firing and not shooter.burst_locked and shooter.sauce > 0.0:
+		# An empty bottle puts out nothing at all. The minimum squirt below is
+		# what every press is *owed*, not what it is owed out of an empty
+		# bottle -- without the tank check here a dry one still coughed out a
+		# tenth of a second every time the trigger went down.
 		shooter.fire_hold = minimum_fire_time
 		shooter.trigger_released = false
 		shooter.burst_time = 0.0
@@ -1259,6 +1263,7 @@ func _build_street() -> void:
 	index = 0
 	for box in StreetMap.stall_boxes():
 		_create_wall("Stall%02d" % index, box["position"], box["size"], Color("3fc3d4"))
+		_add_refill_station(box)
 		index += 1
 
 	index = 0
@@ -1269,11 +1274,32 @@ func _build_street() -> void:
 	_build_start_marker()
 
 
+## Records a box as somewhere the sauce can be topped up, keyed on the middle
+## of its *front face* rather than its centre. A stall is 2.56 m deep, so a
+## reach measured from the centre would spend half of itself inside the stall
+## and leave a band barely wider than the player to stand in; from the face,
+## `refill_reach` means what it says -- how far back from the counter you can
+## be served.
+##
+## Kept as plain data rather than as nodes with Area3Ds: the test is one dot
+## product each, and an overlap body would also have to be kept out of the
+## strand's way.
+func _add_refill_station(box: Dictionary) -> void:
+	var size: Vector3 = box["size"]
+	var facing: Vector3 = box["facing"]
+	var depth: float = size.x if absf(facing.x) > 0.5 else size.z
+	_refill_stations.push_back({
+		"position": box["position"] + facing * (depth * 0.5),
+		"facing": facing,
+	})
+
+
 ## The sketch's red blocks. A chassis that takes sauce like any other surface,
 ## with a lit display front and a delivery slot under it so it reads as a
 ## vending machine rather than as a red box -- and so which way it faces is
-## obvious from across the street. It dispenses nothing yet: there is no
-## pick-up system to hand anything to.
+## obvious from across the street. It dispenses nothing: the sauce is topped up
+## at the stalls, and these are scenery until there is something else worth
+## handing out.
 func _create_vending_machine(machine_name: String, box: Dictionary) -> void:
 	var holder := Node3D.new()
 	holder.name = machine_name
@@ -1307,13 +1333,6 @@ func _create_vending_machine(machine_name: String, box: Dictionary) -> void:
 		depth, Vector2(across * 0.6, size.y * 0.1), size.y * 0.2,
 		Color("0c0e10"), 0.0)
 
-	# What the reach test walks. Kept as plain data rather than as a node with
-	# an Area3D: there are two of them, the test is one dot product each, and an
-	# overlap body would also have to be kept out of the strand's way.
-	_refill_stations.push_back({
-		"position": box["position"],
-		"facing": facing,
-	})
 
 
 ## One flat quad standing 1 cm off the machine's front face. Separate meshes
@@ -1922,10 +1941,10 @@ func _record_visor_splat(player: MayoPlayer, hit_position: Vector3) -> void:
 		SPLAT_VISOR, player.peer_id, cell.x, cell.y]))
 
 
-## Which refill station this player could use, or -1 for none. Flat distance,
-## because a station at the foot of a ramp is still the station you are at, and
-## then a front test -- otherwise you could refill through the wall it is bolted
-## to by standing behind it.
+## Which stall this player could be served at, or -1 for none. Flat distance,
+## because a counter at the foot of a ramp is still the counter you are at, and
+## then a front test -- otherwise you could be served through the back of the
+## stall by standing behind it.
 func station_in_reach(player: MayoPlayer) -> int:
 	if player == null or not is_instance_valid(player):
 		return -1

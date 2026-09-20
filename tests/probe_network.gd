@@ -429,11 +429,25 @@ func _run() -> void:
 	# A is stood well out of the way first: two capsules overlapping would shove
 	# B off the line before they reached the patch.
 	server_world.shooter_for(1).player.global_position = Vector3(-5.0, stand, 5.0)
-	# Dropped in behind the patch, facing it, and told to sprint at it.
-	client_player.global_position = patch + Vector3(0.0, stand, 1.1)
+	# Dropped in behind the patch, facing it, and told to sprint at it -- from
+	# somewhere the mayo has not reached. Starting *on* a painted cell is not a
+	# run onto a patch at all: B trips on the frame it appears, and then keeps
+	# tripping where it stands, because sprinting on mayo pins you there. Each
+	# of those falls is a fresh run through the state machine, and the client is
+	# a frame behind the host on every transition, which is what the fall-state
+	# comparison below was reporting. The start used to be 1.1 m back and clear
+	# by luck; how far back is clear depends on where the stripe happened to
+	# land, so it is searched for rather than assumed.
+	var run_up := 1.1
+	while run_up < 9.0 and server_world._floor.is_mayo_at(patch + Vector3(0.0, 0.0, run_up)):
+		run_up += 0.2
+	client_player.global_position = patch + Vector3(0.0, stand, run_up)
 	client_world.debug_set_aim(0.0, 0.0)
 	client_world.debug_set_input(Vector2(0.0, -1.0), true, false)
-	print("B starts at %.2v, patch centre %.2v" % [client_player.global_position, patch])
+	print("B starts at %.2v, %.1f m back from patch centre %.2v" % [
+		client_player.global_position, run_up, patch])
+	_check(not server_world._floor.is_mayo_at(client_player.global_position),
+		"B starts standing in the mayo, so this is not a run onto a patch")
 
 	var tripped_on_server := false
 	var tripped_on_client := false

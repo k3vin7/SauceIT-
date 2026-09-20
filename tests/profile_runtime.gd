@@ -18,6 +18,38 @@ func _initialize() -> void:
 	call_deferred("_run")
 
 
+## One frame of the worst case the game can actually reach.
+##
+## The profiler used to hold the trigger down for the whole run, which measured
+## sustained fire because sustained fire was possible. It is not: a press cuts
+## at its allowance and will not restart until the trigger comes up, and a tank
+## runs dry in twelve seconds. Left alone, this run measured a mean of 6.8 live
+## points against the 220 it used to -- a profiler quietly reporting almost
+## nothing, which is worse than no profiler, because a regression would look
+## like an improvement.
+##
+## So the trigger is cycled the way a player hammering it would, and the tank is
+## held full. That is the heaviest the strand can legitimately get, which is
+## what a profile is for.
+func _fire_frame(scene) -> void:
+	var shooter = scene._local
+	shooter.sauce = 1.0
+	# Let go for a frame whenever the press has run itself out, so the next one
+	# is allowed to start. `burst_locked` is exactly that condition.
+	if shooter.burst_locked:
+		_hold_trigger(false)
+	else:
+		_hold_trigger(true)
+	await physics_frame
+
+
+func _hold_trigger(down: bool) -> void:
+	if down:
+		Input.action_press("fire_mayo")
+	else:
+		Input.action_release("fire_mayo")
+
+
 func _run() -> void:
 	var scene = load("res://main.tscn").instantiate()
 	root.add_child(scene)
@@ -33,9 +65,9 @@ func _run() -> void:
 
 	# Aim straight down -Z, level. There is no cursor to warp any more.
 	scene.debug_set_aim(0.0, 0.0)
-	Input.action_press("fire_mayo")
+	_hold_trigger(true)
 	for _f in 120:
-		await physics_frame
+		await _fire_frame(scene)
 	scene.debug_reset_profile()
 	scene.debug_profile_enabled = true
 
@@ -52,12 +84,12 @@ func _run() -> void:
 			Input.action_release("move_left")
 			Input.action_press("move_right")
 		var t := Time.get_ticks_usec()
-		await physics_frame
+		await _fire_frame(scene)
 		phys_us += Time.get_ticks_usec() - t
 		n += 1
 		max_points_live = maxi(max_points_live, scene._points.size())
 		sum_points += scene._points.size()
-	Input.action_release("fire_mayo")
+	_hold_trigger(false)
 	Input.action_release("move_right")
 	scene.debug_profile_enabled = false
 

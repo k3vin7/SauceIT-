@@ -22,7 +22,7 @@ extends RefCounted
 ## The stalls and the vending machines are deliberately NOT scaled by it: they
 ## are furniture at a fixed real size, and leaving them alone is what makes the
 ## street read as bigger rather than as the same street viewed closer.
-const SCALE := 1.5
+const SCALE := 1.8
 
 ## One person wide, times the scale. The capsule is 0.64 m in radius, so the
 ## unscaled cell is its diameter and everything on the map is a whole number of
