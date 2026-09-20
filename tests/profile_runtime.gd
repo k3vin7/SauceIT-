@@ -28,18 +28,13 @@ func _initialize() -> void:
 ## nothing, which is worse than no profiler, because a regression would look
 ## like an improvement.
 ##
-## So the trigger is cycled the way a player hammering it would, and the tank is
-## held full. That is the heaviest the strand can legitimately get, which is
-## what a profile is for.
+## So the tank is held full and the trigger simply stays down: a spent squirt
+## now comes back on its own after its cooldown, so holding it is the busiest
+## the nozzle ever is. That is the heaviest the strand can legitimately get,
+## which is what a profile is for.
 func _fire_frame(scene) -> void:
-	var shooter = scene._local
-	shooter.sauce = 1.0
-	# Let go for a frame whenever the press has run itself out, so the next one
-	# is allowed to start. `burst_locked` is exactly that condition.
-	if shooter.burst_locked:
-		_hold_trigger(false)
-	else:
-		_hold_trigger(true)
+	scene._local.sauce = 1.0
+	_hold_trigger(true)
 	await physics_frame
 
 

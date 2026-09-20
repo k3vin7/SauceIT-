@@ -119,10 +119,23 @@ func _run() -> void:
 		for point in scene._points:
 			hammered[point.burst_index] = true
 	Input.action_release("fire_mayo")
-	print("two seconds: holding it down -> %d burst, hammering -> %d bursts" % [
-		held_bursts.size(), hammered.size()])
-	_check(held_bursts.size() == 1,
-		"holding the trigger broke into %d bursts" % held_bursts.size())
+	# Holding it down used to mean exactly one burst, because the stream ran for
+	# as long as the button was held. It does not any more: a squirt ends at its
+	# allowance and the trigger comes back by itself after `spent_burst_cooldown`,
+	# so two seconds of holding is a squirt, a pause, and the start of the next.
+	# What the check is really about survives that -- holding and hammering are
+	# different things, and the burst boundaries come from the nozzle rather than
+	# from the button.
+	var expected_held := int(2.0 / (scene.full_burst_seconds + scene.minimum_fire_time
+		+ scene.spent_burst_cooldown)) + 1
+	print("two seconds: holding it down -> %d bursts (about %d expected), hammering -> %d bursts" % [
+		held_bursts.size(), expected_held, hammered.size()])
+	_check(held_bursts.size() <= expected_held + 1,
+		"holding the trigger broke into %d bursts, more than the %d its allowance and cooldown allow"
+			% [held_bursts.size(), expected_held])
+	_check(hammered.size() >= held_bursts.size() * 2,
+		"hammering made %d bursts against holding's %d: the two are not being told apart"
+			% [hammered.size(), held_bursts.size()])
 	_check(hammered.size() >= 4,
 		"hammering the trigger made %d bursts: the lock is not separating them" % hammered.size())
 

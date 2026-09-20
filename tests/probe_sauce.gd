@@ -22,26 +22,43 @@ func _check(condition: bool, message: String) -> void:
 		failures.push_back(message)
 
 
-## Holds the trigger for `seconds` and reports how long sauce actually came out
-## for, in one unbroken run from the first frame it fired.
+## Holds the trigger for `seconds` and reports what came out: every unbroken run
+## of sauce and every pause between them. Holding now restarts by itself after
+## the pause, so "how long did it fire" is no longer one number -- the first run
+## and the gap after it are the two the checks care about.
 func _hold(scene, seconds: float) -> Dictionary:
 	var shooter = scene._local
-	var fired := 0
-	var gaps := 0
+	var bursts: Array[int] = []
+	var gaps: Array[int] = []
+	var run := 0
 	var was := false
 	var started := false
 	scene.debug_set_input(Vector2.ZERO, false, true)
 	for _f in int(seconds * 60.0):
 		await physics_frame
 		var now: bool = shooter.was_firing
+		if now != was:
+			if was:
+				bursts.push_back(run)
+			elif started:
+				gaps.push_back(run)
+			run = 0
 		if now:
 			started = true
-			fired += 1
-		elif started and not now and was:
-			gaps += 1
+		run += 1
 		was = now
+	if was:
+		bursts.push_back(run)
 	scene.debug_set_input(Vector2.ZERO, false, false)
-	return {"seconds": float(fired) / 60.0, "restarts": maxi(gaps - 1, 0)}
+	var total := 0
+	for burst in bursts:
+		total += burst
+	return {
+		"seconds": float(total) / 60.0,
+		"first": (float(bursts[0]) / 60.0) if not bursts.is_empty() else 0.0,
+		"bursts": bursts.size(),
+		"gap": (float(gaps[0]) / 60.0) if not gaps.is_empty() else 0.0,
+	}
 
 
 func _idle(scene, seconds: float) -> void:
@@ -101,25 +118,30 @@ func _run() -> void:
 		"an empty tank allows %.2f s, under the %.2f s every press gets anyway" % [
 			scene.empty_burst_seconds, scene.minimum_fire_time])
 
-	# --- a full tank cuts at the allowance, with the button still down ---
+	# --- a full tank cuts at the allowance, then comes back on its own ---
 	shooter.sauce = 1.0
-	var long_hold := await _hold(scene, scene.full_burst_seconds + 2.5)
-	print("held the button %.1f s on a full tank: sauce came out for %.2f s, restarts %d" % [
-		scene.full_burst_seconds + 2.5, long_hold.seconds, long_hold.restarts])
+	var long_hold := await _hold(scene, scene.full_burst_seconds * 2.0 + scene.spent_burst_cooldown + 1.5)
+	print("button held down: first squirt %.2f s, then %.2f s of nothing, %d squirts in all" % [
+		long_hold.first, long_hold.gap, long_hold.bursts])
 	# The squirt is cut but still runs out its minimum, so it overshoots by that.
-	_check(long_hold.seconds >= scene.full_burst_seconds - 0.1
-			and long_hold.seconds <= scene.full_burst_seconds + scene.minimum_fire_time + 0.1,
+	_check(long_hold.first >= scene.full_burst_seconds - 0.1
+			and long_hold.first <= scene.full_burst_seconds + scene.minimum_fire_time + 0.1,
 		"a full-tank press ran %.2f s rather than about %.2f" % [
-			long_hold.seconds, scene.full_burst_seconds])
-	# And holding it down does not buy another squirt.
-	_check(long_hold.restarts == 0,
-		"holding the button started %d more squirts: the limit is not a limit"
-			% long_hold.restarts)
-	_check(shooter.burst_locked, "the trigger was not locked after running its allowance")
+			long_hold.first, scene.full_burst_seconds])
+	# Holding through the pause starts the next one without letting go.
+	_check(long_hold.bursts >= 2,
+		"holding the button gave %d squirt(s): it never came back after the pause"
+			% long_hold.bursts)
+	# And the pause is the long one, not the short between-taps one.
+	_check(absf(long_hold.gap - scene.spent_burst_cooldown) < 0.1,
+		"the pause after a spent squirt was %.2f s, not the %.2f s cooldown" % [
+			long_hold.gap, scene.spent_burst_cooldown])
+	_check(scene.spent_burst_cooldown > scene.fire_cooldown_time,
+		"the spent-squirt pause (%.2f s) is no longer than the between-taps one (%.2f s)"
+			% [scene.spent_burst_cooldown, scene.fire_cooldown_time])
 
-	# --- letting go re-arms it ---
-	await _idle(scene, 0.4)
-	_check(not shooter.burst_locked, "letting go of the trigger did not re-arm it")
+	# --- letting go and pressing again still works ---
+	await _idle(scene, 0.6)
 	var again := await _hold(scene, 0.6)
 	print("after letting go, a 0.6 s press put out %.2f s" % again.seconds)
 	_check(again.seconds > 0.3, "the trigger did not fire again after being released")
@@ -134,16 +156,16 @@ func _run() -> void:
 	await _idle(scene, 0.4)
 	shooter.sauce = 0.05
 	var at_dregs := await _hold(scene, 6.0)
-	print("same press: full %.2f s, %.0f%% %.2f s, nearly dry %.2f s" % [
-		at_full.seconds, scene.burst_midpoint * 100.0, at_half.seconds, at_dregs.seconds])
-	_check(at_half.seconds < at_full.seconds - 0.2,
+	print("first squirt of a press: full %.2f s, %.0f%% %.2f s, nearly dry %.2f s" % [
+		at_full.first, scene.burst_midpoint * 100.0, at_half.first, at_dregs.first])
+	_check(at_half.first < at_full.first - 0.2,
 		"a %.0f%% tank gave %.2f s against a full tank's %.2f: the tank is not shortening the squirt"
-			% [scene.burst_midpoint * 100.0, at_half.seconds, at_full.seconds])
+			% [scene.burst_midpoint * 100.0, at_half.first, at_full.first])
 	# And it keeps shortening past the half mark, in the game rather than only
 	# in the curve.
-	_check(at_dregs.seconds < at_half.seconds - 0.1,
+	_check(at_dregs.first < at_half.first - 0.1,
 		"a nearly dry tank gave %.2f s, no shorter than the %.2f s a half tank gave"
-			% [at_dregs.seconds, at_half.seconds])
+			% [at_dregs.first, at_half.first])
 
 	# --- the allowance is fixed when the squirt starts ---
 	# Draining during the squirt must not shorten the squirt that is spending it.
@@ -193,19 +215,15 @@ func _run() -> void:
 			% (scene.refill_reach * 0.6))
 	_check(scene.local_at_station(), "the prompt does not show at a stall")
 	shooter.sauce = 0.2
-	shooter.burst_locked = true
 	_check(scene.refill_for(scene._local.peer_id), "the stall refused to fill the bottle")
-	print("at the stall: tank 0.20 -> %.2f, trigger re-armed %s" % [
-		shooter.sauce, str(not shooter.burst_locked)])
+	print("at the stall: tank 0.20 -> %.2f" % shooter.sauce)
 	_check(is_equal_approx(shooter.sauce, 1.0),
 		"the stall filled the tank to %.2f rather than full" % shooter.sauce)
-	_check(not shooter.burst_locked,
-		"the tank was filled but the trigger is still locked from running dry")
 	# And a full tank means a full-length squirt again.
-	var after_refill := await _hold(scene, scene.full_burst_seconds + 1.5)
-	print("after refilling, a long press put out %.2f s" % after_refill.seconds)
-	_check(after_refill.seconds >= scene.full_burst_seconds - 0.1,
-		"a refilled tank only gave %.2f s" % after_refill.seconds)
+	var after_refill := await _hold(scene, scene.full_burst_seconds + 1.0)
+	print("after refilling, the first squirt ran %.2f s" % after_refill.first)
+	_check(after_refill.first >= scene.full_burst_seconds - 0.1,
+		"a refilled tank only gave %.2f s" % after_refill.first)
 
 	# Out of reach, and behind it, are both refused -- the second because a
 	# station bolted to a wall must not be usable through that wall.
@@ -243,7 +261,6 @@ func _run() -> void:
 	# --- an empty tank fires nothing ---
 	await _idle(scene, 0.4)
 	shooter.sauce = 0.0
-	shooter.burst_locked = false
 	var dry := await _hold(scene, 1.5)
 	print("dry tank, 1.5 s on the button: %.2f s of sauce" % dry.seconds)
 	_check(is_zero_approx(dry.seconds),
@@ -252,7 +269,6 @@ func _run() -> void:
 	# The very last of the tank still fires, so "empty" means empty rather than
 	# "nearly empty".
 	shooter.sauce = 0.02
-	shooter.burst_locked = false
 	var dregs := await _hold(scene, 1.5)
 	print("2%% left, 1.5 s on the button: %.2f s of sauce" % dregs.seconds)
 	_check(dregs.seconds > 0.0, "a tank with something left in it fired nothing")

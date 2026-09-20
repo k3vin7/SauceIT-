@@ -98,10 +98,6 @@ class Shooter:
 	## re-deriving it would shorten the allowance as the squirt spent it, so a
 	## press that was promised three seconds would cut at about two and a half.
 	var burst_allowance := 0.0
-	## Set when a squirt ends because it ran out its allowance, and cleared when
-	## the trigger comes up. Without it, holding the button just starts another
-	## squirt the moment the cooldown ends, which is not a limit at all.
-	var burst_locked := false
 	var next_collision_slot := 0
 	var aim_yaw := 0.0
 	var aim_pitch := 0.0
@@ -157,6 +153,13 @@ class MayoDroplet:
 @export_range(0.05, 10.0, 0.05, "suffix:s") var empty_burst_seconds := 0.2
 ## Which tank level counts as "half" for the middle point above.
 @export_range(0.05, 0.95, 0.01) var burst_midpoint := 0.5
+## The pause after a press has run its allowance out. The trigger comes back on
+## its own at the end of it -- holding the button through the pause starts the
+## next squirt without letting go -- so firing on a full bottle settles into a
+## second on, half a second off, with the on half shrinking as the tank drains.
+## Longer than `fire_cooldown_time`, which is the much shorter gap between two
+## squirts the player ended themselves by letting go.
+@export_range(0.0, 3.0, 0.05, "suffix:s") var spent_burst_cooldown := 0.5
 ## Refills while not firing. Off: the stations hand the sauce out now, so the
 ## tank is a thing you walk back to fill rather than something that quietly
 ## fills itself while you stand around. Left exported because turning it up is
@@ -469,8 +472,6 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 	# press, so nobody has to be told about it.
 	if not shooter.firing:
 		shooter.trigger_released = true
-		# Letting go is what re-arms the trigger after a squirt ran itself out.
-		shooter.burst_locked = false
 	var firing := false
 	if shooter.fire_cooldown > 0.0:
 		# Locked: the trigger does nothing at all.
@@ -487,12 +488,12 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 			shooter.fire_hold = maxf(shooter.fire_hold - delta, 0.0)
 		firing = shooter.fire_hold > 0.0
 		if not firing:
-			shooter.fire_cooldown = fire_cooldown_time
-			# A squirt that ran dry cannot be restarted by keeping the button
-			# down; a squirt the player ended themselves can.
-			if spent:
-				shooter.burst_locked = true
-	elif shooter.firing and not shooter.burst_locked and shooter.sauce > 0.0:
+			# A squirt that ran its allowance out costs the longer pause; one
+			# the player ended themselves costs the short one. Either way the
+			# trigger comes back by itself when the pause is over, so holding
+			# the button through it starts the next squirt.
+			shooter.fire_cooldown = spent_burst_cooldown if spent else fire_cooldown_time
+	elif shooter.firing and shooter.sauce > 0.0:
 		# An empty bottle puts out nothing at all. The minimum squirt below is
 		# what every press is *owed*, not what it is owed out of an empty
 		# bottle -- without the tank check here a dry one still coughed out a
@@ -1423,7 +1424,6 @@ func _damage_player(player: MayoPlayer, amount: float) -> void:
 	var shooter := _shooter_of(player)
 	if shooter != null:
 		shooter.sauce = 1.0
-		shooter.burst_locked = false
 	player.velocity = Vector3.ZERO
 	player.global_position = spawn_position_for(_slot_of(player))
 	if player.contamination != null:
@@ -2000,7 +2000,6 @@ func apply_refill(peer_id: int) -> void:
 	if shooter == null:
 		return
 	shooter.sauce = 1.0
-	shooter.burst_locked = false
 
 
 ## True when the local player is standing at a station, for the HUD prompt.
