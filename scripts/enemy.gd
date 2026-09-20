@@ -126,7 +126,22 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	contamination.cell_size = cell_size
 	contamination.brush_radius = brush_radius
 	add_child(contamination)
-	contamination.configure(self, _body_mesh, radius, height, body_color)
+	# The unwrap is given the **torso's** radius, not the figure's. It maps a
+	# surface point by its angle about the body's axis, which is an honest
+	# unwrap only for a surface of revolution -- and the figure stopped being
+	# one the moment it grew arms. `radius` is half the arm span, 1.15 m, while
+	# the torso the sauce actually lands on is 0.37 m out: handing the unwrap
+	# 1.15 stretches the torso's 2.3 m of surface over 7.2 m of grid, so a splat
+	# that should be 0.40 m across renders about 0.13 m across. That is why a
+	# hit on one of these looked nothing like a hit on a player.
+	#
+	# Using the torso instead makes the body -- the part that is nearly always
+	# what gets hit -- come out at the right size. The limbs, which stick out
+	# further, take a stain that is too wide for them and simply go covered;
+	# they are thinner than one splat, so there was never a middle ground. The
+	# fix without that compromise is a per-bone atlas, which is a much bigger
+	# change than the one it would improve on.
+	contamination.configure(self, _body_mesh, bones[BONE_TORSO][2], height, body_color)
 
 	health = max_health
 

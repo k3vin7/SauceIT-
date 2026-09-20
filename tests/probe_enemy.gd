@@ -162,6 +162,34 @@ func _run() -> void:
 			* roundf(lost / enemy.sauce_damage_per_hit)),
 		"the damage taken is not a whole number of hits")
 
+	# --- a splat is the same size on it as on a player ---
+	# The world has one brush and that is the point of it: a stain is the same
+	# number of metres across on the floor, a wall, a player and an enemy. The
+	# unwrap converts metres of grid into metres of surface by the radius it was
+	# configured with, so handing it the wrong radius silently rescales every
+	# stain on that body -- no error, just a different-looking hit, which is
+	# exactly what half the arm span did here.
+	var torso_radius: float = enemy._bones()[MayoEnemy.BONE_TORSO][2]
+	var enemy_width := 2.0 * enemy.contamination.brush_radius \
+		* torso_radius / enemy.contamination.radius
+	var player_width := 2.0 * player.contamination.brush_radius \
+		* player.contamination.radius / player.contamination.radius
+	print("one splat renders %.3f m across on a player, %.3f m on an enemy's torso (brush %.3f m)" % [
+		player_width, enemy_width, 2.0 * scene.contamination_brush_radius])
+	_check(absf(enemy_width - player_width) < 0.02,
+		"a splat is %.3f m across on an enemy against %.3f m on a player" % [
+			enemy_width, player_width])
+	_check(absf(enemy_width - 2.0 * scene.contamination_brush_radius) < 0.02,
+		"a splat renders %.3f m across from a %.3f m brush" % [
+			enemy_width, 2.0 * scene.contamination_brush_radius])
+	# And the unwrap must be built on the part that actually gets hit, not on
+	# the reach of the limbs.
+	print("unwrap radius %.2f m; torso %.2f m, arm span half %.2f m" % [
+		enemy.contamination.radius, torso_radius, enemy.radius])
+	_check(is_equal_approx(enemy.contamination.radius, torso_radius),
+		"the unwrap is built on %.2f m rather than the torso's %.2f m" % [
+			enemy.contamination.radius, torso_radius])
+
 	# --- it hurts the player, weakly and on a cooldown ---
 	var health_before: float = player.health
 	player.global_position = enemy.global_position \
