@@ -11,6 +11,7 @@ const VisorScript := preload("res://scripts/visor_contamination.gd")
 const VisorOverlayScript := preload("res://scripts/visor_overlay.gd")
 const HealthHudScript := preload("res://scripts/health_hud.gd")
 const MinimapScript := preload("res://scripts/minimap.gd")
+const StallRoofScript := preload("res://scripts/stall_roof.gd")
 
 # Splat batch entry kinds. Four ints per splat: kind, target, cell x, cell y.
 # What `target` means is the kind's business -- a wall packs its index and the
@@ -25,6 +26,8 @@ const SPLAT_VISOR_CLEAR := 4
 ## Addressed by the enemy's index in `_enemies`, which every peer builds in the
 ## same order from the same spawn list, exactly as the walls are.
 const SPLAT_ENEMY := 5
+## Addressed by the roof's index in `_roofs`, built in the same order everywhere.
+const SPLAT_ROOF := 6
 ## Floats per enemy in an enemy state packet: position xyz, yaw, health, and
 ## how far over it has fallen.
 const ENEMY_STATE_STRIDE := 6
@@ -317,6 +320,7 @@ var _camera: Camera3D
 var _floor: FloorContamination
 var _walls: Array[ContaminableObject] = []
 var _enemies: Array[MayoEnemy] = []
+var _roofs: Array[StallRoof] = []
 ## Where the refill stations are and which way they face, so the reach test
 ## does not have to walk the scene tree every frame.
 var _refill_stations: Array[Dictionary] = []
@@ -1406,7 +1410,6 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 	var counter_high: float = StreetMap.stall_metre(StreetMap.STALL_COUNTER_HEIGHT_M)
 	var counter_deep: float = StreetMap.stall_metre(StreetMap.STALL_COUNTER_DEPTH_M)
 	var leg: float = StreetMap.stall_metre(StreetMap.STALL_LEG_M)
-	var canopy_thick := leg * 1.6
 
 	# The counter, along the front edge where the queue stands.
 	var counter_size := _oriented_size(facing, width, counter_high, counter_deep)
@@ -1423,36 +1426,22 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 	var frame := StandardMaterial3D.new()
 	frame.albedo_color = Color("2f3438")
 	frame.roughness = 0.6
-	var awning := StandardMaterial3D.new()
-	awning.albedo_color = Color("3fc3d4")
-	awning.roughness = 0.75
-
 	for index in bays:
 		var offset := (float(index) - (float(bays) - 1.0) * 0.5) * bay
 		var bay_centre := ground + across * offset
 
-		var canopy_size := _oriented_size(facing, bay * 0.98, canopy_thick, bay)
-		var canopy_at := bay_centre
-		canopy_at.y = eaves + canopy_thick * 0.5
-		var canopy := _make_contaminable(holder, "Canopy%d" % index,
-			canopy_at, canopy_size, Color("3fc3d4"))
-		_walls.push_back(canopy)
-
-		# The peaked roof over the sheet: the shape that says "market stall"
-		# from down the street. Visual only -- the sheet under it is what is hit.
-		var roof := MeshInstance3D.new()
+		# The roof, and the only thing up there: the pointed shape both blocks
+		# and stains. It used to be a flat slab at eaves height with a
+		# decorative pyramid on top, so a shot arcing over the stall stopped on
+		# an invisible ceiling rather than running down the slope you can see.
+		var roof := StallRoofScript.new() as StallRoof
 		roof.name = "Roof%d" % index
-		var pyramid := CylinderMesh.new()
-		pyramid.top_radius = 0.0
-		pyramid.bottom_radius = bay * 0.72
-		pyramid.height = peak - eaves
-		pyramid.radial_segments = 4
-		roof.mesh = pyramid
-		roof.position = bay_centre + Vector3(0.0,
-			eaves + canopy_thick + (peak - eaves) * 0.5, 0.0)
+		roof.position = bay_centre + Vector3(0.0, eaves + (peak - eaves) * 0.5, 0.0)
 		roof.rotation.y = atan2(facing.x, facing.z) + PI * 0.25
-		roof.material_override = awning
 		holder.add_child(roof)
+		roof.build(bay * 0.72, peak - eaves, body_cell_size,
+			contamination_brush_radius, Color("3fc3d4"))
+		_roofs.push_back(roof)
 
 	# Legs down each bay division, so a double gets six rather than four and the
 	# span between them stays one tent wide.
@@ -2096,6 +2085,17 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3) ->
 			SPLAT_BODY, player.peer_id, cell.x, cell.y]))
 		_record_visor_splat(player, hit_position)
 		return
+	if surface is StallRoof:
+		var roof := surface as StallRoof
+		var roof_index := _roofs.find(roof)
+		if roof_index < 0:
+			return
+		var roof_cell := roof.paint_mayo(hit_position, hit_normal)
+		if roof_cell.x < 0:
+			return
+		_pending_splats.append_array(PackedInt32Array([
+			SPLAT_ROOF, roof_index, roof_cell.x, roof_cell.y]))
+		return
 	if surface is MayoEnemy:
 		var enemy := surface as MayoEnemy
 		var index := _enemies.find(enemy)
@@ -2130,6 +2130,10 @@ func apply_splats(data: PackedInt32Array) -> void:
 			var body_shooter: Shooter = _shooters.get(target)
 			if body_shooter != null:
 				body_shooter.player.paint_mayo_cell(cell)
+			continue
+		if kind == SPLAT_ROOF:
+			if target >= 0 and target < _roofs.size():
+				_roofs[target].paint_mayo_cell(cell)
 			continue
 		if kind == SPLAT_ENEMY:
 			if target >= 0 and target < _enemies.size():

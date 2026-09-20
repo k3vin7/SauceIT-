@@ -224,6 +224,83 @@ func _run() -> void:
 	_check(worst_clearance > 2.56,
 		"a prop leaves only %.2f m of road, which is not enough to get past" % worst_clearance)
 
+	# --- the stall roofs are the pointed shape, not a flat lid ---
+	# The collider is built from the drawn mesh, so what blocks and what is on
+	# screen cannot disagree -- but only if the shape really is a pyramid. A
+	# flat lid would pass every other check here and still be the thing that was
+	# wrong: sauce fired over a stall stopping dead on an invisible ceiling.
+	var roofs: Array = scene._roofs
+	print("stall roofs: %d for %d bays" % [
+		roofs.size(), StreetMap.stall_boxes().size() + StreetMap.DOUBLE_BAY_MARKERS.size()])
+	_check(roofs.size() > 0, "the stalls have no roofs")
+	var roof = roofs[0]
+	var hull: ConvexPolygonShape3D = roof.get_node("RoofCollision").shape
+	var top := -INF
+	var bottom := INF
+	for point in hull.points:
+		top = maxf(top, point.y)
+		bottom = minf(bottom, point.y)
+	# The apex is one point; the base is not. That is what makes it pointed.
+	var at_top := {}
+	var at_bottom := {}
+	for point in hull.points:
+		if absf(point.y - top) < 0.01:
+			at_top[Vector2(snappedf(point.x, 0.01), snappedf(point.z, 0.01))] = true
+		if absf(point.y - bottom) < 0.01:
+			at_bottom[Vector2(snappedf(point.x, 0.01), snappedf(point.z, 0.01))] = true
+	print("roof collider: %.2f m tall, %d corner(s) at the top, %d at the bottom" % [
+		top - bottom, at_top.size(), at_bottom.size()])
+	_check(at_top.size() == 1,
+		"the roof collider has %d corners at its highest point: it is a lid, not a peak"
+			% at_top.size())
+	_check(at_bottom.size() >= 3,
+		"the roof collider has %d corners at its base" % at_bottom.size())
+	_check(top - bottom > StreetMap.stall_metre(
+			StreetMap.STALL_PEAK_M - StreetMap.STALL_EAVES_M) * 0.9,
+		"the roof collider is only %.2f m tall" % (top - bottom))
+
+	# Dropped on from directly above, the slope catches it lower the further out
+	# from the middle it lands -- which a flat lid would not do.
+	var space: PhysicsDirectSpaceState3D = scene.get_world_3d().direct_space_state
+	var apex: Vector3 = roof.global_position + Vector3(0.0, roof.apex_height(), 0.0)
+	var heights := PackedFloat32Array()
+	for fraction in [0.0, 0.35, 0.7]:
+		var from: Vector3 = roof.global_position 			+ Vector3(roof.radius * fraction, roof.apex_height() + 6.0, 0.0)
+		var query := PhysicsRayQueryParameters3D.create(from, from - Vector3(0.0, 12.0, 0.0))
+		var hit: Dictionary = space.intersect_ray(query)
+		heights.push_back(hit.position.y if hit.has("position") else NAN)
+	print("dropped at 0%%, 35%%, 70%% out from the peak -> landed at %.2f, %.2f, %.2f m" % [
+		heights[0], heights[1], heights[2]])
+	_check(not is_nan(heights[0]) and not is_nan(heights[1]) and not is_nan(heights[2]),
+		"a drop onto the roof hit nothing")
+	_check(heights[0] > heights[1] and heights[1] > heights[2],
+		"the roof caught all three drops at the same height: it is flat")
+	_check(absf(heights[0] - apex.y) < 0.15,
+		"the middle of the roof is %.2f m up against an apex at %.2f m" % [heights[0], apex.y])
+
+	# Sauce sticks to it, and the splat survives the wire. A roof is a new kind
+	# of surface in the splat protocol, and a kind that encodes but does not
+	# replay leaves every other peer's stalls clean.
+	var expected := PackedInt32Array()
+	var cells: Array[Vector2i] = []
+	for step in 8:
+		var cell: Vector2i = roof.contamination.grid.cell_of(
+			Vector2(float(step) * 0.25 - 1.0, float(step) * 0.1 - 0.4))
+		cells.push_back(cell)
+		expected.append_array(PackedInt32Array([scene.SPLAT_ROOF, 0, cell.x, cell.y]))
+	roof.contamination.grid.clear()
+	for cell in cells:
+		roof.paint_mayo_cell(cell)
+	var painted_direct: String = roof.cells_md5()
+	var direct_cells: int = roof.contamination.painted_cell_count()
+	roof.contamination.grid.clear()
+	scene.apply_splats(expected)
+	print("roof splat: %d cells painted directly, replayed %s" % [
+		direct_cells, str(roof.cells_md5() == painted_direct)])
+	_check(direct_cells > 0, "the roof took no sauce at all")
+	_check(roof.cells_md5() == painted_direct,
+		"a replayed roof splat did not reproduce the mask the server painted")
+
 	# --- spawns ---
 	for slot in 4:
 		var spawn: Vector3 = scene.spawn_position_for(slot)
