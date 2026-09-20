@@ -37,9 +37,9 @@ const HEIGHT_MULTIPLE := 2.0
 @export_range(0.01, 20.0, 0.01) var sauce_damage_per_hit := 0.4
 
 @export_group("Movement")
-## Half the player's walking speed. Set from `MayoPlayer.walk_speed` when the
-## world builds one, so it stays half of whatever that becomes.
-@export_range(0.1, 20.0, 0.1, "suffix:m/s") var move_speed := 2.6
+## A fraction of the player's walking speed. Set from `MayoPlayer.walk_speed`
+## when the world builds one, so it stays that fraction of whatever that becomes.
+@export_range(0.1, 20.0, 0.1, "suffix:m/s") var move_speed := 3.64
 @export_range(1.0, 60.0, 0.5, "suffix:m/s²") var fall_gravity := 20.0
 ## How fast it swings round to face where you have moved to. It is not a turret:
 ## running past one should leave it briefly pointed at where you were.
@@ -237,9 +237,11 @@ func _aligned_basis(span: Vector3) -> Basis:
 	return Basis(x_axis, y_axis, x_axis.cross(y_axis))
 
 
-## Half of whatever the players walk at.
-func match_player_speed(walk_speed: float) -> void:
-	move_speed = walk_speed * 0.5
+## A fraction of whatever the players walk at, rather than a speed of its own:
+## the interesting number is how it compares to the player, and that stays true
+## if the player's speed is retuned.
+func match_player_speed(walk_speed: float, fraction: float) -> void:
+	move_speed = walk_speed * fraction
 
 
 ## Standing height off the floor, for dropping one in without burying it.

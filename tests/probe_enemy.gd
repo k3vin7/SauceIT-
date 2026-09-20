@@ -75,11 +75,21 @@ func _run() -> void:
 	_check(colliders >= 6, "the figure has %d colliders; the limbs are not hittable" % colliders)
 
 	# --- speed, and that it is actually chasing ---
-	print("player walks %.2f m/s, enemy moves %.2f m/s (%.2fx)" % [
-		player.walk_speed, enemy.move_speed, enemy.move_speed / player.walk_speed])
-	_check(is_equal_approx(enemy.move_speed, player.walk_speed * 0.5),
-		"the enemy moves at %.2f m/s, not half the player's %.2f" % [
-			enemy.move_speed, player.walk_speed])
+	print("player walks %.2f m/s and runs %.2f; enemy moves %.2f m/s (%.2fx walking)" % [
+		player.walk_speed, player.run_speed, enemy.move_speed,
+		enemy.move_speed / player.walk_speed])
+	_check(is_equal_approx(enemy.move_speed, player.walk_speed * scene.enemy_speed_fraction),
+		"the enemy moves at %.2f m/s, not %.2f of the player's %.2f" % [
+			enemy.move_speed, scene.enemy_speed_fraction, player.walk_speed])
+	# Slower than walking, so it can always be left behind: a chase you cannot
+	# leave is not a decision. Running is the wide margin on top of that.
+	_check(enemy.move_speed < player.walk_speed,
+		"the enemy walks at %.2f m/s against the player's %.2f: it cannot be walked away from"
+			% [enemy.move_speed, player.walk_speed])
+
+	print("enemies on the map: %d" % scene.enemy_count())
+	_check(scene.enemy_count() >= 3,
+		"only %d enemy on the map" % scene.enemy_count())
 
 	# Both moved into the festival square for the walking checks. They need room
 	# to close a gap and then room to dodge sideways, and a street does not have
@@ -191,6 +201,13 @@ func _run() -> void:
 			enemy.contamination.radius, torso_radius])
 
 	# --- it hurts the player, weakly and on a cooldown ---
+	# The others are sent away first. This counts how often *one* enemy can land
+	# a hit, and with three of them on the map the rest walk over and land their
+	# own -- which looks exactly like a broken cooldown.
+	for other in scene.enemy_count():
+		if scene.enemy_at(other) != enemy:
+			scene.enemy_at(other).global_position = square + Vector3(0.0, stand_y, 400.0)
+	await physics_frame
 	var health_before: float = player.health
 	player.global_position = enemy.global_position \
 		+ Vector3(0.0, 0.0, enemy.radius + 0.64)

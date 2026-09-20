@@ -141,6 +141,14 @@ class MayoDroplet:
 @export var use_distance_lifetime := true
 @export_range(0.0, 30.0, 0.1, "suffix:m/s²") var gravity_acceleration := 9.8
 
+@export_group("Enemies")
+## How fast they walk, as a fraction of the player's walking speed. Under 1 they
+## can always be walked away from, which is what makes a chase a decision rather
+## than a fight you cannot leave -- and the player can still run at twice their
+## walk, so the escape is always there. It is the comparison that matters, so it
+## is stored as the fraction and not as a speed.
+@export_range(0.1, 2.0, 0.05) var enemy_speed_fraction := 0.7
+
 @export_group("Sauce Supply")
 ## Seconds of firing a full tank holds, every squirt added together.
 @export_range(1.0, 120.0, 0.5, "suffix:s") var sauce_capacity_seconds := 12.0
@@ -1581,11 +1589,13 @@ func _add_machine_panel(holder: Node3D, panel_name: String, machine_position: Ve
 
 
 ## Where the enemies stand at the start, as map pixels -- the same coordinates
-## the stalls use, so they can be read off the drawing. One, halfway up Karja
-## tänav, so the walk north from the start zone runs into it. The list is what
-## makes a second one a line rather than a change.
+## the stalls use, so they can be read off the drawing. Spread up the route so
+## the walk north from the start zone runs into them one at a time rather than
+## all at once. Adding another is a line.
 const ENEMY_SPAWNS := [
-	[270, 420],
+	[290, 780],   # the run up from Kalda: the first one you meet
+	[270, 420],   # halfway along Karja tänav
+	[370, 550],   # waiting in the festival square
 ]
 
 
@@ -1601,7 +1611,7 @@ func _build_enemies() -> void:
 		add_child(enemy)
 		enemy.build(body_cell_size, contamination_brush_radius, Color("4d3f6b"))
 		if _local != null:
-			enemy.match_player_speed(_local.player.walk_speed)
+			enemy.match_player_speed(_local.player.walk_speed, enemy_speed_fraction)
 		enemy.position = StreetMap.from_pixels(spawn[0], spawn[1]) \
 			+ Vector3(0.0, enemy.stand_height(), 0.0)
 		_enemies.push_back(enemy)
@@ -1668,6 +1678,21 @@ func _slot_of(player: MayoPlayer) -> int:
 ## What is left in the local player's tank, for the HUD.
 func local_sauce() -> float:
 	return _local.sauce if _local != null else 0.0
+
+
+## Takes the enemies out of the world, for the checks that are not about them.
+##
+## Most of what this project measures -- how a body moves relative to its aim,
+## whether two screens agree on a fall, what a strand does in the air -- is
+## measured over several seconds with the player standing still or walking a
+## fixed line. An enemy that walks up and shoves them mid-measurement produces a
+## real failure about something the check was not asking after, and it does it
+## intermittently, depending on how far away the nearest one happened to spawn.
+## Cheaper and clearer than every such check teleporting them over the horizon.
+func debug_clear_enemies() -> void:
+	for enemy in _enemies:
+		enemy.queue_free()
+	_enemies.clear()
 
 
 func enemy_count() -> int:

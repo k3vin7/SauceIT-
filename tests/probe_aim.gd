@@ -35,6 +35,9 @@ func _run() -> void:
 	scene._unhandled_input(toggle)
 	_check(scene._first_person == was_first_person, "F1 did not toggle the camera mode back")
 	scene.set_process_unhandled_input(false)
+	# Walking a fixed line for thirty frames at a time, several times over: an
+	# enemy arriving mid-measurement shoves the player off it.
+	scene.debug_clear_enemies()
 
 	# --- mouse-look accumulation and pitch clamp ---
 	scene.debug_set_aim(0.0, 0.0)

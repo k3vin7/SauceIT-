@@ -422,6 +422,14 @@ func _run() -> void:
 		"B's own screen still shows %.2f after the host filled the bottle" % b_on_client.sauce)
 
 	# --- B runs through A's mayo and goes down ---
+	# The enemies go first. This is about whether two screens agree on a fall,
+	# and an enemy that walks into B mid-slip changes the fall on the host
+	# before the client has been told -- a real disagreement, about something
+	# this case is not asking after.
+	server_world.debug_clear_enemies()
+	client_world.debug_clear_enemies()
+	await _wait(4)
+
 	var patch := _painted_cell_position(server_world)
 	_check(server_world._floor.is_mayo_at(patch),
 		"the patch the run is aimed at is not painted, so this case tests nothing")
@@ -454,6 +462,11 @@ func _run() -> void:
 	var mismatches := 0
 	var compared := 0
 	var states_seen := {}
+	var client_states_seen := {}
+	# How far the client may trail the host, in physics frames.
+	const LAG_FRAMES := 3
+	var host_recent: Array[int] = []
+	var worst_lag := 0
 	var server_tilt_peak := 0.0
 	var client_tilt_peak := 0.0
 	for frame in 240:
@@ -473,11 +486,33 @@ func _run() -> void:
 			client_world.debug_set_input(Vector2.ZERO, false, false)
 		if client_copy.is_incapacitated():
 			tripped_on_client = true
+		# The host's recent states are collected from the first frame of the run,
+		# not from the first compared one. The comparison opens on the frame the
+		# host trips, when the client has not been told yet and is still walking
+		# -- with the history starting there too, that perfectly ordinary frame
+		# of lag looked like the client inventing a state.
+		host_recent.push_back(server_copy.state)
+		while host_recent.size() > LAG_FRAMES + 1:
+			host_recent.remove_at(0)
 		if tripped_on_server:
 			compared += 1
 			states_seen[server_copy.state] = true
-			if server_copy.state != client_copy.state:
+			client_states_seen[client_copy.state] = true
+			# The client has to be following the host through the fall, not
+			# matching it on the identical physics frame. State is sent once a
+			# physics frame but delivered once a *rendered* frame, and a heavy
+			# level runs several physics steps inside one of those -- so
+			# demanding they read the same on the same frame is asserting zero
+			# latency, which held on a bare floor and does not on this map.
+			#
+			# What it has to do instead is never show a state the host has not
+			# just been in: lagging by a frame is the network, inventing or
+			# skipping one is a bug.
+			var found := host_recent.rfind(client_copy.state)
+			if found < 0:
 				mismatches += 1
+			else:
+				worst_lag = maxi(worst_lag, host_recent.size() - 1 - found)
 			# The capsule A watches go over is A's own copy of B.
 			server_tilt_peak = maxf(server_tilt_peak,
 				absf(server_world.shooter_for(client_id).body_mesh.rotation.x))
@@ -488,15 +523,23 @@ func _run() -> void:
 
 	print("B on A's mayo: tripped on host=%s, on B's own screen=%s" % [
 		str(tripped_on_server), str(tripped_on_client)])
-	print("fall states compared for %d frames, %d disagreed, states seen %s" % [
-		compared, mismatches, str(states_seen.keys())])
+	print("fall states compared for %d frames, %d the host was never in, worst lag %d frame(s) of %d allowed" % [
+		compared, mismatches, worst_lag, LAG_FRAMES])
+	print("  host went through %s, B's screen through %s" % [
+		str(states_seen.keys()), str(client_states_seen.keys())])
 	print("capsule pitch peak: host's copy of B %.1f deg, B's own %.1f deg" % [
 		rad_to_deg(server_tilt_peak), rad_to_deg(client_tilt_peak)])
 	_check(tripped_on_server, "B ran through A's mayo and the host never tripped them")
 	_check(tripped_on_client, "B went down on the host but not on B's own screen")
 	_check(compared > 40, "only %d frames of the fall were compared" % compared)
+	# And the same states, in the same set: a client that lagged its way through
+	# without ever entering the stumble would pass the check above by sitting on
+	# whatever the host had a moment ago.
+	for state in states_seen:
+		_check(client_states_seen.has(state),
+			"the host went through state %s and B's screen never did" % str(state))
 	_check(mismatches == 0,
-		"the two screens disagreed about the fall state on %d of %d frames" % [
+		"B's screen showed a fall state the host had not been in, on %d of %d frames" % [
 			mismatches, compared])
 	# Every beat has to show up, not just "not upright": stumble, fall, flat,
 	# and standing up again.
