@@ -234,22 +234,26 @@ func _run() -> void:
 		roofs.size(), StreetMap.stall_boxes().size() + StreetMap.DOUBLE_BAY_MARKERS.size()])
 	_check(roofs.size() > 0, "the stalls have no roofs")
 	var roof = roofs[0]
-	var hull: ConvexPolygonShape3D = roof.get_node("RoofCollision").shape
+	# A shell of four faces, not a solid: a canopy has an inside.
+	var shell: ConcavePolygonShape3D = roof.get_node("RoofCollision").shape
+	_check(shell.backface_collision,
+		"the roof cannot be hit from underneath, which is where a player stands")
+	var shell_faces: PackedVector3Array = shell.get_faces()
 	var top := -INF
 	var bottom := INF
-	for point in hull.points:
+	for point in shell_faces:
 		top = maxf(top, point.y)
 		bottom = minf(bottom, point.y)
 	# The apex is one point; the base is not. That is what makes it pointed.
 	var at_top := {}
 	var at_bottom := {}
-	for point in hull.points:
+	for point in shell_faces:
 		if absf(point.y - top) < 0.01:
 			at_top[Vector2(snappedf(point.x, 0.01), snappedf(point.z, 0.01))] = true
 		if absf(point.y - bottom) < 0.01:
 			at_bottom[Vector2(snappedf(point.x, 0.01), snappedf(point.z, 0.01))] = true
-	print("roof collider: %.2f m tall, %d corner(s) at the top, %d at the bottom" % [
-		top - bottom, at_top.size(), at_bottom.size()])
+	print("roof collider: %.2f m tall, %d corner(s) at the top, %d at the bottom, shell=%s" % [
+		top - bottom, at_top.size(), at_bottom.size(), str(shell_faces.size() / 3)])
 	_check(at_top.size() == 1,
 		"the roof collider has %d corners at its highest point: it is a lid, not a peak"
 			% at_top.size())
@@ -361,6 +365,30 @@ func _run() -> void:
 	_check(broadest < brush * 1.6,
 		"a splat on the roof reaches %.2f m across against a %.2f m brush" % [broadest, brush])
 	roof.contamination.grid.clear()
+
+	# Fired at from underneath -- which is where a player stands -- the sauce
+	# marks the canopy where it was aimed, not along the eaves. A solid collider
+	# put a flat base across the underside, and every point of that base is at
+	# one height, so the unwrap sent all of it to the rim of the net: aim
+	# anywhere under the canopy and the stain came out at the edge.
+	var under: Vector3 = roof.global_position + Vector3(0.0, -roof.height * 0.5 - 1.2, 0.0)
+	var aim_at: Vector3 = roof.global_position 		+ Vector3(roof.radius * 0.3, roof.apex_height() * 0.2, 0.0)
+	var up_query := PhysicsRayQueryParameters3D.create(under, aim_at)
+	var up_hit: Dictionary = space.intersect_ray(up_query)
+	_check(up_hit.has("position"), "a shot fired up at the canopy from below hit nothing")
+	if up_hit.has("position"):
+		_check(up_hit["collider"] == roof,
+			"a shot fired up at the canopy hit %s" % str(up_hit["collider"]))
+		var landed: Vector3 = roof.to_local(up_hit["position"])
+		var slant: float = sqrt(roof.radius * roof.radius + roof.height * roof.height)
+		var from_apex: float = slant * (roof.height * 0.5 - landed.y) / roof.height
+		print("fired up from under the canopy: landed %.2f m from the apex, rim is %.2f m" % [
+			from_apex, slant])
+		# On the slope, not on a flat underside -- which would put every hit at
+		# the rim distance exactly.
+		_check(from_apex < slant * 0.92,
+			"a shot from below landed %.2f m out of %.2f: it hit a flat underside, not the slope"
+				% [from_apex, slant])
 
 	# Sauce sticks to it, and the splat survives the wire. A roof is a new kind
 	# of surface in the splat protocol, and a kind that encodes but does not

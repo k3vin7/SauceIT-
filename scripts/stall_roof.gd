@@ -58,15 +58,24 @@ func build(base_radius: float, roof_height: float, cell_size: float,
 	mesh_instance.mesh = cone
 	add_child(mesh_instance)
 
-	# The collider is built from the drawn mesh's own triangles rather than from
-	# five points worked out by hand: `CylinderMesh` decides for itself which
-	# angle its first vertex sits at, and a hull guessed at from the radius
-	# would be turned a quarter-face against the thing on screen.
-	var hull := ConvexPolygonShape3D.new()
-	hull.points = cone.get_faces()
+	# The collider is the four faces themselves, not a solid pyramid around them
+	# -- a canopy is a sheet, and modelling it as a block is what put sauce in
+	# the wrong place. A convex hull of the same points closes the base, so a
+	# shot fired from underneath hit that flat underside instead of the slope,
+	# and every point of the underside is at one height, so the unwrap sent the
+	# whole of it to the rim of the net: aim anywhere under the canopy and the
+	# stain appeared along the eaves.
+	#
+	# As a shell the shot carries on through where the base would be and lands
+	# on the inside of a sloping face, which is a point the net has a place for,
+	# so it marks the canopy where it was aimed. `backface_collision` is what
+	# lets it be hit from the inside at all.
+	var shell := ConcavePolygonShape3D.new()
+	shell.set_faces(cone.get_faces())
+	shell.backface_collision = true
 	var collision := CollisionShape3D.new()
 	collision.name = "RoofCollision"
-	collision.shape = hull
+	collision.shape = shell
 	add_child(collision)
 
 	contamination = RoofContamination.new()
