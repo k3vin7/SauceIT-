@@ -278,6 +278,45 @@ func _run() -> void:
 	_check(absf(heights[0] - apex.y) < 0.15,
 		"the middle of the roof is %.2f m up against an apex at %.2f m" % [heights[0], apex.y])
 
+	# A splat is the same size wherever it lands on the roof. A cone is
+	# developable -- it lays out flat with no distortion at all -- so there is
+	# no excuse for it not to be, and getting this wrong is not subtle: mapping
+	# (angle, height) the way a body does makes every angle meet at the apex, so
+	# a splat becomes a wedge that is right at the base and tapers to nothing at
+	# the point. A roof with a few shots on it came out as a sunburst.
+	var widths := PackedFloat32Array()
+	for fraction in [0.9, 0.7, 0.5, 0.3, 0.12]:
+		roof.contamination.grid.clear()
+		var at: Vector3 = roof.to_global(Vector3(
+			0.0, roof.height * (0.5 - fraction), roof.radius * fraction))
+		roof.paint_mayo(at, Vector3.BACK)
+		var grid = roof.contamination.grid
+		var widest := 0
+		for row in grid.height:
+			var run := 0
+			for column in grid.width:
+				if grid.cells[row * grid.width + column] == 1:
+					run += 1
+				else:
+					widest = maxi(widest, run)
+					run = 0
+			widest = maxi(widest, run)
+		widths.push_back(float(widest) * grid.cell_size)
+	var narrowest := widths[0]
+	var broadest := widths[0]
+	for width in widths:
+		narrowest = minf(narrowest, width)
+		broadest = maxf(broadest, width)
+	var brush: float = 2.0 * scene.contamination_brush_radius
+	print("splat width down the roof (90%%..12%% from the base): %.2f %.2f %.2f %.2f %.2f m, brush %.2f m" % [
+		widths[0], widths[1], widths[2], widths[3], widths[4], brush])
+	_check(narrowest > brush * 0.8,
+		"a splat near the apex is %.2f m across against a %.2f m brush: the roof is tapering it"
+			% [narrowest, brush])
+	_check(broadest < brush * 1.6,
+		"a splat on the roof reaches %.2f m across against a %.2f m brush" % [broadest, brush])
+	roof.contamination.grid.clear()
+
 	# Sauce sticks to it, and the splat survives the wire. A roof is a new kind
 	# of surface in the splat protocol, and a kind that encodes but does not
 	# replay leaves every other peer's stalls clean.

@@ -11,14 +11,16 @@ extends StaticBody3D
 ## drawn, so the silhouette that blocks and the silhouette on screen cannot
 ## disagree.
 ##
-## Being a cone rather than a box is also why it is a `BodyContamination` and
-## not a `ContaminableObject`. That one unwraps a box, six flat faces with a
-## grid each; this one unwraps about an axis, which is exactly right for a
-## surface of revolution -- and a square pyramid is one, sampled four times
-## round. One grid instead of six, and it is the same grid, shader and two-int
-## network splat as everything else.
+## Being a cone rather than a box is also why it carries a `RoofContamination`
+## and not a `ContaminableObject` or a `BodyContamination`. The first unwraps a
+## box -- six flat faces with a grid each. The second wraps about an axis, which
+## is right for a capsule and wrong here: every angle meets at the apex, so a
+## splat came out as a wedge tapering to nothing at the point and a roof with a
+## few shots on it read as a sunburst. The third lays the cone out as its own
+## flat net, which a cone has exactly. One grid instead of six, and the same
+## grid, deterministic paint and two-int network splat as everything else.
 
-var contamination: BodyContamination
+var contamination: RoofContamination
 var radius := 1.0
 var height := 1.0
 
@@ -59,19 +61,12 @@ func build(base_radius: float, roof_height: float, cell_size: float,
 	collision.shape = hull
 	add_child(collision)
 
-	contamination = BodyContamination.new()
-	contamination.name = "BodyContamination"
+	contamination = RoofContamination.new()
+	contamination.name = "RoofContamination"
 	contamination.cell_size = cell_size
 	contamination.brush_radius = brush_radius
 	add_child(contamination)
-	# Two thirds of the base radius: the area-weighted mean radius of a cone.
-	# The unwrap turns grid metres into surface metres by one radius, and a cone
-	# has a different one at every height, so this is the one that makes a splat
-	# the right size over most of the roof. Right at the apex it still smears,
-	# because every angle meets there -- the same limitation the enemy's limbs
-	# have, and the same fix would be needed for both.
-	contamination.configure(self, mesh_instance, base_radius * (2.0 / 3.0),
-		roof_height, color)
+	contamination.configure(self, mesh_instance, base_radius, roof_height, color)
 
 
 func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
