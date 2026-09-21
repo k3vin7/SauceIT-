@@ -89,8 +89,8 @@ func _run() -> void:
 	enemy.global_position = corner_a
 	player.global_position = corner_b
 	await physics_frame
-	_check(not enemy._can_see(player.global_position),
-		"the two are in sight of each other, so this case tests nothing")
+	_check(not enemy._can_walk_straight_to(player.global_position),
+		"the two can walk straight at each other, so this case tests nothing")
 
 	var opening := enemy.global_position.distance_to(player.global_position)
 	var targets: Array = [player]
@@ -106,12 +106,79 @@ func _run() -> void:
 		"it closed only %.0f m of %.0f in ten seconds: it is stuck on something"
 			% [closed, opening])
 
+	# --- an enemy fits under a stall, and the straight-line test knows it ---
+	# Both halves of the same bug. The canopy was lower than an enemy is tall,
+	# so one could not walk under a stall at all -- and the test for "can I go
+	# straight" was a chest-high ray, which passes under every canopy and over
+	# every counter and cheerfully reported a clear road through one.
+	var eaves: float = StreetMap.stall_metre(StreetMap.STALL_EAVES_M)
+	print("enemy %.2f m tall, canopy eaves at %.2f m, counter at %.2f m (%.0f%% of a player)" % [
+		enemy.height, eaves, StreetMap.stall_metre(StreetMap.STALL_COUNTER_HEIGHT_M),
+		100.0 * StreetMap.stall_metre(StreetMap.STALL_COUNTER_HEIGHT_M) / StreetMap.CAPSULE_HEIGHT])
+	_check(eaves > enemy.height,
+		"the canopy is %.2f m and an enemy is %.2f m: it cannot walk under a stall"
+			% [eaves, enemy.height])
+	# The counter is still cover you shoot over rather than hide behind.
+	_check(StreetMap.stall_metre(StreetMap.STALL_COUNTER_HEIGHT_M)
+			< StreetMap.CAPSULE_HEIGHT * 0.72,
+		"the counter came up with the stall and is now a wall rather than a counter")
+	# A counter still stops a body, so the router must not route through one.
+	var counter_cells := 0
+	for stall in StreetMap.stall_boxes():
+		var counter: Dictionary = StreetMap.counter_box(stall)
+		if not nav.is_walkable(StreetMap.cell_at(counter["position"])):
+			counter_cells += 1
+	print("counters shut to the router: %d of %d stalls" % [
+		counter_cells, StreetMap.stall_boxes().size()])
+	_check(counter_cells > StreetMap.stall_boxes().size() / 2,
+		"only %d counters are shut to the router" % counter_cells)
+
+	# --- the counter that is built and the counter that is routed around are
+	#     the same counter ---
+	# They were not, and this is the failure that produced: the builder pushed
+	# the counter out by half the stall's *frontage* where it wanted half its
+	# *depth*. On a single bay those are the same number and nothing showed; on
+	# a double the counter stood three metres from where the router believed it
+	# was, so enemies were routed straight into one and leaned on it. Both now
+	# read `StreetMap.counter_box`, and this is what stops them drifting apart
+	# again -- the bug was invisible in every single-bay case, which is most of
+	# them.
+	var worst_gap := 0.0
+	var checked := 0
+	for index in StreetMap.stall_boxes().size():
+		var built: Node3D = scene.get_node_or_null("Stall%02d/Counter" % index)
+		if built == null:
+			continue
+		checked += 1
+		var want: Dictionary = StreetMap.counter_box(StreetMap.stall_boxes()[index])
+		var want_at: Vector3 = want["position"]
+		var gap := Vector2(built.global_position.x - want_at.x,
+			built.global_position.z - want_at.z).length()
+		worst_gap = maxf(worst_gap, gap)
+	print("counters: %d checked, worst gap between built and routed %.3f m" % [
+		checked, worst_gap])
+	_check(checked > 0, "no stall counters were found to check")
+	_check(worst_gap < 0.01,
+		"a counter stands %.2f m from where the router thinks it is" % worst_gap)
+
 	# --- a clear line is taken straight ---
-	var square: Vector3 = StreetMap.arena_centre()
-	enemy.global_position = square + Vector3(0.0, enemy.stand_height(), -14.0)
-	player.global_position = square + Vector3(0.0, stand, 14.0)
+	# The pair of spots is searched for rather than assumed: the square has the
+	# stage and the tower standing in it, and picking two points either side of
+	# the middle put one of them on the line.
+	var open_from := Vector3.ZERO
+	var open_to := Vector3.ZERO
+	for cell in StreetMap.walkable_cells():
+		var a: Vector3 = StreetMap.cell_middle(cell)
+		var b: Vector3 = StreetMap.cell_middle(cell + Vector2i(0, 6))
+		if nav.is_walkable(cell + Vector2i(0, 6)) and nav.line_is_walkable(a, b):
+			open_from = a
+			open_to = b
+			break
+	_check(open_from != open_to, "nowhere on the map has a clear straight run")
+	enemy.global_position = open_from + Vector3(0.0, enemy.stand_height(), 0.0)
+	player.global_position = open_to + Vector3(0.0, stand, 0.0)
 	await physics_frame
-	_check(enemy._can_see(player.global_position),
+	_check(enemy._can_walk_straight_to(player.global_position),
 		"the square is not open enough for a straight run, so this tests nothing")
 	enemy._route = PackedVector3Array([Vector3(999.0, 0.0, 999.0)])
 	enemy.advance(1.0 / 60.0, targets)
@@ -121,7 +188,7 @@ func _run() -> void:
 
 	# --- no router: still chases ---
 	enemy.nav = null
-	enemy.global_position = square + Vector3(0.0, enemy.stand_height(), -14.0)
+	enemy.global_position = open_from + Vector3(0.0, enemy.stand_height(), 0.0)
 	await physics_frame
 	var before := enemy.global_position.distance_to(player.global_position)
 	for _f in 60:

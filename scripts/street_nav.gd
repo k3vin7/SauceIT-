@@ -59,6 +59,31 @@ func nearest_walkable(cell: Vector2i) -> Vector2i:
 	return cell
 
 
+## Whether a body may walk the straight line between two points.
+##
+## Asked of the cells rather than of a ray, because the question is "can I walk
+## there", and a ray answers "can I see there" -- which is a different question
+## wherever something is at neither eye height nor ground height. A chest-high
+## ray down a market street passes **under every canopy and over every counter**
+## and reports a clear road, so a chaser dropped its route and walked into a
+## stall it was never going to fit through. The router already knows exactly
+## which cells a body fits in; this walks the line through them.
+##
+## Sampled at a third of a cell, so no cell the line crosses is stepped over.
+func line_is_walkable(from: Vector3, to: Vector3) -> bool:
+	var span := Vector3(to.x - from.x, 0.0, to.z - from.z)
+	var distance := span.length()
+	if distance < 0.001:
+		return true
+	var step := StreetMap.CELL / 3.0
+	var count := int(ceil(distance / step))
+	for i in count + 1:
+		var at: Vector3 = from + span * (float(i) / float(count))
+		if not is_walkable(StreetMap.cell_at(at)):
+			return false
+	return true
+
+
 ## The route from one world position to another, as world points on the ground.
 ## Empty if there is no way through.
 func route(from: Vector3, to: Vector3) -> PackedVector3Array:

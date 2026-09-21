@@ -126,10 +126,8 @@ class Shooter:
 	var nozzle := 0
 	## Which of the three bands the bottle is in, so a change can be noticed.
 	var sauce_stage := 0
-	var gauge_fill: MeshInstance3D
-	var gauge_material: StandardMaterial3D
-	var gauge_length := 0.0
-	var gauge_back := 0.0
+	var bottle_contents: MeshInstance3D
+	var bottle_material: StandardMaterial3D
 	## Counts down to the next puff of air from an empty bottle.
 	var air_puff := 0.0
 	## Counts down while a catch is holding the sauce back.
@@ -832,6 +830,19 @@ func _is_authority() -> bool:
 func _process(_delta: float) -> void:
 	if _local == null:
 		return
+	# The bottle is put where the camera is *before* the camera is placed, and
+	# both at the rendered frame rate.
+	#
+	# It used to be written only in `_physics_process`, while the camera was
+	# placed here -- so on any machine drawing faster than 60 Hz the view turned
+	# smoothly with the mouse and the bottle hanging in it stepped along at 60,
+	# which reads as the bottle juddering against a steady world. It is a
+	# viewmodel: it has to be exactly where the camera says, on the same frame
+	# the camera says it.
+	#
+	# Visual only. `attack_direction` is still settled in the physics tick, so
+	# what the strand does and where the server thinks the body is are untouched.
+	_place_viewmodel()
 	_update_camera()
 	_report_view(_delta)
 	for shooter in _shooters.values():
@@ -906,6 +917,18 @@ func _play_tone(player: AudioStreamPlayer, hertz: float, seconds: float,
 	wave.data = data
 	player.stream = wave
 	player.play()
+
+
+## Puts the local player's aim nodes where the mouse has already said they are.
+## The aim itself is updated the instant the mouse moves -- see `apply_look` --
+## so this is only the transforms catching up, at render rate rather than at the
+## physics rate they were written at.
+func _place_viewmodel() -> void:
+	if _local == null or not is_instance_valid(_local.player):
+		return
+	_local.player.rotation.y = _local.aim_yaw
+	if _local.aim_pivot != null:
+		_local.aim_pivot.rotation.x = _local.aim_pitch
 
 
 ## Everything on a body that follows the sauce level rather than the physics
@@ -1482,7 +1505,9 @@ func _build_weapon(shooter: Shooter) -> void:
 	shooter.aim_pivot.add_child(weapon)
 	shooter.weapon = weapon
 
-	var body_color := Color("cdc4b4")
+	# Translucent, so what is inside it is what you read. A squeeze bottle is a
+	# translucent bottle with sauce in it, and that is the whole gauge.
+	var body_color := Color(0.80, 0.77, 0.71, 0.34)
 	var cap_color := Color("2f3a47")
 	var label_color := Color("c25b3f")
 	var cursor := 0.0
@@ -1490,6 +1515,7 @@ func _build_weapon(shooter: Shooter) -> void:
 	# tip that clear the body so the nozzle reads against the scene.
 	cursor = _add_bottle_part(weapon, "Body", bottle_radius, bottle_radius * 0.72,
 		bottle_length, cursor, body_color, 0.45, 16)
+	_add_bottle_contents(shooter, weapon)
 	_add_bottle_part(weapon, "Label", bottle_radius * 1.04, bottle_radius * 0.95,
 		bottle_length * 0.3, bottle_length * 0.22, label_color, 0.6, 16)
 	cursor = _add_bottle_part(weapon, "Shoulder", bottle_radius * 0.72, bottle_radius * 0.4,
@@ -1499,8 +1525,6 @@ func _build_weapon(shooter: Shooter) -> void:
 	cursor = _add_bottle_part(weapon, "Tip", bottle_radius * 0.42, bottle_radius * 0.16,
 		bottle_length * 0.22, cursor, cap_color, 0.5, 12)
 
-	_add_bottle_gauge(shooter, weapon)
-
 	var muzzle := Marker3D.new()
 	muzzle.name = "Muzzle"
 	muzzle.position = Vector3(0.0, 0.0, -cursor)
@@ -1508,83 +1532,68 @@ func _build_weapon(shooter: Shooter) -> void:
 	shooter.muzzle = muzzle
 
 
-## How much is left, on the bottle itself.
+## The sauce inside the bottle, which is the gauge.
 ##
-## A window down the side of the body, with a column of sauce in it that drops
-## as the bottle empties and changes colour as it crosses into the unreliable
-## and empty bands. On the bottle rather than only on the HUD because the people
-## who most need to know how you are doing are the other three players, and they
-## cannot see your HUD -- a team that can read each other's bottles across the
-## street can cover a reload without being told.
+## A column standing in the translucent body, shrinking from the nozzle end down
+## toward the base as it empties -- which is where sauce sits in a bottle held
+## nozzle-forward. This replaced a little strip stuck on the outside: that read
+## as an instrument bolted to a prop, and the prop is a see-through bottle, so
+## it already had somewhere obvious to put the answer.
 ##
-## PLACEHOLDER: two boxes and a flat colour. When a modelled bottle arrives,
-## `_update_bottle_gauge` only needs its fill node to scale on Y from the
-## bottom; swap the meshes here and leave the maths alone.
-func _add_bottle_gauge(shooter: Shooter, weapon: Node3D) -> void:
-	var window_length := bottle_length * 0.52
-	var window_width := bottle_radius * 0.5
+## It is on every player's bottle, not just the viewmodel, because the people
+## who most need to know how you are doing are the other three and they cannot
+## see your HUD.
+##
+## PLACEHOLDER: a plain cylinder and a flat colour. A modelled bottle wants the
+## same thing -- one node scaled along the bottle axis -- so swap the mesh here
+## and leave `_update_bottle_gauge` alone.
+func _add_bottle_contents(shooter: Shooter, weapon: Node3D) -> void:
+	var contents := MeshInstance3D.new()
+	contents.name = "Contents"
+	var mesh := CylinderMesh.new()
+	# Just inside the wall, and tapering with it so it does not poke through.
+	mesh.top_radius = bottle_radius * 0.72 * 0.86
+	mesh.bottom_radius = bottle_radius * 0.86
+	mesh.height = bottle_length
+	mesh.radial_segments = 16
+	contents.mesh = mesh
+	# Same build as the body: along +Y, then turned onto the bottle axis.
+	contents.rotation_degrees.x = -90.0
 
-	var well := MeshInstance3D.new()
-	well.name = "GaugeWell"
-	var well_mesh := BoxMesh.new()
-	well_mesh.size = Vector3(window_width, bottle_radius * 0.12, window_length)
-	well.mesh = well_mesh
-	var well_material := StandardMaterial3D.new()
-	well_material.albedo_color = Color(0.09, 0.09, 0.10)
-	well_material.roughness = 0.9
-	well.material_override = well_material
-	well.position = Vector3(0.0, bottle_radius * 0.92, -bottle_length * 0.42)
-	weapon.add_child(well)
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color("fff0a8")
+	material.roughness = 0.3
+	contents.material_override = material
+	weapon.add_child(contents)
 
-	var fill := MeshInstance3D.new()
-	fill.name = "GaugeFill"
-	var fill_mesh := BoxMesh.new()
-	# Modelled about its own back end so scaling it runs the column forward from
-	# the bottle's base rather than out of its middle.
-	fill_mesh.size = Vector3(window_width * 0.74, bottle_radius * 0.16, window_length)
-	fill.mesh = fill_mesh
-	fill.position = Vector3(0.0, bottle_radius * 0.96, 0.0)
-	var fill_material := StandardMaterial3D.new()
-	fill_material.albedo_color = Color("fff0a8")
-	fill_material.emission_enabled = true
-	fill_material.emission = Color("fff0a8")
-	fill_material.emission_energy_multiplier = 0.5
-	fill.material_override = fill_material
-	weapon.add_child(fill)
-
-	shooter.gauge_fill = fill
-	shooter.gauge_material = fill_material
-	shooter.gauge_length = window_length
-	shooter.gauge_back = -bottle_length * 0.42 + window_length * 0.5
+	shooter.bottle_contents = contents
+	shooter.bottle_material = material
 	_update_bottle_gauge(shooter)
 
 
 ## Runs the column down as the bottle empties and recolours it by band. Called
-## every frame from `_process`, off the level the authority sent, so the bottle
-## in someone else's hand reads the same as the one in yours.
+## every frame for every shooter, off the level the authority sent, so the
+## bottle in someone else's hand reads the same as the one in yours.
 func _update_bottle_gauge(shooter: Shooter) -> void:
-	if shooter.gauge_fill == null or not is_instance_valid(shooter.gauge_fill):
+	if shooter.bottle_contents == null or not is_instance_valid(shooter.bottle_contents):
 		return
 	var level := clampf(shooter.sauce, 0.0, 1.0)
-	shooter.gauge_fill.scale = Vector3(1.0, 1.0, maxf(level, 0.001))
-	# Anchored at the base: the column shortens from the nozzle end down.
-	shooter.gauge_fill.position.z = shooter.gauge_back \
-		- shooter.gauge_length * level * 0.5
-	shooter.gauge_fill.visible = level > 0.004
+	# The mesh is a bottle-length cylinder turned onto the axis, so scaling its
+	# own Y shortens it along the bottle. Anchored at the base: the surface
+	# drops away from the nozzle rather than shrinking about its middle.
+	shooter.bottle_contents.scale.y = maxf(level, 0.001)
+	shooter.bottle_contents.position.z = -bottle_length * level * 0.5
+	shooter.bottle_contents.visible = level > 0.004
+
 	var stage := sauce_stage_of(level)
-	# PLACEHOLDER colours. A modelled bottle would do this with a texture or a
-	# shader; the three bands are what matters, not the swatches.
+	# PLACEHOLDER colours. The three bands are what matters, not the swatches.
 	var tint := Color("fff0a8")
 	if stage == SauceStage.SPLUTTERING:
 		tint = Color("e8a33c")
 	elif stage == SauceStage.EMPTY:
 		tint = Color("c0392b")
-	if shooter.gauge_material != null:
-		shooter.gauge_material.albedo_color = tint
-		shooter.gauge_material.emission = tint
-		# Empty pulses, so a bottle that is done reads across the street.
-		shooter.gauge_material.emission_energy_multiplier = 0.5 if stage != SauceStage.EMPTY \
-			else 0.5 + 0.8 * absf(sin(Time.get_ticks_msec() * 0.006))
+	if shooter.bottle_material != null:
+		shooter.bottle_material.albedo_color = tint
 
 
 ## Adds one cylinder section along the bottle axis starting at `offset`, and
@@ -1765,9 +1774,16 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 	var counter_deep: float = StreetMap.stall_metre(StreetMap.STALL_COUNTER_DEPTH_M)
 	var leg: float = StreetMap.stall_metre(StreetMap.STALL_LEG_M)
 
-	# The counter, along the front edge where the queue stands.
-	var counter_size := _oriented_size(facing, width, counter_high, counter_deep)
-	var counter_at := ground + facing * (width - counter_deep) * 0.5
+	# The counter, along the front edge where the queue stands. Its box comes
+	# from `StreetMap` rather than being worked out here, because the router
+	# needs the same box -- and two copies of this sum did disagree: this one
+	# pushed the counter out by half the stall's *frontage* where it wanted half
+	# its *depth*, which is the same number on a single bay and three metres out
+	# on a double. The router then routed enemies into counters that were not
+	# where it thought they were, and they leaned on them.
+	var counter_box: Dictionary = StreetMap.counter_box(box)
+	var counter_size: Vector3 = counter_box["size"]
+	var counter_at: Vector3 = counter_box["position"]
 	counter_at.y = counter_high * 0.5
 	var counter := _make_contaminable(holder, "Counter", counter_at, counter_size, Color("d8d2c4"))
 	_walls.push_back(counter)

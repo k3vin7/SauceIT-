@@ -427,7 +427,7 @@ func _step_toward(target: MayoPlayer, delta: float) -> Vector3:
 	var goal := target.global_position
 	if nav == null:
 		return goal
-	if _can_see(goal):
+	if nav.line_is_walkable(global_position, goal):
 		_route.clear()
 		return goal
 
@@ -451,21 +451,16 @@ func _step_toward(target: MayoPlayer, delta: float) -> Vector3:
 	return goal
 
 
-## True when nothing stands between this body and that point. The ray runs at
-## chest height, because a route is about walls and not about the kerb, and it
-## is allowed to end on the player -- that is what seeing them means.
-func _can_see(point: Vector3) -> bool:
-	var space := get_world_3d().direct_space_state
-	if space == null:
-		return true
-	var eye := global_position + Vector3(0.0, height * 0.15, 0.0)
-	var at := point + Vector3(0.0, height * 0.05, 0.0)
-	var query := PhysicsRayQueryParameters3D.create(eye, at)
-	query.exclude = [get_rid()]
-	var hit := space.intersect_ray(query)
-	if hit.is_empty():
-		return true
-	return hit["collider"] is MayoPlayer
+## Whether the straight line to that point is walkable, which the router is
+## asked rather than a ray.
+##
+## This was a chest-high raycast, and it was wrong in a way that only showed up
+## on the street: a ray at that height passes **under every canopy and over
+## every counter**, so it reported a clear road through a stall, the route was
+## dropped, and the body walked into something it was never going to fit
+## through. Seeing a thing and being able to walk to it are different questions.
+func _can_walk_straight_to(point: Vector3) -> bool:
+	return nav == null or nav.line_is_walkable(global_position, point)
 
 
 func _nearest(targets: Array) -> MayoPlayer:

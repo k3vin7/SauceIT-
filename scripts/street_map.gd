@@ -139,7 +139,14 @@ const HUMAN_SCALE := CAPSULE_HEIGHT / HUMAN_HEIGHT
 const STALL_FOOTPRINT_M := 3.0
 const STALL_PEAK_M := 3.27
 const STALL_EAVES_M := 2.2
-const STALL_COUNTER_HEIGHT_M := 0.95
+## Deliberately not 0.95, which is what a real serving counter is. The stall
+## around it was scaled up so a 4.1 m enemy can walk under the canopy, and the
+## counter came up with it -- to shoulder height on the player, which stops it
+## being the thing it is for. Its height is a *relationship to the player*
+## rather than a prop dimension, so it is the one figure here trimmed to hold
+## that relationship: this lands it back at about two thirds of a player, which
+## is cover you shoot over.
+const STALL_COUNTER_HEIGHT_M := 0.82
 const STALL_COUNTER_DEPTH_M := 0.7
 const STALL_LEG_M := 0.08
 
@@ -157,7 +164,11 @@ const STALL_LEG_M := 0.08
 ## It also lifts the serving counter from 53% of the player's height to 66% --
 ## waist-high to chest-high -- which changes what the counter is as cover. That
 ## is the number to watch when tuning this.
-const PROP_SCALE := 1.25
+## Raised from 1.25 so the canopy clears an enemy. They are 4.10 m tall and the
+## eaves were at 3.91 m, so they could not walk under a stall at all -- and the
+## line-of-sight test could see under one, which is how they ended up walking
+## into canopies they were never going to fit through.
+const PROP_SCALE := 1.45
 
 ## The one conversion from real metres to this world's.
 const STALL_SCALE := HUMAN_SCALE * PROP_SCALE
@@ -333,6 +344,27 @@ static func wall_boxes() -> Array[Dictionary]:
 	return boxes
 
 
+## The counter's own box, given a stall's. The counter is the only part of a
+## stall at ground level: the canopy is overhead and the legs are thin. Shared
+## by the thing that builds it and the thing that routes around it, so the two
+## cannot come to different conclusions about where it is.
+static func counter_box(stall: Dictionary) -> Dictionary:
+	var size: Vector3 = stall["size"]
+	var facing: Vector3 = stall["facing"]
+	var deep := stall_metre(STALL_COUNTER_DEPTH_M)
+	# Depth runs along the facing, frontage runs across it. Getting these two
+	# the wrong way round is the bug this function exists to stop happening
+	# twice: on a single bay they are the same number and nothing shows.
+	var wide: float = size.z if absf(facing.x) > 0.5 else size.x
+	var span: float = size.x if absf(facing.x) > 0.5 else size.z
+	return {
+		"position": stall["position"] + facing * (span - deep) * 0.5,
+		"size": Vector3(deep, stall_metre(STALL_COUNTER_HEIGHT_M), wide) \
+			if absf(facing.x) > 0.5 else Vector3(wide, stall_metre(STALL_COUNTER_HEIGHT_M), deep),
+		"facing": facing,
+	}
+
+
 ## Street cells something is standing on. The stalls back onto the walls but
 ## their footprints sit on the road, so anything walking the map has to treat
 ## them as wall -- which is the whole reason an enemy needs a route rather than
@@ -343,7 +375,14 @@ static func blocked_cells() -> Dictionary:
 	# an enemy routed straight through the tower and then leaned on it: the
 	# router has to know about everything standing on the road, not just the
 	# things that came from the marker list.
-	var props: Array[Dictionary] = stall_boxes() + vending_boxes()
+	# Only the **counter** of a stall blocks the ground. The canopy is overhead
+	# and now high enough for an enemy to walk under, and the legs are a hand
+	# wide -- shutting the whole footprint made every stall a pillar and turned
+	# a third of the street into wall.
+	var props: Array[Dictionary] = []
+	for stall in stall_boxes():
+		props.push_back(counter_box(stall))
+	props.append_array(vending_boxes())
 	props.push_back({"position": stage_position(), "size": STAGE_SIZE})
 	props.push_back({
 		"position": tower_position(),
