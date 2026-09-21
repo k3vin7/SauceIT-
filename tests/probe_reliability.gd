@@ -149,6 +149,33 @@ func _run() -> void:
 	_check(air_events > 0,
 		"the unreliable band caught but never puffed: sauce and air are not mixing")
 
+	# --- you can see the sauce through the bottle ---
+	# The level *is* the contents, so the body has to actually be translucent.
+	# An alpha in the colour does nothing by itself -- `StandardMaterial3D`
+	# ignores it until transparency is switched on -- so this was set
+	# see-through and drawn solid, with the gauge sealed inside it. Nothing
+	# failed; the bottle simply told you nothing.
+	var body: MeshInstance3D = shooter.weapon.get_node("Body")
+	var body_material: StandardMaterial3D = body.material_override
+	print("bottle body: alpha %.2f, transparency mode %d, contents visible=%s" % [
+		body_material.albedo_color.a, body_material.transparency,
+		str(shooter.bottle_contents.visible)])
+	_check(body_material.albedo_color.a < 0.95,
+		"the bottle body is opaque, so the sauce in it cannot be read")
+	_check(body_material.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED,
+		"the bottle body has an alpha but transparency is off, so it draws solid")
+	# And the contents move with the level rather than being decoration.
+	shooter.sauce = 1.0
+	scene._update_bottle_gauge(shooter)
+	var full_scale: float = shooter.bottle_contents.scale.y
+	shooter.sauce = 0.25
+	scene._update_bottle_gauge(shooter)
+	var quarter_scale: float = shooter.bottle_contents.scale.y
+	print("contents: %.2f of the bottle when full, %.2f at a quarter" % [
+		full_scale, quarter_scale])
+	_check(quarter_scale < full_scale * 0.5,
+		"the sauce in the bottle does not drop with the level")
+
 	# --- a low bottle never costs damage ---
 	# Damage is per strand point, and nothing in the reliability code touches
 	# it. Checked as a fact about the settings rather than by shooting, so it

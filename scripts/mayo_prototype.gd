@@ -1507,7 +1507,7 @@ func _build_weapon(shooter: Shooter) -> void:
 
 	# Translucent, so what is inside it is what you read. A squeeze bottle is a
 	# translucent bottle with sauce in it, and that is the whole gauge.
-	var body_color := Color(0.80, 0.77, 0.71, 0.34)
+	var body_color := Color(0.82, 0.80, 0.75, 0.40)
 	var cap_color := Color("2f3a47")
 	var label_color := Color("c25b3f")
 	var cursor := 0.0
@@ -1614,6 +1614,18 @@ func _add_bottle_part(weapon: Node3D, part_name: String, back_radius: float, fro
 	var material := StandardMaterial3D.new()
 	material.albedo_color = color
 	material.roughness = roughness
+	# An alpha in the colour does nothing on its own: `StandardMaterial3D`
+	# ignores it until transparency is switched on, so the bottle body was set
+	# translucent and drawn solid, with the sauce that is supposed to be the
+	# gauge sealed inside it. Back faces stay culled -- only the near wall is
+	# wanted between the eye and the contents, and drawing the far wall as well
+	# puts a second layer of tint over them.
+	if color.a < 1.0:
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		# The contents are opaque, so they are drawn in the opaque pass and the
+		# bottle blends over them. Writing depth from the wall as well would let
+		# it occlude whichever of them the sorter happened to put second.
+		material.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
 	part.material_override = material
 	weapon.add_child(part)
 	return offset + length
