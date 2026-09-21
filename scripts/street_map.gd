@@ -333,6 +333,57 @@ static func wall_boxes() -> Array[Dictionary]:
 	return boxes
 
 
+## Street cells something is standing on. The stalls back onto the walls but
+## their footprints sit on the road, so anything walking the map has to treat
+## them as wall -- which is the whole reason an enemy needs a route rather than
+## a direction.
+static func blocked_cells() -> Dictionary:
+	var blocked := {}
+	# The stage and the tower stand on the street too. Leaving them out is how
+	# an enemy routed straight through the tower and then leaned on it: the
+	# router has to know about everything standing on the road, not just the
+	# things that came from the marker list.
+	var props: Array[Dictionary] = stall_boxes() + vending_boxes()
+	props.push_back({"position": stage_position(), "size": STAGE_SIZE})
+	props.push_back({
+		"position": tower_position(),
+		"size": Vector3(TOWER_RADIUS * 2.0, TOWER_HEIGHT, TOWER_RADIUS * 2.0),
+	})
+	for box in props:
+		var position: Vector3 = box["position"]
+		var size: Vector3 = box["size"]
+		var first := Vector2i(
+			int(floor((position.x - size.x * 0.5) / CELL)) + ORIGIN_CELL.x,
+			int(floor((position.z - size.z * 0.5) / CELL)) + ORIGIN_CELL.y)
+		var last := Vector2i(
+			int(floor((position.x + size.x * 0.5 - 0.001) / CELL)) + ORIGIN_CELL.x,
+			int(floor((position.z + size.z * 0.5 - 0.001) / CELL)) + ORIGIN_CELL.y)
+		for j in range(first.y, last.y + 1):
+			for i in range(first.x, last.x + 1):
+				blocked[Vector2i(i, j)] = true
+	return blocked
+
+
+## Cells a body may walk on: street, less whatever is standing on it.
+static func walkable_cells() -> Dictionary:
+	var cells := floor_cells()
+	for cell in blocked_cells():
+		cells.erase(cell)
+	return cells
+
+
+## Middle of a cell, on the ground.
+static func cell_middle(cell: Vector2i) -> Vector3:
+	return cell_corner(cell) + Vector3(CELL * 0.5, 0.0, CELL * 0.5)
+
+
+## Which cell a world position is in.
+static func cell_at(world_position: Vector3) -> Vector2i:
+	return Vector2i(
+		int(floor(world_position.x / CELL)) + ORIGIN_CELL.x,
+		int(floor(world_position.z / CELL)) + ORIGIN_CELL.y)
+
+
 static func stall_boxes() -> Array[Dictionary]:
 	return _anchored_boxes(STALL_ANCHORS, STALL_SIZE)
 

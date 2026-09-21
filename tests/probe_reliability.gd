@@ -126,6 +126,29 @@ func _run() -> void:
 	_check(air_frames > 0, "the bottom band never blew air at all")
 	_check(air_events > 0, "the bottom band never raised air_shot_fired")
 
+	# --- the unreliable band sputters: air mixed in with the sauce ---
+	# What a nearly empty squeeze bottle sounds like, and the only feedback the
+	# band has now that crossing into it is silent. A beep at the threshold said
+	# it once; this keeps saying it, and says it while the sauce is still coming.
+	await _idle(scene, 0.8)
+	air_events = 0
+	shooter.sauce = unreliable
+	var mixed := {}
+	scene.debug_set_input(Vector2.ZERO, false, true)
+	for _f in 120:
+		shooter.sauce = unreliable
+		await physics_frame
+		mixed[shooter.nozzle] = int(mixed.get(shooter.nozzle, 0)) + 1
+	scene.debug_set_input(Vector2.ZERO, false, false)
+	print("unreliable band over 120 frames: %s, air_shot_fired %d time(s)" % [
+		str(mixed), air_events])
+	_check(int(mixed.get(scene.Nozzle.STREAM, 0)) > 0,
+		"the unreliable band never delivered sauce at all")
+	_check(int(mixed.get(scene.Nozzle.CAUGHT, 0)) > 0,
+		"the unreliable band never caught, so nothing was mixed in")
+	_check(air_events > 0,
+		"the unreliable band caught but never puffed: sauce and air are not mixing")
+
 	# --- a low bottle never costs damage ---
 	# Damage is per strand point, and nothing in the reliability code touches
 	# it. Checked as a fact about the settings rather than by shooting, so it

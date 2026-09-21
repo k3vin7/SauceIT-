@@ -176,7 +176,14 @@ func _run() -> void:
 	await _idle(scene, 0.4)
 	shooter.sauce = 1.0
 	scene.debug_set_input(Vector2.ZERO, false, true)
-	await physics_frame
+	# Captured once the squirt is actually under way. Pressing into the tail of
+	# the last one's cooldown means nothing starts for a few frames, and the
+	# allowance read on frame one is the *previous* squirt's -- which then
+	# "changes" when the real one begins.
+	for _f in 60:
+		await physics_frame
+		if shooter.was_firing:
+			break
 	var allowance: float = shooter.burst_allowance
 	for _f in 30:
 		await physics_frame

@@ -44,6 +44,13 @@ const HEIGHT_MULTIPLE := 2.0
 ## How fast it swings round to face where you have moved to. It is not a turret:
 ## running past one should leave it briefly pointed at where you were.
 @export_range(0.5, 20.0, 0.1, "suffix:rad/s") var turn_speed := 2.4
+## How often the route is worked out again. Every frame is waste -- a route is
+## still good while the player is in the same part of the street -- and never is
+## a chase that follows you to where you used to be.
+@export_range(0.05, 3.0, 0.05, "suffix:s") var repath_interval := 0.5
+## How close to a waypoint counts as having reached it. Under about half a cell
+## the body orbits the point instead of passing through it.
+@export_range(0.2, 6.0, 0.1, "suffix:m") var waypoint_reached := 1.6
 
 @export_group("Its attack")
 ## Weak on purpose. At one hit every `contact_interval` this is about 7 damage a
@@ -74,7 +81,15 @@ var facing_yaw := 0.0
 ## 0 standing, TAU/4 flat on its back.
 var fall_angle := 0.0
 
+## Set by the world once the street exists. Without it the enemy walks the
+## straight line, which is what it did before there was any routing at all.
+var nav: StreetNav
+
 var _contact_cooldown := 0.0
+var _route := PackedVector3Array()
+var _route_step := 0
+var _repath_timer := 0.0
+var _route_goal := Vector3.ZERO
 var _body_mesh: MeshInstance3D
 ## World point the feet were planted on when it died -- the axis it goes over.
 var _fall_pivot := Vector3.ZERO
@@ -358,7 +373,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	var target := _nearest(targets)
 	var flat := Vector3.ZERO
 	if target != null:
-		flat = target.global_position - global_position
+		flat = _step_toward(target, delta) - global_position
 		flat.y = 0.0
 
 	if flat.length_squared() > 0.000001:
@@ -396,6 +411,61 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		return null
 	_contact_cooldown = contact_interval
 	return target
+
+
+## Where to walk this frame to end up at `target`.
+##
+## Straight at them while the way is clear, which is most of the time on an open
+## street and is what keeps a chase from reading as a body pacing out the middle
+## of every cell it crosses. Once something is in the way, a route round it,
+## recomputed on a timer rather than every frame.
+##
+## Falling back to the straight line when there is no router at all is
+## deliberate: an enemy that stops chasing because nobody handed it a map is a
+## worse failure than one that leans on a wall.
+func _step_toward(target: MayoPlayer, delta: float) -> Vector3:
+	var goal := target.global_position
+	if nav == null:
+		return goal
+	if _can_see(goal):
+		_route.clear()
+		return goal
+
+	_repath_timer -= delta
+	# Redone when the timer runs out, or at once if the player has left the part
+	# of the street the current route was drawn to.
+	if _repath_timer <= 0.0 or _route.is_empty() \
+			or StreetMap.cell_at(goal) != StreetMap.cell_at(_route_goal):
+		_repath_timer = repath_interval
+		_route_goal = goal
+		_route = nav.route(global_position, goal)
+		_route_step = 0
+
+	# Waypoints already passed are dropped rather than walked back to.
+	while _route_step < _route.size():
+		var flat := _route[_route_step] - global_position
+		flat.y = 0.0
+		if flat.length() > waypoint_reached:
+			return _route[_route_step]
+		_route_step += 1
+	return goal
+
+
+## True when nothing stands between this body and that point. The ray runs at
+## chest height, because a route is about walls and not about the kerb, and it
+## is allowed to end on the player -- that is what seeing them means.
+func _can_see(point: Vector3) -> bool:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return true
+	var eye := global_position + Vector3(0.0, height * 0.15, 0.0)
+	var at := point + Vector3(0.0, height * 0.05, 0.0)
+	var query := PhysicsRayQueryParameters3D.create(eye, at)
+	query.exclude = [get_rid()]
+	var hit := space.intersect_ray(query)
+	if hit.is_empty():
+		return true
+	return hit["collider"] is MayoPlayer
 
 
 func _nearest(targets: Array) -> MayoPlayer:

@@ -413,6 +413,7 @@ var _roofs: Array[StallRoof] = []
 ## Where the refill stations are and which way they face, so the reach test
 ## does not have to walk the scene tree every frame.
 var _refill_stations: Array[Dictionary] = []
+var _nav: StreetNav
 var _health_hud: HealthHud
 var _minimap: Minimap
 var _sauce_audio: AudioStreamPlayer
@@ -643,7 +644,11 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 ## to hang off it later, which is why it carries where the shot came from and
 ## which way it went.
 func _report_air_shot(shooter: Shooter, delta: float) -> void:
-	if shooter.nozzle != Nozzle.AIR:
+	# A catch puffs too, not only an empty bottle. What comes out of a nearly
+	# empty squeeze bottle between squirts is air, and hearing that mixed in
+	# with the sauce is the whole feel of one -- a beep at the threshold told
+	# you the same thing once and then never again.
+	if shooter.nozzle != Nozzle.AIR and shooter.nozzle != Nozzle.CAUGHT:
 		shooter.air_puff = 0.0
 		return
 	shooter.air_puff -= delta
@@ -858,18 +863,24 @@ func _build_sauce_audio() -> void:
 	air_shot_fired.connect(_on_air_shot_fired)
 
 
-func _on_sauce_stage_changed(peer_id: int, stage: int) -> void:
-	# Only the player holding it gets the cue; everyone else reads the bottle.
-	if _local == null or peer_id != _local.peer_id or _sauce_audio == null:
-		return
-	# PLACEHOLDER: falling pitch as the bottle gets worse.
-	_play_tone(_sauce_audio, [640.0, 420.0, 240.0][clampi(stage, 0, 2)], 0.12)
+## Crossing a threshold is deliberately **silent**. A tone here announced the
+## band once and then left the player with nothing, and it announced it at the
+## moment the bottle was still working fine -- so it read as an alarm about
+## something that had not happened yet. The bottle sputtering is the signal
+## instead: it starts the moment the band does, it keeps saying so, and it gets
+## worse in step with the thing it is reporting.
+##
+## The signal stays, because the bottle's own gauge and the HUD ride on it.
+func _on_sauce_stage_changed(_peer_id: int, _stage: int) -> void:
+	pass
 
 
 func _on_air_shot_fired(peer_id: int, _from: Vector3, _direction: Vector3) -> void:
 	if _local == null or peer_id != _local.peer_id or _sauce_audio == null:
 		return
-	# PLACEHOLDER: a short hiss standing in for the puff of air.
+	# PLACEHOLDER: a short hiss standing in for the puff of air. Shorter and
+	# quieter than the bottom band's would want, because in the unreliable band
+	# it is heard *between* squirts rather than instead of them.
 	_play_tone(_sauce_audio, 1800.0, 0.05, true)
 
 
@@ -1938,6 +1949,10 @@ const ENEMY_SPAWNS := [
 ## can be set from that player's walk speed rather than from a number here that
 ## would quietly stop being half of it.
 func _build_enemies() -> void:
+	# Built here rather than with the street, because it has to read the props
+	# standing on the street as well as the street itself.
+	_nav = StreetNav.new()
+	_nav.build()
 	for index in ENEMY_SPAWNS.size():
 		var spawn: Array = ENEMY_SPAWNS[index]
 		var enemy := MayoEnemy.new()
@@ -1945,6 +1960,7 @@ func _build_enemies() -> void:
 		enemy.authority = _is_authority()
 		add_child(enemy)
 		enemy.build(body_cell_size, contamination_brush_radius, Color("4d3f6b"))
+		enemy.nav = _nav
 		if _local != null:
 			enemy.match_player_speed(_local.player.walk_speed, enemy_speed_fraction)
 		enemy.position = StreetMap.from_pixels(spawn[0], spawn[1]) \
