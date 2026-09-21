@@ -44,7 +44,7 @@ func _run() -> void:
 	scene.full_burst_seconds = 6.0
 	scene.half_burst_seconds = 6.0
 	scene.empty_burst_seconds = 6.0
-	scene.sauce_capacity_seconds = 600.0
+	scene.sauce_flow_per_second = 1.0 / 600.0
 
 	# Aim straight down -Z, level. There is no cursor to warp any more.
 	scene.debug_set_aim(0.0, 0.0)

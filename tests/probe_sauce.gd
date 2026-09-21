@@ -77,7 +77,7 @@ func _run() -> void:
 	var shooter = scene._local
 
 	print("tank holds %.0f s of fire; a press runs %.2f s full, %.2f s at %.0f%%, %.2f s empty" % [
-		scene.sauce_capacity_seconds, scene.full_burst_seconds, scene.half_burst_seconds,
+		scene.sauce_seconds_left(1.0), scene.full_burst_seconds, scene.half_burst_seconds,
 		scene.burst_midpoint * 100.0, scene.empty_burst_seconds])
 
 	# --- the curve itself ---
@@ -147,25 +147,29 @@ func _run() -> void:
 	_check(again.seconds > 0.3, "the trigger did not fire again after being released")
 
 	# --- the allowance follows the tank down ---
-	await _idle(scene, 0.2)
+	# Measured inside the steady band on purpose. Below it the nozzle is
+	# unreliable and a press is broken up by catches, so a stopwatch on the
+	# first unbroken run of sauce would be measuring the dice and not the
+	# allowance. The bands are their own section below.
+	await _idle(scene, 0.4)
 	shooter.sauce = 1.0
 	var at_full := await _hold(scene, 6.0)
-	await _idle(scene, 0.4)
-	shooter.sauce = scene.burst_midpoint
-	var at_half := await _hold(scene, 6.0)
-	await _idle(scene, 0.4)
-	shooter.sauce = 0.05
-	var at_dregs := await _hold(scene, 6.0)
-	print("first squirt of a press: full %.2f s, %.0f%% %.2f s, nearly dry %.2f s" % [
-		at_full.first, scene.burst_midpoint * 100.0, at_half.first, at_dregs.first])
-	_check(at_half.first < at_full.first - 0.2,
+	await _idle(scene, 0.8)
+	var lower: float = (scene.steady_level + 1.0) * 0.5
+	shooter.sauce = lower
+	var at_lower := await _hold(scene, 6.0)
+	await _idle(scene, 0.8)
+	var lowest: float = scene.steady_level + 0.02
+	shooter.sauce = lowest
+	var at_lowest := await _hold(scene, 6.0)
+	print("first squirt of a press: full %.2f s, %.0f%% %.2f s, %.0f%% %.2f s" % [
+		at_full.first, lower * 100.0, at_lower.first, lowest * 100.0, at_lowest.first])
+	_check(at_lower.first < at_full.first,
 		"a %.0f%% tank gave %.2f s against a full tank's %.2f: the tank is not shortening the squirt"
-			% [scene.burst_midpoint * 100.0, at_half.first, at_full.first])
-	# And it keeps shortening past the half mark, in the game rather than only
-	# in the curve.
-	_check(at_dregs.first < at_half.first - 0.1,
-		"a nearly dry tank gave %.2f s, no shorter than the %.2f s a half tank gave"
-			% [at_dregs.first, at_half.first])
+			% [lower * 100.0, at_lower.first, at_full.first])
+	_check(at_lowest.first < at_lower.first,
+		"a %.0f%% tank gave %.2f s, no shorter than the %.2f s a %.0f%% tank gave"
+			% [lowest * 100.0, at_lowest.first, at_lower.first, lower * 100.0])
 
 	# --- the allowance is fixed when the squirt starts ---
 	# Draining during the squirt must not shorten the squirt that is spending it.
@@ -266,12 +270,29 @@ func _run() -> void:
 	_check(is_zero_approx(dry.seconds),
 		"an empty tank still put out %.2f s of sauce; it must put out nothing"
 			% dry.seconds)
-	# The very last of the tank still fires, so "empty" means empty rather than
-	# "nearly empty".
-	shooter.sauce = 0.02
-	var dregs := await _hold(scene, 1.5)
-	print("2%% left, 1.5 s on the button: %.2f s of sauce" % dregs.seconds)
-	_check(dregs.seconds > 0.0, "a tank with something left in it fired nothing")
+	# A bottle with a little left in it no longer puts out sauce either -- that
+	# is what the bottom band is -- but it does blow air, which is a different
+	# thing from the trigger being dead.
+	shooter.sauce = scene.spluttering_level * 0.5
+	scene.debug_set_input(Vector2.ZERO, false, true)
+	var air_frames := 0
+	var sauce_frames := 0
+	# Only while the press itself is alive: the squirt allowance and its
+	# cooldown still apply down here, so a longer window would be counting the
+	# pause between presses as a failure to blow air.
+	for _f in 15:
+		await physics_frame
+		if shooter.nozzle == scene.Nozzle.AIR:
+			air_frames += 1
+		if shooter.was_firing:
+			sauce_frames += 1
+	scene.debug_set_input(Vector2.ZERO, false, false)
+	print("%.0f%% left: %d of 15 frames blowing air, %d delivering sauce" % [
+		scene.spluttering_level * 50.0, air_frames, sauce_frames])
+	_check(air_frames >= 14,
+		"a bottle in the bottom band blew air on only %d of 15 frames" % air_frames)
+	_check(sauce_frames == 0,
+		"a bottle in the bottom band still delivered sauce on %d frames" % sauce_frames)
 
 	if failures.is_empty():
 		print("MAYO_SAUCE_OK")

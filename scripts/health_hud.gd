@@ -96,6 +96,27 @@ func _draw_player() -> void:
 	draw_line(Vector2(notch_x, tank.position.y - 2.0),
 		Vector2(notch_x, tank.end.y + 2.0), EDGE, 1.0)
 
+	# The two reliability thresholds, so the bar says where the bottle stops
+	# being dependable rather than leaving it to be discovered mid-fight.
+	for level in [world.get("steady_level"), world.get("spluttering_level")]:
+		var at := tank.position.x + tank.size.x * float(level)
+		draw_line(Vector2(at, tank.position.y), Vector2(at, tank.end.y),
+			Color(0.0, 0.0, 0.0, 0.55), 1.0)
+
+	# The band, and how many seconds of delivery are left in it. Secondary to
+	# the bottle in the player's hand, which is what everyone else reads.
+	var level: float = world.local_sauce()
+	var stage: int = world.sauce_stage_of(level)
+	var label: String = ["", "불안정", "바닥"][clampi(stage, 0, 2)]
+	if label != "":
+		var font := ThemeDB.fallback_font
+		var text := "%s  %.1fs" % [label, world.sauce_seconds_left(level)]
+		var at := Vector2(tank.end.x + 8.0, tank.end.y - 1.0)
+		draw_string(font, at + Vector2(1.0, 1.0), text, HORIZONTAL_ALIGNMENT_LEFT,
+			-1.0, 13, Color(0.0, 0.0, 0.0, 0.7))
+		draw_string(font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13,
+			SAUCE_LOW if stage == 2 else SAUCE_FULL)
+
 
 func _draw_enemies() -> void:
 	var camera := world.get("_camera") as Camera3D

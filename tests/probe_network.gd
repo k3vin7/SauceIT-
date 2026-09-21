@@ -389,6 +389,52 @@ func _run() -> void:
 	_check(server_world.shooter_for(client_id).player.contamination.painted_cell_count() > 0,
 		"wiping B's glasses washed the stain off their body as well")
 
+	# --- both screens see the same unreliable bottle ---
+	# The point of putting the level and the nozzle in the state packet. A catch
+	# is a coin toss; tossed on each machine separately, B would see their own
+	# stream break at moments A never saw, and the sauce that did or did not land
+	# would differ. Here the host tosses it and both read the answer.
+	var b_host = server_world.shooter_for(client_id)
+	var b_client = client_world.shooter_for(client_id)
+	server_world.shooter_for(1).player.global_position = Vector3(-9.0, stand, 9.0)
+	b_host.player.global_position = Vector3(0.0, stand, 0.0)
+	# Parked in the unreliable band, where the nozzle catches.
+	var unreliable: float = (server_world.steady_level + server_world.spluttering_level) * 0.5
+	client_world.debug_set_aim(0.0, -12.0)
+	var nozzle_frames := 0
+	var nozzle_agreed := 0
+	var level_worst := 0.0
+	var caught_frames := 0
+	var seen_modes := {}
+	for _f in 150:
+		# Held *at* the unreliable level, not above it: the bottle drains while
+		# it streams, and topping it up to a floor left it in the steady band.
+		b_host.sauce = unreliable
+		client_world.debug_set_input(Vector2.ZERO, false, true)
+		await physics_frame
+		nozzle_frames += 1
+		if b_host.nozzle == b_client.nozzle:
+			nozzle_agreed += 1
+		if b_host.nozzle == server_world.Nozzle.CAUGHT:
+			caught_frames += 1
+		seen_modes[b_host.nozzle] = int(seen_modes.get(b_host.nozzle, 0)) + 1
+		level_worst = maxf(level_worst, absf(b_host.sauce - b_client.sauce))
+	client_world.debug_set_input(Vector2.ZERO, false, false)
+	await _wait(10)
+	print("unreliable bottle over %d frames: nozzle agreed on %d, caught on %d, level differed by at most %.4f" % [
+		nozzle_frames, nozzle_agreed, caught_frames, level_worst])
+	print("  host nozzle modes: %s, B firing flag on host=%s" % [
+		str(seen_modes), str(b_host.firing)])
+	_check(caught_frames > 0,
+		"the bottle never caught, so this case did not test what it is for")
+	# A frame or two of lag is the network; disagreeing for long is two peers
+	# each rolling their own dice.
+	_check(nozzle_agreed > nozzle_frames - 12,
+		"the two screens disagreed about the nozzle on %d of %d frames" % [
+			nozzle_frames - nozzle_agreed, nozzle_frames])
+	_check(level_worst < 0.02,
+		"the bottle level differed between the screens by %.4f" % level_worst)
+
 	# --- B refills at a station, and both screens agree the bottle is full ---
 	# The drain is derived everywhere from the firing flag, but a refill is an
 	# event: if the broadcast is missing, B fires a full bottle on their own
