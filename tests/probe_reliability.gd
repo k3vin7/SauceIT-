@@ -130,17 +130,22 @@ func _run() -> void:
 	# What a nearly empty squeeze bottle sounds like, and the only feedback the
 	# band has now that crossing into it is silent. A beep at the threshold said
 	# it once; this keeps saying it, and says it while the sauce is still coming.
-	await _idle(scene, 0.8)
+	# Accumulated over several presses rather than one. A press only rolls the
+	# dice every `catch_roll_interval`, so a single short one gets about four
+	# rolls -- and four rolls at this chance come up empty nearly a fifth of the
+	# time, which is a coin toss deciding whether the check passes rather than
+	# the behaviour it is asking about.
 	air_events = 0
-	shooter.sauce = unreliable
 	var mixed := {}
-	scene.debug_set_input(Vector2.ZERO, false, true)
-	for _f in 120:
-		shooter.sauce = unreliable
-		await physics_frame
-		mixed[shooter.nozzle] = int(mixed.get(shooter.nozzle, 0)) + 1
-	scene.debug_set_input(Vector2.ZERO, false, false)
-	print("unreliable band over 120 frames: %s, air_shot_fired %d time(s)" % [
+	for _press in 6:
+		await _idle(scene, 0.7)
+		scene.debug_set_input(Vector2.ZERO, false, true)
+		for _f in 70:
+			shooter.sauce = unreliable
+			await physics_frame
+			mixed[shooter.nozzle] = int(mixed.get(shooter.nozzle, 0)) + 1
+		scene.debug_set_input(Vector2.ZERO, false, false)
+	print("unreliable band over 6 presses: %s, air_shot_fired %d time(s)" % [
 		str(mixed), air_events])
 	_check(int(mixed.get(scene.Nozzle.STREAM, 0)) > 0,
 		"the unreliable band never delivered sauce at all")

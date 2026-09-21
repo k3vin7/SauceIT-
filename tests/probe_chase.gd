@@ -94,17 +94,22 @@ func _run() -> void:
 
 	var opening := enemy.global_position.distance_to(player.global_position)
 	var targets: Array = [player]
-	for _f in 600:
+	# Long enough to walk the gap at its own pace, with half as much again for
+	# the corner. A fixed ten seconds was a fixed map scale in disguise: the day
+	# the street doubled, the same walk no longer fitted and a working chase
+	# read as a stuck one.
+	var window := int(opening / enemy.move_speed * 60.0 * 1.5)
+	for _f in window:
 		enemy.advance(1.0 / 60.0, targets)
 		await physics_frame
 	var closed := opening - enemy.global_position.distance_to(player.global_position)
-	print("round a corner: %.0f m apart, closed %.0f m in 10 s at %.2f m/s" % [
-		opening, closed, enemy.move_speed])
-	# Ten seconds at 3.6 m/s is 36 m of walking; a body leaning on a wall closes
-	# almost none of it, and one walking the route closes most of it.
-	_check(closed > opening * 0.5,
-		"it closed only %.0f m of %.0f in ten seconds: it is stuck on something"
-			% [closed, opening])
+	print("round a corner: %.0f m apart, closed %.0f m in %.1f s at %.2f m/s" % [
+		opening, closed, window / 60.0, enemy.move_speed])
+	# A body leaning on a wall closes almost none of it; one walking the route
+	# closes nearly all of it.
+	_check(closed > opening * 0.7,
+		"it closed only %.0f m of %.0f in %.1f s: it is stuck on something"
+			% [closed, opening, window / 60.0])
 
 	# --- an enemy fits under a stall, and the straight-line test knows it ---
 	# Both halves of the same bug. The canopy was lower than an enemy is tall,

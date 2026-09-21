@@ -31,8 +31,9 @@ extends RefCounted
 ##
 ## The stalls are deliberately NOT scaled by it: they are furniture at a fixed
 ## real size, and leaving them alone is what makes the street read as bigger
-## rather than as the same street viewed closer.
-const SCALE := 1.8
+## rather than as the same street viewed closer. Neither is the wall height --
+## see `WALL_HEIGHT`.
+const SCALE := 3.6
 
 ## One person wide, times the scale. The capsule is 0.64 m in radius, so the
 ## unscaled cell is its diameter and everything on the map is a whole number of
@@ -43,9 +44,15 @@ const ROAD_CELLS := 8
 const ROAD_WIDTH := CELL * ROAD_CELLS
 
 ## Tall enough that the square's far side is not visible over a street wall from
-## anywhere a player can stand. Scaled with the rest: a wall that stayed put
-## while the street grew would start showing what is behind it.
-const WALL_HEIGHT := 7.0 * SCALE
+## anywhere a player can stand.
+##
+## **Not** scaled with `SCALE` any more. It was, back when the whole map grew
+## together; the streets have since been widened without the walls being asked
+## to grow, so this is the height they had reached and is now stated outright.
+## The trade is real and worth knowing: wider streets mean a longer sightline
+## over a wall of fixed height, so at some width the far side of the map starts
+## showing above them. If that turns up, this is the number to raise.
+const WALL_HEIGHT := 12.6
 ## Walls are two cells deep so they read as building fronts rather than as
 ## cardboard: at one cell a corner shows its own thickness across the street.
 const WALL_DEPTH_CELLS := 2

@@ -48,9 +48,18 @@ const HEIGHT_MULTIPLE := 2.0
 ## still good while the player is in the same part of the street -- and never is
 ## a chase that follows you to where you used to be.
 @export_range(0.05, 3.0, 0.05, "suffix:s") var repath_interval := 0.5
-## How close to a waypoint counts as having reached it. Under about half a cell
-## the body orbits the point instead of passing through it.
-@export_range(0.2, 6.0, 0.1, "suffix:m") var waypoint_reached := 1.6
+## How close to a waypoint counts as having reached it, **as a fraction of a
+## lattice cell** rather than in metres.
+##
+## Metres was wrong, and wrong in a way that only showed when the map changed
+## size. 1.6 m was about seven tenths of a cell when a cell was 2.3 m; the
+## street was then widened and a cell became 4.6 m, leaving the same 1.6 m at
+## barely a third of one. A body could then stand between two waypoints,
+## be "not yet at" either, and be handed back a waypoint it had already walked
+## past every time the route was redrawn -- so it orbited, at full walking
+## speed, never getting closer. Tying it to the cell is what stops the next
+## change of scale doing it again.
+@export_range(0.2, 2.0, 0.05, "suffix:cells") var waypoint_reached_cells := 0.7
 
 @export_group("Its attack")
 ## Weak on purpose. At one hit every `contact_interval` this is about 7 damage a
@@ -445,7 +454,7 @@ func _step_toward(target: MayoPlayer, delta: float) -> Vector3:
 	while _route_step < _route.size():
 		var flat := _route[_route_step] - global_position
 		flat.y = 0.0
-		if flat.length() > waypoint_reached:
+		if flat.length() > StreetMap.CELL * waypoint_reached_cells:
 			return _route[_route_step]
 		_route_step += 1
 	return goal
