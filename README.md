@@ -190,8 +190,11 @@ The visible body is `assets/enemies/hamburger_monster/hamburger_monster.glb`, sc
 | patty, cheese, salad | −0.18 … 0.86 | 1.71 |
 | top bun and face | 0.42 … 2.04 | 1.56 |
 | arms, shoulder to hand | −2.08 … 0.65 | 0.46, at x ±1.52 |
+| hands | −2.07 … −1.11 | 0.50, reaching forward |
 
 That last part is not a detail. Measured in **world** space an axis-aligned box grows with the body's yaw, so a collider that fits exactly reads half a metre too wide — which is how the first attempt at this fix was written, and it looked wrong when it was right.
+
+The hands are given per side rather than mirrored: the model's are posed differently and mirroring one onto the other misses by 0.2 m, which left the fingers — the only part of a walking monster at knee height — the one place a shot still met nothing.
 
 Three discs, because that is what a burger is and because the tiers are what a player aims at: the sauce should land on the bun or on the patty and be seen to have. A tier needs a cylinder rather than a capsule — a capsule wide enough to be a bun is also that tall. The arms are capsules and are not decoration: the monster has no legs, it walks on its hands, so they carry every low shot. The burger also sits a third of a metre back of its own origin, which is why the discs are offset in z rather than centred.
 
@@ -332,7 +335,21 @@ Your own sauce counts. A point cannot hit the player who fired it until it has t
 
 The stain is placed by the angle a hit makes about the body's axis. The burger sits a third of a metre back of its own node, so measuring that angle about the node skewed a stain by up to **ten degrees** around the flanks — which is exactly where anyone aims. `BodyContamination.axis_offset` is that offset, shared by the painter and by both overlay shaders so all three agree; a player is centred on their own node and leaves it at zero. `probe_enemy` fires at four azimuths through the real paint path and compares the stain's angle with the hit's: worst case is now 1.5°, against 10° before.
 
-**What the unwrap still cannot do is a top or a bottom.** Every point on the crown of the bun at the same angle shares one texel whatever its radius, so a stain up there draws as a radial streak rather than a blob. It does not show while the monster is upright and you are looking at its side. It shows when it topples and the crown turns to face you. Fixing it properly means a projection that is not cylindrical — triplanar, or a per-part atlas — and that is a bigger change than the mask it would replace.
+### The mask carries three charts, not one
+
+The side chart maps a point by its angle and its height and throws the radius away. On a vertical wall that is exact. On a horizontal one it is degenerate: every point on the crown of the bun at the same angle shares one texel whatever its radius, so a stain up there drew as a streak running from the middle to the rim rather than as a blob. It never showed while the monster stood up and you looked at its side, and it showed the moment it toppled and the crown turned to face you — which is why "the stain goes odd when it falls" and "the underside of the lip never takes sauce" were the same defect twice. The lip overhang faces down; the crown faces up.
+
+So the mask is stacked in three bands in the one texture:
+
+| rows | chart | v is |
+|---|---|---|
+| below the side band | the underside | the radius from the axis |
+| the middle | the side, as before | the height |
+| above the side band | the crown | the radius from the axis |
+
+**u stays the angle in all three, and that is what makes it cost nothing anywhere else.** The seam still wraps across the whole texture; the splat still travels as one cell; and which chart a cell belongs to is already written in its row — so the packet stays four ints with no chart number in it, and the snapshot, the MD5 and the replay go on reading one grid. `probe_enemy` fires two shots straight down on the crown at different distances from the axis and fails if they land in the same cell, which is what they did before.
+
+Selection is hard, by the surface normal, on both sides — the painter picks the chart from the hit normal and the shader from the fragment's. Blending between charts would mean painting several of them per splat, and the splat is the thing that travels over the wire. `cap_depth` is 0 for a player: their ends are hemispheres and the cylinder carries them well enough.
 
 ### One splat has to be visible
 

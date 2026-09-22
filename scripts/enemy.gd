@@ -173,6 +173,13 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	# axis. Turning about the node instead skews a stain by up to ten degrees
 	# around the flanks -- which is exactly where anyone aims.
 	contamination.axis_offset = Vector3(0.0, 0.0, -0.0756 * height)
+	# A burger has a flat top and a flat bottom, and the side chart cannot
+	# draw either: it keeps a point's angle and its height and throws the
+	# radius away, so a stain on the crown comes out as a streak from the
+	# middle to the rim. The caps are polar charts stacked above and below
+	# the side band in the same mask, which is why this costs nothing on the
+	# wire. A player leaves this at zero: their ends are hemispheres.
+	contamination.cap_depth = _body_radius()
 	add_child(contamination)
 	# The unwrap maps a surface point by its angle about the body's axis, which
 	# is an honest unwrap only for a surface of revolution. A burger very nearly
@@ -280,7 +287,8 @@ func _on_animation_finished(animation: StringName) -> void:
 
 ## Index of the torso in `_bones()`. It is what the body comes to rest on, so
 ## its radius is the one measurement the fall needs back out of the skeleton.
-const BONE_NAMES := ["BottomBun", "Fillings", "TopBun", "ArmLeft", "ArmRight"]
+const BONE_NAMES := ["BottomBun", "Fillings", "TopBun", "ArmLeft", "ArmRight",
+	"HandLeft", "HandRight"]
 ## Flat on its back: a quarter turn from standing.
 const FLAT := TAU * 0.25
 
@@ -302,6 +310,7 @@ const FLAT := TAU * 0.25
 ##     patty, cheese, salad  y -0.18 ..  0.86   radius 1.71
 ##     top bun and face      y  0.42 ..  2.04   radius 1.56
 ##     arms, shoulder-hand   y -2.08 ..  0.65   radius 0.46, at x +/-1.52
+##     hands                 y -2.07 .. -1.11   radius 0.50, reaching forward
 ##
 ## The burger sits a third of a metre back of its own origin, which is why
 ## every disc is offset in z rather than centred.
@@ -331,6 +340,14 @@ func _bones() -> Array:
 			"b": Vector3(-0.3707 * h, -0.3951 * h, -0.1732 * h), "radius": 0.1122 * h},
 		{"kind": "limb", "a": Vector3(0.3707 * h, 0.0463 * h, -0.0366 * h),
 			"b": Vector3(0.3707 * h, -0.3951 * h, -0.1732 * h), "radius": 0.1122 * h},
+		# The hands, which the arms' own capsules stop short of: the fingers
+		# reach forward past them, and a shot at the knuckles met nothing.
+		# Given per side rather than mirrored, because the model's hands are
+		# posed differently and mirroring one onto the other misses by 0.2 m.
+		{"kind": "limb", "a": Vector3(0.4357 * h, -0.3884 * h, -0.0316 * h),
+			"b": Vector3(0.4357 * h, -0.3884 * h, -0.2268 * h), "radius": 0.1220 * h},
+		{"kind": "limb", "a": Vector3(-0.3904 * h, -0.3886 * h, -0.0869 * h),
+			"b": Vector3(-0.3904 * h, -0.3886 * h, -0.2821 * h), "radius": 0.1220 * h},
 	]
 
 

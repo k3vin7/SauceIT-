@@ -339,6 +339,49 @@ func _run() -> void:
 	# Wiped again: what follows counts the sauce a shot puts on a clean monster.
 	mask.clear()
 
+	# --- the crown keeps the radius the side chart throws away ---
+	# The side chart maps a point by its angle and its height. On a vertical
+	# wall that is exact; on a flat top it is degenerate -- every point on the
+	# crown at the same angle shares one texel whatever its radius, so a stain
+	# up there drew as a streak from the middle to the rim. It never showed
+	# while the monster stood up and you looked at its side, and it showed the
+	# moment it toppled and the crown turned to face you.
+	#
+	# The crown and the underside are polar charts of their own now, stacked
+	# above and below the side band in the same mask. So: two shots straight
+	# down on the crown at different distances from the axis have to land in
+	# different cells. Under the old mapping they landed in the same one.
+	var crown_cells := []
+	for out_by in [0.25, 0.80]:
+		var out_distance: float = enemy.radius * float(out_by)
+		var over: Vector3 = axis + Vector3(0.0, enemy.height, -out_distance)
+		var down: Dictionary = enemy.get_world_3d().direct_space_state.intersect_ray(
+			PhysicsRayQueryParameters3D.create(
+				body_space * over, body_space * (over - Vector3(0.0, enemy.height, 0.0))))
+		if down.is_empty() or down.collider != enemy:
+			_check(false, "a shot straight down at %.0f%% of the radius met nothing"
+				% (out_by * 100.0))
+			continue
+		var landed_on: Vector3 = body_space.affine_inverse() * (down["position"] as Vector3)
+		var facing: Vector3 = body_space.basis.inverse() * (down["normal"] as Vector3)
+		_check(facing.y > 0.7,
+			"a shot straight down met a surface facing %.2f up, so it is not the crown"
+				% facing.y)
+		crown_cells.push_back(enemy.contamination.grid.cell_of(
+			enemy.contamination.debug_to_grid(down["position"], down["normal"])))
+	if crown_cells.size() == 2:
+		var near: Vector2i = crown_cells[0]
+		var far: Vector2i = crown_cells[1]
+		var side_rows := int(enemy.height / enemy.contamination.cell_size)
+		print("crown: a shot near the middle lands at row %d, one out at the rim at row %d (side ends near row %d)" % [
+			near.y, far.y, side_rows])
+		_check(near.y != far.y,
+			"two shots on the crown at different radii both landed in row %d: the top is still a streak"
+				% near.y)
+		_check(enemy.contamination.cap_depth > 0.0,
+			"the monster has no cap charts, so its crown cannot hold a stain")
+	enemy.contamination.grid.clear()
+
 	# --- sauce marks it and hurts it, off the same hit ---
 	var full: float = enemy.health
 	var clean: int = enemy.contamination.painted_cell_count()

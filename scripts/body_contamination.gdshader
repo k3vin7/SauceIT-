@@ -31,17 +31,45 @@ uniform float paint_threshold = 0.00196;
 // its sides -- worst exactly where a player aims, on the flanks.
 uniform vec3 axis_offset = vec3(0.0);
 
+// The caps. The side chart maps a point by its angle and its height and throws
+// the radius away, which is exact on a vertical wall and degenerate on a
+// horizontal one -- a stain on a flat top draws as a streak from the centre to
+// the rim rather than as a blob. So the mask carries three charts stacked in
+// the one texture: the underside below the side band, the crown above it, both
+// polar, with the radius from the axis standing in for the height. u is the
+// angle in all three, so the seam still wraps across the whole texture.
+//
+// Which chart a fragment reads is decided by the way it faces, exactly as the
+// painter decides it. Hard selection, not a blend: a blend would mean painting
+// several charts per splat, and the splat is what travels over the wire.
+uniform float cap_depth = 0.0;
+uniform float cap_normal_cut = 0.7;
+
+// The chart's own v, in metres, for a point and the way it faces.
+vec2 chart_uv(vec3 about, float up, float height_of_body) {
+	float total = height_of_body + cap_depth * 2.0;
+	float v = about.y;
+	if (cap_depth > 0.0 && abs(up) >= cap_normal_cut) {
+		float rim = min(length(about.xz), cap_depth);
+		v = sign(up) * (height_of_body * 0.5 + rim);
+	}
+	return vec2(
+		atan(about.x, about.z) / TAU + 0.5,
+		clamp(v / total + 0.5, 0.0, 1.0));
+}
+
+
 varying vec3 surface_position;
+varying vec3 surface_normal;
 
 void vertex() {
 	surface_position = VERTEX;
+	surface_normal = NORMAL;
 }
 
 void fragment() {
 	vec3 about = surface_position - axis_offset;
-	vec2 uv = vec2(
-		atan(about.x, about.z) / TAU + 0.5,
-		clamp(surface_position.y / body_height + 0.5, 0.0, 1.0));
+	vec2 uv = chart_uv(about, normalize(surface_normal).y, body_height);
 	float coverage = texture(mask_texture, uv).r;
 	float painted = step(paint_threshold, coverage);
 	ALBEDO = mix(clean_color.rgb, mayo_color.rgb, painted);

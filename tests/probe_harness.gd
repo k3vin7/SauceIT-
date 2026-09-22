@@ -105,10 +105,17 @@ func _settled(worlds: Array) -> bool:
 ## yet. Every fixed frame count in a network test is that assumption written
 ## down; waiting on the answer instead makes the test independent of how
 ## expensive the level happens to be.
+## Waits on both clocks. Half of what this file waits for is driven from
+## `_process` -- the view report, the floor upload, anything that runs once a
+## rendered frame -- and a headless run gives out rendered frames far more
+## sparingly than physics ones. Yielding on physics alone spends the whole
+## budget without the thing being waited for ever getting a turn, which reads as
+## a flake: the view-report check failed about one run in two that way.
 func _until(condition: Callable, frames := 900) -> bool:
 	for _f in frames:
 		if condition.call():
 			return true
+		await process_frame
 		await physics_frame
 	return false
 
@@ -292,8 +299,18 @@ func _run() -> void:
 	var looker_id: int = looker._net.local_id()
 	# Both halves of the round trip: the host has stored it and the guest has
 	# been told what it is rendering with.
-	await _until(func() -> bool: return (
-		seen_host._net._views.has(looker_id) and looker._net._view_acked))
+	# Waited for until the two **agree**, not merely until a report landed. The
+	# first one goes out while the viewport is still settling, so the host can
+	# hold a 4:3 that the guest has already stopped rendering; `report_view`
+	# notices the change on the next frame and sends again, and the state worth
+	# checking is the one after that. Waiting on the arrival instead caught the
+	# session mid-correction about one run in two.
+	await _until(func() -> bool:
+		if not (seen_host._net._views.has(looker_id) and looker._net._view_acked):
+			return false
+		var held: Vector2 = seen_host._net.view_for(looker_id)
+		return is_equal_approx(held.x, looker.camera_fov) \
+			and is_equal_approx(held.y, looker._view_aspect))
 	# The report has to arrive on its own. The first one goes out as the
 	# connection comes up, which is exactly when a packet is most likely to go
 	# nowhere, and nothing else will ever send another until the player resizes

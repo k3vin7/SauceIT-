@@ -43,6 +43,38 @@ var _visual_overlay: ShaderMaterial
 ## exactly where a player aims. Set before `configure`.
 var axis_offset := Vector3.ZERO
 
+## How deep a cap chart is, in metres out from the axis. **0 means no caps**,
+## which is what a player's capsule wants: its ends are hemispheres and the
+## cylinder's own mapping carries them well enough.
+##
+## A flat top is another matter. The side chart maps a point by its angle and
+## its height and throws the radius away, which is exact on a vertical wall and
+## degenerate on a horizontal one: every point on the crown of a burger's bun at
+## the same angle shares one texel whatever its radius, so a stain up there is
+## drawn as a streak running from the centre to the rim rather than as a blob.
+## It does not show while the monster is upright and you are looking at its
+## side. It shows the moment it topples and the crown turns to face you.
+##
+## So the mask carries three charts rather than one, stacked in the one texture:
+##
+##     v below -height/2    the underside, polar: v is the radius from the axis
+##     v within +/-height/2 the side, as before: v is the height
+##     v above +height/2    the crown, polar again
+##
+## **u stays the angle in all three.** That is what makes this cost nothing
+## anywhere else: the wrap at the seam is still correct across the whole
+## texture, the splat still travels as one cell, and which chart a cell belongs
+## to is already written in its row -- so the packet stays four ints and needs
+## no chart number, and the snapshot, the MD5 and the replay go on reading one
+## grid.
+var cap_depth := 0.0
+
+## How far a surface has to face up or down before its hit is recorded on a cap
+## rather than on the side. Hard selection: a hit belongs to one chart. Blending
+## between them would mean painting several charts per splat, which is a much
+## larger change to what travels over the wire than it looks.
+var cap_normal_cut := 0.7
+
 
 func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 		capsule_height: float, clean_color: Color) -> void:
@@ -51,7 +83,8 @@ func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 	radius = capsule_radius
 	height = capsule_height
 	grid.wrap_x = true
-	grid.configure(Vector2(TAU * radius, height), cell_size, clean_color, mayo_color)
+	grid.configure(Vector2(TAU * radius, height + cap_depth * 2.0), cell_size,
+		clean_color, mayo_color)
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://scripts/body_contamination.gdshader")
 	material.set_shader_parameter("mask_texture", grid.texture)
@@ -59,6 +92,8 @@ func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 	material.set_shader_parameter("mayo_color", mayo_color)
 	material.set_shader_parameter("body_height", height)
 	material.set_shader_parameter("axis_offset", axis_offset)
+	material.set_shader_parameter("cap_depth", cap_depth)
+	material.set_shader_parameter("cap_normal_cut", cap_normal_cut)
 	_mesh.material_override = material
 
 
@@ -81,6 +116,8 @@ func add_visual_overlay(visual_root: Node) -> void:
 	_visual_overlay.set_shader_parameter("mayo_color", mayo_color)
 	_visual_overlay.set_shader_parameter("body_height", height)
 	_visual_overlay.set_shader_parameter("axis_offset", axis_offset)
+	_visual_overlay.set_shader_parameter("cap_depth", cap_depth)
+	_visual_overlay.set_shader_parameter("cap_normal_cut", cap_normal_cut)
 	_visual_overlay.set_shader_parameter(
 		"world_to_body", _body.global_transform.affine_inverse())
 	for child in visual_root.find_children("*", "MeshInstance3D", true, false):
@@ -89,9 +126,11 @@ func add_visual_overlay(visual_root: Node) -> void:
 
 
 ## Marks the hit and returns the centre cell, or (-1, -1) if it landed off the
-## body. The normal is unused: on a body every hit is on the one surface.
-func paint_mayo(world_position: Vector3, _world_normal: Vector3) -> Vector2i:
-	return grid.paint(_to_grid(world_position), brush_radius)
+## body. **The normal picks the chart**: it is what says whether the sauce
+## landed on a wall of the body or on its top. With no caps there is only one
+## chart and it is ignored, which is what it was for a long time.
+func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
+	return grid.paint(_to_grid(world_position, world_normal), brush_radius)
 
 
 func paint_mayo_cell(cell: Vector2i) -> void:
@@ -126,8 +165,23 @@ func restore_cells(cells: PackedByteArray) -> bool:
 ## World position -> the unwrapped body surface, in metres. The shader derives
 ## its own coordinate from the same local position, so the two agree by
 ## construction rather than by matching the mesh's UVs.
-func _to_grid(world_position: Vector3) -> Vector2:
+## The chart coordinate a hit maps to, for the checks. Same call the painter
+## makes, so a check cannot agree with a mapping the game does not use.
+func debug_to_grid(world_position: Vector3, world_normal: Vector3) -> Vector2:
+	return _to_grid(world_position, world_normal)
+
+
+func _to_grid(world_position: Vector3, world_normal := Vector3.ZERO) -> Vector2:
 	var local := _body.to_local(world_position)
 	var about := local - axis_offset
-	var angle := atan2(about.x, about.z)
-	return Vector2(angle / TAU * (TAU * radius), local.y)
+	var across := atan2(about.x, about.z) / TAU * (TAU * radius)
+	if cap_depth <= 0.0:
+		return Vector2(across, local.y)
+	# Which way the surface faces, in the body's own space.
+	var facing := _body.global_transform.basis.inverse() * world_normal
+	if absf(facing.y) < cap_normal_cut:
+		return Vector2(across, local.y)
+	# A cap: the radius out from the axis takes the place of the height, so
+	# what the side chart throws away is exactly what this one keeps.
+	var rim := minf(Vector2(about.x, about.z).length(), cap_depth)
+	return Vector2(across, signf(facing.y) * (height * 0.5 + rim))
