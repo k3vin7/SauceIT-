@@ -23,6 +23,9 @@ extends StaticBody3D
 var contamination: RoofContamination
 var radius := 1.0
 var height := 1.0
+## Authored booth meshes can supply the appearance while this node preserves
+## the established roof collision and networked contamination target.
+var visible_surface := true
 
 
 func _ready() -> void:
@@ -56,6 +59,7 @@ func build(base_radius: float, roof_height: float, cell_size: float,
 	var mesh_instance := MeshInstance3D.new()
 	mesh_instance.name = "RoofMesh"
 	mesh_instance.mesh = cone
+	mesh_instance.visible = visible_surface
 	add_child(mesh_instance)
 
 	# The collider is the four faces themselves, not a solid pyramid around them

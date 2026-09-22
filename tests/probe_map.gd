@@ -189,6 +189,45 @@ func _run() -> void:
 		footprints[at] = true
 	_check(overlaps == 0, "%d stalls stand on the same cell as another" % overlaps)
 
+	# All four supplied booth designs are represented, and the deterministic
+	# shuffle never gives consecutive pitches the same visual. Double pitches
+	# instantiate the same design once per bay.
+	var variant_counts := [0, 0, 0, 0]
+	var booth_visuals := 0
+	var truck_visuals := 0
+	var previous_variant := -1
+	for child in scene.get_children():
+		if not child.has_meta("food_booth_variant"):
+			continue
+		if bool(child.get_meta("is_food_truck", false)):
+			_check(int(child.get_meta("stall_bays", 1)) == 2,
+				"%s puts a food truck in a single-bay pitch" % child.name)
+			truck_visuals += child.find_children("FoodTruck*", "Node3D", true, false).size()
+			previous_variant = -1
+			continue
+		var variant := int(child.get_meta("food_booth_variant")) - 1
+		_check(variant >= 0 and variant < variant_counts.size(),
+			"%s has invalid food-booth variant %d" % [child.name, variant + 1])
+		if variant >= 0 and variant < variant_counts.size():
+			variant_counts[variant] += 1
+		_check(variant != previous_variant,
+			"two consecutive pitches use food-booth variant %d" % (variant + 1))
+		previous_variant = variant
+		booth_visuals += child.find_children("FoodBooth*", "Node3D", true, false).size()
+	var expected_booth_visuals := 0
+	for stall in StreetMap.stall_boxes():
+		expected_booth_visuals += int(stall.get("bays", 1))
+	expected_booth_visuals -= truck_visuals * 2
+	print("food-booth designs=%s, visual bays=%d, food trucks=%d" % [
+		str(variant_counts), booth_visuals, truck_visuals])
+	_check(variant_counts.min() > 0, "not all four food-booth designs were placed: %s" %
+		str(variant_counts))
+	_check(truck_visuals >= 1 and truck_visuals <= 3,
+		"the map placed %d food trucks rather than 1-3" % truck_visuals)
+	_check(booth_visuals == expected_booth_visuals,
+		"only %d of %d stall bays have an authored food-booth model" %
+			[booth_visuals, expected_booth_visuals])
+
 	# The vendors that cook on the pitch get two gazebos. A pitch too short for
 	# a double falls back to one rather than losing the vendor, so the count can
 	# come in under the list -- but most of them should get what they asked for.

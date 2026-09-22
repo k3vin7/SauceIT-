@@ -12,6 +12,14 @@ const VisorOverlayScript := preload("res://scripts/visor_overlay.gd")
 const HealthHudScript := preload("res://scripts/health_hud.gd")
 const MinimapScript := preload("res://scripts/minimap.gd")
 const StallRoofScript := preload("res://scripts/stall_roof.gd")
+const FOOD_BOOTH_SCENES: Array[PackedScene] = [
+	preload("res://assets/food_booths/food_booth_s1.glb"),
+	preload("res://assets/food_booths/food_booth_s2.glb"),
+	preload("res://assets/food_booths/food_booth_s3.glb"),
+	preload("res://assets/food_booths/food_booth_s4.glb"),
+]
+const FOOD_TRUCK_SCENE: PackedScene = preload(
+	"res://assets/food_booths/food_truck_s1.glb")
 
 # Splat batch entry kinds. Four ints per splat: kind, target, cell x, cell y.
 # What `target` means is the kind's business -- a wall packs its index and the
@@ -1286,11 +1294,50 @@ func _build_street() -> void:
 		_create_wall("StreetWall%02d" % index, box["position"], box["size"], wall_color)
 		index += 1
 
-	# The sketch's cyan blocks. Solid boxes for now, as asked -- a stall is a
-	# thing to hide behind and to get mayo on, and both of those work already.
+	# Give every pitch one of the four authored food-booth designs.  The seed is
+	# fixed so multiplayer peers build the same scene, while rejecting the last
+	# draw keeps neighbouring entries from becoming a run of identical booths.
 	index = 0
-	for box in StreetMap.stall_boxes():
-		_create_stall("Stall%02d" % index, box)
+	var stall_boxes := StreetMap.stall_boxes()
+	# A truck is wider than one gazebo, so only replace pitches that already own
+	# two bays. Pick a deterministic 1-3 of them so multiplayer peers agree.
+	var truck_rng := RandomNumberGenerator.new()
+	truck_rng.seed = 0x7F00D7AC
+	var truck_candidates: Array[int] = []
+	for stall_index in stall_boxes.size():
+		if int(stall_boxes[stall_index].get("bays", 1)) >= 2:
+			truck_candidates.push_back(stall_index)
+	for truck_shuffle_index in range(truck_candidates.size() - 1, 0, -1):
+		var truck_swap_index := truck_rng.randi_range(0, truck_shuffle_index)
+		var truck_swap_value := truck_candidates[truck_shuffle_index]
+		truck_candidates[truck_shuffle_index] = truck_candidates[truck_swap_index]
+		truck_candidates[truck_swap_index] = truck_swap_value
+	var truck_count := truck_rng.randi_range(1, mini(3, truck_candidates.size()))
+	var truck_stalls := {}
+	for truck_index in truck_count:
+		truck_stalls[truck_candidates[truck_index]] = true
+
+	var booth_rng := RandomNumberGenerator.new()
+	booth_rng.seed = 0x5A17B007
+	var booth_variants: Array[int] = []
+	while booth_variants.size() < stall_boxes.size():
+		var cycle: Array[int] = [0, 1, 2, 3]
+		for shuffle_index in range(cycle.size() - 1, 0, -1):
+			var swap_index := booth_rng.randi_range(0, shuffle_index)
+			var swap_value := cycle[shuffle_index]
+			cycle[shuffle_index] = cycle[swap_index]
+			cycle[swap_index] = swap_value
+		if not booth_variants.is_empty() and cycle[0] == booth_variants.back():
+			var boundary_value := cycle[0]
+			cycle[0] = cycle[1]
+			cycle[1] = boundary_value
+		for cycle_variant in cycle:
+			if booth_variants.size() >= stall_boxes.size():
+				break
+			booth_variants.push_back(cycle_variant)
+	for box in stall_boxes:
+		var variant := booth_variants[index]
+		_create_stall("Stall%02d" % index, box, variant, truck_stalls.has(index))
 		_add_refill_station(box)
 		index += 1
 
@@ -1397,9 +1444,12 @@ func _build_tower() -> void:
 ## The counter is waist-high on purpose. A solid box was cover you could hide
 ## behind completely; a counter is cover you shoot *over*, which is the more
 ## interesting half of what a market stall is for.
-func _create_stall(stall_name: String, box: Dictionary) -> void:
+func _create_stall(stall_name: String, box: Dictionary, variant: int,
+		use_food_truck: bool) -> void:
 	var holder := Node3D.new()
 	holder.name = stall_name
+	holder.set_meta("food_booth_variant", variant + 1)
+	holder.set_meta("is_food_truck", use_food_truck)
 	add_child(holder)
 
 	var ground: Vector3 = box["position"]
@@ -1408,6 +1458,7 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 	var across := Vector3(facing.z, 0.0, -facing.x)
 
 	var bays: int = box.get("bays", 1)
+	holder.set_meta("stall_bays", bays)
 	var bay: float = StreetMap.stall_metre(StreetMap.STALL_FOOTPRINT_M)
 	# A two-bay vendor is two gazebos side by side over one run of counter: the
 	# standard catering pitch is one tent over the cooking and a second over the
@@ -1423,7 +1474,8 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 	var counter_size := _oriented_size(facing, width, counter_high, counter_deep)
 	var counter_at := ground + facing * (width - counter_deep) * 0.5
 	counter_at.y = counter_high * 0.5
-	var counter := _make_contaminable(holder, "Counter", counter_at, counter_size, Color("d8d2c4"))
+	var counter := _make_contaminable(holder, "Counter", counter_at, counter_size,
+		Color("d8d2c4"), false)
 	_walls.push_back(counter)
 
 	# One roof per bay rather than one long one, so a double reads as two tents
@@ -1431,9 +1483,29 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 	var frame := StandardMaterial3D.new()
 	frame.albedo_color = Color("2f3438")
 	frame.roughness = 0.6
+	if use_food_truck:
+		var truck := FOOD_TRUCK_SCENE.instantiate() as Node3D
+		truck.name = "FoodTruck_s1"
+		truck.position = ground
+		truck.rotation.y = atan2(facing.x, facing.z)
+		truck.scale = Vector3.ONE * StreetMap.PROP_SCALE
+		truck.add_to_group("food_truck_visual")
+		holder.add_child(truck)
 	for index in bays:
 		var offset := (float(index) - (float(bays) - 1.0) * 0.5) * bay
 		var bay_centre := ground + across * offset
+
+		# The supplied Blender assets already include the human-height conversion;
+		# apply only the world's extra architecture scale so they match the existing
+		# 5.33 m pitch and 5.81 m peak. Blender's -Y frontage imports as local +Z.
+		if not use_food_truck:
+			var booth := FOOD_BOOTH_SCENES[variant].instantiate() as Node3D
+			booth.name = "FoodBooth%d_s%d" % [index, variant + 1]
+			booth.position = bay_centre
+			booth.rotation.y = atan2(facing.x, facing.z)
+			booth.scale = Vector3.ONE * StreetMap.PROP_SCALE
+			booth.add_to_group("food_booth_visual")
+			holder.add_child(booth)
 
 		# The roof, and the only thing up there: the pointed shape both blocks
 		# and stains. It used to be a flat slab at eaves height with a
@@ -1441,6 +1513,7 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 		# an invisible ceiling rather than running down the slope you can see.
 		var roof := StallRoofScript.new() as StallRoof
 		roof.name = "Roof%d" % index
+		roof.visible_surface = false
 		roof.position = bay_centre + Vector3(0.0, eaves + (peak - eaves) * 0.5, 0.0)
 		roof.rotation.y = atan2(facing.x, facing.z) + PI * 0.25
 		holder.add_child(roof)
@@ -1474,6 +1547,7 @@ func _create_stall(stall_name: String, box: Dictionary) -> void:
 			post_box.size = post_shape.size
 			post_mesh.mesh = post_box
 			post_mesh.material_override = frame
+			post_mesh.visible = false
 			post.add_child(post_mesh)
 			corner += 1
 
@@ -1487,7 +1561,7 @@ func _oriented_size(facing: Vector3, width: float, height: float, depth: float) 
 
 ## A `ContaminableObject` under `holder`, sharing the world's cell and brush.
 func _make_contaminable(holder: Node3D, part_name: String, at: Vector3,
-		size: Vector3, color: Color) -> ContaminableObject:
+		size: Vector3, color: Color, visible_surface := true) -> ContaminableObject:
 	var part := WallScript.new() as ContaminableObject
 	part.name = part_name
 	part.position = at
@@ -1495,6 +1569,7 @@ func _make_contaminable(holder: Node3D, part_name: String, at: Vector3,
 	part.body_color = color
 	part.cell_size = grid_cell_size
 	part.brush_radius = contamination_brush_radius
+	part.visible_surface = visible_surface
 	holder.add_child(part)
 	return part
 
