@@ -324,17 +324,18 @@ func _run() -> void:
 	print("running over the same trail once it is deep: fell=%s" % str(fell_on_deep))
 	_check(fell_on_deep, "running over deep mayo did not knock the player down")
 
-	# --- and the puddle comes from holding the trigger, not from sweeping ---
-	# What this branch is for. The stream dumps most of a burst wherever it is
-	# pointed, so pointing it at one place for the whole of a shot is what
-	# makes a hazard -- and a flick of the trigger must not, or every shot
-	# would leave one behind.
+	# --- and the puddle comes from holding the shot to the end of its duration ---
+	# What this branch is for, measured on a **level** shot, which is the one
+	# that decides the threshold. A level shot sweeps ten metres of floor and a
+	# steep one parks on a single metre, so the same held trigger reaches a
+	# peak of 66 pointed level and 193 pointed down -- a number picked against
+	# the steep case leaves the level one never pooling at all.
 	var peaks := {}
 	for hold in [12, 30, 45, 60]:
 		grid.clear()
 		player.global_position = home
 		player.velocity = Vector3.ZERO
-		scene.debug_set_aim(0.0, -38.0)
+		scene.debug_set_aim(0.0, 0.0)
 		await physics_frame
 		scene._local.sauce = 1.0
 		scene.debug_set_input(Vector2.ZERO, false, true)
@@ -351,13 +352,13 @@ func _run() -> void:
 		print("  held %.2f s: peak %d, %d slippery cells" % [
 			hold / 60.0, held_peak, floor_node.deep_cell_count()])
 	_check(peaks[12] < floor_node.slip_thickness,
-		"a fifth of a second on the trigger reached %d and already left a puddle"
+		"a fifth of a second of a level shot reached %d and already left a puddle"
 			% peaks[12])
 	_check(peaks[30] < floor_node.slip_thickness,
-		"half a shot reached %d: the puddle is meant to take the whole duration"
+		"half a level shot reached %d: the puddle is meant to take the whole duration"
 			% peaks[30])
 	_check(peaks[60] >= floor_node.slip_thickness,
-		"a shot held to the end of its duration only reached %d of the %d that trips"
+		"a level shot held to the end only reached %d of the %d that trips"
 			% [peaks[60], floor_node.slip_thickness])
 
 	if failures.is_empty():

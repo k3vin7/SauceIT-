@@ -18,30 +18,32 @@ extends StaticBody3D
 ##
 ## **This branch makes a puddle out of a held trigger.** A cell counts every
 ## splat that lands on it, and the stream does not spread its sauce evenly: it
-## dumps most of a burst on the spot it happens to sit over while the rest of
-## the trail gets a handful each. Rather than fight that, this branch aims at
-## it -- hold the stream on one place for the whole of its duration and a
-## puddle forms there, right where it was pointed.
+## dumps most of a burst on whatever it dwells over. Rather than fight that,
+## this branch aims at it -- hold a shot for the whole of its duration and a
+## puddle forms along the line you swept.
 ##
-## 150 is measured. It is the value that takes the **whole** burst, so a flick
-## leaves a stain and only a deliberate held shot leaves a hazard:
+## 40 is measured, and it is measured on a **level** shot, which is the one
+## that matters. How concentrated a burst is depends entirely on the pitch: the
+## same shot sweeps 10 m of floor pointed level and 1 m of it pointed steeply
+## down, so the peak thickness a full shot reaches runs from 66 to 193 across
+## the aims. Setting the number against a steep shot would have meant a level
+## one never pooling at all, which is what it did at 150.
 ##
-##     held      peak   slippery cells
-##     0.10 s      29        0
-##     0.20 s      45        0
-##     0.33 s      69        0
-##     0.50 s     101        0
-##     0.75 s     148        0
-##     1.00 s     195        7   <- the duration cap; a full shot
+##     aim    full shot   half shot   quarter shot
+##     0      peak  66    peak  17    peak   9
+##     -10    peak 120    peak  41    peak  15
+##     -20    peak 166
+##     -38    peak 193    peak 101
 ##
-## The trail's median stays around 10 throughout, so the body and tail of a
-## sweep are stain and nothing more. What goes yellow is the spot the stream
-## was parked on, and only when it was parked there for the whole shot.
+## At 40 a level shot held to the end leaves a puddle and a level shot let go
+## of halfway leaves a stain, with the two more than twice apart. Steeper aim
+## concentrates more, so a half shot pointed down at your own feet does pool --
+## which is the right answer: sauce dumped in one place is a puddle.
 ##
 ## The other branch, mayo-trail2, answers the same question the opposite way:
 ## a layer per interval rather than per splat, so a trail is flat, one pass is
 ## slippery nowhere and three overlapping passes are slippery along all of it.
-@export_range(1, 255, 1) var slip_thickness := 150
+@export_range(1, 255, 1) var slip_thickness := 40
 ## The floor is uploaded as tiles and only the changed ones are sent, so this is
 ## what a frame with sauce landing on it actually costs. Bigger tiles mean fewer
 ## draw calls and a larger upload when one is touched; smaller means the reverse.
@@ -82,10 +84,10 @@ extends StaticBody3D
 ## shine on top of that.
 @export var mayo_color_thick := Color("e6cd80")
 ## Where white becomes light cream.
-@export_range(1, 255, 1) var stain_mid_thickness := 50
+@export_range(1, 255, 1) var stain_mid_thickness := 14
 ## Where light cream becomes heavy cream. Clamped below `slip_thickness`, since
 ## a step at or past it would simply never be drawn.
-@export_range(1, 255, 1) var stain_thick_thickness := 100
+@export_range(1, 255, 1) var stain_thick_thickness := 27
 @export_range(0.0, 1.0, 0.01) var mayo_roughness := 0.34
 @export_range(0.0, 1.0, 0.01) var deep_roughness := 0.06
 

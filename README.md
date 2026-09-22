@@ -70,20 +70,29 @@ One roof per bay rather than one long one, so a double reads as two tents pushed
 
 **A mask cell holds how thick the mayo is, 0 to 255, not whether there is any.** A splat *adds* to every cell it covers rather than flagging it, which matters because the stream lands every frame: counting splats would put a single sweep over any threshold worth having. Running trips you only where the thickness has passed `slip_thickness`; below it, mayo is a stain you can sprint across.
 
-**This branch makes a puddle out of a held trigger.** A cell counts every splat that lands on it, and the stream does not spread its sauce evenly: measured on a standing burst, of 111 splats the cell it sat over took **100** while the far end of the same trail took **one to three**. Rather than fight that spread, `mayo-trail1` aims at it — park the stream somewhere for the whole of a shot and a puddle forms there.
+**This branch makes a puddle out of a held trigger.** A cell counts every splat that lands on it, and the stream does not spread its sauce evenly: it dumps most of a burst on whatever it dwells over. Rather than fight that spread, `mayo-trail1` aims at it — hold a shot for the whole of its duration and a puddle forms along the line it swept.
 
-`slip_thickness` is 150, and it is measured as the value that takes the **whole** shot:
+`slip_thickness` is 40, and it is measured on a **level** shot, because how concentrated a burst is depends entirely on pitch. The same held trigger sweeps ten metres of floor pointed level and one metre of it pointed steeply down:
 
-| held | peak | slippery cells |
-|---|---|---|
-| 0.10 s | 29 | 0 |
-| 0.20 s | 45 | 0 |
-| 0.33 s | 69 | 0 |
-| 0.50 s | 101 | 0 |
-| 0.75 s | 148 | 0 |
-| **1.00 s** (the duration cap) | **195** | **7** |
+| aim | full shot | half shot | quarter shot |
+|---|---|---|---|
+| level | peak **66** | peak 17 | peak 9 |
+| −10° | peak 120 | peak 41 | peak 15 |
+| −20° | peak 166 | | |
+| −38° | peak 193 | peak 101 | |
 
-The trail's median stays around 10 throughout, so the body and tail of a sweep are stain and nothing more — a walking pass leaves 0% of its trail slippery, and four of them leave 1%. What goes yellow is the spot the stream was pointed at, and only when it was held there for the whole shot. `probe_thickness` checks all three: a flick leaves nothing, half a shot leaves nothing, a full shot leaves a puddle.
+Setting the number against a steep shot means a level one never pools at all — which is what 150 did, and why it was wrong. At 40, measured through the real fire path:
+
+| level shot held | slippery cells |
+|---|---|
+| 0.20 s | 0 |
+| 0.50 s | 0 |
+| 0.75 s | 0 |
+| **1.00 s** (the duration cap) | **9** |
+
+Steeper aim concentrates more, so a half shot pointed down at your own feet does pool. That is the right answer rather than an exception: sauce dumped in one place is a puddle.
+
+`probe_thickness` checks all four rows. Over a four-pass walking trail the stain's bands come out 16% / 24% / 16% / 44%, so every step is a band you can see rather than a hairline.
 
 ### Two branches, two answers
 
@@ -92,10 +101,10 @@ The spread above is a real property of the weapon, and there are two honest thin
 | | `mayo-trail1` (this one) | `mayo-trail2` |
 |---|---|---|
 | a cell counts | every splat | one layer per `coat_seconds` (0.35 s) |
-| threshold | 150 | 3 |
+| threshold | 40 | 3 |
 | one walking pass | slippery nowhere | slippery nowhere |
-| three overlapping passes | still almost nothing | slippery along all of it |
-| stream held on a spot | puddle at 1.00 s, and only then | puddle at about 1 s |
+| three overlapping passes | patchy (44% after four) | slippery along all of it |
+| a shot held to the end | puddle along the swept line | puddle where it was parked |
 | what it is about | aiming | covering ground |
 
 ### The stain is drawn in four steps
