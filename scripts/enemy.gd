@@ -3,18 +3,10 @@ extends CharacterBody3D
 
 ## The thing that walks at you.
 ##
-## It is built out of capsules -- head, torso, two arms, two legs -- welded into
-## one mesh, and that welding is the whole trick. `BodyContamination` unwraps a
-## body about its own axis, and the shader derives the same coordinate from the
-## vertex position in the mesh's own space, so the two agree only while there is
-## one mesh whose vertices are in the body's space. Six separate MeshInstances
-## would each unwrap about their own centre and slide every stain. So the parts
-## are baked into a single `ArrayMesh` with their offsets folded into the
-## vertices, and the grid, the shader and the two-int network splat all carry on
-## working exactly as they do on a player.
-##
-## Sauce sticking to it is not decoration: it is how you see what you have
-## already hit.
+## Gameplay still uses the original capsule skeleton: health, hits, chase,
+## contact reach, sauce-grid coordinates and network state therefore have not
+## changed. The capsules' welded render mesh is kept hidden as the stable mask
+## target, while the visible body is the animated hamburger-monster GLB.
 ##
 ## Everything that decides anything runs on the authority only. A client's
 ## enemies are placed by the packets the server sends, the same way its players
@@ -26,6 +18,12 @@ extends CharacterBody3D
 ## means the two cannot drift apart.
 const WIDTH_MULTIPLE := 2.0
 const HEIGHT_MULTIPLE := 2.0
+const HAMBURGER_MONSTER := preload(
+	"res://assets/enemies/hamburger_monster/hamburger_monster.glb")
+## Evaluated mesh bounds in the authored Blender file, in metres. Scaling by
+## this keeps the visible monster's soles and crown aligned with the legacy
+## gameplay body's exact height.
+const MODEL_SOURCE_HEIGHT := 1.7729597
 
 @export_group("Health")
 @export_range(10.0, 2000.0, 1.0) var max_health := 240.0
@@ -100,6 +98,13 @@ var _route_step := 0
 var _repath_timer := 0.0
 var _route_goal := Vector3.ZERO
 var _body_mesh: MeshInstance3D
+var _visual_root: Node3D
+var _animation_player: AnimationPlayer
+var _idle_animation := &""
+var _walk_animation := &""
+var _attack_animation := &""
+var _death_animation := &""
+var _attack_animation_active := false
 ## World point the feet were planted on when it died -- the axis it goes over.
 var _fall_pivot := Vector3.ZERO
 ## Half the thickness of the torso: what it comes to rest on.
@@ -143,7 +148,11 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	_body_mesh = MeshInstance3D.new()
 	_body_mesh.name = "EnemyBody"
 	_body_mesh.mesh = _welded_mesh(bones)
+	# Keep the old mesh as the deterministic contamination target without
+	# drawing the capsule mockup over the authored monster.
+	_body_mesh.visible = false
 	add_child(_body_mesh)
+	_build_visual()
 
 	contamination = BodyContamination.new()
 	contamination.name = "BodyContamination"
@@ -166,8 +175,89 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	# fix without that compromise is a per-bone atlas, which is a much bigger
 	# change than the one it would improve on.
 	contamination.configure(self, _body_mesh, bones[BONE_TORSO][2], height, body_color)
+	contamination.add_visual_overlay(_visual_root)
 
 	health = max_health
+	_play_animation(_idle_animation)
+
+
+## Adds the authored monster as presentation only. Its transform deliberately
+## derives from the legacy body height; colliders, reach and spawn placement
+## remain exactly as before.
+func _build_visual() -> void:
+	_visual_root = HAMBURGER_MONSTER.instantiate() as Node3D
+	if _visual_root == null:
+		push_error("Hamburger monster GLB did not instantiate as Node3D")
+		return
+	_visual_root.name = "HamburgerMonsterVisual"
+	var model_scale := height / MODEL_SOURCE_HEIGHT
+	_visual_root.scale = Vector3.ONE * model_scale
+	_visual_root.position = Vector3(0.0, -height * 0.5, 0.0)
+	# The Blender asset faces -Y, which becomes +Z through glTF's Y-up export;
+	# this half turn aligns its mouth with MayoEnemy's established -Z front.
+	_visual_root.rotation.y = PI
+	add_child(_visual_root)
+
+	var players := _visual_root.find_children("*", "AnimationPlayer", true, false)
+	if players.is_empty():
+		push_error("Hamburger monster has no AnimationPlayer")
+		return
+	_animation_player = players[0] as AnimationPlayer
+	_idle_animation = _find_animation("Idle")
+	_walk_animation = _find_animation("Walk")
+	_attack_animation = _find_animation("Attack")
+	_death_animation = _find_animation("Death")
+	_animation_player.animation_finished.connect(_on_animation_finished)
+
+
+func _find_animation(suffix: String) -> StringName:
+	if _animation_player == null:
+		return &""
+	for animation in _animation_player.get_animation_list():
+		if String(animation).to_lower().ends_with(suffix.to_lower()):
+			return animation
+	push_error("Hamburger monster is missing the %s animation" % suffix)
+	return &""
+
+
+func _play_animation(animation: StringName) -> void:
+	if _animation_player == null or animation.is_empty():
+		return
+	if _animation_player.current_animation != animation \
+			or not _animation_player.is_playing():
+		_animation_player.play(animation)
+
+
+func _set_locomotion_animation(moving: bool) -> void:
+	if not is_alive() or _attack_animation_active:
+		return
+	_play_animation(_walk_animation if moving else _idle_animation)
+
+
+func _play_attack_animation() -> void:
+	if _animation_player == null or _attack_animation.is_empty():
+		return
+	_attack_animation_active = true
+	# A new damage tick is a new bite, even if the previous clip had not quite
+	# reached its final frame yet.
+	_animation_player.stop()
+	_animation_player.play(_attack_animation)
+
+
+func _play_death_animation() -> void:
+	_attack_animation_active = false
+	_play_animation(_death_animation)
+
+
+func _on_animation_finished(animation: StringName) -> void:
+	if animation == _idle_animation or animation == _walk_animation:
+		_animation_player.play(animation)
+		return
+	if animation != _attack_animation:
+		return
+	_attack_animation_active = false
+	var moving := Vector2(velocity.x, velocity.z).length_squared() > 0.000001
+	_set_locomotion_animation(moving)
 
 
 ## Index of the torso in `_bones()`. It is what the body comes to rest on, so
@@ -291,6 +381,7 @@ func take_sauce_hit() -> bool:
 		return false
 	# The soles it is standing on, on the ground: the line it goes over.
 	_fall_pivot = global_position - Vector3.UP * (height * 0.5)
+	_play_death_animation()
 	return true
 
 
@@ -358,6 +449,9 @@ func network_state() -> Array:
 
 func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 		new_fall_angle: float) -> void:
+	var was_alive := is_alive()
+	var travelled := Vector2(new_position.x - global_position.x,
+		new_position.z - global_position.z).length_squared()
 	facing_yaw = yaw
 	fall_angle = new_fall_angle
 	health = new_health
@@ -365,6 +459,10 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	# rather than derived from a pivot this peer never saw.
 	global_transform = Transform3D(
 		Basis(Vector3.UP, facing_yaw) * Basis(Vector3.RIGHT, fall_angle), new_position)
+	if was_alive and not is_alive():
+		_play_death_animation()
+	elif is_alive():
+		_set_locomotion_animation(travelled > 0.000001)
 
 
 ## Walks at `targets`' nearest member and hits it when it gets there. Returns
@@ -408,6 +506,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	else:
 		velocity.y -= fall_gravity * delta
 	move_and_slide()
+	_set_locomotion_animation(Vector2(velocity.x, velocity.z).length_squared() > 0.000001)
 
 	if target == null or _contact_cooldown > 0.0:
 		return null
@@ -419,6 +518,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	if gap.length() > reach:
 		return null
 	_contact_cooldown = contact_interval
+	_play_attack_animation()
 	return target
 
 

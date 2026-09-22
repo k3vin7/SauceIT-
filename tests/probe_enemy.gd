@@ -66,6 +66,23 @@ func _run() -> void:
 	_check(envelope.size.z < envelope.size.x * 0.6,
 		"the figure is %.2f m deep against %.2f m wide, which is not a body shape" % [
 			envelope.size.z, envelope.size.x])
+	_check(not enemy._body_mesh.visible,
+		"the old capsule mockup is still visible over the hamburger monster")
+	_check(enemy._visual_root != null,
+		"the hamburger monster visual was not instantiated")
+	_check(enemy._animation_player != null,
+		"the hamburger monster has no usable AnimationPlayer")
+	_check(not enemy._idle_animation.is_empty()
+			and not enemy._walk_animation.is_empty()
+			and not enemy._attack_animation.is_empty()
+			and not enemy._death_animation.is_empty(),
+		"the hamburger monster did not import all four required animations")
+	var visual_meshes := enemy._visual_root.find_children(
+		"*", "MeshInstance3D", true, false)
+	_check(not visual_meshes.is_empty(), "the hamburger monster imported no meshes")
+	for visual_mesh in visual_meshes:
+		_check((visual_mesh as MeshInstance3D).material_overlay != null,
+			"a hamburger mesh is missing the sauce-contamination overlay")
 	# One collider per bone, so what you can see is what you can hit.
 	var colliders := 0
 	for child in enemy.get_children():
@@ -252,17 +269,22 @@ func _run() -> void:
 		+ Vector3(0.0, 0.0, enemy.radius + 0.64)
 	player.global_position.y = stand_y
 	var ticks := 0
+	var bite_animation_seen := false
 	var seconds := 1.5
 	for _f in int(seconds * 60.0):
 		var was: float = player.health
 		await physics_frame
 		if player.health < was:
 			ticks += 1
+			bite_animation_seen = bite_animation_seen \
+				or enemy._animation_player.current_animation == enemy._attack_animation
 	var taken: float = health_before - player.health
 	var expected := int(seconds / enemy.contact_interval)
 	print("%.1f s of standing in it: %d hits for %.0f damage (one every %.2f s)" % [
 		seconds, ticks, taken, enemy.contact_interval])
 	_check(ticks > 0, "standing inside the enemy cost the player nothing")
+	_check(bite_animation_seen,
+		"a contact-damage tick did not start the biting Attack animation")
 	_check(ticks <= expected + 1,
 		"it hit %d times in %.1f s, more than the %.2f s cooldown allows" % [
 			ticks, seconds, enemy.contact_interval])
