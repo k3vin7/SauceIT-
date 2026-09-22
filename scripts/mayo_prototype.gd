@@ -104,6 +104,10 @@ class Shooter:
 	var emit_distance := 0.0
 	var attack_direction := Vector3.FORWARD
 	var burst_index := 0
+	## The coat this shooter's current burst is laying down, and the burst it
+	## was cut for. Numbered by the server; clients take it off the wire.
+	var coat_id := -1
+	var coat_burst := -1
 	var was_firing := false
 	var firing := false
 	## Counts down after the trigger is let go, so a tap still puts out a
@@ -383,6 +387,9 @@ var _input_enabled := true
 ## Splat centre cells found this frame, flushed to the peers at the end of it.
 ## Four ints each: kind, target, cell x, cell y. See MayoNet.apply_splats.
 var _pending_splats := PackedInt32Array()
+## Coats are numbered by the server and ride along with the floor splats, so
+## every peer groups the same splats into the same trigger pull.
+var _next_coat := 0
 ## Peers whose lenses the authority is currently wiping, so the clear can be
 ## broadcast on the frame the timer runs out.
 var _wiping: Dictionary = {}
@@ -2449,7 +2456,7 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 				var on_floor: bool = collider != null and collider.is_in_group("mayo_floor")
 				if _is_authority() and collider != null:
 					if on_floor:
-						_record_floor_splat(hit.position)
+						_record_floor_splat(shooter, point.burst_index, hit.position)
 					elif collider.is_in_group("mayo_contaminable"):
 						_record_splat(collider, hit.position, hit.normal)
 				_begin_landing(point, hit.position, hit.normal, on_floor)
@@ -2484,10 +2491,22 @@ func _begin_landing(point: MayoPoint, hit_position: Vector3, hit_normal: Vector3
 
 
 ## The server paints the floor and queues the same splat for the peers.
-func _record_floor_splat(hit_position: Vector3) -> void:
-	var cell := _floor.paint_mayo(hit_position)
+##
+## The coat travels with the splat. A cell rises once per trigger pull rather
+## than once per splat, so every peer has to agree on which pull a splat came
+## from -- and it is the server that decides, in the field a floor splat was not
+## using. Working it out independently on each machine would mean agreeing on
+## burst boundaries as well as on cells, for nothing.
+func _record_floor_splat(shooter: Shooter, burst_index: int,
+		hit_position: Vector3) -> void:
+	if shooter.coat_burst != burst_index:
+		shooter.coat_burst = burst_index
+		_next_coat += 1
+		shooter.coat_id = _next_coat
+	var cell := _floor.paint_mayo(hit_position, shooter.coat_id)
 	if cell.x >= 0:
-		_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR, 0, cell.x, cell.y]))
+		_pending_splats.append_array(PackedInt32Array([
+			SPLAT_FLOOR, shooter.coat_id, cell.x, cell.y]))
 
 
 ## The server paints whatever was hit and queues the same splat for the peers.
@@ -2551,7 +2570,7 @@ func apply_splats(data: PackedInt32Array) -> void:
 		var cell := Vector2i(data[index + 2], data[index + 3])
 		index += 4
 		if kind == SPLAT_FLOOR:
-			_floor.paint_mayo_cell(cell)
+			_floor.paint_mayo_cell(cell, target)
 			continue
 		if kind == SPLAT_BODY:
 			var body_shooter: Shooter = _shooters.get(target)

@@ -42,7 +42,7 @@ func _paint_patch(scene, ahead: float) -> Vector3:
 	var patch := Vector3(start.x, 0.0, start.z - ahead)
 	var floor_node: FloorContamination = scene._floor
 	var passes := ceili(float(floor_node.slip_thickness)
-		/ float(maxi(floor_node.thickness_per_splat, 1))) + 4
+		/ float(maxi(floor_node.thickness_per_pass, 1))) + 4
 	for _pass in passes:
 		for i in range(-2, 3):
 			floor_node.paint_mayo(patch + Vector3(float(i) * 0.1, 0.0, 0.0))

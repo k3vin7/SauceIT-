@@ -75,7 +75,7 @@ func _run() -> void:
 	var marked := grid.cell_of(Vector2(2.0, 2.0))
 	var painted_texel: int = grid.cells[marked.y * grid.width + marked.x]
 	var clean_texel: int = grid.cells[0]
-	var cut := maxf(float(floor_node.thickness_per_splat) * 0.5, 0.5)
+	var cut := maxf(float(floor_node.thickness_per_pass) * 0.5, 0.5)
 	print("uploaded texel: painted cell reads %d, clean cell reads %d (the outline cuts at %.1f)" % [
 		painted_texel, clean_texel, cut])
 	_check(painted_texel > 0, "the test splat did not mark the cell it was aimed at")

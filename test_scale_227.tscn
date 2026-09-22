@@ -1,7 +1,8 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://scripts/test_scale_227.gd" id="1_script"]
 [ext_resource type="PackedScene" path="res://corridor_graybox.tscn" id="2_map"]
+[ext_resource type="PackedScene" path="res://main.tscn" id="3_game"]
 
 [sub_resource type="Environment" id="Environment_test"]
 background_mode = 1
@@ -9,25 +10,6 @@ background_color = Color(0.055, 0.07, 0.09, 1)
 ambient_light_source = 3
 ambient_light_color = Color(0.72, 0.78, 0.88, 1)
 ambient_light_energy = 0.28
-
-[sub_resource type="CapsuleShape3D" id="CapsuleShape_player"]
-radius = 0.64
-height = 2.56
-
-[sub_resource type="StandardMaterial3D" id="Material_player"]
-albedo_color = Color(1, 0.22, 0.06, 1)
-roughness = 0.72
-
-[sub_resource type="CapsuleMesh" id="CapsuleMesh_player"]
-material = SubResource("Material_player")
-radius = 0.64
-height = 2.56
-
-[sub_resource type="LabelSettings" id="LabelSettings_player"]
-font_size = 42
-font_color = Color(1, 0.8, 0.18, 1)
-outline_size = 8
-outline_color = Color(0.03, 0.03, 0.03, 1)
 
 [node name="ScaleTest227" type="Node3D"]
 script = ExtResource("1_script")
@@ -45,37 +27,64 @@ shadow_enabled = true
 
 [node name="CorridorGraybox" parent="ScaledMap" instance=ExtResource("2_map")]
 
-[node name="PlayerSpawn" type="Marker3D" parent="."]
+[node name="Game" parent="." instance=ExtResource("3_game")]
 
-[node name="Player" type="CharacterBody3D" parent="."]
-position = Vector3(0, 1.3, 0)
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Player"]
-shape = SubResource("CapsuleShape_player")
-
-[node name="CapsuleBody" type="MeshInstance3D" parent="Player"]
-mesh = SubResource("CapsuleMesh_player")
-
-[node name="HeightLabel" type="Label3D" parent="Player"]
-position = Vector3(0, 2.05, 0)
-text = "2.56 m PLAYER"
-label_settings = SubResource("LabelSettings_player")
-billboard = 1
-no_depth_test = true
-
-[node name="Camera3D" type="Camera3D" parent="."]
-current = true
-fov = 65.0
+[node name="EnemyDummies" type="Node3D" parent="."]
 
 [node name="HUD" type="CanvasLayer" parent="."]
+layer = 20
 
 [node name="Info" type="Label" parent="HUD"]
 offset_left = 24.0
-offset_top = 20.0
-offset_right = 590.0
-offset_bottom = 58.0
+offset_top = 18.0
+offset_right = 880.0
+offset_bottom = 54.0
 theme_override_colors/font_color = Color(1, 1, 1, 1)
 theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
 theme_override_constants/outline_size = 8
-theme_override_font_sizes/font_size = 24
-text = "Map 2.27x | Player 2.56 m | Corridor 45 m"
+theme_override_font_sizes/font_size = 23
+text = "Map 2.27x | Actual MayoPlayer 2.56 m"
+
+[node name="Target" type="Label" parent="HUD"]
+offset_left = 24.0
+offset_top = 58.0
+offset_right = 960.0
+offset_bottom = 94.0
+theme_override_colors/font_color = Color(0.88, 0.94, 1, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_constants/outline_size = 7
+theme_override_font_sizes/font_size = 20
+
+[node name="Stopwatch" type="Label" parent="HUD"]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -610.0
+offset_top = 18.0
+offset_right = -24.0
+offset_bottom = 58.0
+grow_horizontal = 0
+theme_override_colors/font_color = Color(1, 0.82, 0.2, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_constants/outline_size = 9
+theme_override_font_sizes/font_size = 25
+text = "STOPWATCH  00:00.000  READY"
+horizontal_alignment = 2
+
+[node name="Help" type="Label" parent="HUD"]
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 22.0
+offset_top = -52.0
+offset_right = -22.0
+offset_bottom = -18.0
+grow_horizontal = 2
+grow_vertical = 0
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_constants/outline_size = 8
+theme_override_font_sizes/font_size = 19
+text = "WASD move | Shift run | Space jump | Mouse look | F1 camera | R reset"
+horizontal_alignment = 1

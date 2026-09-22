@@ -70,7 +70,9 @@ One roof per bay rather than one long one, so a double reads as two tents pushed
 
 **A mask cell holds how thick the mayo is, 0 to 255, not whether there is any.** A splat *adds* to every cell it covers rather than flagging it, which matters because the stream lands every frame: counting splats would put a single sweep over any threshold worth having. Running trips you only where the thickness has passed `slip_thickness`; below it, mayo is a stain you can sprint across.
 
-**The threshold is measured, and it is a compromise between two aims that cannot both be met.** Walking past spraying at a steady pace, then walking the same line again:
+**A cell rises once per trigger pull, not once per splat.** That one rule is what makes the threshold a plain number of passes rather than a measured compromise.
+
+The stream does not spread its sauce evenly. Measured on a standing burst: of 111 splats, the cell the stream sat over took **100** while the far end of the same trail took **one to three**, and during the burst the landing point marches back toward the player (3.2 m to 2.4 m) as the bottle's pressure drops — so it lingers where it started and skims everything after. Counting splats made the head of a trail slippery inside a second and the tail of the same trail never, and left a threshold trying to straddle a hundredfold spread:
 
 | passes | median | p90 | peak |
 |---|---|---|---|
@@ -78,37 +80,32 @@ One roof per bay rather than one long one, so a double reads as two tents pushed
 | 2 | 17 | 36 | 97 |
 | 3 | 25 | 54 | 145 |
 
-A pass does not lay sauce down evenly: it leaves a thick ridge where the stream's landing point clusters and a thin fringe either side, so **one pass's peak (49) is twice three passes' median (25)**. "Once over is slippery nowhere" and "three times over is slippery mostly" therefore pull opposite ways, and no single number satisfies both:
+One pass's peak was twice three passes' median, so "one pass is slippery nowhere" and "three passes are slippery mostly" wanted numbers a hundred apart. 50 left three passes 16% slippery; 22 was the least bad point between the two.
 
-| threshold | 1 pass deep | 3 passes deep |
+Counting passes removes the spread instead of splitting it. A burst lays one layer over everything it reached, head and tail alike, so a trail is flat and the threshold is just a count:
+
+| passes | thickest cell | slippery |
 |---|---|---|
-| 50 | 0% | 16% |
-| 25 | 5% | 51% |
-| **22** | **5%** | **57%** |
-| 20 | 7% | 61% |
+| 1 | 1 | 0% |
+| 4 | 4 | 99% of the stain |
 
-50 was the first attempt and took the first aim literally — and it was reported as a bug, correctly: painting a patch three times left five sixths of it safe, which from the outside looks exactly like thickness not accumulating at all. It does accumulate; a splat raises every cell it covers and those are precisely the cells drawn as stained, which `probe_thickness` checks both ways. The threshold was simply set so high that overlapping three times barely reached it.
+`slip_thickness` is 3. What this gives up is deliberate: parking the stream on one spot no longer piles sauce up there, and holding the trigger for ten seconds leaves the same single layer as brushing past. Making a puddle is three passes.
 
-22 takes the other side. Three passes make most of the trail dangerous, and one pass makes the middle of its own ridge dangerous — about a twentieth of it. That residue is the better error: slipping in the middle of the mess you just made is a lesson, and spraying a floor three times for nothing is a broken mechanic.
+The coat is numbered by the server and rides along in the field a floor splat was not using, so the wire is the same size and every peer groups the same splats into the same pull. A burst's coated cells are a set, not a byte per cell — a byte per cell is 13.9 MB on this floor, and a burst only ever touches a few thousand.
 
-Meeting both strictly needs the **ridge flattened**, not the threshold moved. A cell gains one unit per strand point that lands on it, and about three land per frame right under the stream against one at the fringe — so capping a cell's gain per *frame* rather than per point would narrow the spread. That is a change to the paint path and has not been made.
+### The stain is drawn in steps
 
-### The stain is drawn in four steps
+A cell used to be drawn white on its first pass and yellow on the one that tripped, with nothing in between, so the mayo piling up was invisible until the frame it flipped. The stain has a band per pass instead, each a hard edge on a cell boundary:
 
-A cell is drawn white on its first splat and yellow on its twenty-second, and for a long time there was nothing in between — so a spot at 1 and a spot at 21 looked exactly alike and the mayo piling up was invisible until the frame it flipped. Measured on a standing burst, that gap is wider than it sounds: of 111 splats, the cell under the stream took **100** while the far end of the same stain took **one to three**. Which is how "only the cell it landed on turns yellow" came to be a fair description of a system that was accumulating everywhere it drew.
-
-So the stain has four bands rather than one colour, each a hard edge on a cell boundary:
-
-| thickness | drawn as |
+| passes | drawn as |
 |---|---|
-| 1 – 7 | white — the spatter that has always been there |
-| 8 – 14 | light cream |
-| 15 – 21 | heavy cream, part way to wet — *about to be dangerous* |
-| 22+ | yellow and wet |
+| 1 | white — the stain |
+| 2 | heavy cream — *one more pass and this is dangerous* |
+| 3 | yellow and wet |
 
-The boundaries are `stain_mid_thickness`, `stain_thick_thickness` and `slip_thickness`, and the floor orders them before pushing them at the shader: a step at or past the deep band would never be drawn at all. Over a four-pass trail the bands cover 8% / 9% / 11% / 72%, so the warning band is a ring you can see rather than a hairline.
+The boundaries are `stain_mid_thickness`, `stain_thick_thickness` and `slip_thickness`, and the floor orders them before pushing them at the shader: a step at or past the deep band would never be drawn at all. At three passes to slip there is only room for three bands; `mayo_color_mid` is the fourth and draws only if the deep band is moved out to four passes or more.
 
-Not a gradient, for the same reason the deep band never was one: it has to be readable at a glance at a run, and a hard edge is what reads. `probe_thickness` checks each boundary from both sides and that a cell piling up passes through all four.
+Not a gradient, for the same reason the deep band never was one: it has to be readable at a glance at a run, and a hard edge is what reads. `probe_thickness` checks each boundary from both sides and that a cell piling up passes through every band the configuration can reach.
 
 **"Is this spot slippery" is asked of the floor**, not of the thing standing on it. `FloorContamination.is_slippery_at` has nothing player-shaped in it, so when the enemies are meant to slip they call the same function and get the same answer off the same data the shader draws.
 

@@ -35,8 +35,8 @@ func _run() -> void:
 	var grid: ContaminationGrid = floor_node.grid
 	var player: MayoPlayer = scene._player
 
-	print("deposit %d per splat, slippery at %d, floor %dx%d in %d tiles of %d cells" % [
-		floor_node.thickness_per_splat, floor_node.slip_thickness,
+	print("deposit %d per pass, slippery at %d, floor %dx%d in %d tiles of %d cells" % [
+		floor_node.thickness_per_pass, floor_node.slip_thickness,
 		grid.width, grid.height, grid.tile_count(), floor_node.tile_cells])
 
 	# --- a splat adds, it does not flag ---
@@ -45,7 +45,7 @@ func _run() -> void:
 	for splat in 6:
 		floor_node.paint_mayo(spot)
 		thicknesses.push_back(floor_node.thickness_at(spot))
-	print("six splats on one spot: thickness went %s" % str(thicknesses))
+	print("six uncoated splats on one spot: thickness went %s" % str(thicknesses))
 	_check(thicknesses[0] > 0, "a splat left no thickness at all")
 	_check(thicknesses[5] > thicknesses[0],
 		"six splats left the same thickness as one: it is flagging, not piling up")
@@ -58,6 +58,34 @@ func _run() -> void:
 	_check(floor_node.thickness_at(spot) == 255,
 		"thickness saturated at %d rather than 255" % floor_node.thickness_at(spot))
 
+	# --- a pass lays down one layer, however long the trigger is held ---
+	# The reported symptom, at its root. The stream dumps a hundred splats on
+	# the cell it happens to sit over and one on the far end of the same trail,
+	# so counting splats made the head of a trail slippery inside a second and
+	# the tail of it never. A cell rises once per trigger pull instead, which
+	# makes a trail flat: what decides whether you slip is how many times the
+	# floor was painted, not where the stream lingered while painting it.
+	grid.clear()
+	var held := floor_node.to_global(Vector3(11.0, 0.0, 11.0))
+	for _splat in 40:
+		floor_node.paint_mayo(held, 4242)
+	var one_coat := floor_node.thickness_at(held)
+	for _splat in 40:
+		floor_node.paint_mayo(held, 4243)
+	var two_coats := floor_node.thickness_at(held)
+	print("40 splats in one pass -> %d, another 40 in a second pass -> %d" % [
+		one_coat, two_coats])
+	_check(one_coat == floor_node.thickness_per_pass,
+		"holding the trigger over one cell piled it to %d: a pass has to be one layer"
+			% one_coat)
+	_check(two_coats == floor_node.thickness_per_pass * 2,
+		"a second pass took the cell to %d rather than %d"
+			% [two_coats, floor_node.thickness_per_pass * 2])
+	# And the cap is per burst, not global: an old burst must not go on
+	# suppressing a cell forever.
+	_check(floor_node.thickness_at(held) > floor_node.thickness_per_pass,
+		"the coat never released the cell")
+
 	# --- a splat thickens every cell it covers, not just the one it landed on ---
 	# The visible stain and the range that thickens have to be the same set of
 	# cells. If a splat only raised its own landing cell, painting a patch over
@@ -68,7 +96,7 @@ func _run() -> void:
 	floor_node.paint_mayo(here)
 	var raised := 0
 	var drawn := 0
-	var cut := maxf(float(floor_node.thickness_per_splat) * 0.5, 0.5)
+	var cut := maxf(float(floor_node.thickness_per_pass) * 0.5, 0.5)
 	var landing := grid.cell_of(Vector2(9.0, 9.0))
 	for row in range(landing.y - 8, landing.y + 9):
 		for column in range(landing.x - 8, landing.x + 9):
@@ -104,15 +132,15 @@ func _run() -> void:
 		for column in range(landing.x - 8, landing.x + 9):
 			var value: int = grid.cells[row * grid.width + column]
 			deepest = maxi(deepest, value)
-			if value >= floor_node.thickness_per_splat * offsets.size():
+			if value >= floor_node.thickness_per_pass * offsets.size():
 				stacked += 1
 	print("three splats on %d different landing cells: deepest %d, %d cells reached all three" % [
 		landed_on.size(), deepest, stacked])
 	_check(landed_on.size() == offsets.size(),
 		"the three splats shared a landing cell, so this case tests nothing")
-	_check(deepest == floor_node.thickness_per_splat * offsets.size(),
+	_check(deepest == floor_node.thickness_per_pass * offsets.size(),
 		"three overlapping splats reached %d, not the %d of all three stacking"
-			% [deepest, floor_node.thickness_per_splat * offsets.size()])
+			% [deepest, floor_node.thickness_per_pass * offsets.size()])
 	_check(stacked > 0, "no cell took all three splats, so the overlap is not accumulating")
 
 	# --- the stain is drawn in four steps, and they follow the stored value ---
@@ -125,28 +153,39 @@ func _run() -> void:
 	var bounds := floor_node.step_bounds()
 	print("steps at 1 / %d / %d / %d (white, light cream, heavy cream, deep)" % [
 		bounds.x, bounds.y, floor_node.slip_thickness])
-	_check(1 < bounds.x and bounds.x < bounds.y and bounds.y < floor_node.slip_thickness,
+	_check(bounds.x <= bounds.y and bounds.y < floor_node.slip_thickness,
 		"the steps are not in order: 1 / %d / %d / %d" % [
 			bounds.x, bounds.y, floor_node.slip_thickness])
-	var boundaries := [1, bounds.x, bounds.y, floor_node.slip_thickness]
-	for band in boundaries.size():
-		var at: int = boundaries[band]
-		_check(floor_node.step_for_thickness(at) == band + 1,
-			"thickness %d draws as band %d, not the %d its step begins"
-				% [at, floor_node.step_for_thickness(at), band + 1])
-		_check(floor_node.step_for_thickness(at - 1) == band,
-			"thickness %d draws as band %d: the step at %d starts early"
-				% [at - 1, floor_node.step_for_thickness(at - 1), at])
-	# And a real stain passes through all four rather than jumping white to
-	# yellow -- the spread across a splat is what the steps exist to show.
+	# Which bands the configuration can actually reach. With three passes to
+	# slip there is only room for three of them -- 1, 2 and deep -- so the
+	# check is that the bands that exist land where they say, not that there
+	# are four of them.
+	var reachable := {}
+	var previous := 0
+	for value in range(1, floor_node.slip_thickness + 1):
+		var band := floor_node.step_for_thickness(value)
+		reachable[band] = true
+		_check(band >= previous,
+			"thickness %d draws as band %d after %d drew as %d: the bands go backwards"
+				% [value, band, value - 1, previous])
+		previous = band
+	_check(floor_node.step_for_thickness(floor_node.slip_thickness) == 4,
+		"the deep band does not begin at the thickness that trips")
+	_check(floor_node.step_for_thickness(floor_node.slip_thickness - 1) < 4,
+		"the deep band starts a pass early")
+	_check(reachable.size() >= 3,
+		"only %d bands can ever be drawn: the stain has no middle" % reachable.size())
+	# And a real cell piling up passes through every band there is, rather than
+	# jumping from white to yellow.
 	grid.clear()
 	var pile := floor_node.to_global(Vector3(14.0, 0.0, 14.0))
 	var seen := {}
-	for _splat in floor_node.slip_thickness + 4:
-		floor_node.paint_mayo(pile)
+	for pass_number in floor_node.slip_thickness + 1:
+		floor_node.paint_mayo(pile, 9000 + pass_number)
 		seen[floor_node.stain_step_at(pile)] = true
-	print("a cell piling up passed through bands %s" % str(seen.keys()))
-	for band in [1, 2, 3, 4]:
+	print("a cell piling up passed through bands %s of the %s it can reach" % [
+		str(seen.keys()), str(reachable.keys())])
+	for band in reachable.keys():
 		_check(seen.has(band),
 			"a cell went from nothing to slippery without ever drawing band %d" % band)
 
@@ -305,7 +344,7 @@ func _run() -> void:
 	for step in 6:
 		trail.push_back(home + Vector3(0.0, 0.0, -5.0 - float(step) * 0.5))
 	var thin_splats: int = maxi(floor_node.slip_thickness
-		/ maxi(floor_node.thickness_per_splat, 1) / 2, 1)
+		/ maxi(floor_node.thickness_per_pass, 1) / 2, 1)
 	for _splat in thin_splats:
 		for spot_at in trail:
 			floor_node.paint_mayo(spot_at)

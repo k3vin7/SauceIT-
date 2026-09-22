@@ -72,6 +72,26 @@ var deep_count := 0
 ## The thickness `deep_count` counts past. Set by whoever owns the threshold.
 var deep_threshold := 255
 
+## The cells each live burst has already coated, one set per burst.
+##
+## **A cell rises once per trigger pull, however many splats land on it.** The
+## stream does not spread its sauce evenly: measured on a standing burst, the
+## cell the stream sat on took 100 of the 111 splats while the far end of the
+## same trail took one to three. Counting splats therefore made the head of a
+## trail slippery inside a second and the tail of the same trail never, which is
+## exactly what "only the bit it landed on turns yellow" was.
+##
+## Counting *passes* instead makes the whole trail equal: one trigger pull adds
+## one layer everywhere it reached, and it takes three overlapping passes to
+## make anything slippery -- head, tail and all.
+##
+## Kept as a set per burst rather than a coat id per cell, because a byte per
+## cell is 13.9 MB on the floor and a burst only ever touches a few thousand.
+## Old bursts are evicted by id, oldest first: four players can have four bursts
+## in the air at once, and a burst that has stopped arriving is finished.
+var _coats := {}
+const MAX_LIVE_COATS := 8
+
 var image: Image
 var texture: ImageTexture
 var material: ShaderMaterial
@@ -194,8 +214,8 @@ func is_painted(local: Vector2) -> bool:
 ## centre cell it painted around, or (-1, -1) if the position was off the grid.
 ## The radius is given in metres and converted here, so changing cell_size does
 ## not change how big a splat is.
-func paint(local: Vector2, radius_meters: float, deposit := 1) -> Vector2i:
-	return paint_cell(cell_of(local), radius_meters, deposit)
+func paint(local: Vector2, radius_meters: float, deposit := 1, coat := -1) -> Vector2i:
+	return paint_cell(cell_of(local), radius_meters, deposit, coat)
 
 
 ## The splat itself, addressed by cell rather than by position. Everything below
@@ -203,10 +223,24 @@ func paint(local: Vector2, radius_meters: float, deposit := 1) -> Vector2i:
 ## function of the cell coordinates -- so two machines given the same centre
 ## cell paint byte-identical grids. That is what lets the network send two ints
 ## per splat instead of the cell list, and it is checked by probe_determinism.
-func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1) -> Vector2i:
+## `coat` identifies the trigger pull this splat belongs to. A cell rises at most
+## once for a given coat, so a burst lays down one layer rather than one per
+## splat. -1 means no coat: every splat counts, which is what the surfaces
+## nobody walks on still do.
+func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
+		coat := -1) -> Vector2i:
 	paint_calls += 1
 	if not has_cell(centre):
 		return Vector2i(-1, -1)
+	var coated := {}
+	if coat >= 0:
+		if not _coats.has(coat):
+			if _coats.size() >= MAX_LIVE_COATS:
+				var ids := _coats.keys()
+				ids.sort()
+				_coats.erase(ids[0])
+			_coats[coat] = {}
+		coated = _coats[coat]
 	centre.x = wrapped_x(centre.x)
 	var radius := maxi(1, roundi(radius_meters / cell_size))
 	var scale := maxf(metres_per_cell, 0.0001)
@@ -282,10 +316,15 @@ func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1) -> Vector2
 			var reach := float(radius) + edge_jitter
 			# Squared on both sides, to keep the square root out of the loop.
 			if reach > 0.0 and distance_squared <= reach * reach:
-				# Added, not set. What makes a patch dangerous is how much has
-				# landed on it, and a stream lands every frame -- so counting
-				# splats would put a single sweep over any threshold worth
-				# having.
+				# Already part of this pass: the stream crossing the same cell
+				# again inside one trigger pull adds nothing.
+				if coat >= 0:
+					if coated.has(index):
+						continue
+					coated[index] = true
+				# Added, not set. What makes a patch dangerous is how many
+				# passes have gone over it, and each one adds its layer to
+				# whatever the last one left.
 				var was := int(cells[index])
 				var now := mini(was + deposit, 255)
 				cells[index] = now
@@ -304,6 +343,7 @@ func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1) -> Vector2
 ## the other is how a wiped surface keeps showing its old stain.
 func clear() -> void:
 	cells.fill(0)
+	_coats.clear()
 	painted_count = 0
 	deep_count = 0
 	_touch_all_tiles()

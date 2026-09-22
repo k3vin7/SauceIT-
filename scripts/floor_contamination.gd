@@ -11,50 +11,31 @@ extends StaticBody3D
 @export var floor_size := Vector2(12.0, 12.0)
 @export var clean_color := Color("53616d")
 @export var mayo_color := Color("fff0a8")
-## How much thicker a cell gets per splat that lands on it. The threshold below
-## is set against this, so the pair is what decides how many passes it takes.
-@export_range(1, 64, 1) var thickness_per_splat := 1
+## How much thicker a cell gets per **pass** -- one trigger pull -- rather than
+## per splat that lands on it. A burst lays one layer down over everything it
+## reaches; see `ContaminationGrid._coats` for why. The threshold below is set
+## against this, so the pair is what decides how many passes it takes.
+@export_range(1, 64, 1) var thickness_per_pass := 1
 ## At or over this, the floor is slippery. Under it, it is a stain.
 ##
-## 22 is measured, and it is a **compromise between two aims that cannot both
-## be met**, which is worth stating rather than hiding in a number.
+## **Three passes, and it is exactly three** -- no longer a measured compromise.
+## While a cell counted splats it could not be: the stream dumps a hundred
+## splats on the spot it sits over and one on the far end of the same trail, so
+## "one pass is slippery nowhere" and "three passes are slippery mostly" wanted
+## thresholds a hundred apart, and 22 was the least bad point between them.
 ##
-## Walking past spraying at a steady pace, then walking the same line again:
+## Counting passes removes the spread rather than splitting it. A trigger pull
+## adds one layer to every cell it covered, head and tail alike, so the trail is
+## flat and the threshold is just a number of passes:
 ##
-##     passes   median   p90   peak
-##          1        9    18     49
-##          2       17    36     97
-##          3       25    54    145
+##     1 pass  -- nothing is slippery, anywhere on the trail
+##     2       -- still nothing
+##     3       -- all of the overlap is slippery, all of it at once
 ##
-## A pass does not lay sauce down evenly. It leaves a thick ridge where the
-## stream's landing point clusters and a thin fringe either side, so one pass's
-## **peak (49) is twice three passes' median (25)**. The two aims -- "once over
-## is slippery nowhere" and "three times over is slippery mostly" -- therefore
-## pull opposite ways, and no single number satisfies both:
-##
-##     threshold   1 pass deep   3 passes deep
-##            50            0%             16%
-##            25            5%             51%
-##            22            5%             57%
-##            20            7%             61%
-##
-## 50 was the first attempt and took the first aim literally: nothing is ever
-## slippery after one pass, and three passes leave only a sixth of the trail
-## slippery -- so painting a patch three times and finding it safe, which is
-## exactly what it looked like from the outside, and what it was reported as.
-##
-## 22 takes the other side. Three passes make most of the trail dangerous, and
-## one pass makes the very middle of its own ridge dangerous -- about a
-## twentieth of it. That residue is the better error of the two: slipping in the
-## middle of the mess you just made is a lesson, and spraying a floor three
-## times for nothing is a broken mechanic.
-##
-## Meeting both strictly needs the *ridge* flattened rather than the threshold
-## moved -- a cell gains one unit per strand point that lands on it, and three
-## land per frame right under the stream against one at the fringe, so capping
-## a cell's gain per frame rather than per point would narrow the spread. That
-## is a change to the paint path and has not been made.
-@export_range(1, 255, 1) var slip_thickness := 22
+## Note what this gives up: parking the stream on one spot no longer piles sauce
+## up there. Holding the trigger for ten seconds leaves the same single layer as
+## brushing past. Making a puddle is three passes, deliberately.
+@export_range(1, 255, 1) var slip_thickness := 3
 ## The floor is uploaded as tiles and only the changed ones are sent, so this is
 ## what a frame with sauce landing on it actually costs. Bigger tiles mean fewer
 ## draw calls and a larger upload when one is touched; smaller means the reverse.
@@ -68,26 +49,23 @@ extends StaticBody3D
 @export var deep_color := Color("e8cf4a")
 
 @export_subgroup("Thickness Steps")
-## The stain is drawn in **four steps**, not one flat colour and not a ramp.
+## The stain is drawn in **steps**, not one flat colour and not a ramp, so the
+## sauce piling up is legible before it flips.
 ##
-## A splat draws a cell white on its first hit, and the deep band needs
-## twenty-odd hits. Measured on a standing burst, the cell under the stream took
-## 100 of the 111 splats while the far end of the same stain took one to three
-## -- so with a single stain colour, a spot at 1 and a spot at 21 looked
-## identical and the pile was invisible until the frame it flipped yellow. That
-## is what "only the landing cell turns yellow" actually was.
+## How many steps there is room for follows from `slip_thickness`. At three
+## passes to slip there are three:
 ##
-## The steps make the pile legible while it is still building:
+##     1 pass   white, the stain
+##     2        heavy cream -- one more pass and this is dangerous
+##     3        yellow and wet
 ##
-##     1 .. mid-1      white, the spatter that has always been there
-##     mid .. thick-1  light cream
-##     thick .. slip-1 heavy cream -- about to become dangerous
-##     slip ..         yellow and wet
+## `mayo_color_mid` and its threshold are the fourth, and are only drawn if the
+## deep band is moved out to four passes or more. They are left in rather than
+## deleted because `slip_thickness` is a knob and the shader has the slot.
 ##
 ## Each boundary is a hard edge on a cell boundary rather than a blend, for the
 ## same reason the deep band is: it has to be readable at a glance at a run, and
-## a hard edge is what reads. The look is the same stepped, blocky one the
-## stains have everywhere else.
+## a hard edge is what reads.
 @export var mayo_color_mid := Color("f5e195")
 ## The one that matters most: this is the warning. It has to be clearly apart
 ## from the yellow rather than a shade towards it, so it is duller rather than
@@ -95,10 +73,10 @@ extends StaticBody3D
 ## shine on top of that.
 @export var mayo_color_thick := Color("e6cd80")
 ## Where white becomes light cream.
-@export_range(1, 255, 1) var stain_mid_thickness := 8
+@export_range(1, 255, 1) var stain_mid_thickness := 2
 ## Where light cream becomes heavy cream. Clamped below `slip_thickness`, since
 ## a step at or past it would simply never be drawn.
-@export_range(1, 255, 1) var stain_thick_thickness := 15
+@export_range(1, 255, 1) var stain_thick_thickness := 2
 @export_range(0.0, 1.0, 0.01) var mayo_roughness := 0.34
 @export_range(0.0, 1.0, 0.01) var deep_roughness := 0.06
 
@@ -127,12 +105,12 @@ func configure(new_cell_size: float, new_brush_radius: float) -> void:
 ## The server broadcasts that cell and every peer replays it through
 ## `paint_mayo_cell`, so the wire carries two ints per splat rather than the
 ## cell list, and every grid stays byte-identical.
-func paint_mayo(world_position: Vector3) -> Vector2i:
-	return grid.paint(_to_grid(world_position), brush_radius, thickness_per_splat)
+func paint_mayo(world_position: Vector3, coat := -1) -> Vector2i:
+	return grid.paint(_to_grid(world_position), brush_radius, thickness_per_pass, coat)
 
 
-func paint_mayo_cell(cell: Vector2i) -> void:
-	grid.paint_cell(cell, brush_radius, thickness_per_splat)
+func paint_mayo_cell(cell: Vector2i, coat := -1) -> void:
+	grid.paint_cell(cell, brush_radius, thickness_per_pass, coat)
 
 
 ## Cell-exact: true when there is any mayo at all under this position.
@@ -280,7 +258,7 @@ func _push_shader_values() -> void:
 		tile.set_shader_parameter("deep_roughness", deep_roughness)
 		# Normalised, because the texture reads back 0..1.
 		tile.set_shader_parameter("paint_threshold",
-			maxf(float(thickness_per_splat) * 0.5, 0.5) / 255.0)
+			maxf(float(thickness_per_pass) * 0.5, 0.5) / 255.0)
 		var bounds := step_bounds()
 		tile.set_shader_parameter("mid_threshold", float(bounds.x) / 255.0)
 		tile.set_shader_parameter("thick_threshold", float(bounds.y) / 255.0)
