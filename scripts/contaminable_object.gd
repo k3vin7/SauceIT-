@@ -17,6 +17,9 @@ const FACE_BASIS := [
 
 @export var size := Vector3(5.0, 2.2, 0.18)
 @export var body_color := Color("8e6f63")
+## Collision/paint can stay active behind an authored prop whose own mesh is
+## the visible surface.  Ordinary walls keep rendering their generated quads.
+@export var visible_surface := true
 
 @export_group("Contamination Grid")
 @export_range(0.05, 0.5, 0.01, "suffix:m") var cell_size := 0.1
@@ -157,6 +160,7 @@ func _rebuild() -> void:
 		face.name = "Face%d" % i
 		face.mesh = _build_face_quad(normal, u_axis, v_axis, face_extent)
 		face.material_override = grid.material
+		face.visible = visible_surface
 		add_child(face)
 
 	var collision := CollisionShape3D.new()
