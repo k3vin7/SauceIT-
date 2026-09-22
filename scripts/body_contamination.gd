@@ -31,6 +31,7 @@ var height := 1.28
 
 var _mesh: MeshInstance3D
 var _body: Node3D
+var _visual_overlay: ShaderMaterial
 
 
 ## `body` is the node the hit positions are given in the space of -- the player
@@ -54,6 +55,27 @@ func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 
 func _process(_delta: float) -> void:
 	grid.upload_if_dirty()
+	if _visual_overlay != null and _body != null:
+		_visual_overlay.set_shader_parameter(
+			"world_to_body", _body.global_transform.affine_inverse())
+
+
+## Projects the same deterministic mask over an authored multi-mesh visual.
+## `material_overlay` preserves every imported burger material underneath it;
+## only pixels whose mask cells are painted survive the overlay shader.
+func add_visual_overlay(visual_root: Node) -> void:
+	if visual_root == null:
+		return
+	_visual_overlay = ShaderMaterial.new()
+	_visual_overlay.shader = preload("res://scripts/enemy_contamination_overlay.gdshader")
+	_visual_overlay.set_shader_parameter("mask_texture", grid.texture)
+	_visual_overlay.set_shader_parameter("mayo_color", mayo_color)
+	_visual_overlay.set_shader_parameter("body_height", height)
+	_visual_overlay.set_shader_parameter(
+		"world_to_body", _body.global_transform.affine_inverse())
+	for child in visual_root.find_children("*", "MeshInstance3D", true, false):
+		var mesh_instance := child as MeshInstance3D
+		mesh_instance.material_overlay = _visual_overlay
 
 
 ## Marks the hit and returns the centre cell, or (-1, -1) if it landed off the
