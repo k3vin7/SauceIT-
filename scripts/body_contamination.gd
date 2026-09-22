@@ -36,6 +36,14 @@ var _visual_overlay: ShaderMaterial
 
 ## `body` is the node the hit positions are given in the space of -- the player
 ## -- and `mesh` is the capsule the mask is drawn on.
+## The axis the unwrap turns about, in the body's own space. A player is
+## centred on their own node and leaves this at zero; the burger monster's body
+## sits a third of a metre back of its node, and measuring the angle about the
+## node instead skews a stain by up to ten degrees around its flanks -- which is
+## exactly where a player aims. Set before `configure`.
+var axis_offset := Vector3.ZERO
+
+
 func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 		capsule_height: float, clean_color: Color) -> void:
 	_body = body
@@ -50,6 +58,7 @@ func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 	material.set_shader_parameter("clean_color", clean_color)
 	material.set_shader_parameter("mayo_color", mayo_color)
 	material.set_shader_parameter("body_height", height)
+	material.set_shader_parameter("axis_offset", axis_offset)
 	_mesh.material_override = material
 
 
@@ -71,6 +80,7 @@ func add_visual_overlay(visual_root: Node) -> void:
 	_visual_overlay.set_shader_parameter("mask_texture", grid.texture)
 	_visual_overlay.set_shader_parameter("mayo_color", mayo_color)
 	_visual_overlay.set_shader_parameter("body_height", height)
+	_visual_overlay.set_shader_parameter("axis_offset", axis_offset)
 	_visual_overlay.set_shader_parameter(
 		"world_to_body", _body.global_transform.affine_inverse())
 	for child in visual_root.find_children("*", "MeshInstance3D", true, false):
@@ -118,5 +128,6 @@ func restore_cells(cells: PackedByteArray) -> bool:
 ## construction rather than by matching the mesh's UVs.
 func _to_grid(world_position: Vector3) -> Vector2:
 	var local := _body.to_local(world_position)
-	var angle := atan2(local.x, local.z)
+	var about := local - axis_offset
+	var angle := atan2(about.x, about.z)
 	return Vector2(angle / TAU * (TAU * radius), local.y)

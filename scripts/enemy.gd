@@ -169,22 +169,29 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	contamination.name = "BodyContamination"
 	contamination.cell_size = cell_size
 	contamination.brush_radius = brush_radius
+	# The burger sits back of its own node, and the unwrap turns about an
+	# axis. Turning about the node instead skews a stain by up to ten degrees
+	# around the flanks -- which is exactly where anyone aims.
+	contamination.axis_offset = Vector3(0.0, 0.0, -0.0756 * height)
 	add_child(contamination)
-	# The unwrap is given the **torso's** radius, not the figure's. It maps a
-	# surface point by its angle about the body's axis, which is an honest
-	# unwrap only for a surface of revolution -- and the figure stopped being
-	# one the moment it grew arms. `radius` is half the arm span, 1.15 m, while
-	# the torso the sauce actually lands on is 0.37 m out: handing the unwrap
-	# 1.15 stretches the torso's 2.3 m of surface over 7.2 m of grid, so a splat
-	# that should be 0.40 m across renders about 0.13 m across. That is why a
-	# hit on one of these looked nothing like a hit on a player.
+	# The unwrap maps a surface point by its angle about the body's axis, which
+	# is an honest unwrap only for a surface of revolution. A burger very nearly
+	# is one -- three stacked discs -- which is the one thing that got easier
+	# when the humanoid figure it replaced went away: that one grew arms and
+	# stopped being a solid of revolution the moment it did.
 	#
-	# Using the torso instead makes the body -- the part that is nearly always
-	# what gets hit -- come out at the right size. The limbs, which stick out
-	# further, take a stain that is too wide for them and simply go covered;
-	# they are thinner than one splat, so there was never a middle ground. The
-	# fix without that compromise is a per-bone atlas, which is a much bigger
-	# change than the one it would improve on.
+	# The radius handed over is the widest the burger gets, the patty. It sets
+	# how much grid a metre of surface is worth, so handing over the wrong one
+	# silently rescales every stain on the body -- half an arm span instead of
+	# a torso once rendered a 0.40 m splat at 0.13 m, which is why a hit on one
+	# of these looked nothing like a hit on a player. `probe_enemy` measures
+	# the rendered width against a player's rather than trusting the number.
+	#
+	# What the unwrap still cannot do is a top or a bottom: every point on the
+	# crown of the bun at the same angle shares one texel whatever its radius,
+	# so a stain up there draws as a radial streak rather than a blob. It does
+	# not show while the monster is upright and you are looking at its side. It
+	# shows when it topples and the crown turns to face you.
 	contamination.configure(self, _body_mesh, _body_radius(), height, body_color)
 	contamination.add_visual_overlay(_visual_root)
 

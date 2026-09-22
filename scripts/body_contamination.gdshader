@@ -25,6 +25,12 @@ uniform float mayo_roughness = 0.34;
 // it is drawn, which reads as sauce not sticking at all.
 uniform float paint_threshold = 0.00196;
 
+// The axis the unwrap turns about, in body space. Not always the origin: the
+// burger monster's body sits a third of a metre back of its own node, so
+// measuring the angle about (0,0) skews a stain by up to ten degrees around
+// its sides -- worst exactly where a player aims, on the flanks.
+uniform vec3 axis_offset = vec3(0.0);
+
 varying vec3 surface_position;
 
 void vertex() {
@@ -32,8 +38,9 @@ void vertex() {
 }
 
 void fragment() {
+	vec3 about = surface_position - axis_offset;
 	vec2 uv = vec2(
-		atan(surface_position.x, surface_position.z) / TAU + 0.5,
+		atan(about.x, about.z) / TAU + 0.5,
 		clamp(surface_position.y / body_height + 0.5, 0.0, 1.0));
 	float coverage = texture(mask_texture, uv).r;
 	float painted = step(paint_threshold, coverage);

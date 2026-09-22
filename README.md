@@ -328,6 +328,12 @@ Your own sauce counts. A point cannot hit the player who fired it until it has t
 
 **The stain is cosmetic and nothing reads it back.** Slipping is decided by the floor grid and the floor grid alone. Over the network a body is painted exactly like a wall — only the server marks it, and it broadcasts the centre cell — and a peer joining a session that is already messy is handed each body's mask along with the floor's.
 
+### The unwrap turns about the burger, not about its node
+
+The stain is placed by the angle a hit makes about the body's axis. The burger sits a third of a metre back of its own node, so measuring that angle about the node skewed a stain by up to **ten degrees** around the flanks — which is exactly where anyone aims. `BodyContamination.axis_offset` is that offset, shared by the painter and by both overlay shaders so all three agree; a player is centred on their own node and leaves it at zero. `probe_enemy` fires at four azimuths through the real paint path and compares the stain's angle with the hit's: worst case is now 1.5°, against 10° before.
+
+**What the unwrap still cannot do is a top or a bottom.** Every point on the crown of the bun at the same angle shares one texel whatever its radius, so a stain up there draws as a radial streak rather than a blob. It does not show while the monster is upright and you are looking at its side. It shows when it topples and the crown turns to face you. Fixing it properly means a projection that is not cylindrical — triplanar, or a per-part atlas — and that is a bigger change than the mask it would replace.
+
 ### One splat has to be visible
 
 The mask holds a **thickness**, 0 to 255, where it used to hold a painted flag that was either 0 or 255. Every shader that cut at `0.5` went on compiling the day that changed and quietly started needing about **128 hits on a cell** before it drew any of them. The floor was moved over; the body, the glasses, the stall roofs and the monster overlay were not, so sauce on a player or a monster looked like it was going straight through.

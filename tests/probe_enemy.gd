@@ -290,6 +290,55 @@ func _run() -> void:
 		"its face sits at x %.2f against z %.2f: the model is turned off-square"
 			% [face_x, face_z])
 
+	# --- a stain lands at the angle the sauce hit, not ten degrees off it ---
+	# The unwrap turns about an axis, and the burger sits back of its own node,
+	# so turning about the node skews the angle -- worst on the flanks, which
+	# is exactly where anyone aims. Checked at four azimuths through the real
+	# paint path, against the angle measured about the burger's own axis.
+	var body_space := enemy.global_transform
+	var axis: Vector3 = enemy.contamination.axis_offset
+	var mask = enemy.contamination.grid
+	var worst_skew := 0.0
+	for azimuth in [0.0, 90.0, 180.0, 270.0]:
+		var turn := deg_to_rad(azimuth)
+		# Out along that azimuth from the burger's axis, well clear of it.
+		var out := axis + Vector3(sin(turn), 0.0, -cos(turn)) * enemy.radius * 2.0
+		var at_height := Vector3(0.0, enemy.height * 0.083, 0.0)
+		var shot: Dictionary = enemy.get_world_3d().direct_space_state.intersect_ray(
+			PhysicsRayQueryParameters3D.create(
+				body_space * (out + at_height), body_space * (axis + at_height)))
+		if shot.is_empty() or shot.collider != enemy:
+			_check(false, "a shot at %.0f deg met nothing to stain" % azimuth)
+			continue
+		var landed: Vector3 = body_space.affine_inverse() * (shot["position"] as Vector3)
+		var about := landed - axis
+		var want := fposmod(atan2(about.x, about.z) / TAU + 0.5, 1.0)
+		mask.clear()
+		enemy.paint_mayo(shot["position"], shot["normal"])
+		# The seam is at the front, and a stain straddling it has no meaningful
+		# centroid -- half its cells are at u 0.99 and half at 0.01. Measured as
+		# an angle instead, which adds up either side of the seam.
+		var sum := Vector2.ZERO
+		var painted_cells := 0
+		for row in mask.height:
+			for column in mask.width:
+				if mask.cells[row * mask.width + column] == 0:
+					continue
+				painted_cells += 1
+				var theta := (float(column) + 0.5) / float(mask.width) * TAU
+				sum += Vector2(cos(theta), sin(theta))
+		if painted_cells == 0:
+			_check(false, "a shot at %.0f deg painted nothing" % azimuth)
+			continue
+		var got := fposmod(atan2(sum.y, sum.x) / TAU, 1.0)
+		var skew := absf(fposmod(got - want + 0.5, 1.0) - 0.5) * 360.0
+		worst_skew = maxf(worst_skew, skew)
+	print("stain angle against hit angle: worst %.1f deg over four azimuths" % worst_skew)
+	_check(worst_skew < 4.0,
+		"a stain lands %.0f deg round the body from where the sauce hit" % worst_skew)
+	# Wiped again: what follows counts the sauce a shot puts on a clean monster.
+	mask.clear()
+
 	# --- sauce marks it and hurts it, off the same hit ---
 	var full: float = enemy.health
 	var clean: int = enemy.contamination.painted_cell_count()
