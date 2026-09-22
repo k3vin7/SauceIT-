@@ -82,7 +82,7 @@ func _run() -> void:
 	var far := 0
 	for y in body.grid.height:
 		for x in body.grid.width:
-			if body.grid.cells[y * body.grid.width + x] != 1:
+			if body.grid.cells[y * body.grid.width + x] == 0:
 				continue
 			# Distance round the loop, not across it.
 			var gap: int = absi(x - near_column)
@@ -112,9 +112,9 @@ func _run() -> void:
 	var left_edge := 0
 	var right_edge := 0
 	for y in seam_body.grid.height:
-		if seam_body.grid.cells[y * seam_body.grid.width] == 1:
+		if seam_body.grid.cells[y * seam_body.grid.width] > 0:
 			left_edge += 1
-		if seam_body.grid.cells[y * seam_body.grid.width + seam_body.grid.width - 1] == 1:
+		if seam_body.grid.cells[y * seam_body.grid.width + seam_body.grid.width - 1] > 0:
 			right_edge += 1
 	print("seam splat: %d cells in the first column, %d in the last" % [left_edge, right_edge])
 	_check(left_edge > 0 and right_edge > 0,

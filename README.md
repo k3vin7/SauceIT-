@@ -66,9 +66,47 @@ One roof per bay rather than one long one, so a double reads as two tents pushed
 
 **LAVA** is the festival stage in the square, a low contaminable platform you can walk onto and spray off. **Kodanike torn** — the Citizens' Tower — is the one landmark tall enough to steer by: the promenade is long and every junction looks like the last, so something has to be visible over the rooftops that says which way the square is. It is a landmark rather than cover, which is why it is round and thin. Two vending machines are kept off the promenade; they hand nothing out, but `MayoEnemy` is sized as a multiple of one, so `VENDING_SIZE` is load-bearing even where the props are not.
 
-**One grid still covers the whole map, and it has to.** The slip test, the network snapshot and the determinism hash all read `_floor` and nothing else, so a map stitched out of per-street floors would be a rewrite of the sync rather than a level. The cost is that the floor mask is 3318 × 4193 cells — **13.9 M of them, about 27 MB resident** between the cell array and the image data — and `upload_if_dirty` rebuilds and re-uploads **the whole 13 MB image** on any frame where sauce lands, which at a sustained 60 Hz is around 0.8 GB/s of upload for a stripe of cells a few metres across. Doubling the map's width and length quadrupled all of that.
+**One grid still covers the whole map, and it has to.** The slip test, the network snapshot and the determinism hash all read `_floor` and nothing else, so a map stitched out of per-street floors would be a rewrite of the sync rather than a level. ### Thickness, and only deep mayo trips you
 
-Script time per tick is 5.05 ms, up from 3.33. The upload itself is **not measurable here**: headless has no GPU, so `texture.update` is a no-op and `Image.create_from_data` does not copy, and the probe that tries to time it reports 0.01 ms — which is a measurement of nothing, not a clean bill of health. **This is the first thing to fix if the game stutters while firing.** The fix is not a second floor, for the reason above: it is to stop re-sending the whole mask, either by tiling the floor into separately-uploaded textures or by tracking the touched rectangle. Both are real work and neither has been done.
+**A mask cell holds how thick the mayo is, 0 to 255, not whether there is any.** A splat *adds* to every cell it covers rather than flagging it, which matters because the stream lands every frame: counting splats would put a single sweep over any threshold worth having. Running trips you only where the thickness has passed `slip_thickness`; below it, mayo is a stain you can sprint across.
+
+**The threshold is measured, not guessed.** Walking past spraying and then walking the same line again, at one unit per splat, the trail comes out almost exactly linear:
+
+| passes | median | p90 | peak |
+|---|---|---|---|
+| 1 | 8 | 18 | 46 |
+| 2 | 16 | 35 | 70 |
+| 3 | 24 | 51 | 86 |
+| 4 | 31 | 65 | 103 |
+
+50 is the one window that does what was asked: above the **peak** of a single pass (46), so going over a patch once never trips anywhere on it, and at the **p90** of three (51), so three passes trip over most of the trail.
+
+**"Is this spot slippery" is asked of the floor**, not of the thing standing on it. `FloorContamination.is_slippery_at` has nothing player-shaped in it, so when the enemies are meant to slip they call the same function and get the same answer off the same data the shader draws.
+
+**The deep band is drawn from the cell, unfiltered.** The outline is still a hard cut on a filtered sample — that is what makes it marching squares, and the outermost cells of a stain are the single-deposit case the property is claimed for, so the silhouette keeps it. The deep band instead uses `texelFetch`, which reads the cell's own value with no interpolation, so the cells drawn as slippery are exactly the cells the slip test calls slippery. Filtering it would put the drawn edge between two cells and let what you see disagree with what trips you. Blocky is also the right answer: it has to read at a glance while running, and deep mayo gets its own colour and a wet shine rather than a darker shade of the same cream — a gradient cannot be judged at a run.
+
+Thickness never goes down. There is no drying.
+
+### Uploading only what changed
+
+The floor is uploaded **as tiles, and only the tiles that changed are sent**.
+
+*Why tiles and not a dirty rectangle*, which is the obvious answer: Godot's public API has no partial update for a 2D texture. `ImageTexture.update` and `RenderingServer.texture_2d_update` both replace the whole thing, so knowing precisely which cells changed buys nothing on its own — the upload is all-or-nothing per texture. Making the textures smaller is the only lever there is, and that is what a tile is. The **data** does not tile: `cells` stays one array over the whole floor, because the slip test, the network snapshot and the determinism hash all read it and all want one.
+
+Measured by `probe_upload`, which counts bytes because headless cannot time an upload (no GPU, so `texture.update` is a no-op):
+
+| | before | now |
+|---|---|---|
+| a frame with sauce landing | 13.3 MB | **256 KB** |
+| an idle frame | 0 | 0 |
+
+**53× less**, and splats in opposite corners touch different tiles. Tile size is exported; larger tiles were tried and make almost no difference to the frame (19.5 / 19.3 / 18.8 ms at 512 / 1024 / 2048 cells) while sending 4× and 16× more, so 512 stands.
+
+Two things fell out of this. The `cells` array now **is** the texture's bytes — a thickness is already exactly what an R8 texture wants, so the parallel 0/255 array kept beside it is gone, which is 13.9 MB on this floor and halved the script time per tick (4.17 → 2.00 ms). And the debug readout for "how much of this floor is dangerous" scanned all 13.9 M cells *twice*, twice a second; it cost 3 ms a tick on its own, more than everything else the floor does put together. The counts are kept as cells cross the threshold now, and `probe_thickness` checks the running numbers against the scan they replaced, because a running count that drifts is invisible — it just reports the wrong number forever.
+
+The cost is that the floor mask is 3318 × 4193 cells — **13.9 M of them, about 27 MB resident** between the cell array and the image data — and `upload_if_dirty` rebuilds and re-uploads **the whole 13 MB image** on any frame where sauce lands, which at a sustained 60 Hz is around 0.8 GB/s of upload for a stripe of cells a few metres across. Doubling the map's width and length quadrupled all of that.
+
+Script time per tick is 5.05 ms, up from 3.33. The upload itself is **not measurable here**: headless has no GPU, so `texture.update` is a no-op and `Image.create_from_data` does not copy, and the probe that tries to time it reports 0.01 ms — which is a measurement of nothing, not a clean bill of health. That was the number before tiling, and it is why tiling was done: a painting frame now sends 256 KB of it. See above.
 
 **Moving the world off the origin broke the strand's culling, which is worth recording because nothing failed loudly.** The ribbons and the droplet pool are dynamic meshes written straight into their GPU buffers, which does not recalculate the resource AABB, so both set one by hand — and both had a fixed box centred on the world origin, 48 m for the strand and 24 m for the droplets. That was the entire world when the world was one 48 m floor. On a map this size the box sits nowhere near the player, so the renderer culls a stream that is directly in front of them: it blinks out as the view turns and the stale box leaves the frustum, while the stains keep landing, because painting is driven by the points and not by the mesh. Both now recompute their bounds each frame from the vertices and droplets actually written. `probe_visible.gd` checks the bounds against the very segments `_update_visuals` handed each ribbon, at both ends of the map, and also that the box stays strand-sized — a box big enough to cover the map would pass a containment test and defeat the purpose of having one.
 
@@ -295,6 +333,8 @@ godot --headless --path . --script res://tests/probe_enemy.gd                  #
 godot --headless --path . --script res://tests/probe_sauce.gd                  # squirt length limit, the allowance curve, tank drain
 godot --headless --path . --script res://tests/probe_reliability.gd            # the three bands, the catch cap, the air event
 godot --headless --path . --script res://tests/probe_chase.gd                  # routing round corners, props on the road, straight-line shortcut
+godot --headless --path . --script res://tests/probe_thickness.gd              # thickness piles up, thin is safe, deep trips, counts hold
+godot --headless --path . --script res://tests/probe_upload.gd                 # bytes sent per painting frame
 godot --headless --path . --script res://tests/probe_minimap.gd                # minimap placement, the baked street picture, centring
 godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
 godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states, hostile input

@@ -103,6 +103,22 @@ func _draw_player() -> void:
 		draw_line(Vector2(at, tank.position.y), Vector2(at, tank.end.y),
 			Color(0.0, 0.0, 0.0, 0.55), 1.0)
 
+	# How much of the mayo on the floor is deep enough to put someone down. A
+	# debug readout rather than a game one -- it walks the whole grid, so it is
+	# asked a few times a second, not every frame -- and it is here because
+	# "how slippery is this street getting" is otherwise invisible while tuning.
+	var deep: float = world.get("debug_deep_fraction")
+	if deep >= 0.0:
+		var font_deep := ThemeDB.fallback_font
+		var deep_text := "deep %.0f%%" % (deep * 100.0)
+		var deep_at := Vector2(tank.position.x - 8.0
+			- font_deep.get_string_size(deep_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13).x,
+			tank.end.y - 1.0)
+		draw_string(font_deep, deep_at + Vector2(1.0, 1.0), deep_text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13, Color(0.0, 0.0, 0.0, 0.7))
+		draw_string(font_deep, deep_at, deep_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13,
+			Color("e8cf4a"))
+
 	# The band, and how many seconds of delivery are left in it. Secondary to
 	# the bottle in the player's hand, which is what everyone else reads.
 	var level: float = world.local_sauce()

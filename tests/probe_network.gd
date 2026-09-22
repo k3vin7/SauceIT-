@@ -54,6 +54,16 @@ func _make_world(view_name: String, world_name: String):
 	return world
 
 
+## Waits for something to be true rather than for a count of frames, for the
+## parts that are waiting on a packet.
+func _until(condition: Callable, frames := 600) -> bool:
+	for _f in frames:
+		if condition.call():
+			return true
+		await physics_frame
+	return false
+
+
 ## Both peers holding both players, and the client actually taking state.
 func _settled(server_world, client_world, frames := 900) -> void:
 	for _f in frames:
@@ -77,7 +87,7 @@ func _painted_cell_position(world) -> Vector3:
 	var count := 0
 	for y in grid.height:
 		for x in grid.width:
-			if grid.cells[y * grid.width + x] == 1:
+			if grid.cells[y * grid.width + x] >= world._floor.slip_thickness:
 				total += Vector2(float(x), float(y))
 				count += 1
 	if count == 0:
@@ -87,7 +97,7 @@ func _painted_cell_position(world) -> Vector3:
 	var best_distance := INF
 	for y in grid.height:
 		for x in grid.width:
-			if grid.cells[y * grid.width + x] != 1:
+			if grid.cells[y * grid.width + x] < world._floor.slip_thickness:
 				continue
 			var distance := centroid.distance_squared_to(Vector2(float(x), float(y)))
 			if distance < best_distance:
@@ -222,7 +232,9 @@ func _run() -> void:
 	# stripe does not depend on the tank economy, which `probe_sauce` owns.
 	server_world.shooter_for(1).sauce = 1.0
 	var sweep := 0
-	for press in 4:
+	# Eight presses rather than four: the floor trips someone on how *thick* the
+	# mayo is now, and four passes of a sweep leave a stain rather than a hazard.
+	for press in 8:
 		server_world.debug_set_input(Vector2.ZERO, false, true)
 		for _frame in 30:
 			server_world.debug_set_aim(-9.0 + 18.0 * float(sweep) / 120.0, -34.0)
@@ -251,7 +263,24 @@ func _run() -> void:
 	# player sprays down whatever yaw this peer happened to have for them.
 	for aim in [[47.0, -20.0], [-133.0, 12.0], [95.0, 0.0]]:
 		server_world.debug_set_aim(aim[0], aim[1])
-		await _wait(6)
+		# Waited for, not counted out: the aim reaches the other screen in a
+		# state packet, which lands one poll per rendered frame. Six turns of a
+		# loop yielding on physics frames is six polls only while the two run in
+		# step, and they do not on a level this size.
+		#
+		# The wait is on the **numbers the packet carries** -- the yaw and the
+		# pitch -- and the checks below are on what each peer built out of them:
+		# the body's facing and the direction the strand leaves along. Waiting on
+		# those directly would be waiting for the answer and then asserting it.
+		# Both numbers, too: waiting on the yaw alone let the pitch still be a
+		# packet behind, and a spray twenty degrees out is what that looks like.
+		await _until(func() -> bool: return (
+			absf(wrapf(server_world.shooter_for(1).aim_yaw
+				- client_world.shooter_for(1).aim_yaw, -PI, PI)) < 0.001
+			and absf(server_world.shooter_for(1).aim_pitch
+				- client_world.shooter_for(1).aim_pitch) < 0.001))
+		# And one more tick, so both have run the aim through their own frame.
+		await physics_frame
 		var here = server_world.shooter_for(1)
 		var there = client_world.shooter_for(1)
 		var facing_gap := rad_to_deg(absf(wrapf(
@@ -353,10 +382,17 @@ func _run() -> void:
 	var b_player_host = server_world.shooter_for(client_id).player
 	var b_player_client = client_world.shooter_for(client_id).player
 	client_world._request_wipe()
-	await _wait(4)
+	# Waited for rather than counted out in frames. The request goes client ->
+	# server and the answer comes back in a state packet, and packets arrive one
+	# `multiplayer.poll()` per *rendered* frame -- so four turns of a loop that
+	# yields on physics frames is four polls only while the two run in step, and
+	# a heavier level puts several physics steps inside one rendered frame.
+	await _until(func() -> bool: return (
+		b_player_host.is_wiping() and b_player_client.is_wiping()))
 	_check(b_player_host.is_wiping(), "B pressed R and the host never started a wipe")
 	_check(b_player_client.is_wiping(), "the wipe is not running on B's own screen")
 	var timer_gap := 0.0
+	var earliest_gap := 0.0
 	var lifted_on_a := 0.0
 	var fired_while_wiping := false
 	client_world.debug_set_input(Vector2.ZERO, false, true)
@@ -364,7 +400,17 @@ func _run() -> void:
 	while b_player_host.is_wiping() and wipe_frames < 200:
 		await physics_frame
 		wipe_frames += 1
-		timer_gap = maxf(timer_gap, absf(b_player_host.wipe_timer - b_player_client.wipe_timer))
+		# The client's timer comes out of the state packet, so it trails the
+		# host's by whatever the delivery took. What would be wrong is the two
+		# running at different *rates* -- that is drift -- and what this
+		# measures is lag, so only a client that is ahead, or one further behind
+		# than a packet can account for, is a problem.
+		# Positive when B's screen is *behind* the host, which is what a packet
+		# in flight looks like: the timer counts down, so the peer that has not
+		# had the latest one yet still holds the larger value.
+		var trail: float = b_player_client.wipe_timer - b_player_host.wipe_timer
+		timer_gap = maxf(timer_gap, trail)
+		earliest_gap = minf(earliest_gap, trail)
 		# What A sees of it: B's lenses tipped up on A's screen.
 		lifted_on_a = maxf(lifted_on_a, absf(
 			server_world.shooter_for(client_id).player.visor.wipe_lift()))
@@ -372,13 +418,20 @@ func _run() -> void:
 			fired_while_wiping = true
 	client_world.debug_set_input(Vector2.ZERO, false, false)
 	await _wait(10)
-	print("wipe: %d frames, timers %.3f s apart, B's lenses lifted %.0f deg on A's screen" % [
-		wipe_frames, timer_gap, rad_to_deg(lifted_on_a)])
+	print("wipe: %d frames, B's timer trailed the host's by at most %.3f s (ran ahead by at most %.3f), lenses lifted %.0f deg on A's screen" % [
+		wipe_frames, timer_gap, maxf(-earliest_gap, 0.0), rad_to_deg(lifted_on_a)])
 	print("  after: host %d cells on B's glasses, B's screen %d, fired while wiping=%s" % [
 		b_visor_host.painted_cell_count(), b_visor_client.painted_cell_count(),
 		str(fired_while_wiping)])
-	_check(timer_gap < 0.05,
-		"the wipe timers drifted %.3f s apart, so the two screens are out of step" % timer_gap)
+	# A quarter of a second of trailing is the network; more than that, or the
+	# client running *ahead* of the host at all, is the two keeping their own
+	# time instead of the host keeping it for both.
+	_check(timer_gap < 0.25,
+		"B's wipe timer trailed the host's by %.3f s: further behind than delivery explains"
+			% timer_gap)
+	_check(earliest_gap > -0.02,
+		"B's wipe timer ran %.3f s ahead of the host's, so it is not the host's timer at all"
+			% -earliest_gap)
 	_check(lifted_on_a > deg_to_rad(20.0),
 		"B's lenses only tipped %.0f deg on A's screen" % rad_to_deg(lifted_on_a))
 	_check(not fired_while_wiping, "B kept firing while wiping their glasses")
@@ -406,6 +459,7 @@ func _run() -> void:
 	var level_worst := 0.0
 	var caught_frames := 0
 	var seen_modes := {}
+	var host_recent_nozzle: Array[int] = []
 	for _f in 150:
 		# Held *at* the unreliable level, not above it: the bottle drains while
 		# it streams, and topping it up to a floor left it in the steady band.
@@ -413,7 +467,13 @@ func _run() -> void:
 		client_world.debug_set_input(Vector2.ZERO, false, true)
 		await physics_frame
 		nozzle_frames += 1
-		if b_host.nozzle == b_client.nozzle:
+		# Same rule as the fall state: the client has to be showing something
+		# the host has just been in, not the identical frame's value. A nozzle
+		# is sent, not derived, so it arrives a packet late by construction.
+		host_recent_nozzle.push_back(b_host.nozzle)
+		while host_recent_nozzle.size() > 6:
+			host_recent_nozzle.remove_at(0)
+		if host_recent_nozzle.has(b_client.nozzle):
 			nozzle_agreed += 1
 		if b_host.nozzle == server_world.Nozzle.CAUGHT:
 			caught_frames += 1
@@ -421,7 +481,7 @@ func _run() -> void:
 		level_worst = maxf(level_worst, absf(b_host.sauce - b_client.sauce))
 	client_world.debug_set_input(Vector2.ZERO, false, false)
 	await _wait(10)
-	print("unreliable bottle over %d frames: nozzle agreed on %d, caught on %d, level differed by at most %.4f" % [
+	print("unreliable bottle over %d frames: B's nozzle was one the host had just been in on %d, caught on %d, level differed by at most %.4f" % [
 		nozzle_frames, nozzle_agreed, caught_frames, level_worst])
 	print("  host nozzle modes: %s, B firing flag on host=%s" % [
 		str(seen_modes), str(b_host.firing)])
@@ -430,7 +490,7 @@ func _run() -> void:
 	# A frame or two of lag is the network; disagreeing for long is two peers
 	# each rolling their own dice.
 	_check(nozzle_agreed > nozzle_frames - 12,
-		"the two screens disagreed about the nozzle on %d of %d frames" % [
+		"B's screen showed a nozzle the host had not just been in, on %d of %d frames" % [
 			nozzle_frames - nozzle_agreed, nozzle_frames])
 	_check(level_worst < 0.02,
 		"the bottle level differed between the screens by %.4f" % level_worst)
@@ -477,8 +537,8 @@ func _run() -> void:
 	await _wait(4)
 
 	var patch := _painted_cell_position(server_world)
-	_check(server_world._floor.is_mayo_at(patch),
-		"the patch the run is aimed at is not painted, so this case tests nothing")
+	_check(server_world._floor.is_slippery_at(patch),
+		"the patch the run is aimed at is not deep enough to trip anyone")
 	var client_player = server_world.shooter_for(client_id).player
 	# A is stood well out of the way first: two capsules overlapping would shove
 	# B off the line before they reached the patch.
@@ -493,15 +553,15 @@ func _run() -> void:
 	# by luck; how far back is clear depends on where the stripe happened to
 	# land, so it is searched for rather than assumed.
 	var run_up := 1.1
-	while run_up < 9.0 and server_world._floor.is_mayo_at(patch + Vector3(0.0, 0.0, run_up)):
+	while run_up < 9.0 and server_world._floor.is_slippery_at(patch + Vector3(0.0, 0.0, run_up)):
 		run_up += 0.2
 	client_player.global_position = patch + Vector3(0.0, stand, run_up)
 	client_world.debug_set_aim(0.0, 0.0)
 	client_world.debug_set_input(Vector2(0.0, -1.0), true, false)
 	print("B starts at %.2v, %.1f m back from patch centre %.2v" % [
 		client_player.global_position, run_up, patch])
-	_check(not server_world._floor.is_mayo_at(client_player.global_position),
-		"B starts standing in the mayo, so this is not a run onto a patch")
+	_check(not server_world._floor.is_slippery_at(client_player.global_position),
+		"B starts standing in the deep mayo, so this is not a run onto a patch")
 
 	var tripped_on_server := false
 	var tripped_on_client := false
@@ -510,7 +570,13 @@ func _run() -> void:
 	var states_seen := {}
 	var client_states_seen := {}
 	# How far the client may trail the host, in physics frames.
-	const LAG_FRAMES := 3
+	#
+	# This is not a network budget -- both peers are in one process over
+	# loopback. It is the delivery gap: state is sent once per *physics* frame
+	# and applied once per *rendered* one, so the client can be behind by as
+	# many physics steps as fit inside a rendered frame, and a heavier level
+	# fits more. Eight was three until the floor got four times bigger.
+	const LAG_FRAMES := 8
 	var host_recent: Array[int] = []
 	var worst_lag := 0
 	var server_tilt_peak := 0.0

@@ -1,0 +1,11 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://main.tscn" id="1_main"]
+[ext_resource type="PackedScene" path="res://real_guide.tscn" id="2_guide"]
+
+[node name="MayoPrototypeComparison" type="Node3D"]
+
+[node name="MayoPrototype" parent="." instance=ExtResource("1_main")]
+
+[node name="RealGuide" parent="." instance=ExtResource("2_guide")]
+

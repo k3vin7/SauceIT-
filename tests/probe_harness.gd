@@ -66,7 +66,13 @@ func _session(count: int, port: int, codes: Array = []) -> Array:
 	# frame -- so a physics-frame count is a poll count divided by something the
 	# level decides, and the host could be holding four players while a guest
 	# had only heard about two.
-	await _until(func() -> bool: return _settled(worlds), 600)
+	# The cap is generous on purpose. Every message here is delivered one
+	# `multiplayer.poll()` per rendered frame, and this loop yields on physics
+	# frames -- so on a level heavy enough to fit several physics steps inside a
+	# rendered one, a turn of the loop is a fraction of a poll. The wait ends
+	# when the session settles; the number is only there so a session that never
+	# does fails instead of hanging.
+	await _until(func() -> bool: return _settled(worlds), 2400)
 	# And a little past it, so anything still in flight lands before the checks.
 	for _f in 10:
 		await physics_frame

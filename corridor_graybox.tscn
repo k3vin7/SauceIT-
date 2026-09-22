@@ -1,0 +1,15 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/corridor_graybox.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://assets/scale_tests/corridor_buildings.glb" id="2_buildings"]
+[ext_resource type="PackedScene" path="res://assets/scale_tests/corridor_terrain.glb" id="3_terrain"]
+[ext_resource type="PackedScene" path="res://assets/scale_tests/corridor_routes.glb" id="4_routes"]
+
+[node name="CorridorGraybox" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="Terrain" parent="." instance=ExtResource("3_terrain")]
+
+[node name="Buildings" parent="." instance=ExtResource("2_buildings")]
+
+[node name="SelectedRoutes" parent="." instance=ExtResource("4_routes")]

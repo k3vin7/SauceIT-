@@ -1,0 +1,1283 @@
+{
+  "selected_routes": [
+    "karja",
+    "rootsiturg_loop"
+  ],
+  "corridor_distance_m": 45.0,
+  "route_bounds_local_xz_m": {
+    "x": [
+      -5.918652103340719,
+      62.066208319796715
+    ],
+    "z": [
+      -194.6477956371382,
+      0.0
+    ]
+  },
+  "corridor_bounds_local_xz_m": {
+    "x": [
+      -50.91865210334072,
+      107.06620831979671
+    ],
+    "z": [
+      -239.6477956371382,
+      45.0
+    ]
+  },
+  "buildings": {
+    "total_wide_source": 197,
+    "inside_corridor": 47,
+    "row3_outside": 150,
+    "classification": "minimum LoD2 plan-edge distance to either selected centreline"
+  },
+  "terrain": {
+    "grid_size": [
+      160,
+      287
+    ],
+    "triangles_inside_corridor": 53364
+  },
+  "lengths_1x_m": {
+    "karja": 164.67033188026195,
+    "rootsiturg_loop": 109.36119764470621
+  },
+  "selected_total_1x_m": 274.03152952496816,
+  "widths_1x_m": {
+    "combined_median": 14.330222042388481,
+    "karja_reference_median": 13.800010415966568,
+    "maximum": 40.65562203671453,
+    "maximum_route": "rootsiturg_loop",
+    "maximum_station_m": 70.0,
+    "maximum_local_xz_m": [
+      45.03070475884803,
+      -193.28715593527411
+    ],
+    "valid_samples": 23
+  },
+  "scale_tests": {
+    "test_scale_227": {
+      "factor": 2.27,
+      "selected_total_m": 622.0515720216778,
+      "combined_median_width_m": 32.529604036221855,
+      "maximum_width_m": 92.28826202334199,
+      "maximum_local_xz_m": [
+        102.21969980258503,
+        -438.76184397307225
+      ],
+      "route_bounds_local_xz_m": {
+        "x": [
+          -13.435340274583432,
+          140.89029288593855
+        ],
+        "z": [
+          -441.8504960963037,
+          0.0
+        ]
+      }
+    },
+    "test_scale_180": {
+      "factor": 1.8,
+      "selected_total_m": 493.2567531449427,
+      "combined_median_width_m": 25.794399676299268,
+      "maximum_width_m": 73.18011966608616,
+      "maximum_local_xz_m": [
+        81.05526856592645,
+        -347.9168806834934
+      ],
+      "route_bounds_local_xz_m": {
+        "x": [
+          -10.653573786013295,
+          111.71917497563409
+        ],
+        "z": [
+          -350.36603214684874,
+          0.0
+        ]
+      }
+    }
+  },
+  "building_manifest": [
+    {
+      "name": "Building_000_d073p363",
+      "source_material": "noname313293",
+      "corridor_distance_m": 73.36308777754628,
+      "inside_default": false
+    },
+    {
+      "name": "Building_001_d199p300",
+      "source_material": "noname316991",
+      "corridor_distance_m": 199.29959579777696,
+      "inside_default": false
+    },
+    {
+      "name": "Building_002_d082p744",
+      "source_material": "noname316992",
+      "corridor_distance_m": 82.74355563320456,
+      "inside_default": false
+    },
+    {
+      "name": "Building_003_d158p163",
+      "source_material": "noname340673",
+      "corridor_distance_m": 158.16326195852184,
+      "inside_default": false
+    },
+    {
+      "name": "Building_004_d067p759",
+      "source_material": "noname342071",
+      "corridor_distance_m": 67.75917565461111,
+      "inside_default": false
+    },
+    {
+      "name": "Building_005_d141p811",
+      "source_material": "noname395014",
+      "corridor_distance_m": 141.81115594606794,
+      "inside_default": false
+    },
+    {
+      "name": "Building_006_d102p629",
+      "source_material": "noname395123",
+      "corridor_distance_m": 102.62869558654963,
+      "inside_default": false
+    },
+    {
+      "name": "Building_007_d040p999",
+      "source_material": "noname395130",
+      "corridor_distance_m": 40.999121061914956,
+      "inside_default": true
+    },
+    {
+      "name": "Building_008_d161p645",
+      "source_material": "noname395134",
+      "corridor_distance_m": 161.64476836124328,
+      "inside_default": false
+    },
+    {
+      "name": "Building_009_d084p465",
+      "source_material": "noname395775",
+      "corridor_distance_m": 84.46482809005308,
+      "inside_default": false
+    },
+    {
+      "name": "Building_010_d162p057",
+      "source_material": "noname395864",
+      "corridor_distance_m": 162.0568707809054,
+      "inside_default": false
+    },
+    {
+      "name": "Building_011_d037p692",
+      "source_material": "noname481586",
+      "corridor_distance_m": 37.69224887919746,
+      "inside_default": true
+    },
+    {
+      "name": "Building_012_d029p399",
+      "source_material": "noname481588",
+      "corridor_distance_m": 29.3987503085377,
+      "inside_default": true
+    },
+    {
+      "name": "Building_013_d010p461",
+      "source_material": "noname481589",
+      "corridor_distance_m": 10.461070036595418,
+      "inside_default": true
+    },
+    {
+      "name": "Building_014_d094p457",
+      "source_material": "noname481750",
+      "corridor_distance_m": 94.4565246356008,
+      "inside_default": false
+    },
+    {
+      "name": "Building_015_d046p877",
+      "source_material": "noname481816",
+      "corridor_distance_m": 46.87731030698044,
+      "inside_default": false
+    },
+    {
+      "name": "Building_016_d036p279",
+      "source_material": "noname481817",
+      "corridor_distance_m": 36.278582657326396,
+      "inside_default": true
+    },
+    {
+      "name": "Building_017_d057p252",
+      "source_material": "noname481818",
+      "corridor_distance_m": 57.252173191447504,
+      "inside_default": false
+    },
+    {
+      "name": "Building_018_d025p576",
+      "source_material": "noname481909",
+      "corridor_distance_m": 25.576490702459402,
+      "inside_default": true
+    },
+    {
+      "name": "Building_019_d112p559",
+      "source_material": "noname482214",
+      "corridor_distance_m": 112.5588235810947,
+      "inside_default": false
+    },
+    {
+      "name": "Building_020_d006p860",
+      "source_material": "noname482217",
+      "corridor_distance_m": 6.859970645820883,
+      "inside_default": true
+    },
+    {
+      "name": "Building_021_d006p878",
+      "source_material": "noname482218",
+      "corridor_distance_m": 6.877610107798208,
+      "inside_default": true
+    },
+    {
+      "name": "Building_022_d006p888",
+      "source_material": "noname482219",
+      "corridor_distance_m": 6.88812133162688,
+      "inside_default": true
+    },
+    {
+      "name": "Building_023_d005p468",
+      "source_material": "noname482220",
+      "corridor_distance_m": 5.468397262557334,
+      "inside_default": true
+    },
+    {
+      "name": "Building_024_d006p291",
+      "source_material": "noname482221",
+      "corridor_distance_m": 6.290748337291112,
+      "inside_default": true
+    },
+    {
+      "name": "Building_025_d036p288",
+      "source_material": "noname482416",
+      "corridor_distance_m": 36.28824377196356,
+      "inside_default": true
+    },
+    {
+      "name": "Building_026_d007p629",
+      "source_material": "noname482418",
+      "corridor_distance_m": 7.62948912102716,
+      "inside_default": true
+    },
+    {
+      "name": "Building_027_d058p494",
+      "source_material": "noname482758",
+      "corridor_distance_m": 58.494155482743096,
+      "inside_default": false
+    },
+    {
+      "name": "Building_028_d031p328",
+      "source_material": "noname482790",
+      "corridor_distance_m": 31.328355685544686,
+      "inside_default": true
+    },
+    {
+      "name": "Building_029_d005p149",
+      "source_material": "noname482890",
+      "corridor_distance_m": 5.148800359018662,
+      "inside_default": true
+    },
+    {
+      "name": "Building_030_d166p061",
+      "source_material": "noname483038",
+      "corridor_distance_m": 166.06138793756955,
+      "inside_default": false
+    },
+    {
+      "name": "Building_031_d134p175",
+      "source_material": "noname483273",
+      "corridor_distance_m": 134.17542942944158,
+      "inside_default": false
+    },
+    {
+      "name": "Building_032_d015p874",
+      "source_material": "noname483277",
+      "corridor_distance_m": 15.873744882893725,
+      "inside_default": true
+    },
+    {
+      "name": "Building_033_d132p584",
+      "source_material": "noname483403",
+      "corridor_distance_m": 132.58442914590395,
+      "inside_default": false
+    },
+    {
+      "name": "Building_034_d003p533",
+      "source_material": "noname483596",
+      "corridor_distance_m": 3.533388502375999,
+      "inside_default": true
+    },
+    {
+      "name": "Building_035_d046p918",
+      "source_material": "noname483636",
+      "corridor_distance_m": 46.91816530904352,
+      "inside_default": false
+    },
+    {
+      "name": "Building_036_d047p768",
+      "source_material": "noname487290",
+      "corridor_distance_m": 47.767782396492905,
+      "inside_default": false
+    },
+    {
+      "name": "Building_037_d079p762",
+      "source_material": "noname487291",
+      "corridor_distance_m": 79.76152591669083,
+      "inside_default": false
+    },
+    {
+      "name": "Building_038_d068p609",
+      "source_material": "noname487292",
+      "corridor_distance_m": 68.6092410983311,
+      "inside_default": false
+    },
+    {
+      "name": "Building_039_d061p689",
+      "source_material": "noname487293",
+      "corridor_distance_m": 61.68887858020465,
+      "inside_default": false
+    },
+    {
+      "name": "Building_040_d138p532",
+      "source_material": "noname488477",
+      "corridor_distance_m": 138.53230767117697,
+      "inside_default": false
+    },
+    {
+      "name": "Building_041_d057p275",
+      "source_material": "noname488494",
+      "corridor_distance_m": 57.27476076898972,
+      "inside_default": false
+    },
+    {
+      "name": "Building_042_d204p950",
+      "source_material": "noname488653",
+      "corridor_distance_m": 204.94968039058065,
+      "inside_default": false
+    },
+    {
+      "name": "Building_043_d006p951",
+      "source_material": "noname513696",
+      "corridor_distance_m": 6.950524869915017,
+      "inside_default": true
+    },
+    {
+      "name": "Building_044_d024p127",
+      "source_material": "noname565631",
+      "corridor_distance_m": 24.127417431772734,
+      "inside_default": true
+    },
+    {
+      "name": "Building_045_d051p353",
+      "source_material": "noname608695",
+      "corridor_distance_m": 51.353004044853144,
+      "inside_default": false
+    },
+    {
+      "name": "Building_046_d117p941",
+      "source_material": "noname612100",
+      "corridor_distance_m": 117.94103208112095,
+      "inside_default": false
+    },
+    {
+      "name": "Building_047_d118p163",
+      "source_material": "noname612101",
+      "corridor_distance_m": 118.16325611525777,
+      "inside_default": false
+    },
+    {
+      "name": "Building_048_d092p660",
+      "source_material": "noname617167",
+      "corridor_distance_m": 92.65998108226694,
+      "inside_default": false
+    },
+    {
+      "name": "Building_049_d102p354",
+      "source_material": "noname617168",
+      "corridor_distance_m": 102.35387030998383,
+      "inside_default": false
+    },
+    {
+      "name": "Building_050_d129p740",
+      "source_material": "noname617181",
+      "corridor_distance_m": 129.73956675239955,
+      "inside_default": false
+    },
+    {
+      "name": "Building_051_d188p919",
+      "source_material": "noname620554",
+      "corridor_distance_m": 188.9186490232979,
+      "inside_default": false
+    },
+    {
+      "name": "Building_052_d109p166",
+      "source_material": "noname631423",
+      "corridor_distance_m": 109.16609449401864,
+      "inside_default": false
+    },
+    {
+      "name": "Building_053_d090p167",
+      "source_material": "noname636715",
+      "corridor_distance_m": 90.16652496136409,
+      "inside_default": false
+    },
+    {
+      "name": "Building_054_d037p817",
+      "source_material": "noname638326",
+      "corridor_distance_m": 37.81694673502873,
+      "inside_default": true
+    },
+    {
+      "name": "Building_055_d162p635",
+      "source_material": "noname638332",
+      "corridor_distance_m": 162.63490352825968,
+      "inside_default": false
+    },
+    {
+      "name": "Building_056_d157p585",
+      "source_material": "noname638333",
+      "corridor_distance_m": 157.5853422989145,
+      "inside_default": false
+    },
+    {
+      "name": "Building_057_d064p012",
+      "source_material": "noname641611",
+      "corridor_distance_m": 64.01249183856922,
+      "inside_default": false
+    },
+    {
+      "name": "Building_058_d040p863",
+      "source_material": "noname645460",
+      "corridor_distance_m": 40.86322263150539,
+      "inside_default": true
+    },
+    {
+      "name": "Building_059_d184p794",
+      "source_material": "noname648024",
+      "corridor_distance_m": 184.7936902155121,
+      "inside_default": false
+    },
+    {
+      "name": "Building_060_d182p252",
+      "source_material": "noname648025",
+      "corridor_distance_m": 182.25212773304503,
+      "inside_default": false
+    },
+    {
+      "name": "Building_061_d101p737",
+      "source_material": "noname660238",
+      "corridor_distance_m": 101.7366854509989,
+      "inside_default": false
+    },
+    {
+      "name": "Building_062_d032p996",
+      "source_material": "noname660868",
+      "corridor_distance_m": 32.99609231483683,
+      "inside_default": true
+    },
+    {
+      "name": "Building_063_d033p715",
+      "source_material": "noname660873",
+      "corridor_distance_m": 33.71460252846206,
+      "inside_default": true
+    },
+    {
+      "name": "Building_064_d147p803",
+      "source_material": "noname660914",
+      "corridor_distance_m": 147.80330298257886,
+      "inside_default": false
+    },
+    {
+      "name": "Building_065_d170p816",
+      "source_material": "noname667642",
+      "corridor_distance_m": 170.8160063295026,
+      "inside_default": false
+    },
+    {
+      "name": "Building_066_d142p837",
+      "source_material": "noname685662",
+      "corridor_distance_m": 142.8370577216139,
+      "inside_default": false
+    },
+    {
+      "name": "Building_067_d006p253",
+      "source_material": "noname688905",
+      "corridor_distance_m": 6.253148827611384,
+      "inside_default": true
+    },
+    {
+      "name": "Building_068_d053p058",
+      "source_material": "noname723940",
+      "corridor_distance_m": 53.05757990485431,
+      "inside_default": false
+    },
+    {
+      "name": "Building_069_d036p152",
+      "source_material": "noname723943",
+      "corridor_distance_m": 36.15176845745239,
+      "inside_default": true
+    },
+    {
+      "name": "Building_070_d091p624",
+      "source_material": "noname723944",
+      "corridor_distance_m": 91.62387777996372,
+      "inside_default": false
+    },
+    {
+      "name": "Building_071_d028p179",
+      "source_material": "noname723958",
+      "corridor_distance_m": 28.179139998666805,
+      "inside_default": true
+    },
+    {
+      "name": "Building_072_d047p170",
+      "source_material": "noname723959",
+      "corridor_distance_m": 47.16997057888714,
+      "inside_default": false
+    },
+    {
+      "name": "Building_073_d172p966",
+      "source_material": "noname723978",
+      "corridor_distance_m": 172.96605741809574,
+      "inside_default": false
+    },
+    {
+      "name": "Building_074_d063p258",
+      "source_material": "noname75563",
+      "corridor_distance_m": 63.25788397156516,
+      "inside_default": false
+    },
+    {
+      "name": "Building_075_d104p124",
+      "source_material": "noname75581",
+      "corridor_distance_m": 104.12356110179542,
+      "inside_default": false
+    },
+    {
+      "name": "Building_076_d047p484",
+      "source_material": "noname77846",
+      "corridor_distance_m": 47.48412024226846,
+      "inside_default": false
+    },
+    {
+      "name": "Building_077_d095p205",
+      "source_material": "noname78208",
+      "corridor_distance_m": 95.20503391501943,
+      "inside_default": false
+    },
+    {
+      "name": "Building_078_d063p964",
+      "source_material": "noname78533",
+      "corridor_distance_m": 63.963707970692255,
+      "inside_default": false
+    },
+    {
+      "name": "Building_079_d007p993",
+      "source_material": "noname78852",
+      "corridor_distance_m": 7.992599349607712,
+      "inside_default": true
+    },
+    {
+      "name": "Building_080_d119p455",
+      "source_material": "noname79658",
+      "corridor_distance_m": 119.45505189969991,
+      "inside_default": false
+    },
+    {
+      "name": "Building_081_d037p175",
+      "source_material": "noname79659",
+      "corridor_distance_m": 37.174824243489134,
+      "inside_default": true
+    },
+    {
+      "name": "Building_082_d073p587",
+      "source_material": "noname79676",
+      "corridor_distance_m": 73.58695641851223,
+      "inside_default": false
+    },
+    {
+      "name": "Building_083_d073p672",
+      "source_material": "noname79685",
+      "corridor_distance_m": 73.67203666597675,
+      "inside_default": false
+    },
+    {
+      "name": "Building_084_d179p044",
+      "source_material": "noname79686",
+      "corridor_distance_m": 179.0442420482542,
+      "inside_default": false
+    },
+    {
+      "name": "Building_085_d115p059",
+      "source_material": "noname79728",
+      "corridor_distance_m": 115.05907729028922,
+      "inside_default": false
+    },
+    {
+      "name": "Building_086_d086p238",
+      "source_material": "noname79916",
+      "corridor_distance_m": 86.23826215735725,
+      "inside_default": false
+    },
+    {
+      "name": "Building_087_d117p076",
+      "source_material": "noname79919",
+      "corridor_distance_m": 117.07595340507497,
+      "inside_default": false
+    },
+    {
+      "name": "Building_088_d207p505",
+      "source_material": "noname79922",
+      "corridor_distance_m": 207.5047233238276,
+      "inside_default": false
+    },
+    {
+      "name": "Building_089_d170p134",
+      "source_material": "noname79933",
+      "corridor_distance_m": 170.13400558815238,
+      "inside_default": false
+    },
+    {
+      "name": "Building_090_d157p802",
+      "source_material": "noname80075",
+      "corridor_distance_m": 157.80196662306193,
+      "inside_default": false
+    },
+    {
+      "name": "Building_091_d004p491",
+      "source_material": "noname80081",
+      "corridor_distance_m": 4.4907841707785305,
+      "inside_default": true
+    },
+    {
+      "name": "Building_092_d190p624",
+      "source_material": "noname80261",
+      "corridor_distance_m": 190.62433286386252,
+      "inside_default": false
+    },
+    {
+      "name": "Building_093_d145p091",
+      "source_material": "noname80349",
+      "corridor_distance_m": 145.09148123254712,
+      "inside_default": false
+    },
+    {
+      "name": "Building_094_d192p793",
+      "source_material": "noname80372",
+      "corridor_distance_m": 192.79338905410552,
+      "inside_default": false
+    },
+    {
+      "name": "Building_095_d112p163",
+      "source_material": "noname80461",
+      "corridor_distance_m": 112.16327631273683,
+      "inside_default": false
+    },
+    {
+      "name": "Building_096_d170p837",
+      "source_material": "noname80462",
+      "corridor_distance_m": 170.8374540857354,
+      "inside_default": false
+    },
+    {
+      "name": "Building_097_d083p032",
+      "source_material": "noname80524",
+      "corridor_distance_m": 83.03222152663832,
+      "inside_default": false
+    },
+    {
+      "name": "Building_098_d079p889",
+      "source_material": "noname80655",
+      "corridor_distance_m": 79.88900524603378,
+      "inside_default": false
+    },
+    {
+      "name": "Building_099_d126p292",
+      "source_material": "noname80675",
+      "corridor_distance_m": 126.29232158353888,
+      "inside_default": false
+    },
+    {
+      "name": "Building_100_d139p913",
+      "source_material": "noname80859",
+      "corridor_distance_m": 139.91325810328297,
+      "inside_default": false
+    },
+    {
+      "name": "Building_101_d052p973",
+      "source_material": "noname80978",
+      "corridor_distance_m": 52.97293653112885,
+      "inside_default": false
+    },
+    {
+      "name": "Building_102_d076p163",
+      "source_material": "noname81037",
+      "corridor_distance_m": 76.16287419883912,
+      "inside_default": false
+    },
+    {
+      "name": "Building_103_d084p167",
+      "source_material": "noname81043",
+      "corridor_distance_m": 84.16736452055018,
+      "inside_default": false
+    },
+    {
+      "name": "Building_104_d047p000",
+      "source_material": "noname81063",
+      "corridor_distance_m": 46.999766502968306,
+      "inside_default": false
+    },
+    {
+      "name": "Building_105_d023p528",
+      "source_material": "noname81097",
+      "corridor_distance_m": 23.52775959272202,
+      "inside_default": true
+    },
+    {
+      "name": "Building_106_d007p244",
+      "source_material": "noname81307",
+      "corridor_distance_m": 7.244420453569249,
+      "inside_default": true
+    },
+    {
+      "name": "Building_107_d162p686",
+      "source_material": "noname81447",
+      "corridor_distance_m": 162.6864649206674,
+      "inside_default": false
+    },
+    {
+      "name": "Building_108_d007p148",
+      "source_material": "noname81460",
+      "corridor_distance_m": 7.147701839946178,
+      "inside_default": true
+    },
+    {
+      "name": "Building_109_d184p042",
+      "source_material": "noname81461",
+      "corridor_distance_m": 184.0421596937488,
+      "inside_default": false
+    },
+    {
+      "name": "Building_110_d155p448",
+      "source_material": "noname81463",
+      "corridor_distance_m": 155.44753805994907,
+      "inside_default": false
+    },
+    {
+      "name": "Building_111_d177p512",
+      "source_material": "noname81607",
+      "corridor_distance_m": 177.5120556658229,
+      "inside_default": false
+    },
+    {
+      "name": "Building_112_d170p946",
+      "source_material": "noname81691",
+      "corridor_distance_m": 170.94603885863492,
+      "inside_default": false
+    },
+    {
+      "name": "Building_113_d090p293",
+      "source_material": "noname81764",
+      "corridor_distance_m": 90.29294440456451,
+      "inside_default": false
+    },
+    {
+      "name": "Building_114_d025p414",
+      "source_material": "noname81779",
+      "corridor_distance_m": 25.413871545984158,
+      "inside_default": true
+    },
+    {
+      "name": "Building_115_d085p941",
+      "source_material": "noname81785",
+      "corridor_distance_m": 85.94129134062084,
+      "inside_default": false
+    },
+    {
+      "name": "Building_116_d078p868",
+      "source_material": "noname81794",
+      "corridor_distance_m": 78.86781979083737,
+      "inside_default": false
+    },
+    {
+      "name": "Building_117_d128p675",
+      "source_material": "noname81801",
+      "corridor_distance_m": 128.67492668281633,
+      "inside_default": false
+    },
+    {
+      "name": "Building_118_d191p469",
+      "source_material": "noname81822",
+      "corridor_distance_m": 191.46940921816514,
+      "inside_default": false
+    },
+    {
+      "name": "Building_119_d089p006",
+      "source_material": "noname81831",
+      "corridor_distance_m": 89.0060507464161,
+      "inside_default": false
+    },
+    {
+      "name": "Building_120_d100p782",
+      "source_material": "noname81916",
+      "corridor_distance_m": 100.78175986076924,
+      "inside_default": false
+    },
+    {
+      "name": "Building_121_d052p585",
+      "source_material": "noname81983",
+      "corridor_distance_m": 52.58483830306983,
+      "inside_default": false
+    },
+    {
+      "name": "Building_122_d109p298",
+      "source_material": "noname81992",
+      "corridor_distance_m": 109.29796405856821,
+      "inside_default": false
+    },
+    {
+      "name": "Building_123_d154p658",
+      "source_material": "noname81993",
+      "corridor_distance_m": 154.6582661674378,
+      "inside_default": false
+    },
+    {
+      "name": "Building_124_d109p401",
+      "source_material": "noname82097",
+      "corridor_distance_m": 109.4010768792269,
+      "inside_default": false
+    },
+    {
+      "name": "Building_125_d153p759",
+      "source_material": "noname82142",
+      "corridor_distance_m": 153.7585036272161,
+      "inside_default": false
+    },
+    {
+      "name": "Building_126_d165p412",
+      "source_material": "noname82234",
+      "corridor_distance_m": 165.41220896332354,
+      "inside_default": false
+    },
+    {
+      "name": "Building_127_d165p400",
+      "source_material": "noname82240",
+      "corridor_distance_m": 165.40038360960662,
+      "inside_default": false
+    },
+    {
+      "name": "Building_128_d080p922",
+      "source_material": "noname82248",
+      "corridor_distance_m": 80.9218954026659,
+      "inside_default": false
+    },
+    {
+      "name": "Building_129_d179p514",
+      "source_material": "noname82385",
+      "corridor_distance_m": 179.5140736769067,
+      "inside_default": false
+    },
+    {
+      "name": "Building_130_d049p299",
+      "source_material": "noname82660",
+      "corridor_distance_m": 49.299185422170126,
+      "inside_default": false
+    },
+    {
+      "name": "Building_131_d059p374",
+      "source_material": "noname82678",
+      "corridor_distance_m": 59.37405097406988,
+      "inside_default": false
+    },
+    {
+      "name": "Building_132_d083p083",
+      "source_material": "noname82978",
+      "corridor_distance_m": 83.08275024021684,
+      "inside_default": false
+    },
+    {
+      "name": "Building_133_d032p219",
+      "source_material": "noname83074",
+      "corridor_distance_m": 32.21938776840223,
+      "inside_default": true
+    },
+    {
+      "name": "Building_134_d111p014",
+      "source_material": "noname83092",
+      "corridor_distance_m": 111.01440296641385,
+      "inside_default": false
+    },
+    {
+      "name": "Building_135_d037p037",
+      "source_material": "noname83094",
+      "corridor_distance_m": 37.03722105957293,
+      "inside_default": true
+    },
+    {
+      "name": "Building_136_d110p398",
+      "source_material": "noname83095",
+      "corridor_distance_m": 110.3980762820545,
+      "inside_default": false
+    },
+    {
+      "name": "Building_137_d081p128",
+      "source_material": "noname83096",
+      "corridor_distance_m": 81.12845773516193,
+      "inside_default": false
+    },
+    {
+      "name": "Building_138_d031p879",
+      "source_material": "noname83097",
+      "corridor_distance_m": 31.878654875705013,
+      "inside_default": true
+    },
+    {
+      "name": "Building_139_d079p885",
+      "source_material": "noname83133",
+      "corridor_distance_m": 79.88473017715127,
+      "inside_default": false
+    },
+    {
+      "name": "Building_140_d122p355",
+      "source_material": "noname83143",
+      "corridor_distance_m": 122.35515299466039,
+      "inside_default": false
+    },
+    {
+      "name": "Building_141_d037p769",
+      "source_material": "noname83193",
+      "corridor_distance_m": 37.768760768126874,
+      "inside_default": true
+    },
+    {
+      "name": "Building_142_d183p309",
+      "source_material": "noname83195",
+      "corridor_distance_m": 183.30863145706553,
+      "inside_default": false
+    },
+    {
+      "name": "Building_143_d027p425",
+      "source_material": "noname83203",
+      "corridor_distance_m": 27.42466955670127,
+      "inside_default": true
+    },
+    {
+      "name": "Building_144_d155p432",
+      "source_material": "noname83210",
+      "corridor_distance_m": 155.4324995913976,
+      "inside_default": false
+    },
+    {
+      "name": "Building_145_d161p958",
+      "source_material": "noname83220",
+      "corridor_distance_m": 161.95762226464504,
+      "inside_default": false
+    },
+    {
+      "name": "Building_146_d107p654",
+      "source_material": "noname83226",
+      "corridor_distance_m": 107.65366797901028,
+      "inside_default": false
+    },
+    {
+      "name": "Building_147_d191p671",
+      "source_material": "noname83273",
+      "corridor_distance_m": 191.67101401904299,
+      "inside_default": false
+    },
+    {
+      "name": "Building_148_d208p264",
+      "source_material": "noname83283",
+      "corridor_distance_m": 208.26370932494495,
+      "inside_default": false
+    },
+    {
+      "name": "Building_149_d073p013",
+      "source_material": "noname83415",
+      "corridor_distance_m": 73.01346464043,
+      "inside_default": false
+    },
+    {
+      "name": "Building_150_d024p771",
+      "source_material": "noname83419",
+      "corridor_distance_m": 24.77117098342515,
+      "inside_default": true
+    },
+    {
+      "name": "Building_151_d048p456",
+      "source_material": "noname83421",
+      "corridor_distance_m": 48.45574723946039,
+      "inside_default": false
+    },
+    {
+      "name": "Building_152_d068p239",
+      "source_material": "noname83424",
+      "corridor_distance_m": 68.23928219112508,
+      "inside_default": false
+    },
+    {
+      "name": "Building_153_d185p015",
+      "source_material": "noname83441",
+      "corridor_distance_m": 185.01478848396152,
+      "inside_default": false
+    },
+    {
+      "name": "Building_154_d074p905",
+      "source_material": "noname83539",
+      "corridor_distance_m": 74.905187562534,
+      "inside_default": false
+    },
+    {
+      "name": "Building_155_d151p788",
+      "source_material": "noname83583",
+      "corridor_distance_m": 151.78785330901812,
+      "inside_default": false
+    },
+    {
+      "name": "Building_156_d101p288",
+      "source_material": "noname83586",
+      "corridor_distance_m": 101.28817155021008,
+      "inside_default": false
+    },
+    {
+      "name": "Building_157_d004p003",
+      "source_material": "noname83653",
+      "corridor_distance_m": 4.002808528598229,
+      "inside_default": true
+    },
+    {
+      "name": "Building_158_d006p840",
+      "source_material": "noname83716",
+      "corridor_distance_m": 6.840454784336594,
+      "inside_default": true
+    },
+    {
+      "name": "Building_159_d161p113",
+      "source_material": "noname83734",
+      "corridor_distance_m": 161.11325067667815,
+      "inside_default": false
+    },
+    {
+      "name": "Building_160_d073p733",
+      "source_material": "noname83735",
+      "corridor_distance_m": 73.73330014381115,
+      "inside_default": false
+    },
+    {
+      "name": "Building_161_d139p015",
+      "source_material": "noname83737",
+      "corridor_distance_m": 139.0146679950695,
+      "inside_default": false
+    },
+    {
+      "name": "Building_162_d143p973",
+      "source_material": "noname83794",
+      "corridor_distance_m": 143.97339325247108,
+      "inside_default": false
+    },
+    {
+      "name": "Building_163_d005p131",
+      "source_material": "noname83808",
+      "corridor_distance_m": 5.131304954570019,
+      "inside_default": true
+    },
+    {
+      "name": "Building_164_d053p721",
+      "source_material": "noname83862",
+      "corridor_distance_m": 53.720715370829836,
+      "inside_default": false
+    },
+    {
+      "name": "Building_165_d067p417",
+      "source_material": "noname83888",
+      "corridor_distance_m": 67.41664389639115,
+      "inside_default": false
+    },
+    {
+      "name": "Building_166_d127p683",
+      "source_material": "noname83894",
+      "corridor_distance_m": 127.6830265734049,
+      "inside_default": false
+    },
+    {
+      "name": "Building_167_d077p621",
+      "source_material": "noname83895",
+      "corridor_distance_m": 77.62083790201078,
+      "inside_default": false
+    },
+    {
+      "name": "Building_168_d004p461",
+      "source_material": "noname83972",
+      "corridor_distance_m": 4.460900638242339,
+      "inside_default": true
+    },
+    {
+      "name": "Building_169_d208p040",
+      "source_material": "noname84076",
+      "corridor_distance_m": 208.04035225366718,
+      "inside_default": false
+    },
+    {
+      "name": "Building_170_d119p966",
+      "source_material": "noname84137",
+      "corridor_distance_m": 119.96562037370155,
+      "inside_default": false
+    },
+    {
+      "name": "Building_171_d038p493",
+      "source_material": "noname84181",
+      "corridor_distance_m": 38.493271342252484,
+      "inside_default": true
+    },
+    {
+      "name": "Building_172_d190p262",
+      "source_material": "noname843204",
+      "corridor_distance_m": 190.26187569408603,
+      "inside_default": false
+    },
+    {
+      "name": "Building_173_d101p041",
+      "source_material": "noname843205",
+      "corridor_distance_m": 101.04071995962816,
+      "inside_default": false
+    },
+    {
+      "name": "Building_174_d102p151",
+      "source_material": "noname843207",
+      "corridor_distance_m": 102.15123472361947,
+      "inside_default": false
+    },
+    {
+      "name": "Building_175_d178p961",
+      "source_material": "noname843209",
+      "corridor_distance_m": 178.96060802263094,
+      "inside_default": false
+    },
+    {
+      "name": "Building_176_d169p690",
+      "source_material": "noname843210",
+      "corridor_distance_m": 169.69039681952052,
+      "inside_default": false
+    },
+    {
+      "name": "Building_177_d181p342",
+      "source_material": "noname843214",
+      "corridor_distance_m": 181.3415522543049,
+      "inside_default": false
+    },
+    {
+      "name": "Building_178_d047p036",
+      "source_material": "noname843226",
+      "corridor_distance_m": 47.03613427408949,
+      "inside_default": false
+    },
+    {
+      "name": "Building_179_d137p920",
+      "source_material": "noname843227",
+      "corridor_distance_m": 137.9201285871987,
+      "inside_default": false
+    },
+    {
+      "name": "Building_180_d021p299",
+      "source_material": "noname84448",
+      "corridor_distance_m": 21.299243771859928,
+      "inside_default": true
+    },
+    {
+      "name": "Building_181_d148p825",
+      "source_material": "noname84911",
+      "corridor_distance_m": 148.8250019363682,
+      "inside_default": false
+    },
+    {
+      "name": "Building_182_d060p152",
+      "source_material": "noname85204",
+      "corridor_distance_m": 60.15245326304561,
+      "inside_default": false
+    },
+    {
+      "name": "Building_183_d126p851",
+      "source_material": "noname85371",
+      "corridor_distance_m": 126.85053910315084,
+      "inside_default": false
+    },
+    {
+      "name": "Building_184_d094p131",
+      "source_material": "noname85380",
+      "corridor_distance_m": 94.13067508606305,
+      "inside_default": false
+    },
+    {
+      "name": "Building_185_d208p820",
+      "source_material": "noname85387",
+      "corridor_distance_m": 208.8198643524887,
+      "inside_default": false
+    },
+    {
+      "name": "Building_186_d072p833",
+      "source_material": "noname85571",
+      "corridor_distance_m": 72.83322938407184,
+      "inside_default": false
+    },
+    {
+      "name": "Building_187_d048p533",
+      "source_material": "noname85706",
+      "corridor_distance_m": 48.53295857731716,
+      "inside_default": false
+    },
+    {
+      "name": "Building_188_d007p649",
+      "source_material": "noname85709",
+      "corridor_distance_m": 7.648900479052369,
+      "inside_default": true
+    },
+    {
+      "name": "Building_189_d086p505",
+      "source_material": "noname85710",
+      "corridor_distance_m": 86.50530789191734,
+      "inside_default": false
+    },
+    {
+      "name": "Building_190_d100p884",
+      "source_material": "noname86195",
+      "corridor_distance_m": 100.8843943351002,
+      "inside_default": false
+    },
+    {
+      "name": "Building_191_d210p153",
+      "source_material": "noname87377",
+      "corridor_distance_m": 210.1529034267837,
+      "inside_default": false
+    },
+    {
+      "name": "Building_192_d057p488",
+      "source_material": "noname87503",
+      "corridor_distance_m": 57.48823372795515,
+      "inside_default": false
+    },
+    {
+      "name": "Building_193_d141p143",
+      "source_material": "noname87671",
+      "corridor_distance_m": 141.14342977370973,
+      "inside_default": false
+    },
+    {
+      "name": "Building_194_d144p311",
+      "source_material": "noname87834",
+      "corridor_distance_m": 144.3112006855856,
+      "inside_default": false
+    },
+    {
+      "name": "Building_195_d103p476",
+      "source_material": "noname87903",
+      "corridor_distance_m": 103.47603385938497,
+      "inside_default": false
+    },
+    {
+      "name": "Building_196_d015p614",
+      "source_material": "noname89484",
+      "corridor_distance_m": 15.614458433131775,
+      "inside_default": true
+    }
+  ]
+}

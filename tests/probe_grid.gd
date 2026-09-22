@@ -29,8 +29,18 @@ func _run() -> void:
 
 	# --- sampler settings ---
 	var code: String = grid.material.shader.code
-	_check(code.contains("step(THRESHOLD, coverage)") and code.contains("THRESHOLD = 0.5"),
-		"the shader does not cut at exactly 0.5")
+	# The outline is still a hard cut on a filtered sample -- that is what makes
+	# it marching squares -- but it is cut at half a *deposit* now rather than at
+	# a fixed 0.5, because a cell with one splat on it is nowhere near the top of
+	# a byte any more.
+	_check(code.contains("step(paint_threshold, coverage)"),
+		"the shader does not cut the outline at the paint threshold")
+	# And the deep band is read unfiltered, so the cells drawn as slippery are
+	# exactly the cells the slip test calls slippery.
+	_check(code.contains("texelFetch(mask_texture"),
+		"the deep band is filtered, so what is drawn can disagree with what trips you")
+	_check(code.contains("step(slip_threshold, thickness)"),
+		"the deep band is not cut at the slip threshold")
 	var sampler := ""
 	for line in code.split("\n"):
 		if line.begins_with("uniform sampler2D mask_texture"):
@@ -52,28 +62,32 @@ func _run() -> void:
 	# Grid coordinates are the floor's own, and the floor no longer sits at the
 	# world origin now that it carries the whole street, so every world point
 	# here is built from the local one rather than assumed equal to it.
-	floor_node.paint_mayo(floor_node.to_global(Vector3(2.0, 0.0, 2.0)))
+	# Painted several times: one splat now leaves a thickness, not a flag.
+	for _splat in 8:
+		floor_node.paint_mayo(floor_node.to_global(Vector3(2.0, 0.0, 2.0)))
 	grid.upload_if_dirty()
 	# grid.image is what is handed to texture.update. Reading the texture back
 	# would be closer to what the shader sees, but headless has no GPU to read
 	# it back from -- it returns the blank image it was created with.
-	var uploaded := grid.image
+	# Read back out of `cells`, which *is* the texture's bytes now: a thickness
+	# is already exactly what an R8 texture wants, so the parallel 0/255 array
+	# that used to be kept beside it is gone.
 	var marked := grid.cell_of(Vector2(2.0, 2.0))
-	var painted_texel: int = uploaded.get_pixel(marked.x, marked.y).r8
-	var clean_texel: int = uploaded.get_pixel(0, 0).r8
-	print("uploaded texel: painted cell reads %d, clean cell reads %d (the cut is at 128)" % [
-		painted_texel, clean_texel])
-	_check(grid.cells[marked.y * grid.width + marked.x] == 1,
-		"the test splat did not mark the cell it was aimed at")
-	_check(painted_texel > 128,
-		"a painted cell uploads as %d, under the shader's 0.5 cut: it would not be drawn"
-			% painted_texel)
-	_check(clean_texel == 0, "a clean cell uploads as %d rather than 0" % clean_texel)
+	var painted_texel: int = grid.cells[marked.y * grid.width + marked.x]
+	var clean_texel: int = grid.cells[0]
+	var cut := maxf(float(floor_node.thickness_per_splat) * 0.5, 0.5)
+	print("uploaded texel: painted cell reads %d, clean cell reads %d (the outline cuts at %.1f)" % [
+		painted_texel, clean_texel, cut])
+	_check(painted_texel > 0, "the test splat did not mark the cell it was aimed at")
+	_check(float(painted_texel) > cut,
+		"a painted cell holds %d, under the outline's cut of %.1f: it would not be drawn"
+			% [painted_texel, cut])
+	_check(clean_texel == 0, "a clean cell holds %d rather than 0" % clean_texel)
 	# And wiping has to take the texture with it, not just the mask.
 	grid.clear()
 	grid.upload_if_dirty()
-	_check(grid.image.get_pixel(marked.x, marked.y).r8 == 0,
-		"clearing the grid left the stain in the texture")
+	_check(grid.cells[marked.y * grid.width + marked.x] == 0,
+		"clearing the grid left the stain behind")
 
 	# --- the 0.5 crossing sits on the cell boundary ---
 	# A block of cells filled directly, then walked across in fine steps. Built
@@ -88,6 +102,9 @@ func _run() -> void:
 			if grid.has_cell(cell):
 				grid.cells[cell.y * grid.width + cell.x] = 1
 	grid.dirty = true
+	# Filled to one deposit and cut at half of one, which is the case the
+	# outline's marching-squares property is actually claimed for: the outermost
+	# cells of a real stain are the ones a single splat only just reached.
 	var crossing := _find_crossing(floor_node, grid, centre)
 	var boundary := _nearest_cell_boundary(grid, crossing)
 	print("bilinear 0.5 crossing at x=%.5f m, nearest cell boundary x=%.5f m, error %.6f m" % [

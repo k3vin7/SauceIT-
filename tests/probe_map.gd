@@ -344,7 +344,7 @@ func _run() -> void:
 		for row in grid.height:
 			var run := 0
 			for column in grid.width:
-				if grid.cells[row * grid.width + column] == 1:
+				if grid.cells[row * grid.width + column] > 0:
 					run += 1
 				else:
 					widest = maxi(widest, run)

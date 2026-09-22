@@ -845,6 +845,7 @@ func _process(_delta: float) -> void:
 	_place_viewmodel()
 	_update_camera()
 	_report_view(_delta)
+	_update_deep_readout(_delta)
 	for shooter in _shooters.values():
 		_update_fallen_body(shooter)
 		_update_visor(shooter)
@@ -2054,6 +2055,26 @@ func _slot_of(player: MayoPlayer) -> int:
 	return 0
 
 
+## Share of the painted floor thick enough to slip on, refreshed a few times a
+## second rather than every frame: it walks the whole grid, which on this map is
+## fourteen million cells. -1 while it has never been asked.
+var debug_deep_fraction := -1.0
+var _deep_refresh := 0.0
+
+## How often the reading above is taken. Debug only.
+@export_range(0.0, 5.0, 0.05, "suffix:s") var deep_readout_interval := 0.5
+
+
+func _update_deep_readout(delta: float) -> void:
+	if deep_readout_interval <= 0.0 or _floor == null:
+		return
+	_deep_refresh -= delta
+	if _deep_refresh > 0.0:
+		return
+	_deep_refresh = deep_readout_interval
+	debug_deep_fraction = _floor.deep_fraction()
+
+
 ## What is left in the local player's tank, for the HUD.
 func local_sauce() -> float:
 	return _local.sauce if _local != null else 0.0
@@ -2170,7 +2191,12 @@ func _update_slip(shooter: Shooter) -> void:
 	var player := shooter.player
 	if not player.can_slip() or not player.is_running():
 		return
-	if _floor.is_mayo_at(player.global_position):
+	# Asked of the floor, not decided here. "Is this spot slippery" is a fact
+	# about the floor, and the floor is what the shader draws from -- so what
+	# trips you and what you can see cannot come apart. Nothing about this is
+	# player-shaped: when the enemies are meant to slip too, they call the same
+	# function and get the same answer.
+	if _floor.is_slippery_at(player.global_position):
 		player.begin_slip()
 
 
