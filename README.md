@@ -351,7 +351,15 @@ It is a development harness, not a game mode. The shipped scene is untouched.
 
 ## Verification
 
-Run the headless checks with a Godot 4 executable:
+Run the headless checks with a Godot 4 executable.
+
+**On a fresh clone, import the assets once first.** `--script` does not run an import pass, so the stall meshes have no imported form yet and `mayo_prototype.gd` fails to parse on the `preload` of the first one — which does not read as a missing import, it reads as a probe hanging:
+
+```sh
+godot --headless --path . --import   # once per clone, and after deleting .godot/
+```
+
+Then:
 
 ```sh
 godot --headless --path . --script res://tests/smoke_test.gd
