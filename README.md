@@ -94,6 +94,19 @@ Putting both ends on the same clock removes the spread instead of splitting it. 
 
 The coat is numbered by the server and rides along in the field a floor splat was not using, so the wire is the same size and every peer groups the same splats into the same layer. A coat's cells are a set, not a byte per cell — a byte per cell is 13.9 MB on this floor, and a coat only ever touches a few thousand.
 
+### Two branches, two answers
+
+The stream does not spread its sauce evenly — measured on a standing burst, of 111 splats the cell it sat over took **100** while the far end of the same trail took **one to three**. That is a real property of the weapon, and there are two honest things to do about it. Both are kept, so they can be played against each other:
+
+| | `mayo-trail1` | `mayo-trail2` (this one) |
+|---|---|---|
+| a cell counts | every splat | one layer per `coat_seconds` (0.35 s) |
+| threshold | 150 | 3 |
+| one walking pass | slippery nowhere | slippery nowhere |
+| three overlapping passes | still almost nothing | slippery along all of it |
+| stream held on a spot | puddle at 1.00 s, and only then | puddle at about 1 s |
+| what it is about | aiming | covering ground |
+
 ### The stain is drawn in steps
 
 A cell used to be drawn white on its first pass and yellow on the one that tripped, with nothing in between, so the mayo piling up was invisible until the frame it flipped. The stain has a band per pass instead, each a hard edge on a cell boundary:
