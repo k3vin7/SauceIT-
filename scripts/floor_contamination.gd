@@ -66,6 +66,39 @@ extends StaticBody3D
 ## does not: a runner has to be able to tell at the edge of the patch, not by
 ## comparing two shades of cream.
 @export var deep_color := Color("e8cf4a")
+
+@export_subgroup("Thickness Steps")
+## The stain is drawn in **four steps**, not one flat colour and not a ramp.
+##
+## A splat draws a cell white on its first hit, and the deep band needs
+## twenty-odd hits. Measured on a standing burst, the cell under the stream took
+## 100 of the 111 splats while the far end of the same stain took one to three
+## -- so with a single stain colour, a spot at 1 and a spot at 21 looked
+## identical and the pile was invisible until the frame it flipped yellow. That
+## is what "only the landing cell turns yellow" actually was.
+##
+## The steps make the pile legible while it is still building:
+##
+##     1 .. mid-1      white, the spatter that has always been there
+##     mid .. thick-1  light cream
+##     thick .. slip-1 heavy cream -- about to become dangerous
+##     slip ..         yellow and wet
+##
+## Each boundary is a hard edge on a cell boundary rather than a blend, for the
+## same reason the deep band is: it has to be readable at a glance at a run, and
+## a hard edge is what reads. The look is the same stepped, blocky one the
+## stains have everywhere else.
+@export var mayo_color_mid := Color("f5e195")
+## The one that matters most: this is the warning. It has to be clearly apart
+## from the yellow rather than a shade towards it, so it is duller rather than
+## brighter -- same lightness, much less saturation, and the deep band's wet
+## shine on top of that.
+@export var mayo_color_thick := Color("e6cd80")
+## Where white becomes light cream.
+@export_range(1, 255, 1) var stain_mid_thickness := 8
+## Where light cream becomes heavy cream. Clamped below `slip_thickness`, since
+## a step at or past it would simply never be drawn.
+@export_range(1, 255, 1) var stain_thick_thickness := 15
 @export_range(0.0, 1.0, 0.01) var mayo_roughness := 0.34
 @export_range(0.0, 1.0, 0.01) var deep_roughness := 0.06
 
@@ -135,6 +168,36 @@ func deep_fraction() -> float:
 
 func deep_cell_count() -> int:
 	return grid.deep_count
+
+
+## Where the two middle steps actually sit, as (mid, thick).
+##
+## Ordered here rather than trusted from the inspector: a step at or past the
+## deep band would never be drawn, and one past the other would swallow it, so
+## both are pulled back into range instead of quietly disappearing.
+func step_bounds() -> Vector2i:
+	var thick := clampi(stain_thick_thickness, 1, maxi(slip_thickness - 1, 1))
+	return Vector2i(clampi(stain_mid_thickness, 1, thick), thick)
+
+
+## Which of the four bands a thickness is drawn in: 0 clean, 1 white, 2 light
+## cream, 3 heavy cream, 4 deep. This is the shader's own arithmetic, so a check
+## can confirm the band that gets drawn and the thickness that is stored agree.
+func step_for_thickness(thickness: int) -> int:
+	if thickness <= 0:
+		return 0
+	if thickness >= slip_thickness:
+		return 4
+	var bounds := step_bounds()
+	if thickness >= bounds.y:
+		return 3
+	if thickness >= bounds.x:
+		return 2
+	return 1
+
+
+func stain_step_at(world_position: Vector3) -> int:
+	return step_for_thickness(thickness_at(world_position))
 
 
 func cells_md5() -> String:
@@ -211,11 +274,16 @@ func _push_shader_values() -> void:
 	for index in grid.tile_count():
 		var tile := grid.tile_material(index)
 		tile.set_shader_parameter("deep_color", deep_color)
+		tile.set_shader_parameter("mayo_color_mid", mayo_color_mid)
+		tile.set_shader_parameter("mayo_color_thick", mayo_color_thick)
 		tile.set_shader_parameter("mayo_roughness", mayo_roughness)
 		tile.set_shader_parameter("deep_roughness", deep_roughness)
 		# Normalised, because the texture reads back 0..1.
 		tile.set_shader_parameter("paint_threshold",
 			maxf(float(thickness_per_splat) * 0.5, 0.5) / 255.0)
+		var bounds := step_bounds()
+		tile.set_shader_parameter("mid_threshold", float(bounds.x) / 255.0)
+		tile.set_shader_parameter("thick_threshold", float(bounds.y) / 255.0)
 		tile.set_shader_parameter("slip_threshold", float(slip_thickness) / 255.0)
 
 

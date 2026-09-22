@@ -93,6 +93,23 @@ A pass does not lay sauce down evenly: it leaves a thick ridge where the stream'
 
 Meeting both strictly needs the **ridge flattened**, not the threshold moved. A cell gains one unit per strand point that lands on it, and about three land per frame right under the stream against one at the fringe — so capping a cell's gain per *frame* rather than per point would narrow the spread. That is a change to the paint path and has not been made.
 
+### The stain is drawn in four steps
+
+A cell is drawn white on its first splat and yellow on its twenty-second, and for a long time there was nothing in between — so a spot at 1 and a spot at 21 looked exactly alike and the mayo piling up was invisible until the frame it flipped. Measured on a standing burst, that gap is wider than it sounds: of 111 splats, the cell under the stream took **100** while the far end of the same stain took **one to three**. Which is how "only the cell it landed on turns yellow" came to be a fair description of a system that was accumulating everywhere it drew.
+
+So the stain has four bands rather than one colour, each a hard edge on a cell boundary:
+
+| thickness | drawn as |
+|---|---|
+| 1 – 7 | white — the spatter that has always been there |
+| 8 – 14 | light cream |
+| 15 – 21 | heavy cream, part way to wet — *about to be dangerous* |
+| 22+ | yellow and wet |
+
+The boundaries are `stain_mid_thickness`, `stain_thick_thickness` and `slip_thickness`, and the floor orders them before pushing them at the shader: a step at or past the deep band would never be drawn at all. Over a four-pass trail the bands cover 8% / 9% / 11% / 72%, so the warning band is a ring you can see rather than a hairline.
+
+Not a gradient, for the same reason the deep band never was one: it has to be readable at a glance at a run, and a hard edge is what reads. `probe_thickness` checks each boundary from both sides and that a cell piling up passes through all four.
+
 **"Is this spot slippery" is asked of the floor**, not of the thing standing on it. `FloorContamination.is_slippery_at` has nothing player-shaped in it, so when the enemies are meant to slip they call the same function and get the same answer off the same data the shader draws.
 
 **The deep band is drawn from the cell, unfiltered.** The outline is still a hard cut on a filtered sample — that is what makes it marching squares, and the outermost cells of a stain are the single-deposit case the property is claimed for, so the silhouette keeps it. The deep band instead uses `texelFetch`, which reads the cell's own value with no interpolation, so the cells drawn as slippery are exactly the cells the slip test calls slippery. Filtering it would put the drawn edge between two cells and let what you see disagree with what trips you. Blocky is also the right answer: it has to read at a glance while running, and deep mayo gets its own colour and a wet shine rather than a darker shade of the same cream — a gradient cannot be judged at a run.

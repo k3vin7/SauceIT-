@@ -115,6 +115,41 @@ func _run() -> void:
 			% [deepest, floor_node.thickness_per_splat * offsets.size()])
 	_check(stacked > 0, "no cell took all three splats, so the overlap is not accumulating")
 
+	# --- the stain is drawn in four steps, and they follow the stored value ---
+	# The reported symptom: paint a patch three times and only the spot under
+	# the stream turns yellow. It was true, and it was not the thickness failing
+	# to accumulate -- a cell is drawn white on its first splat and yellow on its
+	# twenty-second, so everything between the two looked identical and the pile
+	# building up was invisible. The steps are what make it visible, so what has
+	# to hold is that the band drawn follows the byte stored, at every boundary.
+	var bounds := floor_node.step_bounds()
+	print("steps at 1 / %d / %d / %d (white, light cream, heavy cream, deep)" % [
+		bounds.x, bounds.y, floor_node.slip_thickness])
+	_check(1 < bounds.x and bounds.x < bounds.y and bounds.y < floor_node.slip_thickness,
+		"the steps are not in order: 1 / %d / %d / %d" % [
+			bounds.x, bounds.y, floor_node.slip_thickness])
+	var boundaries := [1, bounds.x, bounds.y, floor_node.slip_thickness]
+	for band in boundaries.size():
+		var at: int = boundaries[band]
+		_check(floor_node.step_for_thickness(at) == band + 1,
+			"thickness %d draws as band %d, not the %d its step begins"
+				% [at, floor_node.step_for_thickness(at), band + 1])
+		_check(floor_node.step_for_thickness(at - 1) == band,
+			"thickness %d draws as band %d: the step at %d starts early"
+				% [at - 1, floor_node.step_for_thickness(at - 1), at])
+	# And a real stain passes through all four rather than jumping white to
+	# yellow -- the spread across a splat is what the steps exist to show.
+	grid.clear()
+	var pile := floor_node.to_global(Vector3(14.0, 0.0, 14.0))
+	var seen := {}
+	for _splat in floor_node.slip_thickness + 4:
+		floor_node.paint_mayo(pile)
+		seen[floor_node.stain_step_at(pile)] = true
+	print("a cell piling up passed through bands %s" % str(seen.keys()))
+	for band in [1, 2, 3, 4]:
+		_check(seen.has(band),
+			"a cell went from nothing to slippery without ever drawing band %d" % band)
+
 	# --- one pass is a stain; several are a hazard ---
 	grid.clear()
 	var stand: float = scene.spawn_position_for(0).y
@@ -159,6 +194,18 @@ func _run() -> void:
 		deep_peak = peak
 	print("after four passes: thickest cell %d, %d slippery cells, %.0f%% of the stain" % [
 		deep_peak, floor_node.deep_cell_count(), floor_node.deep_fraction() * 100.0])
+	# What share of the stain each band covers. The steps are only worth having
+	# if the middle two are actually drawn on a real trail rather than being a
+	# hairline between white and yellow.
+	var census := PackedInt32Array([0, 0, 0, 0, 0])
+	for cell in grid.cells:
+		census[floor_node.step_for_thickness(cell)] += 1
+	var stain: int = census[1] + census[2] + census[3] + census[4]
+	print("bands over the trail: white %.0f%%, light %.0f%%, heavy %.0f%%, deep %.0f%%" % [
+		100.0 * census[1] / stain, 100.0 * census[2] / stain,
+		100.0 * census[3] / stain, 100.0 * census[4] / stain])
+	_check(census[2] + census[3] > 0,
+		"the two middle bands cover nothing: the stain still jumps white to yellow")
 	_check(deep_peak >= floor_node.slip_thickness,
 		"four passes only reached %d, under the %d that trips: nothing would ever be slippery"
 			% [deep_peak, floor_node.slip_thickness])
