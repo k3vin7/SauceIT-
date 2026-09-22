@@ -24,17 +24,19 @@ extends StaticBody3D
 ## "one pass is slippery nowhere" and "three passes are slippery mostly" wanted
 ## thresholds a hundred apart, and 22 was the least bad point between them.
 ##
-## Counting passes removes the spread rather than splitting it. A trigger pull
-## adds one layer to every cell it covered, head and tail alike, so the trail is
-## flat and the threshold is just a number of passes:
+## Counting layers removes the spread rather than splitting it. A cell takes a
+## layer per `coat_seconds` the stream is on it, so the threshold is just a
+## count of times the floor was painted:
 ##
 ##     1 pass  -- nothing is slippery, anywhere on the trail
 ##     2       -- still nothing
 ##     3       -- all of the overlap is slippery, all of it at once
 ##
-## Note what this gives up: parking the stream on one spot no longer piles sauce
-## up there. Holding the trigger for ten seconds leaves the same single layer as
-## brushing past. Making a puddle is three passes, deliberately.
+## And sauce still pools where it is parked, which is the point of holding a
+## trigger: about a second of the stream sitting on a spot puts a puddle there.
+## What it no longer does is get there a hundred times faster than the same
+## stream sweeping, which is what made the head of a trail slippery while its
+## tail stayed clean.
 @export_range(1, 255, 1) var slip_thickness := 3
 ## The floor is uploaded as tiles and only the changed ones are sent, so this is
 ## what a frame with sauce landing on it actually costs. Bigger tiles mean fewer

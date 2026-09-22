@@ -81,16 +81,19 @@ var deep_threshold := 255
 ## trail slippery inside a second and the tail of the same trail never, which is
 ## exactly what "only the bit it landed on turns yellow" was.
 ##
-## Counting *passes* instead makes the whole trail equal: one trigger pull adds
-## one layer everywhere it reached, and it takes three overlapping passes to
-## make anything slippery -- head, tail and all.
+## Counting *layers* instead puts both ends of a trail on the same clock. A
+## coat is opened per trigger pull and reopened every `coat_seconds` it stays
+## open, so brushing a cell in passing leaves one layer and holding the stream
+## on it leaves one every interval -- sauce pools where you park it, at a rate
+## that no longer outruns the rest of the trail by a hundred to one.
 ##
-## Kept as a set per burst rather than a coat id per cell, because a byte per
-## cell is 13.9 MB on the floor and a burst only ever touches a few thousand.
-## Old bursts are evicted by id, oldest first: four players can have four bursts
-## in the air at once, and a burst that has stopped arriving is finished.
+## Kept as a set per coat rather than a coat id per cell, because a byte per
+## cell is 13.9 MB on the floor and a coat only ever touches a few thousand.
+## Old coats are evicted by id, oldest first: a held trigger opens a few a
+## second and four players can be firing, so the ceiling is generous and a coat
+## that has stopped arriving is finished.
 var _coats := {}
-const MAX_LIVE_COATS := 8
+const MAX_LIVE_COATS := 48
 
 var image: Image
 var texture: ImageTexture

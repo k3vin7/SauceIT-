@@ -70,7 +70,7 @@ One roof per bay rather than one long one, so a double reads as two tents pushed
 
 **A mask cell holds how thick the mayo is, 0 to 255, not whether there is any.** A splat *adds* to every cell it covers rather than flagging it, which matters because the stream lands every frame: counting splats would put a single sweep over any threshold worth having. Running trips you only where the thickness has passed `slip_thickness`; below it, mayo is a stain you can sprint across.
 
-**A cell rises once per trigger pull, not once per splat.** That one rule is what makes the threshold a plain number of passes rather than a measured compromise.
+**A cell takes one layer per `coat_seconds` the stream is on it, not one per splat.** That one rule is what makes the threshold a plain number of passes rather than a measured compromise.
 
 The stream does not spread its sauce evenly. Measured on a standing burst: of 111 splats, the cell the stream sat over took **100** while the far end of the same trail took **one to three**, and during the burst the landing point marches back toward the player (3.2 m to 2.4 m) as the bottle's pressure drops — so it lingers where it started and skims everything after. Counting splats made the head of a trail slippery inside a second and the tail of the same trail never, and left a threshold trying to straddle a hundredfold spread:
 
@@ -82,16 +82,17 @@ The stream does not spread its sauce evenly. Measured on a standing burst: of 11
 
 One pass's peak was twice three passes' median, so "one pass is slippery nowhere" and "three passes are slippery mostly" wanted numbers a hundred apart. 50 left three passes 16% slippery; 22 was the least bad point between the two.
 
-Counting passes removes the spread instead of splitting it. A burst lays one layer over everything it reached, head and tail alike, so a trail is flat and the threshold is just a count:
+Putting both ends on the same clock removes the spread instead of splitting it. A coat opens per trigger pull and reopens every `coat_seconds` (0.35 s) it stays open, so a cell brushed in passing takes one layer and a cell the stream sits on takes one per interval:
 
-| passes | thickest cell | slippery |
+| | thickest cell | slippery |
 |---|---|---|
-| 1 | 1 | 0% |
-| 4 | 4 | 99% of the stain |
+| 1 pass, walking | 2 | 0% |
+| 4 passes, walking | 8 | 99% of the stain |
+| stream parked ~1 s | 4 | yes |
 
-`slip_thickness` is 3. What this gives up is deliberate: parking the stream on one spot no longer piles sauce up there, and holding the trigger for ten seconds leaves the same single layer as brushing past. Making a puddle is three passes.
+`slip_thickness` is 3, and both halves hold at once. A single pass is slippery nowhere on its length, three overlapping passes are slippery along all of it, and holding the stream on a chokepoint still puddles it — about a second, deliberately, at a rate you can watch arrive through the stain's steps. What a parked stream no longer does is get there a hundred times faster than the same stream sweeping, which is what made the head of a trail slippery while its own tail stayed clean.
 
-The coat is numbered by the server and rides along in the field a floor splat was not using, so the wire is the same size and every peer groups the same splats into the same pull. A burst's coated cells are a set, not a byte per cell — a byte per cell is 13.9 MB on this floor, and a burst only ever touches a few thousand.
+The coat is numbered by the server and rides along in the field a floor splat was not using, so the wire is the same size and every peer groups the same splats into the same layer. A coat's cells are a set, not a byte per cell — a byte per cell is 13.9 MB on this floor, and a coat only ever touches a few thousand.
 
 ### The stain is drawn in steps
 

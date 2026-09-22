@@ -77,6 +77,10 @@ func _prepare_main_instance() -> void:
 		elif child is Node3D:
 			(child as Node3D).visible = false
 
+	# These belong to the hidden prototype street.  Clearing them only on this
+	# instance keeps its chase/contact loop out of the scale walk; the four
+	# measurement dummies below are separate, inert bodies with collision only.
+	game.debug_clear_enemies()
 	game.debug_clear_input_override()
 	game.set_first_person(true)
 

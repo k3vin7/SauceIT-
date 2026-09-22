@@ -369,6 +369,39 @@ func _run() -> void:
 	print("running over the same trail once it is deep: fell=%s" % str(fell_on_deep))
 	_check(fell_on_deep, "running over deep mayo did not knock the player down")
 
+	# --- and sauce pools where the stream is parked ---
+	# The other half of the rule. A layer is per `coat_seconds` rather than per
+	# trigger pull, so holding the stream on one spot goes on layering: a
+	# chokepoint can be puddled deliberately, at a rate that does not outrun
+	# the rest of the trail the way counting splats did.
+	grid.clear()
+	player.global_position = home
+	player.velocity = Vector3.ZERO
+	scene.debug_set_aim(0.0, -38.0)
+	await physics_frame
+	scene._local.sauce = 1.0
+	scene.debug_set_input(Vector2.ZERO, false, true)
+	var tap_peak := 0
+	for held_frame in 90:
+		scene._local.sauce = 1.0
+		await physics_frame
+		if held_frame == 30:
+			for cell in grid.cells:
+				tap_peak = maxi(tap_peak, cell)
+	scene.debug_set_input(Vector2.ZERO, false, false)
+	for _f in 45:
+		await physics_frame
+	var parked_peak := 0
+	for cell in grid.cells:
+		parked_peak = maxi(parked_peak, cell)
+	print("stream held on one spot: %d layers after half a second, %d after holding it" % [
+		tap_peak, parked_peak])
+	_check(parked_peak >= floor_node.slip_thickness,
+		"holding the stream on one spot only reached %d of the %d that trips: sauce does not pool"
+			% [parked_peak, floor_node.slip_thickness])
+	_check(tap_peak < floor_node.slip_thickness,
+		"half a second on a spot reached %d and was already slippery" % tap_peak)
+
 	if failures.is_empty():
 		print("MAYO_THICKNESS_OK")
 		quit(0)

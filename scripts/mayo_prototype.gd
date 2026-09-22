@@ -108,6 +108,10 @@ class Shooter:
 	## was cut for. Numbered by the server; clients take it off the wire.
 	var coat_id := -1
 	var coat_burst := -1
+	## The physics frame the current coat was opened on. A coat that has been
+	## open longer than `coat_seconds` is closed and the next one started, so a
+	## stream held on one spot goes on layering instead of stopping at one.
+	var coat_frame := 0
 	var was_firing := false
 	var firing := false
 	## Counts down after the trigger is let go, so a tap still puts out a
@@ -386,6 +390,22 @@ var _net_panel: Control
 var _input_enabled := true
 ## Splat centre cells found this frame, flushed to the peers at the end of it.
 ## Four ints each: kind, target, cell x, cell y. See MayoNet.apply_splats.
+## How long one layer of sauce takes to lay down, in seconds of the stream
+## being on a spot.
+##
+## This is the rate limit that lets sauce pool without the head of a trail
+## running away from its tail. A splat-per-layer count could not: the stream
+## dumps a hundred splats on the cell it sits over against one on the far end of
+## the same trail, so parking made a puddle in a fifth of a second while
+## sweeping made one never.
+##
+## Per **layer** rather than per splat, both ends are on the same clock. Brush a
+## cell in passing and it takes one layer; hold the stream on it and it takes
+## one every `coat_seconds`, so at three passes to slip, about a second of
+## standing on a spot puts a puddle there -- deliberately, and at a rate you can
+## see coming through the stain's steps.
+@export_range(0.05, 2.0, 0.05, "suffix:s") var coat_seconds := 0.35
+
 var _pending_splats := PackedInt32Array()
 ## Coats are numbered by the server and ride along with the floor splats, so
 ## every peer groups the same splats into the same trigger pull.
@@ -2499,8 +2519,11 @@ func _begin_landing(point: MayoPoint, hit_position: Vector3, hit_normal: Vector3
 ## burst boundaries as well as on cells, for nothing.
 func _record_floor_splat(shooter: Shooter, burst_index: int,
 		hit_position: Vector3) -> void:
-	if shooter.coat_burst != burst_index:
+	var frame := int(Engine.get_physics_frames())
+	var span := maxi(1, roundi(coat_seconds * float(Engine.physics_ticks_per_second)))
+	if shooter.coat_burst != burst_index or frame - shooter.coat_frame >= span:
 		shooter.coat_burst = burst_index
+		shooter.coat_frame = frame
 		_next_coat += 1
 		shooter.coat_id = _next_coat
 	var cell := _floor.paint_mayo(hit_position, shooter.coat_id)
