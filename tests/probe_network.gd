@@ -536,6 +536,25 @@ func _run() -> void:
 	client_world.debug_clear_enemies()
 	await _wait(4)
 
+	# A puddle to run through, laid down the way this branch makes one: A holds
+	# the stream on one spot for a full shot. Through the normal fire path, so
+	# the client hears about it exactly as it would in play -- what is being
+	# tested is that both screens agree on the fall, and a patch poked into
+	# the host's grid directly would not have travelled.
+	var a_shooter = server_world.shooter_for(1)
+	server_world.debug_set_aim(0.0, -38.0)
+	await _wait(4)
+	for _burst in 2:
+		a_shooter.sauce = 1.0
+		server_world.debug_set_input(Vector2.ZERO, false, true)
+		for _f in 70:
+			a_shooter.sauce = 1.0
+			await physics_frame
+		server_world.debug_set_input(Vector2.ZERO, false, false)
+		await _wait(40)
+	print("A held the stream on one spot: %d slippery cells on the host, %d on B's screen" % [
+		server_world._floor.deep_cell_count(), client_world._floor.deep_cell_count()])
+
 	var patch := _painted_cell_position(server_world)
 	_check(server_world._floor.is_slippery_at(patch),
 		"the patch the run is aimed at is not deep enough to trip anyone")

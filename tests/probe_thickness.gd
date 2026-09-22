@@ -184,12 +184,11 @@ func _run() -> void:
 			var one_pass_deep := floor_node.deep_fraction()
 			print("after one pass: thickest cell %d, %.0f%% of the trail slippery" % [
 				peak, one_pass_deep * 100.0])
-			# One pass leaves its own ridge dangerous and nothing else. It is not
-			# nothing -- see `slip_thickness` for why no threshold makes it
-			# nothing without three passes leaving almost nothing either -- but
-			# it has to stay a sliver rather than the whole trail.
-			_check(one_pass_deep < 0.20,
-				"one pass left %.0f%% of its trail slippery: walking your own fresh trail would be a coin toss"
+			# Walking past spraying is a stain and nothing else. The hazard on this
+			# branch comes from holding the stream still, not from sweeping it, so
+			# a moving pass must leave nothing to slip on at all.
+			_check(one_pass_deep < 0.05,
+				"one walking pass left %.0f%% of its trail slippery: a sweep is meant to be a stain"
 					% (one_pass_deep * 100.0))
 		deep_peak = peak
 	print("after four passes: thickest cell %d, %d slippery cells, %.0f%% of the stain" % [
@@ -209,11 +208,6 @@ func _run() -> void:
 	_check(deep_peak >= floor_node.slip_thickness,
 		"four passes only reached %d, under the %d that trips: nothing would ever be slippery"
 			% [deep_peak, floor_node.slip_thickness])
-	# The thing that was reported: painting a patch several times and finding it
-	# safe. Most of what has been gone over repeatedly has to be dangerous.
-	_check(floor_node.deep_fraction() > 0.5,
-		"four passes left only %.0f%% of the trail slippery: going over a patch again and again does nothing"
-			% (floor_node.deep_fraction() * 100.0))
 
 	# --- the running counts agree with counting ---
 	# `painted_cell_count` and `deep_cell_count` are kept as cells change rather
@@ -329,6 +323,42 @@ func _run() -> void:
 	var fell_on_deep := await _run_over(scene, player, thin)
 	print("running over the same trail once it is deep: fell=%s" % str(fell_on_deep))
 	_check(fell_on_deep, "running over deep mayo did not knock the player down")
+
+	# --- and the puddle comes from holding the trigger, not from sweeping ---
+	# What this branch is for. The stream dumps most of a burst wherever it is
+	# pointed, so pointing it at one place for the whole of a shot is what
+	# makes a hazard -- and a flick of the trigger must not, or every shot
+	# would leave one behind.
+	var peaks := {}
+	for hold in [12, 30, 45, 60]:
+		grid.clear()
+		player.global_position = home
+		player.velocity = Vector3.ZERO
+		scene.debug_set_aim(0.0, -38.0)
+		await physics_frame
+		scene._local.sauce = 1.0
+		scene.debug_set_input(Vector2.ZERO, false, true)
+		for _f in hold:
+			scene._local.sauce = 1.0
+			await physics_frame
+		scene.debug_set_input(Vector2.ZERO, false, false)
+		for _f in 60:
+			await physics_frame
+		var held_peak := 0
+		for cell in grid.cells:
+			held_peak = maxi(held_peak, cell)
+		peaks[hold] = held_peak
+		print("  held %.2f s: peak %d, %d slippery cells" % [
+			hold / 60.0, held_peak, floor_node.deep_cell_count()])
+	_check(peaks[12] < floor_node.slip_thickness,
+		"a fifth of a second on the trigger reached %d and already left a puddle"
+			% peaks[12])
+	_check(peaks[30] < floor_node.slip_thickness,
+		"half a shot reached %d: the puddle is meant to take the whole duration"
+			% peaks[30])
+	_check(peaks[60] >= floor_node.slip_thickness,
+		"a shot held to the end of its duration only reached %d of the %d that trips"
+			% [peaks[60], floor_node.slip_thickness])
 
 	if failures.is_empty():
 		print("MAYO_THICKNESS_OK")

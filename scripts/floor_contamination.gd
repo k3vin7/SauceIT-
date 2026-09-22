@@ -16,45 +16,32 @@ extends StaticBody3D
 @export_range(1, 64, 1) var thickness_per_splat := 1
 ## At or over this, the floor is slippery. Under it, it is a stain.
 ##
-## 22 is measured, and it is a **compromise between two aims that cannot both
-## be met**, which is worth stating rather than hiding in a number.
+## **This branch makes a puddle out of a held trigger.** A cell counts every
+## splat that lands on it, and the stream does not spread its sauce evenly: it
+## dumps most of a burst on the spot it happens to sit over while the rest of
+## the trail gets a handful each. Rather than fight that, this branch aims at
+## it -- hold the stream on one place for the whole of its duration and a
+## puddle forms there, right where it was pointed.
 ##
-## Walking past spraying at a steady pace, then walking the same line again:
+## 150 is measured. It is the value that takes the **whole** burst, so a flick
+## leaves a stain and only a deliberate held shot leaves a hazard:
 ##
-##     passes   median   p90   peak
-##          1        9    18     49
-##          2       17    36     97
-##          3       25    54    145
+##     held      peak   slippery cells
+##     0.10 s      29        0
+##     0.20 s      45        0
+##     0.33 s      69        0
+##     0.50 s     101        0
+##     0.75 s     148        0
+##     1.00 s     195        7   <- the duration cap; a full shot
 ##
-## A pass does not lay sauce down evenly. It leaves a thick ridge where the
-## stream's landing point clusters and a thin fringe either side, so one pass's
-## **peak (49) is twice three passes' median (25)**. The two aims -- "once over
-## is slippery nowhere" and "three times over is slippery mostly" -- therefore
-## pull opposite ways, and no single number satisfies both:
+## The trail's median stays around 10 throughout, so the body and tail of a
+## sweep are stain and nothing more. What goes yellow is the spot the stream
+## was parked on, and only when it was parked there for the whole shot.
 ##
-##     threshold   1 pass deep   3 passes deep
-##            50            0%             16%
-##            25            5%             51%
-##            22            5%             57%
-##            20            7%             61%
-##
-## 50 was the first attempt and took the first aim literally: nothing is ever
-## slippery after one pass, and three passes leave only a sixth of the trail
-## slippery -- so painting a patch three times and finding it safe, which is
-## exactly what it looked like from the outside, and what it was reported as.
-##
-## 22 takes the other side. Three passes make most of the trail dangerous, and
-## one pass makes the very middle of its own ridge dangerous -- about a
-## twentieth of it. That residue is the better error of the two: slipping in the
-## middle of the mess you just made is a lesson, and spraying a floor three
-## times for nothing is a broken mechanic.
-##
-## Meeting both strictly needs the *ridge* flattened rather than the threshold
-## moved -- a cell gains one unit per strand point that lands on it, and three
-## land per frame right under the stream against one at the fringe, so capping
-## a cell's gain per frame rather than per point would narrow the spread. That
-## is a change to the paint path and has not been made.
-@export_range(1, 255, 1) var slip_thickness := 22
+## The other branch, mayo-trail2, answers the same question the opposite way:
+## a layer per interval rather than per splat, so a trail is flat, one pass is
+## slippery nowhere and three overlapping passes are slippery along all of it.
+@export_range(1, 255, 1) var slip_thickness := 150
 ## The floor is uploaded as tiles and only the changed ones are sent, so this is
 ## what a frame with sauce landing on it actually costs. Bigger tiles mean fewer
 ## draw calls and a larger upload when one is touched; smaller means the reverse.
@@ -95,10 +82,10 @@ extends StaticBody3D
 ## shine on top of that.
 @export var mayo_color_thick := Color("e6cd80")
 ## Where white becomes light cream.
-@export_range(1, 255, 1) var stain_mid_thickness := 8
+@export_range(1, 255, 1) var stain_mid_thickness := 50
 ## Where light cream becomes heavy cream. Clamped below `slip_thickness`, since
 ## a step at or past it would simply never be drawn.
-@export_range(1, 255, 1) var stain_thick_thickness := 15
+@export_range(1, 255, 1) var stain_thick_thickness := 100
 @export_range(0.0, 1.0, 0.01) var mayo_roughness := 0.34
 @export_range(0.0, 1.0, 0.01) var deep_roughness := 0.06
 

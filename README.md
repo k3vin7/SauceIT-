@@ -70,28 +70,33 @@ One roof per bay rather than one long one, so a double reads as two tents pushed
 
 **A mask cell holds how thick the mayo is, 0 to 255, not whether there is any.** A splat *adds* to every cell it covers rather than flagging it, which matters because the stream lands every frame: counting splats would put a single sweep over any threshold worth having. Running trips you only where the thickness has passed `slip_thickness`; below it, mayo is a stain you can sprint across.
 
-**The threshold is measured, and it is a compromise between two aims that cannot both be met.** Walking past spraying at a steady pace, then walking the same line again:
+**This branch makes a puddle out of a held trigger.** A cell counts every splat that lands on it, and the stream does not spread its sauce evenly: measured on a standing burst, of 111 splats the cell it sat over took **100** while the far end of the same trail took **one to three**. Rather than fight that spread, `mayo-trail1` aims at it — park the stream somewhere for the whole of a shot and a puddle forms there.
 
-| passes | median | p90 | peak |
-|---|---|---|---|
-| 1 | 9 | 18 | 49 |
-| 2 | 17 | 36 | 97 |
-| 3 | 25 | 54 | 145 |
+`slip_thickness` is 150, and it is measured as the value that takes the **whole** shot:
 
-A pass does not lay sauce down evenly: it leaves a thick ridge where the stream's landing point clusters and a thin fringe either side, so **one pass's peak (49) is twice three passes' median (25)**. "Once over is slippery nowhere" and "three times over is slippery mostly" therefore pull opposite ways, and no single number satisfies both:
-
-| threshold | 1 pass deep | 3 passes deep |
+| held | peak | slippery cells |
 |---|---|---|
-| 50 | 0% | 16% |
-| 25 | 5% | 51% |
-| **22** | **5%** | **57%** |
-| 20 | 7% | 61% |
+| 0.10 s | 29 | 0 |
+| 0.20 s | 45 | 0 |
+| 0.33 s | 69 | 0 |
+| 0.50 s | 101 | 0 |
+| 0.75 s | 148 | 0 |
+| **1.00 s** (the duration cap) | **195** | **7** |
 
-50 was the first attempt and took the first aim literally — and it was reported as a bug, correctly: painting a patch three times left five sixths of it safe, which from the outside looks exactly like thickness not accumulating at all. It does accumulate; a splat raises every cell it covers and those are precisely the cells drawn as stained, which `probe_thickness` checks both ways. The threshold was simply set so high that overlapping three times barely reached it.
+The trail's median stays around 10 throughout, so the body and tail of a sweep are stain and nothing more — a walking pass leaves 0% of its trail slippery, and four of them leave 1%. What goes yellow is the spot the stream was pointed at, and only when it was held there for the whole shot. `probe_thickness` checks all three: a flick leaves nothing, half a shot leaves nothing, a full shot leaves a puddle.
 
-22 takes the other side. Three passes make most of the trail dangerous, and one pass makes the middle of its own ridge dangerous — about a twentieth of it. That residue is the better error: slipping in the middle of the mess you just made is a lesson, and spraying a floor three times for nothing is a broken mechanic.
+### Two branches, two answers
 
-Meeting both strictly needs the **ridge flattened**, not the threshold moved. A cell gains one unit per strand point that lands on it, and about three land per frame right under the stream against one at the fringe — so capping a cell's gain per *frame* rather than per point would narrow the spread. That is a change to the paint path and has not been made.
+The spread above is a real property of the weapon, and there are two honest things to do about it. Both are kept:
+
+| | `mayo-trail1` (this one) | `mayo-trail2` |
+|---|---|---|
+| a cell counts | every splat | one layer per `coat_seconds` (0.35 s) |
+| threshold | 150 | 3 |
+| one walking pass | slippery nowhere | slippery nowhere |
+| three overlapping passes | still almost nothing | slippery along all of it |
+| stream held on a spot | puddle at 1.00 s, and only then | puddle at about 1 s |
+| what it is about | aiming | covering ground |
 
 ### The stain is drawn in four steps
 
