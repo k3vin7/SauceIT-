@@ -70,16 +70,28 @@ One roof per bay rather than one long one, so a double reads as two tents pushed
 
 **A mask cell holds how thick the mayo is, 0 to 255, not whether there is any.** A splat *adds* to every cell it covers rather than flagging it, which matters because the stream lands every frame: counting splats would put a single sweep over any threshold worth having. Running trips you only where the thickness has passed `slip_thickness`; below it, mayo is a stain you can sprint across.
 
-**The threshold is measured, not guessed.** Walking past spraying and then walking the same line again, at one unit per splat, the trail comes out almost exactly linear:
+**The threshold is measured, and it is a compromise between two aims that cannot both be met.** Walking past spraying at a steady pace, then walking the same line again:
 
 | passes | median | p90 | peak |
 |---|---|---|---|
-| 1 | 8 | 18 | 46 |
-| 2 | 16 | 35 | 70 |
-| 3 | 24 | 51 | 86 |
-| 4 | 31 | 65 | 103 |
+| 1 | 9 | 18 | 49 |
+| 2 | 17 | 36 | 97 |
+| 3 | 25 | 54 | 145 |
 
-50 is the one window that does what was asked: above the **peak** of a single pass (46), so going over a patch once never trips anywhere on it, and at the **p90** of three (51), so three passes trip over most of the trail.
+A pass does not lay sauce down evenly: it leaves a thick ridge where the stream's landing point clusters and a thin fringe either side, so **one pass's peak (49) is twice three passes' median (25)**. "Once over is slippery nowhere" and "three times over is slippery mostly" therefore pull opposite ways, and no single number satisfies both:
+
+| threshold | 1 pass deep | 3 passes deep |
+|---|---|---|
+| 50 | 0% | 16% |
+| 25 | 5% | 51% |
+| **22** | **5%** | **57%** |
+| 20 | 7% | 61% |
+
+50 was the first attempt and took the first aim literally — and it was reported as a bug, correctly: painting a patch three times left five sixths of it safe, which from the outside looks exactly like thickness not accumulating at all. It does accumulate; a splat raises every cell it covers and those are precisely the cells drawn as stained, which `probe_thickness` checks both ways. The threshold was simply set so high that overlapping three times barely reached it.
+
+22 takes the other side. Three passes make most of the trail dangerous, and one pass makes the middle of its own ridge dangerous — about a twentieth of it. That residue is the better error: slipping in the middle of the mess you just made is a lesson, and spraying a floor three times for nothing is a broken mechanic.
+
+Meeting both strictly needs the **ridge flattened**, not the threshold moved. A cell gains one unit per strand point that lands on it, and about three land per frame right under the stream against one at the fringe — so capping a cell's gain per *frame* rather than per point would narrow the spread. That is a change to the paint path and has not been made.
 
 **"Is this spot slippery" is asked of the floor**, not of the thing standing on it. `FloorContamination.is_slippery_at` has nothing player-shaped in it, so when the enemies are meant to slip they call the same function and get the same answer off the same data the shader draws.
 

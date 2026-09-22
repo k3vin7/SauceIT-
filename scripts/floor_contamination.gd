@@ -16,23 +16,45 @@ extends StaticBody3D
 @export_range(1, 64, 1) var thickness_per_splat := 1
 ## At or over this, the floor is slippery. Under it, it is a stain.
 ##
-## 50 is measured, not guessed. Walking past spraying -- a *pass*, which is what
-## a player actually does -- and then walking the same line again, the trail
-## comes out almost exactly linear at this deposit:
+## 22 is measured, and it is a **compromise between two aims that cannot both
+## be met**, which is worth stating rather than hiding in a number.
+##
+## Walking past spraying at a steady pace, then walking the same line again:
 ##
 ##     passes   median   p90   peak
-##          1        8    18     46
-##          2       16    35     70
-##          3       24    51     86
-##          4       31    65    103
+##          1        9    18     49
+##          2       17    36     97
+##          3       25    54    145
 ##
-## So 50 sits in the one window that does what the brief asks: above the **peak**
-## of a single pass (46), so once over a patch never trips anywhere on it, and at
-## the **p90** of three (51), so three passes trip over most of the trail. It is
-## a threshold on how much landed rather than on how many times the trigger was
-## pulled, which matters because the stream lands every frame -- counting splats
-## would put one squirt over any threshold worth having.
-@export_range(1, 255, 1) var slip_thickness := 50
+## A pass does not lay sauce down evenly. It leaves a thick ridge where the
+## stream's landing point clusters and a thin fringe either side, so one pass's
+## **peak (49) is twice three passes' median (25)**. The two aims -- "once over
+## is slippery nowhere" and "three times over is slippery mostly" -- therefore
+## pull opposite ways, and no single number satisfies both:
+##
+##     threshold   1 pass deep   3 passes deep
+##            50            0%             16%
+##            25            5%             51%
+##            22            5%             57%
+##            20            7%             61%
+##
+## 50 was the first attempt and took the first aim literally: nothing is ever
+## slippery after one pass, and three passes leave only a sixth of the trail
+## slippery -- so painting a patch three times and finding it safe, which is
+## exactly what it looked like from the outside, and what it was reported as.
+##
+## 22 takes the other side. Three passes make most of the trail dangerous, and
+## one pass makes the very middle of its own ridge dangerous -- about a
+## twentieth of it. That residue is the better error of the two: slipping in the
+## middle of the mess you just made is a lesson, and spraying a floor three
+## times for nothing is a broken mechanic.
+##
+## Meeting both strictly needs the *ridge* flattened rather than the threshold
+## moved -- a cell gains one unit per strand point that lands on it, and three
+## land per frame right under the stream against one at the fringe, so capping
+## a cell's gain per frame rather than per point would narrow the spread. That
+## is a change to the paint path and has not been made.
+@export_range(1, 255, 1) var slip_thickness := 22
 ## The floor is uploaded as tiles and only the changed ones are sent, so this is
 ## what a frame with sauce landing on it actually costs. Bigger tiles mean fewer
 ## draw calls and a larger upload when one is touched; smaller means the reverse.
