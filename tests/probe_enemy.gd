@@ -35,37 +35,100 @@ func _run() -> void:
 	var enemy: MayoEnemy = scene.enemy_at(0)
 	var player: MayoPlayer = scene._player
 
-	# --- size ---
+	# --- it is solid over the shape it is drawn as ---
+	# The thing that was reported: sauce went through the monster. Its colliders
+	# were a humanoid stick figure left over from the mock enemy it replaced --
+	# head, torso, pelvis, arms, legs -- while the burger is drawn 4.2 m across
+	# and was solid over 1.9 m of it, so anything but a shot down the middle
+	# met nothing. What has to hold is that the silhouette you can see is the
+	# silhouette you can hit.
 	var station: Vector3 = StreetMap.VENDING_SIZE
-	print("refill station %.2v -> enemy %.2f m wide, %.2f m tall (%.1fx, %.1fx)" % [
-		station, enemy.radius * 2.0, enemy.height,
-		enemy.radius * 2.0 / station.x, enemy.height / station.y])
-	_check(is_equal_approx(enemy.radius * 2.0, station.x * 2.0),
-		"the enemy is %.2f m wide, not twice the station's %.2f m" % [enemy.radius * 2.0, station.x])
+	print("refill station %.2v -> monster %.2f m wide, %.2f m tall (%.1fx tall)" % [
+		station, enemy.radius * 2.0, enemy.height, enemy.height / station.y])
 	_check(is_equal_approx(enemy.height, station.y * 2.0),
 		"the enemy is %.2f m tall, not twice the station's %.2f m" % [enemy.height, station.y])
 
-	# The silhouette is the mesh's, not the declared numbers': the bones are
-	# fractions of the height, and an arm reaching a finger's width too far
-	# would make the figure wider than the size it claims to be.
+	# Everything below is measured in the **body's own space**. In world space
+	# an axis-aligned box grows with the body's yaw, so a collider that fits
+	# exactly reads as half a metre too wide -- which is how the first attempt
+	# at this fix was written, and it looked wrong when it was right.
+	var to_body: Transform3D = enemy.global_transform.affine_inverse()
+	var drawn := AABB()
+	var drawn_started := false
+	for node in enemy._visual_root.find_children("*", "MeshInstance3D", true, false):
+		var mesh_node := node as MeshInstance3D
+		if mesh_node.mesh == null:
+			continue
+		var into: Transform3D = to_body * mesh_node.global_transform
+		var part: AABB = into * mesh_node.mesh.get_aabb()
+		drawn = drawn.merge(part) if drawn_started else part
+		drawn_started = true
+	var solid := AABB()
+	var solid_started := false
+	var shapes: Array[Node] = enemy.find_children("*", "CollisionShape3D", true, false)
+	for node in shapes:
+		var shape := node as CollisionShape3D
+		var part: AABB = shape.transform * shape.shape.get_debug_mesh().get_aabb()
+		solid = solid.merge(part) if solid_started else part
+		solid_started = true
+	print("drawn %.2f x %.2f x %.2f, solid %.2f x %.2f x %.2f, in %d parts" % [
+		drawn.size.x, drawn.size.y, drawn.size.z,
+		solid.size.x, solid.size.y, solid.size.z, shapes.size()])
+	_check(shapes.size() >= 3,
+		"the monster is %d collider(s): the burger is meant to be three tiers plus its arms"
+			% shapes.size())
+	for axis in 3:
+		_check(solid.size[axis] > drawn.size[axis] * 0.75,
+			"the monster is %.2f m across axis %d but solid over only %.2f m of it"
+				% [drawn.size[axis], axis, solid.size[axis]])
+
+	# Round, not flat: the old figure was a body and much thinner front to back
+	# than wide. A burger is a stack of discs, and the collider has to be too,
+	# or one side of it goes back to being air.
+	_check(absf(solid.size.x - solid.size.z) < solid.size.x * 0.35,
+		"the monster is solid over %.2f m across and %.2f m deep, which is not a burger"
+			% [solid.size.x, solid.size.z])
+
+	# And point by point: a spot on the patty, on each bun and on an arm has to
+	# be solid. The envelope above can be the right size and still be hollow
+	# where it counts.
+	var space := enemy.get_world_3d().direct_space_state
+	var probes := {
+		"the bottom bun": Vector3(0.0, -0.024 * enemy.height, -0.076 * enemy.height),
+		"the patty's rim": Vector3(0.39 * enemy.height, 0.083 * enemy.height, -0.076 * enemy.height),
+		"the top bun": Vector3(0.0, 0.30 * enemy.height, -0.076 * enemy.height),
+		"an arm": Vector3(-0.3707 * enemy.height, -0.30 * enemy.height, -0.12 * enemy.height),
+	}
+	var hollow: Array[String] = []
+	for where in probes.keys():
+		var query := PhysicsPointQueryParameters3D.new()
+		query.position = enemy.global_transform * (probes[where] as Vector3)
+		query.collide_with_areas = false
+		var found := false
+		for hit in space.intersect_point(query, 8):
+			if hit.collider == enemy:
+				found = true
+		if not found:
+			hollow.push_back(where)
+	print("solid at: %s" % ("every part sampled" if hollow.is_empty() else "hollow at " + str(hollow)))
+	_check(hollow.is_empty(),
+		"sauce would pass through %s" % str(hollow))
+
+	# The mask the stains are unwrapped onto is built from the same measurements,
+	# so a stain lands where the sauce hit rather than on a humanoid ghost.
 	var envelope: AABB = enemy._body_mesh.mesh.get_aabb()
-	print("welded mesh: %d surface(s), %.2f m wide, %.2f m tall, %.2f m deep" % [
+	print("welded mask: %d surface(s), %.2f m wide, %.2f m tall, %.2f m deep" % [
 		enemy._body_mesh.mesh.get_surface_count(), envelope.size.x, envelope.size.y,
 		envelope.size.z])
 	_check(enemy._body_mesh.mesh.get_surface_count() == 1,
 		"the body is %d surfaces; the unwrap needs one mesh in the body's space"
 			% enemy._body_mesh.mesh.get_surface_count())
-	_check(absf(envelope.size.x - station.x * 2.0) < 0.02,
-		"the figure is %.2f m across, not the %.2f m it claims" % [
-			envelope.size.x, station.x * 2.0])
-	_check(absf(envelope.size.y - station.y * 2.0) < 0.02,
-		"the figure is %.2f m tall, not the %.2f m it claims" % [
-			envelope.size.y, station.y * 2.0])
-	# A person, not a pillar: much thinner front to back than it is wide, even
-	# with its arms out in front of it.
-	_check(envelope.size.z < envelope.size.x * 0.6,
-		"the figure is %.2f m deep against %.2f m wide, which is not a body shape" % [
-			envelope.size.z, envelope.size.x])
+	_check(absf(envelope.size.y - enemy.height) < enemy.height * 0.12,
+		"the mask is %.2f m tall against a %.2f m monster" % [envelope.size.y, enemy.height])
+	_check(absf(envelope.size.x - solid.size.x) < 0.02,
+		"the mask is %.2f m across and the colliders are %.2f m: the stain would not follow the sauce"
+			% [envelope.size.x, solid.size.x])
+
 	_check(not enemy._body_mesh.visible,
 		"the old capsule mockup is still visible over the hamburger monster")
 	_check(enemy._visual_root != null,
@@ -83,13 +146,16 @@ func _run() -> void:
 	for visual_mesh in visual_meshes:
 		_check((visual_mesh as MeshInstance3D).material_overlay != null,
 			"a hamburger mesh is missing the sauce-contamination overlay")
-	# One collider per bone, so what you can see is what you can hit.
+	# Three discs for the burger and one capsule per arm, so what you can see
+	# is what you can hit.
 	var colliders := 0
 	for child in enemy.get_children():
 		if child is CollisionShape3D:
 			colliders += 1
-	print("colliders: %d (one per bone)" % colliders)
-	_check(colliders >= 6, "the figure has %d colliders; the limbs are not hittable" % colliders)
+	print("colliders: %d (three burger tiers and two arms)" % colliders)
+	_check(colliders >= 5,
+		"the monster has %d colliders; it needs a tier each for the buns and the patty, and an arm each side"
+			% colliders)
 
 	# --- speed, and that it is actually chasing ---
 	print("player walks %.2f m/s and runs %.2f; enemy moves %.2f m/s (%.2fx walking)" % [
@@ -190,15 +256,39 @@ func _run() -> void:
 	_check(worst_off < 60.0,
 		"its front sat %.0f deg off the way it was travelling: it is going backwards"
 			% worst_off)
-	# And the figure has to have a front to look with, or none of that is visible.
-	var shape: AABB = enemy._body_mesh.mesh.get_aabb()
-	print("silhouette reaches %.2f m forward of its spine and %.2f m behind it" % [
-		-shape.position.z, shape.end.z])
-	# It reaches further forward than its own back is thick, which is what makes
-	# the facing readable from down the street rather than only in the numbers.
-	_check(-shape.position.z - shape.end.z > enemy._rest_radius * 0.5,
-		"the figure reaches %.2f m forward and %.2f m back: which way it faces cannot be seen"
-			% [-shape.position.z, shape.end.z])
+	# And it has to have a front to look with, or none of that is visible. The
+	# old figure showed its front by reaching its arms forward, and the burger
+	# cannot: its colliders are discs and a disc has no front. What it has is a
+	# face, so that is what is checked -- the mouth and eyes have to sit forward
+	# of the body, on -Z, which is the front every other body in the game uses.
+	var to_body_now: Transform3D = enemy.global_transform.affine_inverse()
+	var face := AABB()
+	var face_started := false
+	for node in enemy._visual_root.find_children("*", "MeshInstance3D", true, false):
+		var mesh_node := node as MeshInstance3D
+		var part_name := String(mesh_node.name)
+		if mesh_node.mesh == null:
+			continue
+		if not (part_name.contains("Eye") or part_name.contains("Pupil")
+			or part_name.contains("Mouth") or part_name.contains("Fang")
+			or part_name.contains("Gum")):
+			continue
+		var into_body: Transform3D = to_body_now * mesh_node.global_transform
+		var part: AABB = into_body * mesh_node.mesh.get_aabb()
+		face = face.merge(part) if face_started else part
+		face_started = true
+	var face_z := face.position.z + face.size.z * 0.5
+	var face_x := face.position.x + face.size.x * 0.5
+	print("its face sits at x %.2f, z %.2f in its own space (front is -Z)" % [
+		face_x, face_z])
+	_check(face_started, "the monster has no face meshes, so its facing tests nothing")
+	_check(face_z < -enemy._body_radius() * 0.3,
+		"its face sits at z %.2f: it is not looking the way the body is pointed" % face_z)
+	# Square on, not over a shoulder: a face off to one side means the model is
+	# turned by the wrong angle, and it would walk at you sideways.
+	_check(absf(face_x) < absf(face_z) * 0.4,
+		"its face sits at x %.2f against z %.2f: the model is turned off-square"
+			% [face_x, face_z])
 
 	# --- sauce marks it and hurts it, off the same hit ---
 	var full: float = enemy.health
@@ -235,12 +325,12 @@ func _run() -> void:
 	# configured with, so handing it the wrong radius silently rescales every
 	# stain on that body -- no error, just a different-looking hit, which is
 	# exactly what half the arm span did here.
-	var torso_radius: float = enemy._bones()[MayoEnemy.BONE_TORSO][2]
+	var body_radius: float = enemy._body_radius()
 	var enemy_width := 2.0 * enemy.contamination.brush_radius \
-		* torso_radius / enemy.contamination.radius
+		* body_radius / enemy.contamination.radius
 	var player_width := 2.0 * player.contamination.brush_radius \
 		* player.contamination.radius / player.contamination.radius
-	print("one splat renders %.3f m across on a player, %.3f m on an enemy's torso (brush %.3f m)" % [
+	print("one splat renders %.3f m across on a player, %.3f m on the burger (brush %.3f m)" % [
 		player_width, enemy_width, 2.0 * scene.contamination_brush_radius])
 	_check(absf(enemy_width - player_width) < 0.02,
 		"a splat is %.3f m across on an enemy against %.3f m on a player" % [
@@ -251,10 +341,10 @@ func _run() -> void:
 	# And the unwrap must be built on the part that actually gets hit, not on
 	# the reach of the limbs.
 	print("unwrap radius %.2f m; torso %.2f m, arm span half %.2f m" % [
-		enemy.contamination.radius, torso_radius, enemy.radius])
-	_check(is_equal_approx(enemy.contamination.radius, torso_radius),
+		enemy.contamination.radius, body_radius, enemy.radius])
+	_check(is_equal_approx(enemy.contamination.radius, body_radius),
 		"the unwrap is built on %.2f m rather than the torso's %.2f m" % [
-			enemy.contamination.radius, torso_radius])
+			enemy.contamination.radius, body_radius])
 
 	# --- it hurts the player, weakly and on a cooldown ---
 	# The others are sent away first. This counts how often *one* enemy can land
@@ -366,12 +456,15 @@ func _run() -> void:
 	_check(backwards > enemy.height * 0.8,
 		"its head ended %.2f m toward the player; it fell on its face, not its back"
 			% -backwards)
-	# Resting on the ground rather than sunk into it or hovering over it.
-	print("at rest the body centre is %.2f m up, torso half-thickness %.2f m" % [
-		enemy.global_position.y, enemy._rest_radius])
-	_check(absf(enemy.global_position.y - enemy._rest_radius) < 0.02,
-		"flat on its back the body sits %.2f m up rather than on its %.2f m torso" % [
-			enemy.global_position.y, enemy._rest_radius])
+	# Resting on the ground rather than sunk into it or hovering over it. The
+	# height to expect is measured from the feet it toppled about, not from
+	# zero: the street it is standing on is not at y = 0.
+	var expected_rest: float = enemy._fall_pivot.y + enemy._rest_radius
+	print("at rest the body centre is %.2f m up; its feet are at %.2f and it is %.2f m thick" % [
+		enemy.global_position.y, enemy._fall_pivot.y, enemy._rest_radius])
+	_check(absf(enemy.global_position.y - expected_rest) < 0.02,
+		"flat on its back it sits %.2f m up rather than the %.2f m its own thickness puts it at"
+			% [enemy.global_position.y, expected_rest])
 	_check(hud.enemy_bar_rect(enemy, camera).size.x == 0.0,
 		"a dead enemy still has a health bar over it")
 

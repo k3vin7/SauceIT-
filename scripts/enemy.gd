@@ -24,6 +24,8 @@ const HAMBURGER_MONSTER := preload(
 ## this keeps the visible monster's soles and crown aligned with the legacy
 ## gameplay body's exact height.
 const MODEL_SOURCE_HEIGHT := 1.7729597
+## The height the proportions in `_bones` are written as fractions of.
+const MODEL_HEIGHT := 4.1
 
 @export_group("Health")
 @export_range(10.0, 2000.0, 1.0) var max_health := 240.0
@@ -122,11 +124,13 @@ func _ready() -> void:
 ## grid's clean colour, so the stain and the skin are one material.
 func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	var station: Vector3 = StreetMap.VENDING_SIZE
-	radius = station.x * WIDTH_MULTIPLE * 0.5
 	height = station.y * HEIGHT_MULTIPLE
+	# The burger is very nearly as wide as it is tall, so its width comes
+	# from the model rather than from the refill station it is sized against.
+	radius = _body_radius()
 
 	var bones := _bones()
-	_rest_radius = bones[BONE_TORSO][2]
+	_rest_radius = _body_radius()
 
 	# One collider per bone rather than one capsule around the lot. A single
 	# capsule wide enough to cover the outstretched arms is a fat pill that
@@ -134,15 +138,22 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	# a metre outside it. Per bone, the silhouette you can see is the silhouette
 	# you can hit.
 	for index in bones.size():
-		var bone: Array = bones[index]
-		var shape := CapsuleShape3D.new()
-		shape.radius = bone[2]
-		var span: Vector3 = bone[1] - bone[0]
-		shape.height = span.length() + bone[2] * 2.0
+		var bone: Dictionary = bones[index]
 		var collision := CollisionShape3D.new()
-		collision.name = "Bone%d" % index
-		collision.shape = shape
-		collision.transform = Transform3D(_aligned_basis(span), (bone[0] + bone[1]) * 0.5)
+		collision.name = BONE_NAMES[index] if index < BONE_NAMES.size() else "Part%d" % index
+		if bone["kind"] == "disc":
+			var disc := CylinderShape3D.new()
+			disc.radius = bone["radius"]
+			disc.height = bone["height"]
+			collision.shape = disc
+			collision.transform = Transform3D(Basis(), bone["centre"])
+		else:
+			var span: Vector3 = bone["b"] - bone["a"]
+			var capsule := CapsuleShape3D.new()
+			capsule.radius = bone["radius"]
+			capsule.height = span.length() + bone["radius"] * 2.0
+			collision.shape = capsule
+			collision.transform = Transform3D(_aligned_basis(span), (bone["a"] + bone["b"]) * 0.5)
 		add_child(collision)
 
 	_body_mesh = MeshInstance3D.new()
@@ -174,7 +185,7 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	# they are thinner than one splat, so there was never a middle ground. The
 	# fix without that compromise is a per-bone atlas, which is a much bigger
 	# change than the one it would improve on.
-	contamination.configure(self, _body_mesh, bones[BONE_TORSO][2], height, body_color)
+	contamination.configure(self, _body_mesh, _body_radius(), height, body_color)
 	contamination.add_visual_overlay(_visual_root)
 
 	health = max_health
@@ -262,45 +273,65 @@ func _on_animation_finished(animation: StringName) -> void:
 
 ## Index of the torso in `_bones()`. It is what the body comes to rest on, so
 ## its radius is the one measurement the fall needs back out of the skeleton.
-const BONE_TORSO := 1
+const BONE_NAMES := ["BottomBun", "Fillings", "TopBun", "ArmLeft", "ArmRight"]
 ## Flat on its back: a quarter turn from standing.
 const FLAT := TAU * 0.25
 
-## The skeleton, in the body's own space: y runs from -height/2 at the soles to
-## +height/2 at the crown, and x is its right. Each bone is a capsule given as
-## two end points and a radius, so the proportions are all fractions of the one
-## height and the whole figure scales with the size it was told to be.
+## The body, in its own space: y runs from -height/2 at the soles to +height/2
+## at the crown, and x is its right.
 ##
-## The arms set the width: their hands reach exactly `radius` out, so the
-## silhouette really is as wide as the size it claims rather than that wide plus
-## whatever a cuff happened to add.
+## **Measured off the monster, not invented.** These were a humanoid stick
+## figure left over from the mock enemy the burger replaced -- head, torso,
+## pelvis, two arms, two legs -- and a burger is nothing like that shape, so it
+## was drawn 4.2 m across and solid over 1.9 m of it. Sauce aimed anywhere but
+## its middle went straight through it.
+##
+## Every number below is the real extent of the parts it stands for, read out
+## of the GLB **in the body's own space**. That last part matters: measured in
+## world space an axis-aligned box grows with the body's yaw, and a collider
+## that fits perfectly reads as half a metre too wide.
+##
+##     bottom bun            y -0.82 ..  0.63   radius 1.49
+##     patty, cheese, salad  y -0.18 ..  0.86   radius 1.71
+##     top bun and face      y  0.42 ..  2.04   radius 1.56
+##     arms, shoulder-hand   y -2.08 ..  0.65   radius 0.46, at x +/-1.52
+##
+## The burger sits a third of a metre back of its own origin, which is why
+## every disc is offset in z rather than centred.
+##
+## Three discs for the burger, because that is what a burger is and because the
+## tiers are what a player aims at -- sauce should land on the bun or the patty
+## and be seen to have. The arms are not decoration: the monster has no legs,
+## it walks on its hands, so they carry every low shot.
+##
+## `kind` is "disc" (a cylinder: centre, radius, height) or "limb" (a capsule:
+## two ends and a radius). A burger tier needs the cylinder -- a capsule wide
+## enough to be a bun is also that tall.
 func _bones() -> Array:
 	var h := height
-	var half := h * 0.5
-	var arm_radius := h * 0.035
-	var hand_x := radius - arm_radius
-	var head_radius := h * 0.075
-	var leg_radius := h * 0.045
-	# How far the hands come forward. Enough to read as reaching for you from
-	# down the street, short of turning the figure into a slab.
-	var reach := h * 0.13
+	var cz := -0.0756 * h
 	return [
-		# Head: a capsule with no barrel is a sphere, and its crown is the top
-		# of the whole figure.
-		[Vector3(0.0, half - head_radius, 0.0), Vector3(0.0, half - head_radius, 0.0), head_radius],
-		[Vector3(0.0, h * 0.30, 0.0), Vector3(0.0, 0.0, 0.0), h * 0.09],
-		[Vector3(-h * 0.055, 0.0, 0.0), Vector3(h * 0.055, 0.0, 0.0), h * 0.07],
-		# Arms, shoulder to hand, out and down and reaching forward. The reach
-		# is what gives the figure a front at all: every other bone is on the
-		# x-y plane, so without it the body is symmetric back to front and there
-		# is no way to tell which way it is facing until it falls over.
-		[Vector3(-h * 0.10, h * 0.27, 0.0), Vector3(-hand_x, h * 0.02, -reach), arm_radius],
-		[Vector3(h * 0.10, h * 0.27, 0.0), Vector3(hand_x, h * 0.02, -reach), arm_radius],
-		# Legs, hip to sole. Their feet are the bottom of the figure, and are
-		# set a little forward of the hips for the same reason.
-		[Vector3(-h * 0.05, 0.0, 0.0), Vector3(-h * 0.06, -half + leg_radius, -h * 0.02), leg_radius],
-		[Vector3(h * 0.05, 0.0, 0.0), Vector3(h * 0.06, -half + leg_radius, -h * 0.02), leg_radius],
+		{"kind": "disc", "centre": Vector3(0.0, -0.0244 * h, cz),
+			"radius": 0.3634 * h, "height": 0.3561 * h},
+		{"kind": "disc", "centre": Vector3(0.0, 0.0829 * h, cz),
+			"radius": 0.4171 * h, "height": 0.2537 * h},
+		{"kind": "disc", "centre": Vector3(0.0, 0.3000 * h, cz),
+			"radius": 0.3805 * h, "height": 0.3951 * h},
+		# The end points are pulled in by one radius each, because a capsule's
+		# caps reach that far past them -- given the shoulder and the knuckle
+		# as they measure, the shape overhangs both by half a metre.
+		{"kind": "limb", "a": Vector3(-0.3707 * h, 0.0463 * h, -0.0366 * h),
+			"b": Vector3(-0.3707 * h, -0.3951 * h, -0.1732 * h), "radius": 0.1122 * h},
+		{"kind": "limb", "a": Vector3(0.3707 * h, 0.0463 * h, -0.0366 * h),
+			"b": Vector3(0.3707 * h, -0.3951 * h, -0.1732 * h), "radius": 0.1122 * h},
 	]
+
+
+## The half-width the unwrap wraps the body around, and what `contact_reach` is
+## measured beyond: the widest the burger gets, which is the patty, not a
+## shoulder and not the arms.
+func _body_radius() -> float:
+	return 0.4171 * height
 
 
 ## Every bone's capsule baked into one mesh, in the body's space. Baked rather
@@ -312,15 +343,26 @@ func _welded_mesh(bones: Array) -> ArrayMesh:
 	var normals := PackedVector3Array()
 	var indices := PackedInt32Array()
 	for bone in bones:
-		var span: Vector3 = bone[1] - bone[0]
-		var bone_radius: float = bone[2]
-		var capsule := CapsuleMesh.new()
-		capsule.radius = bone_radius
-		capsule.height = span.length() + bone_radius * 2.0
-		capsule.radial_segments = 12
-		capsule.rings = 6
-		var arrays: Array = capsule.get_mesh_arrays()
-		var placement := Transform3D(_aligned_basis(span), (bone[0] + bone[1]) * 0.5)
+		var arrays: Array
+		var placement: Transform3D
+		if bone["kind"] == "disc":
+			var disc := CylinderMesh.new()
+			disc.top_radius = bone["radius"]
+			disc.bottom_radius = bone["radius"]
+			disc.height = bone["height"]
+			disc.radial_segments = 16
+			disc.rings = 1
+			arrays = disc.get_mesh_arrays()
+			placement = Transform3D(Basis(), bone["centre"])
+		else:
+			var span: Vector3 = bone["b"] - bone["a"]
+			var capsule := CapsuleMesh.new()
+			capsule.radius = bone["radius"]
+			capsule.height = span.length() + bone["radius"] * 2.0
+			capsule.radial_segments = 12
+			capsule.rings = 6
+			arrays = capsule.get_mesh_arrays()
+			placement = Transform3D(_aligned_basis(span), (bone["a"] + bone["b"]) * 0.5)
 		var offset := vertices.size()
 		for vertex in arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array:
 			vertices.push_back(placement * vertex)
