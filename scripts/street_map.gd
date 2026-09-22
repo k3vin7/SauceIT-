@@ -31,8 +31,9 @@ extends RefCounted
 ##
 ## The stalls are deliberately NOT scaled by it: they are furniture at a fixed
 ## real size, and leaving them alone is what makes the street read as bigger
-## rather than as the same street viewed closer.
-const SCALE := 1.8
+## rather than as the same street viewed closer. Neither is the wall height --
+## see `WALL_HEIGHT`.
+const SCALE := 3.6
 
 ## One person wide, times the scale. The capsule is 0.64 m in radius, so the
 ## unscaled cell is its diameter and everything on the map is a whole number of
@@ -43,9 +44,15 @@ const ROAD_CELLS := 8
 const ROAD_WIDTH := CELL * ROAD_CELLS
 
 ## Tall enough that the square's far side is not visible over a street wall from
-## anywhere a player can stand. Scaled with the rest: a wall that stayed put
-## while the street grew would start showing what is behind it.
-const WALL_HEIGHT := 7.0 * SCALE
+## anywhere a player can stand.
+##
+## **Not** scaled with `SCALE` any more. It was, back when the whole map grew
+## together; the streets have since been widened without the walls being asked
+## to grow, so this is the height they had reached and is now stated outright.
+## The trade is real and worth knowing: wider streets mean a longer sightline
+## over a wall of fixed height, so at some width the far side of the map starts
+## showing above them. If that turns up, this is the number to raise.
+const WALL_HEIGHT := 12.6
 ## Walls are two cells deep so they read as building fronts rather than as
 ## cardboard: at one cell a corner shows its own thickness across the street.
 const WALL_DEPTH_CELLS := 2
@@ -139,7 +146,14 @@ const HUMAN_SCALE := CAPSULE_HEIGHT / HUMAN_HEIGHT
 const STALL_FOOTPRINT_M := 3.0
 const STALL_PEAK_M := 3.27
 const STALL_EAVES_M := 2.2
-const STALL_COUNTER_HEIGHT_M := 0.95
+## Deliberately not 0.95, which is what a real serving counter is. The stall
+## around it was scaled up so a 4.1 m enemy can walk under the canopy, and the
+## counter came up with it -- to shoulder height on the player, which stops it
+## being the thing it is for. Its height is a *relationship to the player*
+## rather than a prop dimension, so it is the one figure here trimmed to hold
+## that relationship: this lands it back at about two thirds of a player, which
+## is cover you shoot over.
+const STALL_COUNTER_HEIGHT_M := 0.82
 const STALL_COUNTER_DEPTH_M := 0.7
 const STALL_LEG_M := 0.08
 
@@ -157,7 +171,11 @@ const STALL_LEG_M := 0.08
 ## It also lifts the serving counter from 53% of the player's height to 66% --
 ## waist-high to chest-high -- which changes what the counter is as cover. That
 ## is the number to watch when tuning this.
-const PROP_SCALE := 1.25
+## Raised from 1.25 so the canopy clears an enemy. They are 4.10 m tall and the
+## eaves were at 3.91 m, so they could not walk under a stall at all -- and the
+## line-of-sight test could see under one, which is how they ended up walking
+## into canopies they were never going to fit through.
+const PROP_SCALE := 1.45
 
 ## The one conversion from real metres to this world's.
 const STALL_SCALE := HUMAN_SCALE * PROP_SCALE
@@ -331,6 +349,85 @@ static func wall_boxes() -> Array[Dictionary]:
 			"size": size,
 		})
 	return boxes
+
+
+## The counter's own box, given a stall's. The counter is the only part of a
+## stall at ground level: the canopy is overhead and the legs are thin. Shared
+## by the thing that builds it and the thing that routes around it, so the two
+## cannot come to different conclusions about where it is.
+static func counter_box(stall: Dictionary) -> Dictionary:
+	var size: Vector3 = stall["size"]
+	var facing: Vector3 = stall["facing"]
+	var deep := stall_metre(STALL_COUNTER_DEPTH_M)
+	# Depth runs along the facing, frontage runs across it. Getting these two
+	# the wrong way round is the bug this function exists to stop happening
+	# twice: on a single bay they are the same number and nothing shows.
+	var wide: float = size.z if absf(facing.x) > 0.5 else size.x
+	var span: float = size.x if absf(facing.x) > 0.5 else size.z
+	return {
+		"position": stall["position"] + facing * (span - deep) * 0.5,
+		"size": Vector3(deep, stall_metre(STALL_COUNTER_HEIGHT_M), wide) \
+			if absf(facing.x) > 0.5 else Vector3(wide, stall_metre(STALL_COUNTER_HEIGHT_M), deep),
+		"facing": facing,
+	}
+
+
+## Street cells something is standing on. The stalls back onto the walls but
+## their footprints sit on the road, so anything walking the map has to treat
+## them as wall -- which is the whole reason an enemy needs a route rather than
+## a direction.
+static func blocked_cells() -> Dictionary:
+	var blocked := {}
+	# The stage and the tower stand on the street too. Leaving them out is how
+	# an enemy routed straight through the tower and then leaned on it: the
+	# router has to know about everything standing on the road, not just the
+	# things that came from the marker list.
+	# Only the **counter** of a stall blocks the ground. The canopy is overhead
+	# and now high enough for an enemy to walk under, and the legs are a hand
+	# wide -- shutting the whole footprint made every stall a pillar and turned
+	# a third of the street into wall.
+	var props: Array[Dictionary] = []
+	for stall in stall_boxes():
+		props.push_back(counter_box(stall))
+	props.append_array(vending_boxes())
+	props.push_back({"position": stage_position(), "size": STAGE_SIZE})
+	props.push_back({
+		"position": tower_position(),
+		"size": Vector3(TOWER_RADIUS * 2.0, TOWER_HEIGHT, TOWER_RADIUS * 2.0),
+	})
+	for box in props:
+		var position: Vector3 = box["position"]
+		var size: Vector3 = box["size"]
+		var first := Vector2i(
+			int(floor((position.x - size.x * 0.5) / CELL)) + ORIGIN_CELL.x,
+			int(floor((position.z - size.z * 0.5) / CELL)) + ORIGIN_CELL.y)
+		var last := Vector2i(
+			int(floor((position.x + size.x * 0.5 - 0.001) / CELL)) + ORIGIN_CELL.x,
+			int(floor((position.z + size.z * 0.5 - 0.001) / CELL)) + ORIGIN_CELL.y)
+		for j in range(first.y, last.y + 1):
+			for i in range(first.x, last.x + 1):
+				blocked[Vector2i(i, j)] = true
+	return blocked
+
+
+## Cells a body may walk on: street, less whatever is standing on it.
+static func walkable_cells() -> Dictionary:
+	var cells := floor_cells()
+	for cell in blocked_cells():
+		cells.erase(cell)
+	return cells
+
+
+## Middle of a cell, on the ground.
+static func cell_middle(cell: Vector2i) -> Vector3:
+	return cell_corner(cell) + Vector3(CELL * 0.5, 0.0, CELL * 0.5)
+
+
+## Which cell a world position is in.
+static func cell_at(world_position: Vector3) -> Vector2i:
+	return Vector2i(
+		int(floor(world_position.x / CELL)) + ORIGIN_CELL.x,
+		int(floor(world_position.z / CELL)) + ORIGIN_CELL.y)
 
 
 static func stall_boxes() -> Array[Dictionary]:

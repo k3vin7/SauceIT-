@@ -25,7 +25,7 @@ All requested baseline values are under **Mayo Stream — Reference Values** and
 
 ### The tutorial street
 
-`scripts/street_map.gd` builds the level off the Haapsalu *maitsete promenaad* festival map. It is generated rather than authored, and the whole thing is one lattice: a cell is one person wide (the capsule's 1.28 m diameter) times `SCALE`, and every street is declared as `ROAD_CELLS = 8` of them. That is why "the road is eight people wide" stays true — it is the literal statement in the code, not a metre figure copied into six rectangles that drift apart when one is edited. `SCALE` is 1.8, so a cell is 2.30 m and a street is 18.43 m across; the promenade covers 147 × 191 m.
+`scripts/street_map.gd` builds the level off the Haapsalu *maitsete promenaad* festival map. It is generated rather than authored, and the whole thing is one lattice: a cell is one person wide (the capsule's 1.28 m diameter) times `SCALE`, and every street is declared as `ROAD_CELLS = 8` of them. That is why "the road is eight people wide" stays true — it is the literal statement in the code, not a metre figure copied into six rectangles that drift apart when one is edited. `SCALE` is 3.6, so a cell is 4.61 m and a street is 36.86 m across; the promenade covers 295 × 382 m. **Wall height no longer rides on it** — the streets have been widened twice without the walls being asked to grow with them, so `WALL_HEIGHT` is now stated outright at 12.6 m. The trade is worth knowing: a wider street is a longer sightline over a wall of fixed height, so at some width the far side of the map starts showing above them.
 
 The layout is six overlapping lattice rectangles, and they **overlap rather than abut** — the overlap is the junction, so no crossing is a special case and the whole map falls out of their union:
 
@@ -70,11 +70,113 @@ One roof per bay rather than one long one, so a double reads as two tents pushed
 
 **LAVA** is the festival stage in the square, a low contaminable platform you can walk onto and spray off. **Kodanike torn** — the Citizens' Tower — is the one landmark tall enough to steer by: the promenade is long and every junction looks like the last, so something has to be visible over the rooftops that says which way the square is. It is a landmark rather than cover, which is why it is round and thin. Two vending machines are kept off the promenade; they hand nothing out, but `MayoEnemy` is sized as a multiple of one, so `VENDING_SIZE` is load-bearing even where the props are not.
 
-**One grid still covers the whole map, and it has to.** The slip test, the network snapshot and the determinism hash all read `_floor` and nothing else, so a map stitched out of per-street floors would be a rewrite of the sync rather than a level. The cost is that the floor mask is 1659 × 2097 cells — 3.48 M of them, about 6.6 MB resident between the cell array and the image data — and `upload_if_dirty` rebuilds and re-uploads **the whole 3.3 MB image** on any frame where sauce lands, which at a sustained 60 Hz would be around 200 MB/s of upload for a stripe of cells a few metres across. Script time per tick is unchanged (measured: 3.33 ms). The upload is GPU bandwidth, which the headless profiler cannot see. **This is the first thing to fix if the game stutters while firing, and it is also what caps how much bigger the map can get** — the fix is a dirty-rectangle upload inside `ContaminationGrid`, not a second floor, for the reason above.
+**One grid still covers the whole map, and it has to.** The slip test, the network snapshot and the determinism hash all read `_floor` and nothing else, so a map stitched out of per-street floors would be a rewrite of the sync rather than a level. ### Thickness, and only deep mayo trips you
+
+**A mask cell holds how thick the mayo is, 0 to 255, not whether there is any.** A splat *adds* to every cell it covers rather than flagging it, which matters because the stream lands every frame: counting splats would put a single sweep over any threshold worth having. Running trips you only where the thickness has passed `slip_thickness`; below it, mayo is a stain you can sprint across.
+
+**A cell takes one layer per `coat_seconds` the stream is on it, not one per splat.** That one rule is what makes the threshold a plain number of passes rather than a measured compromise.
+
+The stream does not spread its sauce evenly. Measured on a standing burst: of 111 splats, the cell the stream sat over took **100** while the far end of the same trail took **one to three**, and during the burst the landing point marches back toward the player (3.2 m to 2.4 m) as the bottle's pressure drops — so it lingers where it started and skims everything after. Counting splats made the head of a trail slippery inside a second and the tail of the same trail never, and left a threshold trying to straddle a hundredfold spread:
+
+| passes | median | p90 | peak |
+|---|---|---|---|
+| 1 | 9 | 18 | 49 |
+| 2 | 17 | 36 | 97 |
+| 3 | 25 | 54 | 145 |
+
+One pass's peak was twice three passes' median, so "one pass is slippery nowhere" and "three passes are slippery mostly" wanted numbers a hundred apart. 50 left three passes 16% slippery; 22 was the least bad point between the two.
+
+Putting both ends on the same clock removes the spread instead of splitting it. A coat opens per trigger pull and reopens every `coat_seconds` (0.35 s) it stays open, so a cell brushed in passing takes one layer and a cell the stream sits on takes one per interval:
+
+| | thickest cell | slippery |
+|---|---|---|
+| 1 pass, walking | 2 | 0% |
+| 4 passes, walking | 8 | 99% of the stain |
+| stream parked ~1 s | 4 | yes |
+
+`slip_thickness` is 3, and both halves hold at once. A single pass is slippery nowhere on its length, three overlapping passes are slippery along all of it, and holding the stream on a chokepoint still puddles it — about a second, deliberately, at a rate you can watch arrive through the stain's steps. What a parked stream no longer does is get there a hundred times faster than the same stream sweeping, which is what made the head of a trail slippery while its own tail stayed clean.
+
+The coat is numbered by the server and rides along in the field a floor splat was not using, so the wire is the same size and every peer groups the same splats into the same layer. A coat's cells are a set, not a byte per cell — a byte per cell is 13.9 MB on this floor, and a coat only ever touches a few thousand.
+
+### Two branches, two answers
+
+The stream does not spread its sauce evenly — measured on a standing burst, of 111 splats the cell it sat over took **100** while the far end of the same trail took **one to three**. That is a real property of the weapon, and there are two honest things to do about it. Both are kept, so they can be played against each other:
+
+| | `mayo-trail1` | `mayo-trail2` (this one) |
+|---|---|---|
+| a cell counts | every splat | one layer per `coat_seconds` (0.35 s) |
+| threshold | 150 | 3 |
+| one walking pass | slippery nowhere | slippery nowhere |
+| three overlapping passes | still almost nothing | slippery along all of it |
+| stream held on a spot | puddle at 1.00 s, and only then | puddle at about 1 s |
+| what it is about | aiming | covering ground |
+
+### The stain is drawn in steps
+
+A cell used to be drawn white on its first pass and yellow on the one that tripped, with nothing in between, so the mayo piling up was invisible until the frame it flipped. The stain has a band per pass instead, each a hard edge on a cell boundary:
+
+| passes | drawn as |
+|---|---|
+| 1 | white — the stain |
+| 2 | heavy cream — *one more pass and this is dangerous* |
+| 3 | yellow and wet |
+
+The boundaries are `stain_mid_thickness`, `stain_thick_thickness` and `slip_thickness`, and the floor orders them before pushing them at the shader: a step at or past the deep band would never be drawn at all. At three passes to slip there is only room for three bands; `mayo_color_mid` is the fourth and draws only if the deep band is moved out to four passes or more.
+
+Not a gradient, for the same reason the deep band never was one: it has to be readable at a glance at a run, and a hard edge is what reads. `probe_thickness` checks each boundary from both sides and that a cell piling up passes through every band the configuration can reach.
+
+**"Is this spot slippery" is asked of the floor**, not of the thing standing on it. `FloorContamination.is_slippery_at` has nothing player-shaped in it, so when the enemies are meant to slip they call the same function and get the same answer off the same data the shader draws.
+
+**The deep band is drawn from the cell, unfiltered.** The outline is still a hard cut on a filtered sample — that is what makes it marching squares, and the outermost cells of a stain are the single-deposit case the property is claimed for, so the silhouette keeps it. The deep band instead uses `texelFetch`, which reads the cell's own value with no interpolation, so the cells drawn as slippery are exactly the cells the slip test calls slippery. Filtering it would put the drawn edge between two cells and let what you see disagree with what trips you. Blocky is also the right answer: it has to read at a glance while running, and deep mayo gets its own colour and a wet shine rather than a darker shade of the same cream — a gradient cannot be judged at a run.
+
+Thickness never goes down. There is no drying.
+
+### Uploading only what changed
+
+The floor is uploaded **as tiles, and only the tiles that changed are sent**.
+
+*Why tiles and not a dirty rectangle*, which is the obvious answer: Godot's public API has no partial update for a 2D texture. `ImageTexture.update` and `RenderingServer.texture_2d_update` both replace the whole thing, so knowing precisely which cells changed buys nothing on its own — the upload is all-or-nothing per texture. Making the textures smaller is the only lever there is, and that is what a tile is. The **data** does not tile: `cells` stays one array over the whole floor, because the slip test, the network snapshot and the determinism hash all read it and all want one.
+
+Measured by `probe_upload`, which counts bytes because headless cannot time an upload (no GPU, so `texture.update` is a no-op):
+
+| | before | now |
+|---|---|---|
+| a frame with sauce landing | 13.3 MB | **256 KB** |
+| an idle frame | 0 | 0 |
+
+**53× less**, and splats in opposite corners touch different tiles. Tile size is exported; larger tiles were tried and make almost no difference to the frame (19.5 / 19.3 / 18.8 ms at 512 / 1024 / 2048 cells) while sending 4× and 16× more, so 512 stands.
+
+Two things fell out of this. The `cells` array now **is** the texture's bytes — a thickness is already exactly what an R8 texture wants, so the parallel 0/255 array kept beside it is gone, which is 13.9 MB on this floor and halved the script time per tick (4.17 → 2.00 ms). And the debug readout for "how much of this floor is dangerous" scanned all 13.9 M cells *twice*, twice a second; it cost 3 ms a tick on its own, more than everything else the floor does put together. The counts are kept as cells cross the threshold now, and `probe_thickness` checks the running numbers against the scan they replaced, because a running count that drifts is invisible — it just reports the wrong number forever.
+
+The cost is that the floor mask is 3318 × 4193 cells — **13.9 M of them, about 27 MB resident** between the cell array and the image data — and `upload_if_dirty` rebuilds and re-uploads **the whole 13 MB image** on any frame where sauce lands, which at a sustained 60 Hz is around 0.8 GB/s of upload for a stripe of cells a few metres across. Doubling the map's width and length quadrupled all of that.
+
+Script time per tick is 5.05 ms, up from 3.33. The upload itself is **not measurable here**: headless has no GPU, so `texture.update` is a no-op and `Image.create_from_data` does not copy, and the probe that tries to time it reports 0.01 ms — which is a measurement of nothing, not a clean bill of health. That was the number before tiling, and it is why tiling was done: a painting frame now sends 256 KB of it. See above.
 
 **Moving the world off the origin broke the strand's culling, which is worth recording because nothing failed loudly.** The ribbons and the droplet pool are dynamic meshes written straight into their GPU buffers, which does not recalculate the resource AABB, so both set one by hand — and both had a fixed box centred on the world origin, 48 m for the strand and 24 m for the droplets. That was the entire world when the world was one 48 m floor. On a map this size the box sits nowhere near the player, so the renderer culls a stream that is directly in front of them: it blinks out as the view turns and the stale box leaves the frustum, while the stains keep landing, because painting is driven by the points and not by the mesh. Both now recompute their bounds each frame from the vertices and droplets actually written. `probe_visible.gd` checks the bounds against the very segments `_update_visuals` handed each ribbon, at both ends of the map, and also that the box stays strand-sized — a box big enough to cover the map would pass a containment test and defeat the purpose of having one.
 
 `probe_map.gd` checks what a generated level does not get for free: that every street is at least the road width, that the festival square is reachable on foot from the start zone by flood fill, that no cell touching a street — diagonals included — is neither street nor wall, that the stage and the tower stand on open ground, that the square is wider than the stream reaches in both directions (the strand probes fire across it), that every prop faces a street with its back past the street's edge and leaves enough road to get past, that the round place is round and is a place rather than a wide spot in the road, that all 51 markers became stalls and none share ground, that the canopy clears a player's head and the counter does not, that the cooking vendors got their second gazebo, and that all four spawns stand on open ground.
+
+### Getting there
+
+`scripts/street_nav.gd` routes across the street. The enemies used to walk the straight line between themselves and the player, which works right up until a wall is on that line — and then they lean on it, which is most corners on a street map.
+
+Feeler rays were the obvious reach, and they are the wrong tool for finding the way here: this map is full of concave corners — stalls backed against walls, L-shaped junctions — and a body steering off whiskers gets wedged in them. A navigation mesh is the other standard answer and is redundant, because the geometry it would be baked from was *generated from a lattice of walkable cells in the first place*. So `AStarGrid2D` runs on those cells directly and what comes back is a real route round the corner rather than a guess that gets stuck in one.
+
+Rays still earn their keep, just not for finding the way: a route made of cells hugs the middle of them, which reads as a body pacing out every square it crosses, so a chaser that can **see** the player skips the route entirely and walks straight. **How close counts as reaching a waypoint is measured in cells, not metres**, and finding that out cost a debugging session. 1.6 m was about seven tenths of a cell when a cell was 2.30 m; the street was then doubled and a cell became 4.61 m, leaving the same 1.6 m at barely a third of one. A body could stand between two waypoints, be "not yet at" either, and be handed back one it had already walked past every time the route was redrawn — so it orbited, **at full walking speed**, never getting closer, which looks exactly like being stuck on a wall and is not. Routes are recomputed on `repath_interval` or the moment the player leaves the part of the street the current one was drawn to, and diagonals are off — a diagonal step between two cells that share only a corner cuts that corner, and a body as wide as a cell clips the wall going through.
+
+**Two more things had to be true before any of that worked on the actual street.**
+
+The first: an enemy is 4.10 m tall and the canopy eaves were at 3.91 m, so they could not walk under a stall at all. `PROP_SCALE` went to 1.45, which puts the eaves at 4.54 m. The counter did *not* come up with it — its height is a relationship to the player rather than a prop dimension, and scaling it took it to shoulder height and stopped it being cover you shoot over, so the real figure behind it was trimmed to hold it at about two thirds of a player. Now that enemies fit under a stall, only the **counter** blocks the ground: the canopy is overhead and the legs are a hand wide. Shutting the whole footprint had made every stall a pillar and a third of the street into wall.
+
+The second was the actual bug, and it was invisible in most cases. The builder pushed the counter out by half the stall's **frontage** where it wanted half its **depth** — the same number on a single bay, and three metres out on a double. So a double-bay counter stood three metres from where the router believed it was, and enemies routed confidently into one and leaned on it. Both now read `StreetMap.counter_box`, and `probe_chase` compares every built counter against it and fails on a centimetre, because the version of this that could go wrong quietly already did.
+
+**And the test for "can I walk straight there" was a chest-high raycast**, which is a different question from the one being asked: a ray at that height passes **under every canopy and over every counter**, so it reported a clear road through a stall, the route was thrown away, and the body walked into something it was never going to fit through. It asks the router now — the router already knows exactly which cells a body fits in, and walking the line through them is both exact and cheaper than a physics query.
+
+**What the router has to know about is everything standing on the road, not just the walls.** The stalls back onto the walls but their footprints sit on the street: a third of the street's cells are under something. Leaving the stage and the tower out of that list — they are built separately from the marker list the stalls come from — is exactly how an enemy routed straight through the tower and then leaned on it, which is the bug this was supposed to fix, reappearing one prop later. `probe_chase` puts a corner between the two and fails unless the gap closes, checks the route is longer than the straight line (a route that is not cannot be one), that every waypoint is somewhere a body may stand, that a clear line is taken straight, and that an enemy handed no router at all still chases badly rather than stopping.
+
+Doubling the map also broke three checks in `probe_enemy` and `probe_chase`, all the same way: they had fixed distances and fixed time windows baked in, so a chase that worked perfectly read as a stuck one the moment the walk got longer. They take their windows from the distance and the walking speed now. A fourth asserted the enemy *faces the player*, which was the same thing back when it walked straight at them — it routes now, so rounding a corner puts its front ninety degrees off the player quite correctly. What that check is really guarding is a yaw half a turn out, so it compares the body's front against the direction it is actually travelling, which the route supplies and which cannot be wrong in the same way the body's own axes can.
+
+**Three probes had to be told to clear the enemies**, and `probe_whip` was the third: it stands the player in the festival square to whip the strand around, which is where one of them spawns, and a shove goes into `frame_movement` — which is the thing that bends the strand. That *is* the measurement. Anything measuring a body over several seconds wants an empty street; `debug_clear_enemies()` is one line.
 
 ### The enemy
 
@@ -131,6 +233,26 @@ The allowance comes off the tank, as a curve pinned at three points: `full_burst
 `sauce_capacity_seconds` (12) is the whole tank in seconds of fire, which at these lengths is about twenty-two squirts: 1.10 s, then 1.00, 0.91, 0.82, 0.75, 0.68 and down — and then a walk to a stall. Held down without pause that is roughly half a minute of wall time, the cooldowns included.
 
 **Nothing goes over the wire for any of it.** The drain is driven by the firing flag every peer already has for every shooter, so it stays in step by exactly the argument the squirt's own `fire_hold` and `fire_cooldown` timers are already made on — these are the same class of per-peer float, and `STATE_STRIDE` is unchanged.
+
+**A bottle that is nearly empty stops being dependable, and that is the only thing it stops being.** Damage is never reduced by a low bottle — `low_sauce_reduces_damage` exists as `false` to say so where anyone tuning the numbers will read it. What a low bottle costs is delivery:
+
+* **Steady**, above `steady_level` (20%): the stream starts the instant the trigger does and does not break.
+* **Spluttering**, down to `spluttering_level` (5%): the nozzle catches. It is put to the test every `catch_roll_interval` while the trigger is down, a failed roll holds the sauce back for `catch_delay_min`..`catch_delay_max`, and the first roll of a press happens immediately — which is what makes a press at a low bottle start late rather than straight away, and mid-press reads as the stream breaking up. No more than `max_consecutive_catches` rolls in a row may fail; the cap is checked *before* the die rather than after, so a run is broken by the rule and cannot come out longer than it says.
+* **Bottom band**, at or below `spluttering_level`: air and nothing else. No sauce, no damage, and `air_shot_fired` for each puff — its own signal rather than a flag on the shot, because knockback is going to hang off it later and wants a single place to hang off. It carries where the shot came from and which way it went, for exactly that.
+
+The drain is a flow: `sauce_flow_per_second` of a tank per second while sauce is leaving it, so what is left lasts `sauce_seconds_left()` = level ÷ flow. Air counts as spending, since the last of a bottle still coughs its way out.
+
+**The nozzle is the host's, and it is the one part of firing that could not stay derived.** Everything else about a squirt follows from the trigger flag every peer already has — which is why none of it was ever sent. A catch is a coin toss, and a coin tossed separately on each machine gives every player a different fight: B's stream would break at moments A never saw, and the sauce that did or did not land would differ. So the authority decides and the answer travels: the state packet grew from 13 floats to 15, carrying the bottle level and what its nozzle is doing. Every peer, the authority included, then emits off that answer rather than off its own reading. `probe_network` parks a client's bottle in the spluttering band and fails unless both screens agree — measured, 150 of 150 frames including 31 caught ones, with the level identical to four decimal places.
+
+The catch has **its own random source**, kept apart from the shooter's `rng`. That one is fixed-seeded, because the strand's jitter has to be reproducible for `probe_determinism`; drawing the catch rolls from it would have made the pattern of catches identical in every session, and coupled it to how many strand points happened to be emitted first, since emission draws from the same stream. Neither had to be true — only the host rolls and the answer is sent — so `catch_rng` is randomized.
+
+**The level is the sauce in the bottle.** The body is translucent — genuinely, which took two goes: `StandardMaterial3D` ignores an alpha in the albedo colour until `transparency` is switched on, so the first version set the body see-through and drew it solid, with the gauge sealed inside it. Nothing failed; the bottle simply told you nothing, which is why `probe_reliability` now checks the transparency *mode* and not just the alpha. Back faces stay culled, since only the near wall belongs between the eye and the contents, and the wall does not write depth, so it cannot occlude the opaque sauce it is meant to be blending over. There is a column of sauce standing in it, shrinking from the nozzle end down toward the base as it empties — which is where sauce sits in a bottle held nozzle-forward — and changing colour at each band. It replaced a little gauge strip stuck on the outside, which read as an instrument bolted to a prop when the prop was already a see-through bottle with the answer in it. It is drawn on every player's bottle rather than only the viewmodel: the people who most need to know how you are doing are the other three, and they cannot see your HUD. Your own is still hidden in third person, because it is held at eye height and would sit inside your own capsule. The HUD keeps the bar as the secondary readout, with the two thresholds marked on it and the band and seconds-left written beside it.
+
+**The viewmodel is placed at the rendered frame rate, not the physics rate.** It was written only in `_physics_process` while the camera was placed in `_process`, so on any machine drawing faster than 60 Hz the view turned smoothly with the mouse and the bottle hanging in it stepped along at 60 — which reads as the bottle juddering against a steady world. A viewmodel has to be exactly where the camera says on the same frame the camera says it. `_place_viewmodel` is visual only; `attack_direction` is still settled in the physics tick, so what the strand does and where the server thinks the body is are untouched.
+
+**Crossing a threshold is silent, and the sputtering is the signal instead.** A tone at the boundary announced the band once and then left the player with nothing — and it announced it at the moment the bottle was still working fine, so it read as an alarm about something that had not happened yet. `air_shot_fired` now fires on a **catch** as well as on an empty bottle, so in the unreliable band the puff of air is heard *between* the squirts rather than instead of them. That is what a nearly empty squeeze bottle actually does, and unlike a beep it starts when the band does, keeps saying so, and gets worse in step with the thing it is reporting. `sauce_stage_changed` still exists, because the bottle's gauge and the HUD ride on it.
+
+Sound hangs off `sauce_stage_changed` and `air_shot_fired` rather than off the state, so it lands on every peer at the moment the authority said it did. **The tones are placeholders** — generated, so the three bands can be told apart while tuning — and are marked as such in the code along with the bottle gauge's meshes and colours.
 
 **The stalls fill it.** `E` at one of the blue stalls fills the bottle and clears the trigger lock, and `sauce_refill_per_second` is 0 — the tank does not quietly fill itself while you stand around, so it is a thing you walk back to. There are dozens of them and they line the whole route, which is what makes the map's shape mean something: how far you can push on is how far you are willing to be from the last counter. The knob stays exported because turning it up is the one-line way to play without the walk. The red vending machines hand nothing out; they are scenery until there is something else worth dispensing.
 
@@ -253,6 +375,10 @@ godot --headless --path . --script res://tests/probe_map.gd                    #
 godot --headless --path . --script res://tests/probe_visible.gd                # strand/droplet mesh bounds follow the player
 godot --headless --path . --script res://tests/probe_enemy.gd                  # enemy size, chase, sauce damage, contact damage, splat replay
 godot --headless --path . --script res://tests/probe_sauce.gd                  # squirt length limit, the allowance curve, tank drain
+godot --headless --path . --script res://tests/probe_reliability.gd            # the three bands, the catch cap, the air event
+godot --headless --path . --script res://tests/probe_chase.gd                  # routing round corners, props on the road, straight-line shortcut
+godot --headless --path . --script res://tests/probe_thickness.gd              # thickness piles up, thin is safe, deep trips, counts hold
+godot --headless --path . --script res://tests/probe_upload.gd                 # bytes sent per painting frame
 godot --headless --path . --script res://tests/probe_minimap.gd                # minimap placement, the baked street picture, centring
 godot --headless --path . --script res://tests/probe_determinism.gd            # paint() depends on the centre cell alone
 godot --headless --path . --script res://tests/probe_network.gd                # two peers: grids, slipping, fall states, hostile input

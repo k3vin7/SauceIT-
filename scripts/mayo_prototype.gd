@@ -36,6 +36,30 @@ const SPLAT_VISOR_CLEAR := 4
 const SPLAT_ENEMY := 5
 ## Addressed by the roof's index in `_roofs`, built in the same order everywhere.
 const SPLAT_ROOF := 6
+
+## What the nozzle is doing this frame. The **authority decides it and it
+## travels in the state packet**, because it is the one part of firing that
+## cannot be worked out independently: everything else about a squirt follows
+## from the trigger flag every peer already has, but a catch is a coin toss, and
+## a coin tossed separately on each machine gives every player a different fight.
+## The three bands a bottle can be in.
+enum SauceStage { STEADY, SPLUTTERING, EMPTY }
+
+enum Nozzle {
+	IDLE,    ## trigger up, or the squirt has run its allowance out
+	STREAM,  ## sauce is coming out
+	CAUGHT,  ## trigger down, nozzle held back: the unreliable bottle catching
+	AIR,     ## trigger down, bottle all but empty: air and nothing else
+}
+
+## Fired on every peer when a press produces air rather than sauce. Deliberately
+## its own signal rather than a flag on the shot: knockback is going to hang off
+## this later, and it wants a single place to hang off.
+signal air_shot_fired(peer_id: int, from: Vector3, direction: Vector3)
+
+## Fired on every peer when a bottle crosses between steady, spluttering and
+## empty, so sound and the bottle's own look can follow it.
+signal sauce_stage_changed(peer_id: int, stage: int)
 ## Floats per enemy in an enemy state packet: position xyz, yaw, health, and
 ## how far over it has fallen.
 const ENEMY_STATE_STRIDE := 6
@@ -88,6 +112,14 @@ class Shooter:
 	var emit_distance := 0.0
 	var attack_direction := Vector3.FORWARD
 	var burst_index := 0
+	## The coat this shooter's current burst is laying down, and the burst it
+	## was cut for. Numbered by the server; clients take it off the wire.
+	var coat_id := -1
+	var coat_burst := -1
+	## The physics frame the current coat was opened on. A coat that has been
+	## open longer than `coat_seconds` is closed and the next one started, so a
+	## stream held on one spot goes on layering instead of stopping at one.
+	var coat_frame := 0
 	var was_firing := false
 	var firing := false
 	## Counts down after the trigger is let go, so a tap still puts out a
@@ -105,6 +137,21 @@ class Shooter:
 	var sauce := 1.0
 	## How long the squirt under way has been running.
 	var burst_time := 0.0
+	## What the nozzle is doing, from the enum above. The authority works it out;
+	## everyone else is told.
+	var nozzle := 0
+	## Which of the three bands the bottle is in, so a change can be noticed.
+	var sauce_stage := 0
+	var bottle_contents: MeshInstance3D
+	var bottle_material: StandardMaterial3D
+	## Counts down to the next puff of air from an empty bottle.
+	var air_puff := 0.0
+	## Counts down while a catch is holding the sauce back.
+	var catch_hold := 0.0
+	## Counts down to the next roll of the dice.
+	var catch_roll := 0.0
+	## How many rolls in a row have caught, for the cap on consecutive ones.
+	var catches_in_a_row := 0
 	## How long it is allowed to run, fixed when it started. Worked out once
 	## rather than every frame because the tank is draining *during* the squirt:
 	## re-deriving it would shorten the allowance as the squirt spent it, so a
@@ -114,6 +161,16 @@ class Shooter:
 	var aim_yaw := 0.0
 	var aim_pitch := 0.0
 	var rng := RandomNumberGenerator.new()
+	## The nozzle's own dice, kept apart from `rng` above on purpose.
+	##
+	## `rng` is fixed-seeded, because the strand's jitter has to be reproducible
+	## -- `probe_determinism` rests on it. Drawing the catch rolls from the same
+	## stream would make the pattern of catches identical in every session, and
+	## would couple it to how many strand points happened to be emitted first,
+	## since emission draws from it too. Neither is wanted, and neither has to
+	## be: only the host rolls, and the answer travels in the state packet, so
+	## this one is free to be random.
+	var catch_rng := RandomNumberGenerator.new()
 	var air_visual: StreamVisual
 	var landing_visual: StreamVisual
 	var shadow_visual: StreamVisual
@@ -158,8 +215,11 @@ class MayoDroplet:
 @export_range(0.1, 2.0, 0.05) var enemy_speed_fraction := 0.7
 
 @export_group("Sauce Supply")
-## Seconds of firing a full tank holds, every squirt added together.
-@export_range(1.0, 120.0, 0.5, "suffix:s") var sauce_capacity_seconds := 12.0
+## How fast the bottle empties while sauce is actually coming out, as a fraction
+## of a full tank per second. A full tank therefore lasts `1 / flow` seconds of
+## delivery, and what is left lasts `sauce / flow` -- which is what
+## `sauce_seconds_left` reports and what the HUD counts down.
+@export_range(0.005, 1.0, 0.005, "suffix:tank/s") var sauce_flow_per_second := 1.0 / 12.0
 ## The three points the squirt-length curve is pinned to: how long one press
 ## runs on a full tank, on a half one, and on the last of it. Straight lines
 ## between them, and it keeps getting shorter the whole way down -- there is no
@@ -189,6 +249,33 @@ class MayoDroplet:
 ## the front of its counter. The player is 1.28 m across, so this is a step or
 ## two back from the counter rather than a room-sized trigger.
 @export_range(0.5, 8.0, 0.1, "suffix:m") var refill_reach := 2.6
+
+@export_group("Sauce Reliability")
+## Above this the bottle is dependable: the stream starts the instant the
+## trigger does and does not break.
+@export_range(0.0, 1.0, 0.01) var steady_level := 0.20
+## Between `spluttering_level` and `steady_level` the nozzle is unreliable --
+## it catches, and the stream breaks up. Below it, only air comes out.
+@export_range(0.0, 1.0, 0.01) var spluttering_level := 0.05
+## Chance that a single roll, while unreliable, catches instead of delivering.
+@export_range(0.0, 1.0, 0.01) var catch_chance := 0.35
+## How often the nozzle is put to the test while the trigger is down. The first
+## roll of a press happens immediately, which is what makes a press at a low
+## bottle start late rather than straight away.
+@export_range(0.02, 2.0, 0.01, "suffix:s") var catch_roll_interval := 0.22
+## How long a catch holds the sauce back for.
+@export_range(0.0, 2.0, 0.01, "suffix:s") var catch_delay_min := 0.08
+@export_range(0.0, 2.0, 0.01, "suffix:s") var catch_delay_max := 0.30
+## How many rolls in a row may catch. At 2 a third consecutive catch cannot
+## happen: the bottle is unreliable, not broken, and a run of them long enough
+## to feel like the trigger has stopped working is not the intent.
+@export_range(0, 10, 1) var max_consecutive_catches := 2
+## Damage is never reduced by a low bottle. It is the *delivery* that suffers,
+## and this is here to say so where anyone tuning the numbers will read it.
+@export var low_sauce_reduces_damage := false
+## How often an empty bottle puffs. This is what a sound and a puff of vapour
+## hang off, so it is a rate rather than every frame.
+@export_range(0.02, 2.0, 0.01, "suffix:s") var air_puff_interval := 0.12
 
 @export_group("Emission Shape")
 ## Both are absolute, while the spacing between points is not, so what they do
@@ -311,7 +398,26 @@ var _net_panel: Control
 var _input_enabled := true
 ## Splat centre cells found this frame, flushed to the peers at the end of it.
 ## Four ints each: kind, target, cell x, cell y. See MayoNet.apply_splats.
+## How long one layer of sauce takes to lay down, in seconds of the stream
+## being on a spot.
+##
+## This is the rate limit that lets sauce pool without the head of a trail
+## running away from its tail. A splat-per-layer count could not: the stream
+## dumps a hundred splats on the cell it sits over against one on the far end of
+## the same trail, so parking made a puddle in a fifth of a second while
+## sweeping made one never.
+##
+## Per **layer** rather than per splat, both ends are on the same clock. Brush a
+## cell in passing and it takes one layer; hold the stream on it and it takes
+## one every `coat_seconds`, so at three passes to slip, about a second of
+## standing on a spot puts a puddle there -- deliberately, and at a rate you can
+## see coming through the stain's steps.
+@export_range(0.05, 2.0, 0.05, "suffix:s") var coat_seconds := 0.35
+
 var _pending_splats := PackedInt32Array()
+## Coats are numbered by the server and ride along with the floor splats, so
+## every peer groups the same splats into the same trigger pull.
+var _next_coat := 0
 ## Peers whose lenses the authority is currently wiping, so the clear can be
 ## broadcast on the frame the timer runs out.
 var _wiping: Dictionary = {}
@@ -340,8 +446,10 @@ var _roofs: Array[StallRoof] = []
 ## Where the refill stations are and which way they face, so the reach test
 ## does not have to walk the scene tree every frame.
 var _refill_stations: Array[Dictionary] = []
+var _nav: StreetNav
 var _health_hud: HealthHud
 var _minimap: Minimap
+var _sauce_audio: AudioStreamPlayer
 
 # The single-player fields the checks and the rest of this file grew up with,
 # now views onto the local player's Shooter. Nothing assigns through them.
@@ -526,7 +634,16 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		shooter.burst_allowance = burst_seconds_at(shooter.sauce)
 		firing = true
 
-	if firing:
+	# What the trigger is asking for is now separate from what the nozzle does
+	# about it. The authority settles that and the answer travels; every peer,
+	# the authority included, then emits off the answer rather than off its own
+	# reading -- so a catch is a catch on every screen at the same moment.
+	if _is_authority():
+		_decide_nozzle(shooter, delta, firing)
+	var delivering := shooter.nozzle == Nozzle.STREAM
+	_report_air_shot(shooter, delta)
+
+	if delivering:
 		if not shooter.was_firing:
 			shooter.burst_index += 1
 		_apply_inertial_follow(shooter.player.frame_movement, shooter)
@@ -546,19 +663,115 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		shooter.emit_distance = 0.0
 		if shooter.was_firing:
 			_apply_release_pressure_loss(shooter)
-	_advance_sauce(shooter, delta, firing)
-	shooter.was_firing = firing
+	if _is_authority():
+		_advance_sauce(shooter, delta, delivering or shooter.nozzle == Nozzle.AIR)
+	shooter.was_firing = delivering
 
 
-## Drains the tank while firing and trickles it back while not. Driven by the
-## same firing flag every peer already has for every shooter, so it stays in
-## step across a session without a byte on the wire -- exactly the argument the
-## squirt's own timers are already made on.
-func _advance_sauce(shooter: Shooter, delta: float, firing: bool) -> void:
-	if firing:
+## Raises `air_shot_fired` while the nozzle is blowing air, on every peer --
+## the nozzle state it reads is the authority's, so the event lands on every
+## screen at the same moment without being sent itself.
+##
+## Paced rather than raised every frame: it is what a sound and a puff hang off,
+## and sixty of those a second is not a thing anyone wants. Knockback is meant
+## to hang off it later, which is why it carries where the shot came from and
+## which way it went.
+func _report_air_shot(shooter: Shooter, delta: float) -> void:
+	# A catch puffs too, not only an empty bottle. What comes out of a nearly
+	# empty squeeze bottle between squirts is air, and hearing that mixed in
+	# with the sauce is the whole feel of one -- a beep at the threshold told
+	# you the same thing once and then never again.
+	if shooter.nozzle != Nozzle.AIR and shooter.nozzle != Nozzle.CAUGHT:
+		shooter.air_puff = 0.0
+		return
+	shooter.air_puff -= delta
+	if shooter.air_puff > 0.0:
+		return
+	shooter.air_puff = air_puff_interval
+	var from: Vector3 = shooter.muzzle.global_position if shooter.muzzle != null \
+		else shooter.player.global_position
+	air_shot_fired.emit(shooter.peer_id, from, shooter.attack_direction)
+
+
+## The authority's decision about what the nozzle does with the trigger it has
+## been given, and the only place in firing that rolls a die.
+##
+## Three bands, by how much is left. Above `steady_level` the bottle is
+## dependable. Between there and `spluttering_level` it catches: rolls at a
+## fixed cadence, and a roll that fails holds the sauce back for a moment --
+## which at the first roll of a press reads as the stream starting late, and
+## mid-press as it breaking up. Below `spluttering_level` nothing but air comes
+## out. **Damage is not touched anywhere in here**: what a low bottle costs is
+## delivery, not power.
+func _decide_nozzle(shooter: Shooter, delta: float, firing: bool) -> void:
+	var stage := sauce_stage_of(shooter.sauce)
+	if stage != shooter.sauce_stage:
+		shooter.sauce_stage = stage
+		sauce_stage_changed.emit(shooter.peer_id, stage)
+
+	if not firing:
+		shooter.nozzle = Nozzle.IDLE
+		shooter.catch_hold = 0.0
+		# A fresh press is tested straight away rather than after a wait, so a
+		# low bottle is late off the mark.
+		shooter.catch_roll = 0.0
+		return
+
+	if stage == SauceStage.EMPTY:
+		shooter.nozzle = Nozzle.AIR
+		return
+
+	if stage == SauceStage.STEADY:
+		shooter.nozzle = Nozzle.STREAM
+		shooter.catches_in_a_row = 0
+		return
+
+	# Unreliable: hold whatever is left of the last catch, then roll again.
+	if shooter.catch_hold > 0.0:
+		shooter.catch_hold = maxf(shooter.catch_hold - delta, 0.0)
+		shooter.nozzle = Nozzle.CAUGHT
+		return
+	shooter.catch_roll = maxf(shooter.catch_roll - delta, 0.0)
+	if shooter.catch_roll > 0.0:
+		shooter.nozzle = Nozzle.STREAM
+		return
+	shooter.catch_roll = catch_roll_interval
+	# The cap is checked before the die, not after: a roll that is not allowed
+	# to fail is not rolled, so the run is broken by the rule rather than by
+	# luck and cannot come out longer than it says.
+	if shooter.catches_in_a_row >= max_consecutive_catches \
+			or shooter.catch_rng.randf() >= catch_chance:
+		shooter.catches_in_a_row = 0
+		shooter.nozzle = Nozzle.STREAM
+		return
+	shooter.catches_in_a_row += 1
+	shooter.catch_hold = shooter.catch_rng.randf_range(
+		minf(catch_delay_min, catch_delay_max), maxf(catch_delay_min, catch_delay_max))
+	shooter.nozzle = Nozzle.CAUGHT
+
+
+## Which band a bottle at this level is in.
+func sauce_stage_of(level: float) -> int:
+	if level <= spluttering_level:
+		return SauceStage.EMPTY
+	if level <= steady_level:
+		return SauceStage.SPLUTTERING
+	return SauceStage.STEADY
+
+
+## Seconds of delivery left in a bottle at this level, which is the whole point
+## of expressing the drain as a flow.
+func sauce_seconds_left(level: float) -> float:
+	return level / maxf(sauce_flow_per_second, 0.0001)
+
+
+## Drains the tank while sauce is leaving it -- air counts, since the last of a
+## bottle still coughs its way out -- and trickles it back while not. Authority
+## only: the level travels in the state packet, so nobody else has to guess.
+func _advance_sauce(shooter: Shooter, delta: float, spending: bool) -> void:
+	if spending:
 		shooter.burst_time += delta
-		shooter.sauce = maxf(
-			shooter.sauce - delta / maxf(sauce_capacity_seconds, 0.01), 0.0)
+		shooter.sauce = maxf(shooter.sauce - sauce_flow_per_second * delta, 0.0)
 		return
 	if sauce_refill_per_second > 0.0:
 		shooter.sauce = minf(shooter.sauce + sauce_refill_per_second * delta, 1.0)
@@ -652,11 +865,26 @@ func _is_authority() -> bool:
 func _process(_delta: float) -> void:
 	if _local == null:
 		return
+	# The bottle is put where the camera is *before* the camera is placed, and
+	# both at the rendered frame rate.
+	#
+	# It used to be written only in `_physics_process`, while the camera was
+	# placed here -- so on any machine drawing faster than 60 Hz the view turned
+	# smoothly with the mouse and the bottle hanging in it stepped along at 60,
+	# which reads as the bottle juddering against a steady world. It is a
+	# viewmodel: it has to be exactly where the camera says, on the same frame
+	# the camera says it.
+	#
+	# Visual only. `attack_direction` is still settled in the physics tick, so
+	# what the strand does and where the server thinks the body is are untouched.
+	_place_viewmodel()
 	_update_camera()
 	_report_view(_delta)
+	_update_deep_readout(_delta)
 	for shooter in _shooters.values():
 		_update_fallen_body(shooter)
 		_update_visor(shooter)
+		_update_sauce_look(shooter)
 
 
 ## The capsule lies on its side while the player is down. A capsule is all the
@@ -664,6 +892,88 @@ func _process(_delta: float) -> void:
 ## The lenses tipping up and back down, which is the part of a wipe that
 ## everyone else can see. Driven off the replicated timer, so it plays at the
 ## same moment on every screen.
+## Sound for the two things the bottle does that are worth hearing: crossing
+## into a new band, and coughing air. Both hang off the signals rather than off
+## the state, so they land on every peer at the moment the authority said they
+## did -- and so a designer can move them somewhere else without touching the
+## firing code.
+##
+## PLACEHOLDER: generated tones, so the three bands are *audible* now and can be
+## told apart while tuning. Replace `_sauce_stage_stream` and `_air_puff_stream`
+## with real clips; nothing else here has to change.
+func _build_sauce_audio() -> void:
+	_sauce_audio = AudioStreamPlayer.new()
+	_sauce_audio.name = "SauceAudio"
+	_sauce_audio.bus = "Master"
+	add_child(_sauce_audio)
+	sauce_stage_changed.connect(_on_sauce_stage_changed)
+	air_shot_fired.connect(_on_air_shot_fired)
+
+
+## Crossing a threshold is deliberately **silent**. A tone here announced the
+## band once and then left the player with nothing, and it announced it at the
+## moment the bottle was still working fine -- so it read as an alarm about
+## something that had not happened yet. The bottle sputtering is the signal
+## instead: it starts the moment the band does, it keeps saying so, and it gets
+## worse in step with the thing it is reporting.
+##
+## The signal stays, because the bottle's own gauge and the HUD ride on it.
+func _on_sauce_stage_changed(_peer_id: int, _stage: int) -> void:
+	pass
+
+
+func _on_air_shot_fired(peer_id: int, _from: Vector3, _direction: Vector3) -> void:
+	if _local == null or peer_id != _local.peer_id or _sauce_audio == null:
+		return
+	# PLACEHOLDER: a short hiss standing in for the puff of air. Shorter and
+	# quieter than the bottom band's would want, because in the unreliable band
+	# it is heard *between* squirts rather than instead of them.
+	_play_tone(_sauce_audio, 1800.0, 0.05, true)
+
+
+## PLACEHOLDER tone generator. A real project hands `AudioStreamPlayer` a clip;
+## this exists so the feedback can be heard and tuned before there are any.
+func _play_tone(player: AudioStreamPlayer, hertz: float, seconds: float,
+		noisy := false) -> void:
+	var rate := 22050.0
+	var frames := int(rate * seconds)
+	var wave := AudioStreamWAV.new()
+	wave.format = AudioStreamWAV.FORMAT_8_BITS
+	wave.mix_rate = int(rate)
+	var data := PackedByteArray()
+	data.resize(frames)
+	var noise := RandomNumberGenerator.new()
+	noise.seed = 7
+	for i in frames:
+		var fade := 1.0 - float(i) / float(maxi(frames, 1))
+		var sample := sin(TAU * hertz * float(i) / rate)
+		if noisy:
+			sample = noise.randf_range(-1.0, 1.0)
+		data[i] = int(clampf(sample * fade * 90.0, -127.0, 127.0)) + 128
+	wave.data = data
+	player.stream = wave
+	player.play()
+
+
+## Puts the local player's aim nodes where the mouse has already said they are.
+## The aim itself is updated the instant the mouse moves -- see `apply_look` --
+## so this is only the transforms catching up, at render rate rather than at the
+## physics rate they were written at.
+func _place_viewmodel() -> void:
+	if _local == null or not is_instance_valid(_local.player):
+		return
+	_local.player.rotation.y = _local.aim_yaw
+	if _local.aim_pivot != null:
+		_local.aim_pivot.rotation.x = _local.aim_pitch
+
+
+## Everything on a body that follows the sauce level rather than the physics
+## tick. Run for every shooter, not just the local one: the point of putting the
+## level on the bottle is that other people can read it.
+func _update_sauce_look(shooter: Shooter) -> void:
+	_update_bottle_gauge(shooter)
+
+
 func _update_visor(shooter: Shooter) -> void:
 	if shooter.player.visor == null:
 		return
@@ -727,8 +1037,11 @@ func set_first_person(enabled: bool) -> void:
 	# screen overlay instead. Everyone else's stay visible in both modes.
 	if _local != null and _local.player.visor != null:
 		_local.player.visor.visible = not enabled
-	# The bottle is a first-person viewmodel held at eye height; in third person
-	# it would sit inside the capsule, so it is hidden rather than mispositioned.
+	# Only *your own* bottle is a viewmodel held at eye height, and in third
+	# person it would sit inside your own capsule, so it is hidden rather than
+	# mispositioned. Everyone else's stays visible in both modes: their bottle
+	# now carries how much sauce they have left, and a team that can read each
+	# other's bottles across the street can cover a reload without being told.
 	if _local != null and is_instance_valid(_local.weapon):
 		_local.weapon.visible = enabled
 	_update_camera()
@@ -839,6 +1152,7 @@ func _build_world() -> void:
 	_build_crosshair()
 	_build_network_panel()
 	_build_enemies()
+	_build_sauce_audio()
 	# After the street, because it bakes the street's own cells into a texture.
 	_minimap.build()
 
@@ -1051,6 +1365,8 @@ func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
 	# sequence. Peer 1 keeps the original seed, so the single-player game and
 	# the checks built on it emit exactly the strand they always did.
 	shooter.rng.seed = 0x4d41594f + peer_id - 1
+	# Not seeded to match: see `catch_rng`. It is the host's alone.
+	shooter.catch_rng.randomize()
 	shooter.player = PlayerScript.new()
 	shooter.player.peer_id = peer_id
 	# The name is the address the network state is applied through, so it must
@@ -1225,7 +1541,9 @@ func _build_weapon(shooter: Shooter) -> void:
 	shooter.aim_pivot.add_child(weapon)
 	shooter.weapon = weapon
 
-	var body_color := Color("cdc4b4")
+	# Translucent, so what is inside it is what you read. A squeeze bottle is a
+	# translucent bottle with sauce in it, and that is the whole gauge.
+	var body_color := Color(0.82, 0.80, 0.75, 0.40)
 	var cap_color := Color("2f3a47")
 	var label_color := Color("c25b3f")
 	var cursor := 0.0
@@ -1233,6 +1551,7 @@ func _build_weapon(shooter: Shooter) -> void:
 	# tip that clear the body so the nozzle reads against the scene.
 	cursor = _add_bottle_part(weapon, "Body", bottle_radius, bottle_radius * 0.72,
 		bottle_length, cursor, body_color, 0.45, 16)
+	_add_bottle_contents(shooter, weapon)
 	_add_bottle_part(weapon, "Label", bottle_radius * 1.04, bottle_radius * 0.95,
 		bottle_length * 0.3, bottle_length * 0.22, label_color, 0.6, 16)
 	cursor = _add_bottle_part(weapon, "Shoulder", bottle_radius * 0.72, bottle_radius * 0.4,
@@ -1247,6 +1566,70 @@ func _build_weapon(shooter: Shooter) -> void:
 	muzzle.position = Vector3(0.0, 0.0, -cursor)
 	weapon.add_child(muzzle)
 	shooter.muzzle = muzzle
+
+
+## The sauce inside the bottle, which is the gauge.
+##
+## A column standing in the translucent body, shrinking from the nozzle end down
+## toward the base as it empties -- which is where sauce sits in a bottle held
+## nozzle-forward. This replaced a little strip stuck on the outside: that read
+## as an instrument bolted to a prop, and the prop is a see-through bottle, so
+## it already had somewhere obvious to put the answer.
+##
+## It is on every player's bottle, not just the viewmodel, because the people
+## who most need to know how you are doing are the other three and they cannot
+## see your HUD.
+##
+## PLACEHOLDER: a plain cylinder and a flat colour. A modelled bottle wants the
+## same thing -- one node scaled along the bottle axis -- so swap the mesh here
+## and leave `_update_bottle_gauge` alone.
+func _add_bottle_contents(shooter: Shooter, weapon: Node3D) -> void:
+	var contents := MeshInstance3D.new()
+	contents.name = "Contents"
+	var mesh := CylinderMesh.new()
+	# Just inside the wall, and tapering with it so it does not poke through.
+	mesh.top_radius = bottle_radius * 0.72 * 0.86
+	mesh.bottom_radius = bottle_radius * 0.86
+	mesh.height = bottle_length
+	mesh.radial_segments = 16
+	contents.mesh = mesh
+	# Same build as the body: along +Y, then turned onto the bottle axis.
+	contents.rotation_degrees.x = -90.0
+
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color("fff0a8")
+	material.roughness = 0.3
+	contents.material_override = material
+	weapon.add_child(contents)
+
+	shooter.bottle_contents = contents
+	shooter.bottle_material = material
+	_update_bottle_gauge(shooter)
+
+
+## Runs the column down as the bottle empties and recolours it by band. Called
+## every frame for every shooter, off the level the authority sent, so the
+## bottle in someone else's hand reads the same as the one in yours.
+func _update_bottle_gauge(shooter: Shooter) -> void:
+	if shooter.bottle_contents == null or not is_instance_valid(shooter.bottle_contents):
+		return
+	var level := clampf(shooter.sauce, 0.0, 1.0)
+	# The mesh is a bottle-length cylinder turned onto the axis, so scaling its
+	# own Y shortens it along the bottle. Anchored at the base: the surface
+	# drops away from the nozzle rather than shrinking about its middle.
+	shooter.bottle_contents.scale.y = maxf(level, 0.001)
+	shooter.bottle_contents.position.z = -bottle_length * level * 0.5
+	shooter.bottle_contents.visible = level > 0.004
+
+	var stage := sauce_stage_of(level)
+	# PLACEHOLDER colours. The three bands are what matters, not the swatches.
+	var tint := Color("fff0a8")
+	if stage == SauceStage.SPLUTTERING:
+		tint = Color("e8a33c")
+	elif stage == SauceStage.EMPTY:
+		tint = Color("c0392b")
+	if shooter.bottle_material != null:
+		shooter.bottle_material.albedo_color = tint
 
 
 ## Adds one cylinder section along the bottle axis starting at `offset`, and
@@ -1267,6 +1650,18 @@ func _add_bottle_part(weapon: Node3D, part_name: String, back_radius: float, fro
 	var material := StandardMaterial3D.new()
 	material.albedo_color = color
 	material.roughness = roughness
+	# An alpha in the colour does nothing on its own: `StandardMaterial3D`
+	# ignores it until transparency is switched on, so the bottle body was set
+	# translucent and drawn solid, with the sauce that is supposed to be the
+	# gauge sealed inside it. Back faces stay culled -- only the near wall is
+	# wanted between the eye and the contents, and drawing the far wall as well
+	# puts a second layer of tint over them.
+	if color.a < 1.0:
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		# The contents are opaque, so they are drawn in the opaque pass and the
+		# bottle blends over them. Writing depth from the wall as well would let
+		# it occlude whichever of them the sorter happened to put second.
+		material.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
 	part.material_override = material
 	weapon.add_child(part)
 	return offset + length
@@ -1470,9 +1865,16 @@ func _create_stall(stall_name: String, box: Dictionary, variant: int,
 	var counter_deep: float = StreetMap.stall_metre(StreetMap.STALL_COUNTER_DEPTH_M)
 	var leg: float = StreetMap.stall_metre(StreetMap.STALL_LEG_M)
 
-	# The counter, along the front edge where the queue stands.
-	var counter_size := _oriented_size(facing, width, counter_high, counter_deep)
-	var counter_at := ground + facing * (width - counter_deep) * 0.5
+	# The counter, along the front edge where the queue stands. Its box comes
+	# from `StreetMap` rather than being worked out here, because the router
+	# needs the same box -- and two copies of this sum did disagree: this one
+	# pushed the counter out by half the stall's *frontage* where it wanted half
+	# its *depth*, which is the same number on a single bay and three metres out
+	# on a double. The router then routed enemies into counters that were not
+	# where it thought they were, and they leaned on them.
+	var counter_box: Dictionary = StreetMap.counter_box(box)
+	var counter_size: Vector3 = counter_box["size"]
+	var counter_at: Vector3 = counter_box["position"]
 	counter_at.y = counter_high * 0.5
 	var counter := _make_contaminable(holder, "Counter", counter_at, counter_size,
 		Color("d8d2c4"), false)
@@ -1678,6 +2080,10 @@ const ENEMY_SPAWNS := [
 ## can be set from that player's walk speed rather than from a number here that
 ## would quietly stop being half of it.
 func _build_enemies() -> void:
+	# Built here rather than with the street, because it has to read the props
+	# standing on the street as well as the street itself.
+	_nav = StreetNav.new()
+	_nav.build()
 	for index in ENEMY_SPAWNS.size():
 		var spawn: Array = ENEMY_SPAWNS[index]
 		var enemy := MayoEnemy.new()
@@ -1685,6 +2091,7 @@ func _build_enemies() -> void:
 		enemy.authority = _is_authority()
 		add_child(enemy)
 		enemy.build(body_cell_size, contamination_brush_radius, Color("4d3f6b"))
+		enemy.nav = _nav
 		if _local != null:
 			enemy.match_player_speed(_local.player.walk_speed, enemy_speed_fraction)
 		enemy.position = StreetMap.from_pixels(spawn[0], spawn[1]) \
@@ -1748,6 +2155,26 @@ func _slot_of(player: MayoPlayer) -> int:
 			return slot
 		slot += 1
 	return 0
+
+
+## Share of the painted floor thick enough to slip on, refreshed a few times a
+## second rather than every frame: it walks the whole grid, which on this map is
+## fourteen million cells. -1 while it has never been asked.
+var debug_deep_fraction := -1.0
+var _deep_refresh := 0.0
+
+## How often the reading above is taken. Debug only.
+@export_range(0.0, 5.0, 0.05, "suffix:s") var deep_readout_interval := 0.5
+
+
+func _update_deep_readout(delta: float) -> void:
+	if deep_readout_interval <= 0.0 or _floor == null:
+		return
+	_deep_refresh -= delta
+	if _deep_refresh > 0.0:
+		return
+	_deep_refresh = deep_readout_interval
+	debug_deep_fraction = _floor.deep_fraction()
 
 
 ## What is left in the local player's tank, for the HUD.
@@ -1866,7 +2293,12 @@ func _update_slip(shooter: Shooter) -> void:
 	var player := shooter.player
 	if not player.can_slip() or not player.is_running():
 		return
-	if _floor.is_mayo_at(player.global_position):
+	# Asked of the floor, not decided here. "Is this spot slippery" is a fact
+	# about the floor, and the floor is what the shader draws from -- so what
+	# trips you and what you can see cannot come apart. Nothing about this is
+	# player-shaped: when the enemies are meant to slip too, they call the same
+	# function and get the same answer.
+	if _floor.is_slippery_at(player.global_position):
 		player.begin_slip()
 
 
@@ -2119,7 +2551,7 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 				var on_floor: bool = collider != null and collider.is_in_group("mayo_floor")
 				if _is_authority() and collider != null:
 					if on_floor:
-						_record_floor_splat(hit.position)
+						_record_floor_splat(shooter, point.burst_index, hit.position)
 					elif collider.is_in_group("mayo_contaminable"):
 						_record_splat(collider, hit.position, hit.normal)
 				_begin_landing(point, hit.position, hit.normal, on_floor)
@@ -2154,10 +2586,25 @@ func _begin_landing(point: MayoPoint, hit_position: Vector3, hit_normal: Vector3
 
 
 ## The server paints the floor and queues the same splat for the peers.
-func _record_floor_splat(hit_position: Vector3) -> void:
-	var cell := _floor.paint_mayo(hit_position)
+##
+## The coat travels with the splat. A cell rises once per trigger pull rather
+## than once per splat, so every peer has to agree on which pull a splat came
+## from -- and it is the server that decides, in the field a floor splat was not
+## using. Working it out independently on each machine would mean agreeing on
+## burst boundaries as well as on cells, for nothing.
+func _record_floor_splat(shooter: Shooter, burst_index: int,
+		hit_position: Vector3) -> void:
+	var frame := int(Engine.get_physics_frames())
+	var span := maxi(1, roundi(coat_seconds * float(Engine.physics_ticks_per_second)))
+	if shooter.coat_burst != burst_index or frame - shooter.coat_frame >= span:
+		shooter.coat_burst = burst_index
+		shooter.coat_frame = frame
+		_next_coat += 1
+		shooter.coat_id = _next_coat
+	var cell := _floor.paint_mayo(hit_position, shooter.coat_id)
 	if cell.x >= 0:
-		_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR, 0, cell.x, cell.y]))
+		_pending_splats.append_array(PackedInt32Array([
+			SPLAT_FLOOR, shooter.coat_id, cell.x, cell.y]))
 
 
 ## The server paints whatever was hit and queues the same splat for the peers.
@@ -2221,7 +2668,7 @@ func apply_splats(data: PackedInt32Array) -> void:
 		var cell := Vector2i(data[index + 2], data[index + 3])
 		index += 4
 		if kind == SPLAT_FLOOR:
-			_floor.paint_mayo_cell(cell)
+			_floor.paint_mayo_cell(cell, target)
 			continue
 		if kind == SPLAT_BODY:
 			var body_shooter: Shooter = _shooters.get(target)

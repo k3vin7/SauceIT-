@@ -114,26 +114,65 @@ func _run() -> void:
 
 	# Move the player sideways: it has to follow, not walk at where they were.
 	# Twelve metres rather than eighteen, so the step stays inside the square.
+	#
+	# Measured as "does the gap close", over a window worked out from the gap
+	# and the walking speed, rather than as "did it move on x within a second".
+	# The latter assumed the enemy heads straight for the player: it routes now,
+	# and a route's first second can be entirely along one axis while it gets
+	# round whatever is between the two -- which on this map is the stage and
+	# the tower. It also assumed a map scale, and read as a failure the day the
+	# map was made bigger.
 	var before_turn := enemy.global_position
 	player.global_position += Vector3(12.0, 0.0, 0.0)
+	var gap_before := enemy.global_position.distance_to(player.global_position)
+	var window := int(gap_before / enemy.move_speed * 60.0 * 1.4)
+	for _f in window:
+		await physics_frame
+	var gap_after := enemy.global_position.distance_to(player.global_position)
+	print("player stepped 12 m sideways; over %.1f s the gap went %.0f m -> %.0f m, and it moved %.1v" % [
+		window / 60.0, gap_before, gap_after, enemy.global_position - before_turn])
+	_check(gap_after < gap_before * 0.4,
+		"the enemy did not follow the player: %.0f m of %.0f m still between them"
+			% [gap_after, gap_before])
+
+	# It has to be looking where it is going -- compared against the direction it
+	# is actually travelling, not against the player.
+	#
+	# It used to be checked against the player, which was the same thing back
+	# when it walked straight at them. It routes now, so rounding a corner puts
+	# its front ninety degrees off the player quite correctly, and the old check
+	# called that going backwards. What it is really guarding is a yaw that is
+	# half a turn out -- it did once walk at the player backwards, and its own
+	# axes could not catch that because they were wrong in the same way. Its
+	# *velocity* is not: that comes from the route, so a front that disagrees
+	# with it by half a turn is exactly the bug and nothing else is.
+	# Sampled during a clean walk, not while it is standing on the player. Next
+	# to them its heading flips about as it shoves into them, and a body that
+	# turns at a rate cannot follow that -- which says nothing about whether its
+	# front is on the right end.
+	player.global_position = square + Vector3(0.0, stand_y, 20.0)
+	enemy.global_position = square + Vector3(0.0, enemy.stand_height(), -20.0)
 	for _f in 60:
 		await physics_frame
-	var chase := enemy.global_position - before_turn
-	print("player stepped 12 m sideways; the enemy's next second went %.2v" % chase)
-	_check(chase.x > 0.5, "the enemy did not turn after the player, moving %.2f m on x" % chase.x)
-
-	# It has to be looking where it is going. Checked against the player rather
-	# than against its own -z, because its own axes cannot catch a yaw that is
-	# half a turn out -- they are wrong in exactly the same way. It walked at the
-	# player backwards for a while and every check here still passed.
-	var to_player: Vector3 = player.global_position - enemy.global_position
-	to_player.y = 0.0
-	var front: Vector3 = -enemy.global_transform.basis.z
-	var facing_dot := front.dot(to_player.normalized())
-	print("it is looking %.0f deg off the player it is walking at" % rad_to_deg(acos(clampf(facing_dot, -1.0, 1.0))))
-	_check(facing_dot > 0.9,
-		"the enemy walks at the player with its front %.0f deg away: it is going backwards"
-			% rad_to_deg(acos(clampf(facing_dot, -1.0, 1.0))))
+	var worst_off := 0.0
+	var sampled := 0
+	for _f in 90:
+		await physics_frame
+		var travel := Vector3(enemy.velocity.x, 0.0, enemy.velocity.z)
+		if travel.length() < enemy.move_speed * 0.5:
+			continue
+		sampled += 1
+		var front: Vector3 = -enemy.global_transform.basis.z
+		worst_off = maxf(worst_off, rad_to_deg(acos(clampf(
+			front.dot(travel.normalized()), -1.0, 1.0))))
+	print("while walking, its front was at worst %.0f deg off its direction of travel (%d samples)" % [
+		worst_off, sampled])
+	_check(sampled > 10, "the enemy was not walking, so its facing tests nothing")
+	# Generous: it turns at a rate, so it lags its own direction while swinging
+	# round a corner. Half a turn out is the thing being ruled out.
+	_check(worst_off < 60.0,
+		"its front sat %.0f deg off the way it was travelling: it is going backwards"
+			% worst_off)
 	# And the figure has to have a front to look with, or none of that is visible.
 	var shape: AABB = enemy._body_mesh.mesh.get_aabb()
 	print("silhouette reaches %.2f m forward of its spine and %.2f m behind it" % [

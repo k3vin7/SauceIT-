@@ -29,6 +29,10 @@ func _run() -> void:
 	root.add_child(scene)
 	await process_frame
 	scene.set_process_unhandled_input(false)
+	# One of them spawns in the festival square, which is exactly where this
+	# stands the player -- and a shove mid-whip goes into `frame_movement`,
+	# which is what bends the strand. That is the measurement.
+	scene.debug_clear_enemies()
 	# Whipping sweeps the strand through a full turn at close to its full range,
 	# so this has to happen somewhere with nothing in the way: a point that hits
 	# a wall settles, leaves the AIR phase, and takes the stretched pair being
@@ -76,6 +80,17 @@ func _run() -> void:
 func _whip(scene, rate: float, threshold: float) -> Dictionary:
 	scene._points.clear()
 	scene.debug_set_aim(0.0, -8.0)
+	# Each whip starts from a trigger that is actually ready. Pressing into the
+	# tail of the last one's cooldown means the burst begins several frames in,
+	# with the aim already part way through its sweep -- so what is measured is
+	# where the cooldown happened to end rather than how hard the turn was.
+	# The bottle is topped up for the same reason: a whip is about the strand,
+	# and a bottle low enough to catch is `probe_reliability`'s subject.
+	scene._local.sauce = 1.0
+	for _f in 40:
+		if scene._local.fire_cooldown <= 0.0:
+			break
+		await physics_frame
 	Input.action_press("fire_mayo")
 	for _f in 26:
 		scene.debug_set_aim(rad_to_deg(scene._aim_yaw) + rate / 60.0, -8.0)

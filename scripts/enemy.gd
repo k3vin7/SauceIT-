@@ -44,6 +44,22 @@ const HEIGHT_MULTIPLE := 2.0
 ## How fast it swings round to face where you have moved to. It is not a turret:
 ## running past one should leave it briefly pointed at where you were.
 @export_range(0.5, 20.0, 0.1, "suffix:rad/s") var turn_speed := 2.4
+## How often the route is worked out again. Every frame is waste -- a route is
+## still good while the player is in the same part of the street -- and never is
+## a chase that follows you to where you used to be.
+@export_range(0.05, 3.0, 0.05, "suffix:s") var repath_interval := 0.5
+## How close to a waypoint counts as having reached it, **as a fraction of a
+## lattice cell** rather than in metres.
+##
+## Metres was wrong, and wrong in a way that only showed when the map changed
+## size. 1.6 m was about seven tenths of a cell when a cell was 2.3 m; the
+## street was then widened and a cell became 4.6 m, leaving the same 1.6 m at
+## barely a third of one. A body could then stand between two waypoints,
+## be "not yet at" either, and be handed back a waypoint it had already walked
+## past every time the route was redrawn -- so it orbited, at full walking
+## speed, never getting closer. Tying it to the cell is what stops the next
+## change of scale doing it again.
+@export_range(0.2, 2.0, 0.05, "suffix:cells") var waypoint_reached_cells := 0.7
 
 @export_group("Its attack")
 ## Weak on purpose. At one hit every `contact_interval` this is about 7 damage a
@@ -74,7 +90,15 @@ var facing_yaw := 0.0
 ## 0 standing, TAU/4 flat on its back.
 var fall_angle := 0.0
 
+## Set by the world once the street exists. Without it the enemy walks the
+## straight line, which is what it did before there was any routing at all.
+var nav: StreetNav
+
 var _contact_cooldown := 0.0
+var _route := PackedVector3Array()
+var _route_step := 0
+var _repath_timer := 0.0
+var _route_goal := Vector3.ZERO
 var _body_mesh: MeshInstance3D
 ## World point the feet were planted on when it died -- the axis it goes over.
 var _fall_pivot := Vector3.ZERO
@@ -358,7 +382,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	var target := _nearest(targets)
 	var flat := Vector3.ZERO
 	if target != null:
-		flat = target.global_position - global_position
+		flat = _step_toward(target, delta) - global_position
 		flat.y = 0.0
 
 	if flat.length_squared() > 0.000001:
@@ -396,6 +420,56 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		return null
 	_contact_cooldown = contact_interval
 	return target
+
+
+## Where to walk this frame to end up at `target`.
+##
+## Straight at them while the way is clear, which is most of the time on an open
+## street and is what keeps a chase from reading as a body pacing out the middle
+## of every cell it crosses. Once something is in the way, a route round it,
+## recomputed on a timer rather than every frame.
+##
+## Falling back to the straight line when there is no router at all is
+## deliberate: an enemy that stops chasing because nobody handed it a map is a
+## worse failure than one that leans on a wall.
+func _step_toward(target: MayoPlayer, delta: float) -> Vector3:
+	var goal := target.global_position
+	if nav == null:
+		return goal
+	if nav.line_is_walkable(global_position, goal):
+		_route.clear()
+		return goal
+
+	_repath_timer -= delta
+	# Redone when the timer runs out, or at once if the player has left the part
+	# of the street the current route was drawn to.
+	if _repath_timer <= 0.0 or _route.is_empty() \
+			or StreetMap.cell_at(goal) != StreetMap.cell_at(_route_goal):
+		_repath_timer = repath_interval
+		_route_goal = goal
+		_route = nav.route(global_position, goal)
+		_route_step = 0
+
+	# Waypoints already passed are dropped rather than walked back to.
+	while _route_step < _route.size():
+		var flat := _route[_route_step] - global_position
+		flat.y = 0.0
+		if flat.length() > StreetMap.CELL * waypoint_reached_cells:
+			return _route[_route_step]
+		_route_step += 1
+	return goal
+
+
+## Whether the straight line to that point is walkable, which the router is
+## asked rather than a ray.
+##
+## This was a chest-high raycast, and it was wrong in a way that only showed up
+## on the street: a ray at that height passes **under every canopy and over
+## every counter**, so it reported a clear road through a stall, the route was
+## dropped, and the body walked into something it was never going to fit
+## through. Seeing a thing and being able to walk to it are different questions.
+func _can_walk_straight_to(point: Vector3) -> bool:
+	return nav == null or nav.line_is_walkable(global_position, point)
 
 
 func _nearest(targets: Array) -> MayoPlayer:

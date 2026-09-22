@@ -1,0 +1,90 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/test_scale_227.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://corridor_graybox.tscn" id="2_map"]
+[ext_resource type="PackedScene" path="res://main.tscn" id="3_game"]
+
+[sub_resource type="Environment" id="Environment_test"]
+background_mode = 1
+background_color = Color(0.055, 0.07, 0.09, 1)
+ambient_light_source = 3
+ambient_light_color = Color(0.72, 0.78, 0.88, 1)
+ambient_light_energy = 0.28
+
+[node name="ScaleTest227" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_test")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-58, -28, 0)
+light_color = Color(1, 0.96, 0.88, 1)
+light_energy = 0.72
+shadow_enabled = true
+
+[node name="ScaledMap" type="Node3D" parent="."]
+
+[node name="CorridorGraybox" parent="ScaledMap" instance=ExtResource("2_map")]
+
+[node name="Game" parent="." instance=ExtResource("3_game")]
+
+[node name="EnemyDummies" type="Node3D" parent="."]
+
+[node name="HUD" type="CanvasLayer" parent="."]
+layer = 20
+
+[node name="Info" type="Label" parent="HUD"]
+offset_left = 24.0
+offset_top = 18.0
+offset_right = 880.0
+offset_bottom = 54.0
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_constants/outline_size = 8
+theme_override_font_sizes/font_size = 23
+text = "Map 2.27x | Actual MayoPlayer 2.56 m"
+
+[node name="Target" type="Label" parent="HUD"]
+offset_left = 24.0
+offset_top = 58.0
+offset_right = 960.0
+offset_bottom = 94.0
+theme_override_colors/font_color = Color(0.88, 0.94, 1, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_constants/outline_size = 7
+theme_override_font_sizes/font_size = 20
+
+[node name="Stopwatch" type="Label" parent="HUD"]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -610.0
+offset_top = 18.0
+offset_right = -24.0
+offset_bottom = 58.0
+grow_horizontal = 0
+theme_override_colors/font_color = Color(1, 0.82, 0.2, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_constants/outline_size = 9
+theme_override_font_sizes/font_size = 25
+text = "STOPWATCH  00:00.000  READY"
+horizontal_alignment = 2
+
+[node name="Help" type="Label" parent="HUD"]
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 22.0
+offset_top = -52.0
+offset_right = -22.0
+offset_bottom = -18.0
+grow_horizontal = 2
+grow_vertical = 0
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_constants/outline_size = 8
+theme_override_font_sizes/font_size = 19
+text = "WASD move | Shift run | Space jump | Mouse look | F1 camera | R reset"
+horizontal_alignment = 1

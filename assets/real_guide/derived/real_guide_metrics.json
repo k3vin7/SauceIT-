@@ -1,0 +1,360 @@
+{
+  "source": {
+    "authority": "Maa- ja Ruumiamet (Estonian Land and Spatial Development Board)",
+    "crs": "EPSG:3301 (L-EST97), metres",
+    "lod2_format": "Wavefront OBJ + MTL + FWT + PRJ (ZIP)",
+    "dtm_format": "GeoTIFF, float32, 1 m, map sheet 62371",
+    "route_measurement_aid": "OpenStreetMap saved XML, fetched 2026-09-21",
+    "route_way_ids": {
+      "karja": [
+        1077409051
+      ],
+      "rootsiturg_loop": [
+        78515554,
+        294591644,
+        294591655,
+        294591647,
+        294591650,
+        78515531
+      ],
+      "ehte_west": [
+        27468217
+      ],
+      "ehte_east": [
+        78515450
+      ],
+      "northeast_branch": [
+        4728079,
+        78515585,
+        313806203
+      ]
+    }
+  },
+  "origin": {
+    "description": "Karja/Kalda centre-line intersection",
+    "longitude": 23.5362231,
+    "latitude": 58.9465648,
+    "epsg3301_easting_m": 473304.6986277641,
+    "epsg3301_northing_m": 6534255.864013337,
+    "dtm_height_m": 4.860479274428192,
+    "godot_axis_mapping": "X=east-origin_e, Y=height-origin_h, Z=origin_n-north"
+  },
+  "crop_local_m": {
+    "x": [
+      -190.0,
+      235.0
+    ],
+    "z": [
+      -320.0,
+      80.0
+    ]
+  },
+  "dtm_sheet_coverage": {
+    "sheet": "62371",
+    "epsg3301_easting_m": [
+      470000.0,
+      475000.0
+    ],
+    "epsg3301_northing_m": [
+      6530000.0,
+      6535000.0
+    ],
+    "additional_sheets_required": false
+  },
+  "output": {
+    "lod2_buildings": 197,
+    "lod2_triangles": 13046,
+    "terrain_grid_vertices": 171654,
+    "terrain_grid_size": [
+      427,
+      402
+    ],
+    "terrain_triangles": 341652
+  },
+  "festival_routes": {
+    "scale": 1.0,
+    "lengths_m": {
+      "karja": 164.67033188026195,
+      "rootsiturg_loop": 109.36119764470621,
+      "ehte_west": 12.59900252440492,
+      "ehte_east": 33.39162282785024,
+      "northeast_branch": 128.23850888033923
+    },
+    "total_m": 448.26066375756255,
+    "scaled_2_27": {
+      "factor": 2.27,
+      "lengths_m": {
+        "karja": 373.80165336819465,
+        "rootsiturg_loop": 248.2499186534831,
+        "ehte_west": 28.599735730399168,
+        "ehte_east": 75.79898381922006,
+        "northeast_branch": 291.10141515837006
+      },
+      "total_m": 1017.551706729667
+    }
+  },
+  "lava_plaza": {
+    "basis": "OSM way 1467386804 grass footprint at the LAVA position shown on the supplied festival diagram; reference overlay, not an official event production boundary",
+    "local_outline_xz_m": [
+      [
+        21.431703940266743,
+        -114.31691435351968
+      ],
+      [
+        14.813512156775687,
+        -91.18224604334682
+      ],
+      [
+        26.328550965699833,
+        -99.08939904905856
+      ],
+      [
+        27.467968861514237,
+        -103.21412231400609
+      ]
+    ],
+    "minimum_bounding_rectangle_m": [
+      24.062696031508708,
+      8.896158106710637
+    ],
+    "area_m2": 125.80709533370191,
+    "scaled_2_27": {
+      "dimensions_m": [
+        54.62231999152477,
+        20.194278902233144
+      ],
+      "area_m2": 648.2713815450326
+    }
+  },
+  "width_measurement": {
+    "street": "Karja-to-Rootsiturg 204 m comparison axis",
+    "definition": "nearest opposing Maa-amet LoD2 building-envelope intersections on a line perpendicular to the OSM centreline; includes carriageway and sidewalks/open frontage, not carriageway width",
+    "sampling": "every 5 m from station 10 m; valid opposing hits 1..45 m from centreline",
+    "valid_samples": 21,
+    "median_m": 13.800010415966568,
+    "p10_m": 11.892935488381728,
+    "p90_m": 30.174190603826407,
+    "samples_m": [
+      [
+        10.0,
+        17.813880747060978
+      ],
+      [
+        15.0,
+        14.490705457254533
+      ],
+      [
+        20.0,
+        11.88299141945992
+      ],
+      [
+        25.0,
+        11.892935488381728
+      ],
+      [
+        30.0,
+        11.84980790875818
+      ],
+      [
+        35.0,
+        11.924581810064465
+      ],
+      [
+        40.0,
+        13.343899045344521
+      ],
+      [
+        45.0,
+        13.459298746256046
+      ],
+      [
+        125.0,
+        14.330222042388481
+      ],
+      [
+        130.0,
+        14.097421275686436
+      ],
+      [
+        135.0,
+        13.800010415966568
+      ],
+      [
+        140.0,
+        13.50262812578979
+      ],
+      [
+        145.0,
+        13.205245835613013
+      ],
+      [
+        150.0,
+        25.533626899041476
+      ],
+      [
+        155.0,
+        12.429397914647831
+      ],
+      [
+        160.0,
+        12.122122522956012
+      ],
+      [
+        165.0,
+        14.74311791676973
+      ],
+      [
+        170.0,
+        24.851709142972645
+      ],
+      [
+        175.0,
+        30.174190603826407
+      ],
+      [
+        180.0,
+        38.49484183893226
+      ],
+      [
+        195.0,
+        37.48501089750195
+      ]
+    ]
+  },
+  "comparison": {
+    "real_route_length_m": 203.9999203189021,
+    "existing_route_length_m": 289.4216470271281,
+    "existing_to_real_length_ratio": 1.418734118006962,
+    "width_samples": 21,
+    "real_facade_width_median_m": 13.800010415966568,
+    "real_facade_width_p10_m": 11.892935488381728,
+    "real_facade_width_p90_m": 30.174190603826407,
+    "existing_uniform_width_m": 36.864000000000004,
+    "existing_minus_real_median_width_m": 23.063989584033436,
+    "key_positions": {
+      "saue_junction": {
+        "real_station_m": 74.16476981562782,
+        "existing_station_m": 133.632,
+        "station_difference_existing_minus_real_m": 59.467230184372184,
+        "real_local_xz_m": [
+          3.412364847783465,
+          -72.2800812702626
+        ],
+        "existing_local_xz_m": [
+          -4.470416640669685,
+          -133.08166656267875
+        ]
+      },
+      "rootsiturg_bend_entry": {
+        "real_station_m": 164.67033188026195,
+        "existing_station_m": 243.0545414456924,
+        "station_difference_existing_minus_real_m": 78.38420956543044,
+        "real_local_xz_m": [
+          27.95902511838358,
+          -159.30707296729088
+        ],
+        "existing_local_xz_m": [
+          -9.216000000000001,
+          -241.92000000000002
+        ]
+      },
+      "route_end": {
+        "real_local_xz_m": [
+          62.066208319796715,
+          -176.40402659401298
+        ],
+        "existing_local_xz_m": [
+          11.520000000000001,
+          -283.39200000000005
+        ],
+        "plan_offset_m": 118.32728184585534
+      }
+    },
+    "width_station_samples_m": [
+      [
+        10.0,
+        17.813880747060978
+      ],
+      [
+        15.0,
+        14.490705457254533
+      ],
+      [
+        20.0,
+        11.88299141945992
+      ],
+      [
+        25.0,
+        11.892935488381728
+      ],
+      [
+        30.0,
+        11.84980790875818
+      ],
+      [
+        35.0,
+        11.924581810064465
+      ],
+      [
+        40.0,
+        13.343899045344521
+      ],
+      [
+        45.0,
+        13.459298746256046
+      ],
+      [
+        125.0,
+        14.330222042388481
+      ],
+      [
+        130.0,
+        14.097421275686436
+      ],
+      [
+        135.0,
+        13.800010415966568
+      ],
+      [
+        140.0,
+        13.50262812578979
+      ],
+      [
+        145.0,
+        13.205245835613013
+      ],
+      [
+        150.0,
+        25.533626899041476
+      ],
+      [
+        155.0,
+        12.429397914647831
+      ],
+      [
+        160.0,
+        12.122122522956012
+      ],
+      [
+        165.0,
+        14.74311791676973
+      ],
+      [
+        170.0,
+        24.851709142972645
+      ],
+      [
+        175.0,
+        30.174190603826407
+      ],
+      [
+        180.0,
+        38.49484183893226
+      ],
+      [
+        195.0,
+        37.48501089750195
+      ]
+    ]
+  }
+}

@@ -30,12 +30,23 @@ func _release_all() -> void:
 
 
 ## Paints a straight patch of floor ahead of the player and returns its centre.
+##
+## Painted until it is genuinely deep, not just present. A splat leaves a
+## *thickness* now and the floor only trips someone once that thickness passes
+## `slip_thickness`, so a patch laid down with one pass of the brush is a stain
+## and nothing more -- which is the point of the change and would make every
+## check in this file quietly test the wrong thing. `probe_thickness` is what
+## covers the thin case on purpose.
 func _paint_patch(scene, ahead: float) -> Vector3:
 	var start: Vector3 = scene._player.global_position
 	var patch := Vector3(start.x, 0.0, start.z - ahead)
-	for i in range(-2, 3):
-		scene._floor.paint_mayo(patch + Vector3(float(i) * 0.1, 0.0, 0.0))
-		scene._floor.paint_mayo(patch + Vector3(0.0, 0.0, float(i) * 0.1))
+	var floor_node: FloorContamination = scene._floor
+	var passes := ceili(float(floor_node.slip_thickness)
+		/ float(maxi(floor_node.thickness_per_pass, 1))) + 4
+	for _pass in passes:
+		for i in range(-2, 3):
+			floor_node.paint_mayo(patch + Vector3(float(i) * 0.1, 0.0, 0.0))
+			floor_node.paint_mayo(patch + Vector3(0.0, 0.0, float(i) * 0.1))
 	return patch
 
 
@@ -63,7 +74,7 @@ func _run() -> void:
 	# --- walking over mayo must not trip ---
 	_reset(scene)
 	var patch := _paint_patch(scene, 1.2)
-	_check(scene._floor.is_mayo_at(patch), "the test patch was not painted")
+	_check(scene._floor.is_slippery_at(patch), "the test patch is not deep enough to trip anyone")
 	Input.action_press("move_forward")
 	var walked_over := false
 	# A fall lasts about 60 frames, so checking the state only at the end would
@@ -71,7 +82,7 @@ func _run() -> void:
 	var fell_while_walking := false
 	for _f in 90:
 		await physics_frame
-		if scene._floor.is_mayo_at(player.global_position):
+		if scene._floor.is_slippery_at(player.global_position):
 			walked_over = true
 		if player.state != MayoPlayer.State.NORMAL:
 			fell_while_walking = true
@@ -94,9 +105,9 @@ func _run() -> void:
 			trip_position = player.global_position
 			break
 	print("running: tripped=%s at %.2v, that cell painted=%s" % [
-		str(tripped), trip_position, str(scene._floor.is_mayo_at(trip_position))])
+		str(tripped), trip_position, str(scene._floor.is_slippery_at(trip_position))])
 	_check(tripped, "running over mayo did not knock the player down")
-	_check(scene._floor.is_mayo_at(trip_position),
+	_check(scene._floor.is_slippery_at(trip_position),
 		"the player fell on a cell the floor says is clean")
 
 	# --- the player skids forward, uncontrolled, and the timings hold ---
@@ -127,9 +138,23 @@ func _run() -> void:
 	var locked_through_stumble := true
 	Input.action_press("fire_mayo")
 	scene._points.clear()
-	while player.is_incapacitated() and frames_down < 300:
+	# Beats are counted in **physics ticks**, not in turns of this loop.
+	#
+	# The two are the same only while the engine runs one tick per iteration,
+	# and it does not: on a frame that takes longer than a tick Godot runs
+	# several before handing back, and a coroutine awaiting `physics_frame` gets
+	# one turn for all of them. So the player's timers advance and this loop does
+	# not see it, and a fall that plays out perfectly is counted short -- which
+	# is exactly what a heavier floor made it do, with the mechanic untouched.
+	var fall_started := Engine.get_physics_frames()
+	var first_seen := {}
+	var last_seen := {}
+	while player.is_incapacitated() and Engine.get_physics_frames() - fall_started < 300:
 		await physics_frame
-		frames_down += 1
+		var tick := Engine.get_physics_frames()
+		if not first_seen.has(player.state):
+			first_seen[player.state] = tick
+		last_seen[player.state] = tick
 		moved = maxf(moved, start_position.distance_to(player.global_position))
 		if is_equal_approx(player.fall_tilt(), 1.0):
 			# Flat out: the capsule must have gone over backwards and the view
@@ -146,7 +171,6 @@ func _run() -> void:
 			scene.set_first_person(true)
 			await process_frame
 		if player.state == MayoPlayer.State.STUMBLE:
-			stumble_frames += 1
 			stumble_body_sway = maxf(stumble_body_sway, absf(scene._body_mesh.rotation.z))
 			# A level aim keeps the camera's right vector horizontal, so any Y on
 			# it is the shake rolling the view.
@@ -155,13 +179,19 @@ func _run() -> void:
 			locked_through_stumble = locked_through_stumble and player.is_incapacitated()
 		if player.state == MayoPlayer.State.STANDING_UP:
 			resting_speed = maxf(resting_speed, Vector3(player.velocity.x, 0.0, player.velocity.z).length())
-		if is_equal_approx(player.fall_tilt(), 1.0):
-			flat_frames += 1
+
 		# Firing legitimately resumes on the very frame the player stands up, so
 		# only count sauce emitted while still down.
 		if player.is_incapacitated() and not scene._points.is_empty():
 			fired = true
 	_release_all()
+	frames_down = Engine.get_physics_frames() - fall_started
+	# Each beat's length is the gap between the tick it was first seen on and
+	# the tick the next one was, which survives a turn of the loop being missed.
+	stumble_frames = int(first_seen.get(MayoPlayer.State.FALLING, fall_started)) \
+		- int(first_seen.get(MayoPlayer.State.STUMBLE, fall_started))
+	flat_frames = int(last_seen.get(MayoPlayer.State.DOWN, fall_started)) \
+		- int(first_seen.get(MayoPlayer.State.DOWN, fall_started)) + 1
 	var expected := int(round((player.stumble_duration + player.fall_duration
 		+ player.down_duration + player.stand_up_duration) * 60.0))
 	var slide: Vector3 = player.global_position - start_position
@@ -213,7 +243,7 @@ func _run() -> void:
 	# --- slipping again straight after standing up pitches you forward ---
 	_reset(scene)
 	var forward_patch := _paint_patch(scene, 1.2)
-	_check(scene._floor.is_mayo_at(forward_patch), "the second-fall patch was not painted")
+	_check(scene._floor.is_slippery_at(forward_patch), "the second-fall patch was not painted")
 	Input.action_press("move_forward")
 	Input.action_press("run")
 	# First fall: backwards, with a stumble, as always.
@@ -234,7 +264,7 @@ func _run() -> void:
 	# The skid carries the player past the first patch, so paint the ground they
 	# stood up on: they are sprinting again the instant they are upright.
 	_paint_patch(scene, 0.0)
-	_check(scene._floor.is_mayo_at(player.global_position),
+	_check(scene._floor.is_slippery_at(player.global_position),
 		"the player did not stand up on painted floor, so this case tests nothing")
 	var second_stumbled := false
 	var second_fall := false
@@ -283,7 +313,7 @@ func _run() -> void:
 	_check(player.state == MayoPlayer.State.NORMAL, "the player did not get back up")
 	_reset(scene)
 	_paint_patch(scene, 0.0)
-	_check(scene._floor.is_mayo_at(player.global_position),
+	_check(scene._floor.is_slippery_at(player.global_position),
 		"the player is not standing on painted floor, so this case tests nothing")
 
 	Input.action_press("move_forward")

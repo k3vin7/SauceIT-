@@ -103,15 +103,23 @@ const BLOCK_REPLIES_PER_SECOND := 1.0
 ## packet are both sized against this -- see POOL_SIZE in mayo_prototype.gd.
 const MAX_CLIENTS := 3
 ## Floats per player in a state packet: position xyz, yaw, velocity xz, firing,
-## aim pitch, fall state, fall timer, fall direction, wipe timer, health. The
-## peer ids travel alongside as ints -- a peer id is a full 32-bit random number
-## and does not survive a round trip through a 32-bit float.
-const STATE_STRIDE := 13
-## What that costs the host. One player is 13 floats plus a 4-byte id, so 56
-## bytes; a four-player session is 224 bytes of state a frame, and the host sends
+## aim pitch, fall state, fall timer, fall direction, wipe timer, health, sauce
+## level, nozzle state. The peer ids travel alongside as ints -- a peer id is a
+## full 32-bit random number and does not survive a round trip through a 32-bit
+## float.
+##
+## The last two are why this grew. Everything else about a squirt follows from
+## the trigger flag every peer already has, but an unreliable nozzle catches on
+## a coin toss, and a coin tossed separately on each machine gives every player
+## a different fight. The host tosses it and sends the answer; the level rides
+## along rather than being derived, so nobody has to guess which band a bottle
+## is in either.
+const STATE_STRIDE := 15
+## What that costs the host. One player is 15 floats plus a 4-byte id, so 64
+## bytes; a four-player session is 256 bytes of state a frame, and the host sends
 ## it to each of the three guests at the physics rate:
 ##
-##     4 x 56 x 3 guests x 60 Hz = 40.3 kB/s of state
+##     4 x 64 x 3 guests x 60 Hz = 46.1 kB/s of state
 ##
 ## The splats ride alongside on the reliable channel, 16 bytes each. Four players
 ## all hosing the floor land about 750 points a second between them:
@@ -876,7 +884,8 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			position.x, position.y, position.z, state[1],
 			velocity.x, velocity.z,
 			1.0 if shooter.firing else 0.0, shooter.aim_pitch,
-			float(state[3]), state[4], state[5], state[6], state[7]]))
+			float(state[3]), state[4], state[5], state[6], state[7],
+			shooter.sauce, float(shooter.nozzle)]))
 	return data
 
 
@@ -913,6 +922,11 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 			Vector3(data[index + 4], 0.0, data[index + 5]),
 			int(data[index + 8]), data[index + 9], data[index + 10],
 			data[index + 11], data[index + 12])
+		# The bottle and what its nozzle is doing are the host's, for everyone
+		# including the peer holding it: a client that decided its own would
+		# catch at different moments from the screen next to it.
+		shooter.sauce = clampf(data[index + 13], 0.0, 1.0)
+		shooter.nozzle = clampi(int(round(data[index + 14])), 0, 3)
 		# The local player's own aim is never taken back from the server: it is
 		# already ahead of this packet.
 		if not shooter.is_local:

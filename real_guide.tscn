@@ -1,0 +1,34 @@
+[gd_scene load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://scripts/real_guide.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://assets/real_guide/derived/haapsalu_dtm_1m.glb" id="2_dtm"]
+[ext_resource type="PackedScene" path="res://assets/real_guide/derived/haapsalu_lod2.glb" id="3_lod2"]
+[ext_resource type="PackedScene" path="res://assets/real_guide/derived/route_karja.glb" id="4_karja"]
+[ext_resource type="PackedScene" path="res://assets/real_guide/derived/route_rootsiturg_loop.glb" id="5_loop"]
+[ext_resource type="PackedScene" path="res://assets/real_guide/derived/route_ehte_west.glb" id="6_ehte_west"]
+[ext_resource type="PackedScene" path="res://assets/real_guide/derived/route_ehte_east.glb" id="7_ehte_east"]
+[ext_resource type="PackedScene" path="res://assets/real_guide/derived/route_northeast_branch.glb" id="8_ne_branch"]
+[ext_resource type="PackedScene" path="res://assets/real_guide/derived/lava_plaza.glb" id="9_lava"]
+
+[node name="RealGuide" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="DTM_1m" parent="." instance=ExtResource("2_dtm")]
+
+[node name="LoD2_Buildings" parent="." instance=ExtResource("3_lod2")]
+
+[node name="Routes" type="Node3D" parent="."]
+
+[node name="Karja" parent="Routes" instance=ExtResource("4_karja")]
+
+[node name="Rootsiturg_Loop" parent="Routes" instance=ExtResource("5_loop")]
+
+[node name="Ehte" type="Node3D" parent="Routes"]
+
+[node name="West_Approach" parent="Routes/Ehte" instance=ExtResource("6_ehte_west")]
+
+[node name="East_To_32" parent="Routes/Ehte" instance=ExtResource("7_ehte_east")]
+
+[node name="Northeast_Branch" parent="Routes" instance=ExtResource("8_ne_branch")]
+
+[node name="LAVA_Plaza" parent="." instance=ExtResource("9_lava")]
