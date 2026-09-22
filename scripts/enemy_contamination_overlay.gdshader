@@ -9,6 +9,11 @@ uniform sampler2D mask_texture : filter_linear, repeat_enable, hint_default_blac
 uniform vec4 mayo_color : source_color = vec4(1.0, 0.941, 0.659, 1.0);
 uniform float body_height = 4.1;
 uniform mat4 world_to_body;
+// Half a single splat's worth, normalised. **Not 0.5.** The mask holds a
+// thickness now, 0 to 255, rather than a painted flag that was either 0 or 255
+// -- so a cut at 0.5 means a cell has to be hit about 128 times before any of
+// it is drawn, which reads as sauce not sticking at all.
+uniform float paint_threshold = 0.00196;
 
 varying vec3 body_position;
 
@@ -20,7 +25,7 @@ void fragment() {
 	vec2 uv = vec2(
 		atan(body_position.x, body_position.z) / TAU + 0.5,
 		clamp(body_position.y / body_height + 0.5, 0.0, 1.0));
-	if (texture(mask_texture, uv).r < 0.5) {
+	if (texture(mask_texture, uv).r < paint_threshold) {
 		discard;
 	}
 	ALBEDO = mayo_color.rgb;

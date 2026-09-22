@@ -11,9 +11,13 @@ shader_type canvas_item;
 uniform sampler2D mask_texture : filter_linear, repeat_disable, hint_default_black;
 uniform vec4 mayo_color : source_color;
 
-const float THRESHOLD = 0.5;
+// Half a single splat's worth, normalised. **Not 0.5.** The mask holds a
+// thickness now, 0 to 255, rather than a painted flag that was either 0 or 255
+// -- so a cut at 0.5 means a cell has to be hit about 128 times before any of
+// it is drawn, which reads as sauce not sticking at all.
+uniform float paint_threshold = 0.00196;
 
 void fragment() {
 	float coverage = texture(mask_texture, vec2(UV.x, 1.0 - UV.y)).r;
-	COLOR = vec4(mayo_color.rgb, step(THRESHOLD, coverage) * mayo_color.a);
+	COLOR = vec4(mayo_color.rgb, step(paint_threshold, coverage) * mayo_color.a);
 }

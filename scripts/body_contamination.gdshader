@@ -19,7 +19,11 @@ uniform float body_height = 1.28;
 uniform float clean_roughness = 0.75;
 uniform float mayo_roughness = 0.34;
 
-const float THRESHOLD = 0.5;
+// Half a single splat's worth, normalised. **Not 0.5.** The mask holds a
+// thickness now, 0 to 255, rather than a painted flag that was either 0 or 255
+// -- so a cut at 0.5 means a cell has to be hit about 128 times before any of
+// it is drawn, which reads as sauce not sticking at all.
+uniform float paint_threshold = 0.00196;
 
 varying vec3 surface_position;
 
@@ -32,7 +36,7 @@ void fragment() {
 		atan(surface_position.x, surface_position.z) / TAU + 0.5,
 		clamp(surface_position.y / body_height + 0.5, 0.0, 1.0));
 	float coverage = texture(mask_texture, uv).r;
-	float painted = step(THRESHOLD, coverage);
+	float painted = step(paint_threshold, coverage);
 	ALBEDO = mix(clean_color.rgb, mayo_color.rgb, painted);
 	ROUGHNESS = mix(clean_roughness, mayo_roughness, painted);
 	METALLIC = 0.0;

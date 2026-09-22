@@ -328,6 +328,12 @@ Your own sauce counts. A point cannot hit the player who fired it until it has t
 
 **The stain is cosmetic and nothing reads it back.** Slipping is decided by the floor grid and the floor grid alone. Over the network a body is painted exactly like a wall — only the server marks it, and it broadcasts the centre cell — and a peer joining a session that is already messy is handed each body's mask along with the floor's.
 
+### One splat has to be visible
+
+The mask holds a **thickness**, 0 to 255, where it used to hold a painted flag that was either 0 or 255. Every shader that cut at `0.5` went on compiling the day that changed and quietly started needing about **128 hits on a cell** before it drew any of them. The floor was moved over; the body, the glasses, the stall roofs and the monster overlay were not, so sauce on a player or a monster looked like it was going straight through.
+
+All five now cut at `paint_threshold`, half a deposit — 0.00196 — and `probe_body` reads the number out of each shader's source and fails if one deposit would not clear it. Off a material is no good (a material only reports parameters somebody explicitly set) and off the rendering server is no good either (a headless run has no compiled shader to ask), but the value written in the file is the thing that matters anyway.
+
 ### Contamination grid
 
 `ContaminationGrid` is one rectangular mask — cells, texture and material. The floor owns one; each wall face owns one of its own, so walls and floor share the same grid code, shader and brush. Cells are 0.1 m and the brush radius is exported **in metres**, converted to cells internally, so changing the cell size does not change how big a splat is.

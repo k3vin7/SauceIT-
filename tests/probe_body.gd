@@ -275,6 +275,45 @@ func _run() -> void:
 	_check(self_visor.painted_cell_count() > 0,
 		"it landed on you but not on your own glasses, which were pointing at it")
 
+	# --- one splat is enough to be drawn, on every kind of surface ---
+	# The mask holds a thickness now, 0 to 255, where it used to hold a painted
+	# flag that was either 0 or 255. Every shader that cut at 0.5 kept working
+	# the day that changed and quietly started needing about **128** hits on a
+	# cell before it drew any of them -- which does not look like a threshold,
+	# it looks like sauce going straight through. The floor was moved over and
+	# the body, the glasses, the roofs and the monster overlay were not.
+	#
+	# So: for every material that reads one of these masks, one deposit has to
+	# clear its threshold.
+	var deposit := 1.0 / 255.0
+	var surfaces := {
+		"a body": load("res://scripts/body_contamination.gdshader"),
+		"the glasses": load("res://scripts/visor_overlay.gdshader"),
+		"a stall roof": load("res://scripts/roof_contamination.gdshader"),
+		"the monster overlay": load("res://scripts/enemy_contamination_overlay.gdshader"),
+		"the floor and walls": load("res://scripts/contamination.gdshader"),
+	}
+	var blind: Array[String] = []
+	for where in surfaces.keys():
+		# Read out of the shader source. Not off a material, which only reports
+		# parameters somebody has explicitly set, and not off the rendering
+		# server, which has no compiled shader to ask in a headless run. The
+		# value written in the file is the thing being checked anyway.
+		var shader: Shader = surfaces[where]
+		var declaration := RegEx.new()
+		declaration.compile("uniform\\s+float\\s+paint_threshold\\s*=\\s*([0-9.]+)")
+		var found := declaration.search(shader.code)
+		if found == null:
+			blind.push_back("%s (declares no paint_threshold)" % where)
+			continue
+		var cut := float(found.get_string(1))
+		print("  %-20s draws a cell from %.5f, one splat leaves %.5f" % [
+			where, cut, deposit])
+		if cut > deposit:
+			blind.push_back("%s (needs %.0f hits)" % [where, cut / deposit])
+	_check(blind.is_empty(),
+		"a single splat is invisible on %s" % str(blind))
+
 	if failures.is_empty():
 		print("MAYO_BODY_OK")
 		quit(0)
