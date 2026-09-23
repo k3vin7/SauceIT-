@@ -657,7 +657,13 @@ func _run() -> void:
 	# being paddled along looks like. Fed the ground directly rather than walked
 	# across the map for it: this is about the coupling, and a monster that
 	# catches a kerb on the way would be testing the pathing instead.
+	# The monsters on the street have this off -- this rig's arms cannot reach
+	# the floor, so planting them puts the hands in the air -- but the code is
+	# still worth holding to its contract for the day a rig can carry it.
+	_check(not enemy.procedural_gait,
+		"the street's monsters are planting hands their arms cannot reach the floor with")
 	var strider: MayoEnemy = MayoEnemy.new()
+	strider.procedural_gait = true
 	root.add_child(strider)
 	strider.build(scene.body_cell_size, scene.contamination_brush_radius, Color("4d3f6b"))
 	await physics_frame

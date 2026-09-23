@@ -81,6 +81,14 @@ const MODEL_HEIGHT := 4.1
 ## at the moment a monster stops, it freezes mid-step with one elbow bent.
 @export_range(0.05, 2.0, 0.05, "suffix:s") var gait_settle_seconds := 0.25
 
+## Whether to plant the hands and solve the arms back from them at all.
+##
+## **Off.** See where it is built for why: this rig's arms cannot reach the
+## floor, so planting them puts the hands in the air. Left in because the rest
+## of the walk -- the clip keeping pace with the ground -- is worth having on
+## its own, and because a rig that can reach would only need this turned on.
+@export var procedural_gait := false
+
 var health := 240.0
 ## Clients simulate no enemies at all, exactly as they simulate no bodies.
 var authority := true
@@ -245,16 +253,25 @@ func _build_visual() -> void:
 	_death_animation = _find_animation("Death")
 	_animation_player.animation_finished.connect(_on_animation_finished)
 
-	# The gait rides on top of whatever the clip does. The imported Walk swings
-	# the arms and holds the body level, which reads as a burger hanging in the
-	# air being paddled along; `EnemyGait` bends the elbows under load and lets
-	# the body fall and be caught between steps. As a SkeletonModifier3D it is
-	# called after the clip has written its pose, so it adds rather than fights.
-	for node in _visual_root.find_children("*", "Skeleton3D", true, false):
-		_gait = GaitScript.new()
-		_gait.name = "Gait"
-		node.add_child(_gait)
-		break
+	# **Off by default, and it should stay off until the rig can carry it.**
+	#
+	# `EnemyGait` plants the hands and solves the arms back from them, which is
+	# what walking on your hands is. The monster cannot do it: its shoulders
+	# sit 1.12 units up and its arms span 0.87, so an arm stretched straight
+	# down leaves the hand 0.71 m clear of the ground. The asset is rigged as a
+	# burger floating with its arms dangling, and the only way to plant those
+	# hands is to drop the whole body two thirds of a metre into a crouch --
+	# which is a different silhouette, and a different set of colliders.
+	#
+	# Forced anyway, the solver does the only thing it can: it plants the hands
+	# at the height the arms *can* reach and holds them there, in mid-air, at
+	# whatever wrist angle the solve lands on. Which is what it looked like.
+	if procedural_gait:
+		for node in _visual_root.find_children("*", "Skeleton3D", true, false):
+			_gait = GaitScript.new()
+			_gait.name = "Gait"
+			node.add_child(_gait)
+			break
 
 
 func _find_animation(suffix: String) -> StringName:
@@ -500,7 +517,8 @@ func _advance_fall(delta: float) -> void:
 ## Writes `facing_yaw` and `fall_angle` onto the node. The yaw is applied first
 ## and the topple second, so the topple is about the body's own right axis --
 ## it falls onto its own back whichever way it happened to be looking.
-## Walks the gait forward by the ground actually covered, not by the clock.
+## Walks the clip -- and the gait, when there is one -- forward by the ground
+## actually covered rather than by the clock.
 ##
 ## The phase is a distance, so a monster slowed down or shoved takes shorter
 ## steps rather than the same steps faster -- the hands stay with the floor
@@ -510,13 +528,12 @@ func _advance_fall(delta: float) -> void:
 ## `strength` is faded rather than switched. Snapping it off at the moment a
 ## monster stops leaves it mid-step with one elbow bent, which reads as a flinch.
 func _advance_gait(step: Vector3, walking: bool, delta: float) -> void:
-	if _gait == null:
-		return
 	var covered := Vector2(step.x, step.z).length()
 	_ground_covered += covered
-	_gait.phase = _ground_covered / maxf(_gait.stride_in_use(), 0.01)
-	_gait.strength = move_toward(_gait.strength, 1.0 if walking else 0.0,
-		delta / maxf(gait_settle_seconds, 0.01))
+	if _gait != null:
+		_gait.phase = _ground_covered / maxf(_gait.stride_in_use(), 0.01)
+		_gait.strength = move_toward(_gait.strength, 1.0 if walking else 0.0,
+			delta / maxf(gait_settle_seconds, 0.01))
 	if _animation_player != null and not _attack_animation_active and is_alive():
 		# The clip keeps pace with the ground too: at a standstill it idles at
 		# its own rate, and walking it runs at the share of full speed the

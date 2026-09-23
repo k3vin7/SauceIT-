@@ -335,29 +335,17 @@ Your own sauce counts. A point cannot hit the player who fired it until it has t
 
 The stain is placed by the angle a hit makes about the body's axis. The burger sits a third of a metre back of its own node, so measuring that angle about the node skewed a stain by up to **ten degrees** around the flanks — which is exactly where anyone aims. `BodyContamination.axis_offset` is that offset, shared by the painter and by both overlay shaders so all three agree; a player is centred on their own node and leaves it at zero. `probe_enemy` fires at four azimuths through the real paint path and compares the stain's angle with the hit's: worst case is now 1.5°, against 10° before.
 
-### It walks on its hands
+### Walking on its hands is off, and why
 
-The imported `Walk` clip swings the arms from the shoulder and holds the body level. Swinging is not walking: a hand that keeps moving while it is meant to be carrying the body reads as treading water, and no amount of extra bend at the elbow fixes it, because the shape of the limb was never the problem. **The hand does not stay where it was put.**
+The imported `Walk` clip swings the arms from the shoulder and holds the body level, which reads as a burger hanging in the air being rowed along. `scripts/enemy_gait.gd` was written to fix that: plant each hand, hold it still while it carries the weight, and solve the arm backwards from it with two-bone IK.
 
-So `scripts/enemy_gait.gd` places the hands rather than posing them. Each is given a plant point, and while it is the hand taking weight it does not move — the body travels over it, which in the body's own space is a slide backwards at exactly the speed the monster is going forwards. Then it lifts, swings ahead, and plants again. The arm is solved backwards from wherever the hand is, two-bone IK at shoulder and elbow, so the bend comes out of the reach instead of being dialled in. The body falls and is caught between plants, and rolls as the weight crosses over.
+**It is off (`procedural_gait`), because this rig cannot do it.** The shoulders sit 1.12 units up and the arms span 0.87, so an arm stretched straight down leaves the hand **0.71 m clear of the ground**. The asset is rigged as a floating burger with dangling arms; the only way to plant those hands is to drop the whole body two thirds of a metre into a crouch, which is a different silhouette and a different set of colliders.
 
-It is a `SkeletonModifier3D`, which is the difference between adding to the clip and fighting it: it is called after the animation has written its pose and before the skeleton is used. Godot has had two names for that hook and a modifier whose hook is never called is silent rather than loud, so it counts its calls and `probe_enemy` checks the count.
+Forced anyway, the solver does the only thing left to it: it plants the hands at the height the arms *can* reach and holds them there, in mid-air, at whatever wrist angle the solve lands on — and standing still it pulls both arms taut into straight sticks, because the target is always at the edge of reach. Which is exactly how it looked.
 
-Four things had to be got right, and each was wrong first:
+**The checks passed the whole time.** A planted hand held to 0.002 m a frame against a swinging one's 0.100, and a metre of ground turned a metre of gait to within a thousandth. All true, and all beside the point: the hand was holding still in the air. Whether the pose looked like anything was the one thing not being measured, and it was not measurable from here — which is the lesson, not the bug.
 
-**Forward is +Z in the skeleton.** The visual root is turned a half turn so the model's face lines up with the body's −Z, which leaves the rig's own +Z pointing the way the monster walks. Backwards, a planted hand slides *with* the body instead of against it and covers twice the ground rather than none of it — 0.13 m a frame against the body's 0.077.
-
-**A hand slides back by the ground the body covers while it is down**, which is `stride × stance_share`, not half a stride. They are the same distance seen from two places, and if they differ the hand skates by the difference.
-
-**The arms cannot reach the floor.** The shoulders sit 1.12 units up and the arms span 0.87, so at the height the model rests its hands the arm is already at full stretch with no room to swing fore or aft at all. Ask it to and the solver clamps, and the hand drifts. The plant height is worked back from the stride instead — the monster crouches into its stride rather than reaching past what it has — and the stride itself is clamped to what the arms can span, so asking for a long one shortens the cycle rather than breaking the plant.
-
-**The wrist plants too.** Left to the arm, the palm swings about the hand joint even though the joint is holding still, which is the same wander one bone further down: 0.014 m a frame of it.
-
-With all four, measured over 1.80 m of walking: a **planted hand moves 0.002 m a frame** while the body moves 0.030, and a swinging one covers 0.100. `probe_enemy` fails if the planted figure is not far smaller than the swinging one, and if it is not well under the body's own step.
-
-The phase is a distance, not a clock — it comes off the ground the monster has actually covered, so one slowed or shoved takes shorter steps rather than the same steps faster. Fed three paces, a metre of ground is a metre of gait to within a thousandth. That is also why the check winds the odometer back rather than writing the phase: the phase is derived every frame, so writing it is overwritten on the next step, and the jump back is a metre of hand movement in one frame.
-
-All of it is cosmetic — no collider, no mask cell, no packet. `stride_metres`, `stance_share`, `step_lift_metres`, `track_width`, `plant_height_offset`, `bob_metres`, `body_roll_degrees` and `elbows_point_back` are exported, and `gait_settle_seconds` fades the whole thing in and out rather than switching it, since cutting it the moment a monster stops freezes it mid-step with one arm in the air.
+What is kept is the part that needed no rig at all: **the clip keeps pace with the ground.** `speed_scale` follows the share of full speed the monster is actually managing, so a slowed or shoved one takes slower steps rather than skating through the same ones. The gait itself stays in the tree, gated off and still held to its contract by `probe_enemy` on a monster of its own, for the day there is a rig that can carry it.
 
 ### The stain is drawn from the rest pose
 
