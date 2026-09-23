@@ -731,6 +731,69 @@ func _run() -> void:
 		_check(shifted_most > 0.05,
 			"turning the gait on moved the model %.3f m: the arms are still swinging straight"
 				% shifted_most)
+
+		# --- and a planted hand holds still while the body walks over it ---
+		# The whole of it. A hand that keeps moving while it is meant to be
+		# carrying the body reads as treading water, and no amount of bend at the
+		# elbow fixes that, because the shape of the limb was never the problem.
+		# So the hand is given a plant point and the arm is solved backwards from
+		# it; what has to hold is that the point does not move.
+		#
+		# Walked by hand rather than across the map: this is about the coupling
+		# between the ground and the gait, and a monster that catches a kerb on
+		# the way would be testing the pathing instead.
+		var hand_of := func(side: int) -> Vector3:
+			var want := "Stage1_HamburgerMonster_Palm" + ("L" if side == 0 else "R")
+			for node in strider._visual_root.find_children("*", "MeshInstance3D", true, false):
+				var mesh_node := node as MeshInstance3D
+				if String(mesh_node.name) == want:
+					return mesh_node.global_transform.origin
+			return Vector3.ZERO
+		gait.strength = 1.0
+		# Wound back through the odometer, not by writing the phase: the phase
+		# is derived from the ground covered every frame, so setting it here
+		# would be overwritten on the first step -- and the jump back to where
+		# the odometer had got to is a metre of hand movement in one frame,
+		# which is the whole measurement.
+		strider._ground_covered = 0.0
+		strider._advance_gait(Vector3.ZERO, true, 1.0 / 60.0)
+		strider.global_position = scene.spawn_position_for(0) + Vector3(0.0, 0.0, -20.0)
+		for _f in 3:
+			await process_frame
+			await physics_frame
+		# One step's worth of ground, a slice at a time, watching the hand that is
+		# down for it. The body travels; the hand must not.
+		var slice: float = gait.stride_metres / 60.0
+		var planted_wander := 0.0
+		var swinging_travel := 0.0
+		var body_travel := 0.0
+		var last_hand := {0: hand_of.call(0), 1: hand_of.call(1)}
+		var last_body: Vector3 = strider.global_position
+		for _f in 60:
+			strider.global_position -= Vector3(0.0, 0.0, slice)
+			strider._advance_gait(Vector3(0.0, 0.0, -slice), true, 1.0 / 60.0)
+			await process_frame
+			await physics_frame
+			body_travel += (strider.global_position - last_body).length()
+			last_body = strider.global_position
+			for side in 2:
+				var now: Vector3 = hand_of.call(side)
+				var went: float = (now - (last_hand[side] as Vector3)).length()
+				last_hand[side] = now
+				if gait.is_planted(side, gait.phase):
+					planted_wander = maxf(planted_wander, went)
+				else:
+					swinging_travel = maxf(swinging_travel, went)
+		print("over %.2f m of walking: a planted hand wandered %.3f m per frame at worst, a swinging one covered %.3f" % [
+			body_travel, planted_wander, swinging_travel])
+		_check(body_travel > 1.0, "the monster did not walk, so the planting tests nothing")
+		_check(swinging_travel > planted_wander * 2.0,
+			"a planted hand moves %.3f m a frame against a swinging one's %.3f: they are both just swinging"
+				% [planted_wander, swinging_travel])
+		_check(planted_wander < slice * 0.5,
+			"a planted hand slid %.3f m a frame while the body moved %.3f: it is skating, not standing"
+				% [planted_wander, slice])
+
 	strider.queue_free()
 	await physics_frame
 

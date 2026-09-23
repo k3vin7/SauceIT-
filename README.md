@@ -337,25 +337,27 @@ The stain is placed by the angle a hit makes about the body's axis. The burger s
 
 ### It walks on its hands
 
-The imported `Walk` clip swings the arms and holds the body level. That is a burger hanging in the air being rowed along, not a thing walking, and two pieces of a walk cycle are missing from it.
+The imported `Walk` clip swings the arms from the shoulder and holds the body level. Swinging is not walking: a hand that keeps moving while it is meant to be carrying the body reads as treading water, and no amount of extra bend at the elbow fixes it, because the shape of the limb was never the problem. **The hand does not stay where it was put.**
 
-**The arms have to take weight.** A leg bends under load and straightens to push off; a straight limb swinging from the shoulder is a pendulum. Each arm gets extra flexion at the elbow, half a cycle apart, deepest as that arm passes under the body — and a smaller gather at the shoulder, because a limb that folds equally at both joints reads as boneless.
+So `scripts/enemy_gait.gd` places the hands rather than posing them. Each is given a plant point, and while it is the hand taking weight it does not move — the body travels over it, which in the body's own space is a slide backwards at exactly the speed the monster is going forwards. Then it lifts, swings ahead, and plants again. The arm is solved backwards from wherever the hand is, two-bone IK at shoulder and elbow, so the bend comes out of the reach instead of being dialled in. The body falls and is caught between plants, and rolls as the weight crosses over.
 
-**The body has to fall and be caught.** Nothing carries the weight between one hand landing and the next, so the body dips between steps and rises as a hand plants, at twice the stride frequency because there are two steps in a cycle. It rolls into each step as well, a few degrees.
+It is a `SkeletonModifier3D`, which is the difference between adding to the clip and fighting it: it is called after the animation has written its pose and before the skeleton is used. Godot has had two names for that hook and a modifier whose hook is never called is silent rather than loud, so it counts its calls and `probe_enemy` checks the count.
 
-`scripts/enemy_gait.gd` is a `SkeletonModifier3D`, which is the difference between adding to the clip and fighting it: it is called after the animation has written its pose and before the skeleton is used, so what it writes is the clip's pose *plus* this rather than whichever of the two ran last. Godot has had two names for that hook, and a modifier whose hook is never called is silent rather than loud, so it counts its calls and `probe_enemy` checks the count.
+Four things had to be got right, and each was wrong first:
 
-**The phase is a distance, not a clock.** It comes off the ground the monster has actually covered, so one slowed or shoved takes shorter steps rather than the same steps faster — hands that keep pace with the floor instead of skating over it, which is most of what being paddled along looks like. The clip's `speed_scale` follows the same measure. `probe_enemy` feeds it three paces and fails if a metre of ground is not a metre of gait:
+**Forward is +Z in the skeleton.** The visual root is turned a half turn so the model's face lines up with the body's −Z, which leaves the rig's own +Z pointing the way the monster walks. Backwards, a planted hand slides *with* the body instead of against it and covers twice the ground rather than none of it — 0.13 m a frame against the body's 0.077.
 
-| | ground | gait |
-|---|---|---|
-| a steady walk | 3.60 m | 0.783 cycles (0.783 due) |
-| shoved along | 10.80 m | 2.348 cycles (2.348 due) |
-| barely moving | 0.60 m | 0.130 cycles (0.130 due) |
+**A hand slides back by the ground the body covers while it is down**, which is `stride × stance_share`, not half a stride. They are the same distance seen from two places, and if they differ the hand skates by the difference.
 
-Turning it on moves the model 0.46 m at the fingertips. That is measured on the **meshes**, not on the bone poses: a modifier writes into the pose the skeleton hands out, and reading a bone back from outside that pass recomputes it from the clip and shows nothing whatever the modifier did — 0.0 degrees, from a modifier that was working.
+**The arms cannot reach the floor.** The shoulders sit 1.12 units up and the arms span 0.87, so at the height the model rests its hands the arm is already at full stretch with no room to swing fore or aft at all. Ask it to and the solver clamps, and the hand drifts. The plant height is worked back from the stride instead — the monster crouches into its stride rather than reaching past what it has — and the stride itself is clamped to what the arms can span, so asking for a long one shortens the cycle rather than breaking the plant.
 
-All of it is cosmetic. No collider, no mask cell and no packet is touched: `stride_metres`, `elbow_bend_degrees`, `shoulder_gather_degrees`, `bob_metres` and `body_roll_degrees` are all exported, and `gait_settle_seconds` fades the whole thing in and out rather than switching it, since cutting it at the moment a monster stops freezes it mid-step with one elbow bent.
+**The wrist plants too.** Left to the arm, the palm swings about the hand joint even though the joint is holding still, which is the same wander one bone further down: 0.014 m a frame of it.
+
+With all four, measured over 1.80 m of walking: a **planted hand moves 0.002 m a frame** while the body moves 0.030, and a swinging one covers 0.100. `probe_enemy` fails if the planted figure is not far smaller than the swinging one, and if it is not well under the body's own step.
+
+The phase is a distance, not a clock — it comes off the ground the monster has actually covered, so one slowed or shoved takes shorter steps rather than the same steps faster. Fed three paces, a metre of ground is a metre of gait to within a thousandth. That is also why the check winds the odometer back rather than writing the phase: the phase is derived every frame, so writing it is overwritten on the next step, and the jump back is a metre of hand movement in one frame.
+
+All of it is cosmetic — no collider, no mask cell, no packet. `stride_metres`, `stance_share`, `step_lift_metres`, `track_width`, `plant_height_offset`, `bob_metres`, `body_roll_degrees` and `elbows_point_back` are exported, and `gait_settle_seconds` fades the whole thing in and out rather than switching it, since cutting it the moment a monster stops freezes it mid-step with one arm in the air.
 
 ### The stain is drawn from the rest pose
 

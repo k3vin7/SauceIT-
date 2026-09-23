@@ -514,7 +514,7 @@ func _advance_gait(step: Vector3, walking: bool, delta: float) -> void:
 		return
 	var covered := Vector2(step.x, step.z).length()
 	_ground_covered += covered
-	_gait.phase = _ground_covered / maxf(_gait.stride_metres, 0.01)
+	_gait.phase = _ground_covered / maxf(_gait.stride_in_use(), 0.01)
 	_gait.strength = move_toward(_gait.strength, 1.0 if walking else 0.0,
 		delta / maxf(gait_settle_seconds, 0.01))
 	if _animation_player != null and not _attack_animation_active and is_alive():
