@@ -335,6 +335,28 @@ Your own sauce counts. A point cannot hit the player who fired it until it has t
 
 The stain is placed by the angle a hit makes about the body's axis. The burger sits a third of a metre back of its own node, so measuring that angle about the node skewed a stain by up to **ten degrees** around the flanks — which is exactly where anyone aims. `BodyContamination.axis_offset` is that offset, shared by the painter and by both overlay shaders so all three agree; a player is centred on their own node and leaves it at zero. `probe_enemy` fires at four azimuths through the real paint path and compares the stain's angle with the hit's: worst case is now 1.5°, against 10° before.
 
+### It walks on its hands
+
+The imported `Walk` clip swings the arms and holds the body level. That is a burger hanging in the air being rowed along, not a thing walking, and two pieces of a walk cycle are missing from it.
+
+**The arms have to take weight.** A leg bends under load and straightens to push off; a straight limb swinging from the shoulder is a pendulum. Each arm gets extra flexion at the elbow, half a cycle apart, deepest as that arm passes under the body — and a smaller gather at the shoulder, because a limb that folds equally at both joints reads as boneless.
+
+**The body has to fall and be caught.** Nothing carries the weight between one hand landing and the next, so the body dips between steps and rises as a hand plants, at twice the stride frequency because there are two steps in a cycle. It rolls into each step as well, a few degrees.
+
+`scripts/enemy_gait.gd` is a `SkeletonModifier3D`, which is the difference between adding to the clip and fighting it: it is called after the animation has written its pose and before the skeleton is used, so what it writes is the clip's pose *plus* this rather than whichever of the two ran last. Godot has had two names for that hook, and a modifier whose hook is never called is silent rather than loud, so it counts its calls and `probe_enemy` checks the count.
+
+**The phase is a distance, not a clock.** It comes off the ground the monster has actually covered, so one slowed or shoved takes shorter steps rather than the same steps faster — hands that keep pace with the floor instead of skating over it, which is most of what being paddled along looks like. The clip's `speed_scale` follows the same measure. `probe_enemy` feeds it three paces and fails if a metre of ground is not a metre of gait:
+
+| | ground | gait |
+|---|---|---|
+| a steady walk | 3.60 m | 0.783 cycles (0.783 due) |
+| shoved along | 10.80 m | 2.348 cycles (2.348 due) |
+| barely moving | 0.60 m | 0.130 cycles (0.130 due) |
+
+Turning it on moves the model 0.46 m at the fingertips. That is measured on the **meshes**, not on the bone poses: a modifier writes into the pose the skeleton hands out, and reading a bone back from outside that pass recomputes it from the clip and shows nothing whatever the modifier did — 0.0 degrees, from a modifier that was working.
+
+All of it is cosmetic. No collider, no mask cell and no packet is touched: `stride_metres`, `elbow_bend_degrees`, `shoulder_gather_degrees`, `bob_metres` and `body_roll_degrees` are all exported, and `gait_settle_seconds` fades the whole thing in and out rather than switching it, since cutting it at the moment a monster stops freezes it mid-step with one elbow bent.
+
 ### The stain is drawn from the rest pose
 
 The overlay reads its mask by where a vertex sits in the body. That was the **animated** position, which meant every clip dragged the stain across the model: measured through the death clip, the parts travel **1.3 m to 3.5 m** in the body's own space — the top bun 1.37, the eye 2.38, the mouth 2.18 — so a monster shot in the face went over with the sauce sliding off it, and walking did a milder version of the same to the arms.

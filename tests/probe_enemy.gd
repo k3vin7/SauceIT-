@@ -645,6 +645,95 @@ func _run() -> void:
 	doomed.queue_free()
 	await physics_frame
 
+	# --- it walks on its hands rather than being paddled along ---
+	# The imported Walk clip swings the arms and holds the body level, which
+	# reads as a burger hanging in the air being rowed. `EnemyGait` bends the
+	# elbows under load and lets the body fall and be caught between steps, on
+	# top of the clip rather than instead of it.
+	#
+	# What has to hold is that it is keyed to the **ground**, not to a clock. A
+	# monster slowed or shoved has to take shorter steps rather than the same
+	# steps faster, or its hands skate over the floor -- which is most of what
+	# being paddled along looks like. Fed the ground directly rather than walked
+	# across the map for it: this is about the coupling, and a monster that
+	# catches a kerb on the way would be testing the pathing instead.
+	var strider: MayoEnemy = MayoEnemy.new()
+	root.add_child(strider)
+	strider.build(scene.body_cell_size, scene.contamination_brush_radius, Color("4d3f6b"))
+	await physics_frame
+	var gait = strider._gait
+	_check(gait != null, "the monster has no gait, so it walks the way it used to")
+	if gait != null:
+		_check(gait.has_rig(),
+			"the gait did not find the arm bones it bends, so it does nothing")
+		_check(gait.get_skeleton() != null, "the gait is not attached to the rig")
+
+		var tick := 1.0 / 60.0
+		for _f in 40:
+			strider._advance_gait(Vector3.ZERO, false, tick)
+		print("standing still: gait strength %.2f, phase %.3f" % [gait.strength, gait.phase])
+		_check(gait.strength < 0.05,
+			"a monster stood still still has %.2f of a walk on it" % gait.strength)
+		_check(is_zero_approx(gait.phase),
+			"a monster stood still walked %.2f cycles on the spot" % gait.phase)
+
+		# A metre of ground has to be a metre of gait, whatever pace it arrives at.
+		var paces := {"a steady walk": 0.06, "shoved along": 0.18, "barely moving": 0.01}
+		for pace in paces.keys():
+			var step: float = paces[pace]
+			var before: float = gait.phase
+			for _f in 60:
+				strider._advance_gait(Vector3(0.0, 0.0, -step), true, tick)
+			var turned: float = gait.phase - before
+			var due: float = (step * 60.0) / gait.stride_metres
+			print("  %-14s %.2f m of ground -> %.3f cycles (%.3f due)" % [
+				pace, step * 60.0, turned, due])
+			_check(absf(turned - due) < 0.001,
+				"%s: %.2f m of ground turned the gait %.3f cycles, not %.3f -- the steps are on a clock"
+					% [pace, step * 60.0, turned, due])
+		_check(gait.strength > 0.9,
+			"a walking monster only has %.2f of a walk on it" % gait.strength)
+
+		# And it actually moves the model. Checked on the meshes rather than on the
+		# bone poses: a modifier writes into the pose the skeleton hands out, and
+		# reading a bone back from outside that pass recomputes it from the clip and
+		# shows nothing whatever the modifier did. What the player sees is where the
+		# parts end up, so that is what is measured.
+		var where_parts_are := func() -> Dictionary:
+			var out := {}
+			var into: Transform3D = strider.global_transform.affine_inverse()
+			for node in strider._visual_root.find_children("*", "MeshInstance3D", true, false):
+				var mesh_node := node as MeshInstance3D
+				out[mesh_node.name] = (into * mesh_node.global_transform).origin
+			return out
+		gait.strength = 0.0
+		gait.phase = 0.25
+		for _f in 4:
+			await process_frame
+			await physics_frame
+		var at_rest: Dictionary = where_parts_are.call()
+		gait.strength = 1.0
+		for _f in 4:
+			await process_frame
+			await physics_frame
+		var mid_step: Dictionary = where_parts_are.call()
+		var shifted_most := 0.0
+		var shifted_name := ""
+		for part in at_rest.keys():
+			var moved_by: float = ((mid_step[part] as Vector3) - (at_rest[part] as Vector3)).length()
+			if moved_by > shifted_most:
+				shifted_most = moved_by
+				shifted_name = String(part).replace("Stage1_HamburgerMonster_", "")
+		print("the rig called the gait %d times; turning it on moves the model %.3f m at most (%s)" % [
+			gait.calls, shifted_most, shifted_name])
+		_check(gait.calls > 0,
+			"the skeleton never called the gait, so none of it reaches the model")
+		_check(shifted_most > 0.05,
+			"turning the gait on moved the model %.3f m: the arms are still swinging straight"
+				% shifted_most)
+	strider.queue_free()
+	await physics_frame
+
 	if failures.is_empty():
 		print("MAYO_ENEMY_OK")
 		quit(0)

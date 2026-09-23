@@ -18,6 +18,7 @@ extends CharacterBody3D
 ## means the two cannot drift apart.
 const WIDTH_MULTIPLE := 2.0
 const HEIGHT_MULTIPLE := 2.0
+const GaitScript := preload("res://scripts/enemy_gait.gd")
 const HAMBURGER_MONSTER := preload(
 	"res://assets/enemies/hamburger_monster/hamburger_monster.glb")
 ## Evaluated mesh bounds in the authored Blender file, in metres. Scaling by
@@ -75,6 +76,11 @@ const MODEL_HEIGHT := 4.1
 ## Long enough to read as toppling rather than as being deleted.
 @export_range(0.1, 4.0, 0.05, "suffix:s") var fall_duration := 0.9
 
+@export_group("Its walk")
+## How long the gait takes to come on or go off. Faded rather than switched: cut
+## at the moment a monster stops, it freezes mid-step with one elbow bent.
+@export_range(0.05, 2.0, 0.05, "suffix:s") var gait_settle_seconds := 0.25
+
 var health := 240.0
 ## Clients simulate no enemies at all, exactly as they simulate no bodies.
 var authority := true
@@ -100,6 +106,11 @@ var _route_step := 0
 var _repath_timer := 0.0
 var _route_goal := Vector3.ZERO
 var _body_mesh: MeshInstance3D
+var _gait: Node
+## How far the monster has walked, in metres. The gait's phase comes off this
+## rather than off a clock, so its hands keep pace with the ground instead of
+## sliding along it -- which is most of what paddling looks like.
+var _ground_covered := 0.0
 var _visual_root: Node3D
 var _animation_player: AnimationPlayer
 var _idle_animation := &""
@@ -234,6 +245,17 @@ func _build_visual() -> void:
 	_death_animation = _find_animation("Death")
 	_animation_player.animation_finished.connect(_on_animation_finished)
 
+	# The gait rides on top of whatever the clip does. The imported Walk swings
+	# the arms and holds the body level, which reads as a burger hanging in the
+	# air being paddled along; `EnemyGait` bends the elbows under load and lets
+	# the body fall and be caught between steps. As a SkeletonModifier3D it is
+	# called after the clip has written its pose, so it adds rather than fights.
+	for node in _visual_root.find_children("*", "Skeleton3D", true, false):
+		_gait = GaitScript.new()
+		_gait.name = "Gait"
+		node.add_child(_gait)
+		break
+
 
 func _find_animation(suffix: String) -> StringName:
 	if _animation_player == null:
@@ -271,6 +293,14 @@ func _play_attack_animation() -> void:
 
 func _play_death_animation() -> void:
 	_attack_animation_active = false
+	# The gait is a walk, and this is not one. Both of its levers are left
+	# wherever the last step put them otherwise, so a monster killed mid-stride
+	# would go over with one elbow tucked and the clip running at whatever pace
+	# it had been walking at.
+	if _gait != null:
+		_gait.strength = 0.0
+	if _animation_player != null:
+		_animation_player.speed_scale = 1.0
 	_play_animation(_death_animation)
 
 
@@ -470,6 +500,33 @@ func _advance_fall(delta: float) -> void:
 ## Writes `facing_yaw` and `fall_angle` onto the node. The yaw is applied first
 ## and the topple second, so the topple is about the body's own right axis --
 ## it falls onto its own back whichever way it happened to be looking.
+## Walks the gait forward by the ground actually covered, not by the clock.
+##
+## The phase is a distance, so a monster slowed down or shoved takes shorter
+## steps rather than the same steps faster -- the hands stay with the floor
+## instead of skating over it. The clip is scaled by the same measure, for the
+## same reason.
+##
+## `strength` is faded rather than switched. Snapping it off at the moment a
+## monster stops leaves it mid-step with one elbow bent, which reads as a flinch.
+func _advance_gait(step: Vector3, walking: bool, delta: float) -> void:
+	if _gait == null:
+		return
+	var covered := Vector2(step.x, step.z).length()
+	_ground_covered += covered
+	_gait.phase = _ground_covered / maxf(_gait.stride_metres, 0.01)
+	_gait.strength = move_toward(_gait.strength, 1.0 if walking else 0.0,
+		delta / maxf(gait_settle_seconds, 0.01))
+	if _animation_player != null and not _attack_animation_active and is_alive():
+		# The clip keeps pace with the ground too: at a standstill it idles at
+		# its own rate, and walking it runs at the share of full speed the
+		# monster is actually managing.
+		var pace := 1.0
+		if walking and move_speed > 0.01:
+			pace = clampf(covered / maxf(delta, 0.0001) / move_speed, 0.25, 2.0)
+		_animation_player.speed_scale = pace
+
+
 func _apply_pose() -> void:
 	var pose := Basis(Vector3.UP, facing_yaw) * Basis(Vector3.RIGHT, fall_angle)
 	if fall_angle <= 0.0:
@@ -571,8 +628,11 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		velocity.y = 0.0
 	else:
 		velocity.y -= fall_gravity * delta
+	var stood_at := global_position
 	move_and_slide()
-	_set_locomotion_animation(Vector2(velocity.x, velocity.z).length_squared() > 0.000001)
+	var walking := Vector2(velocity.x, velocity.z).length_squared() > 0.000001
+	_set_locomotion_animation(walking)
+	_advance_gait(global_position - stood_at, walking, delta)
 
 	if target == null or _contact_cooldown > 0.0:
 		return null
