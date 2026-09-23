@@ -16,6 +16,8 @@ uniform sampler2D mask_texture : filter_linear, repeat_enable, hint_default_blac
 uniform vec4 clean_color : source_color;
 uniform vec4 mayo_color : source_color;
 uniform float body_height = 1.28;
+uniform float body_y_offset = 0.0;
+uniform float body_angle_offset = 0.0;
 uniform float clean_roughness = 0.75;
 uniform float mayo_roughness = 0.34;
 
@@ -29,8 +31,8 @@ void vertex() {
 
 void fragment() {
 	vec2 uv = vec2(
-		atan(surface_position.x, surface_position.z) / TAU + 0.5,
-		clamp(surface_position.y / body_height + 0.5, 0.0, 1.0));
+		atan(surface_position.x, surface_position.z) / TAU + 0.5 + body_angle_offset,
+		clamp((surface_position.y + body_y_offset) / body_height + 0.5, 0.0, 1.0));
 	float coverage = texture(mask_texture, uv).r;
 	float painted = step(THRESHOLD, coverage);
 	ALBEDO = mix(clean_color.rgb, mayo_color.rgb, painted);

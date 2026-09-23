@@ -20,6 +20,8 @@ const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 ]
 const FOOD_TRUCK_SCENE: PackedScene = preload(
 	"res://assets/food_booths/food_truck_s1.glb")
+const MOLDY_TOAST_RUSHER_SCENE_PATH := \
+	"res://assets/enemies/Stage1_MoldyToastRusher/Stage1_MoldyToastRusher.scn"
 
 # Splat batch entry kinds. Four ints per splat: kind, target, cell x, cell y.
 # What `target` means is the kind's business -- a wall packs its index and the
@@ -156,6 +158,9 @@ class MayoDroplet:
 ## walk, so the escape is always there. It is the comparison that matters, so it
 ## is stored as the fraction and not as a speed.
 @export_range(0.1, 2.0, 0.05) var enemy_speed_fraction := 0.7
+## The toast rushers can be outrun, but not merely walked away from. Their low
+## health makes turning to spray one down the intended answer to the charge.
+@export_range(0.1, 3.0, 0.05) var toast_rusher_speed_fraction := 1.65
 
 @export_group("Sauce Supply")
 ## Seconds of firing a full tank holds, every squirt added together.
@@ -1672,16 +1677,19 @@ const ENEMY_SPAWNS := [
 	[270, 420],   # halfway along Karja tänav
 	[370, 550],   # waiting in the festival square
 ]
+const TOAST_RUSHER_PAIR_OFFSETS := [-18.0, 18.0]
 
 
 ## Drops the enemies in. They are built after the local player so their speed
 ## can be set from that player's walk speed rather than from a number here that
 ## would quietly stop being half of it.
 func _build_enemies() -> void:
+	var toast_scene := load(MOLDY_TOAST_RUSHER_SCENE_PATH) as PackedScene
+	assert(toast_scene != null, "Moldy toast rusher scene was not imported")
 	for index in ENEMY_SPAWNS.size():
 		var spawn: Array = ENEMY_SPAWNS[index]
 		var enemy := MayoEnemy.new()
-		enemy.name = "Enemy%02d" % index
+		enemy.name = "Enemy%02d_Bruiser" % index
 		enemy.authority = _is_authority()
 		add_child(enemy)
 		enemy.build(body_cell_size, contamination_brush_radius, Color("4d3f6b"))
@@ -1690,6 +1698,23 @@ func _build_enemies() -> void:
 		enemy.position = StreetMap.from_pixels(spawn[0], spawn[1]) \
 			+ Vector3(0.0, enemy.stand_height(), 0.0)
 		_enemies.push_back(enemy)
+		# A pair flanks every existing enemy. Offsetting in map x keeps them visibly
+		# beside their anchor instead of stacked inside it, while preserving the
+		# deterministic build order that network splat indices rely on.
+		for pair_index in TOAST_RUSHER_PAIR_OFFSETS.size():
+			var rusher := MayoEnemy.new()
+			rusher.name = "Enemy%02d_ToastRusher%d" % [index, pair_index + 1]
+			rusher.authority = _is_authority()
+			add_child(rusher)
+			rusher.build_moldy_toast_rusher(body_cell_size,
+				contamination_brush_radius, toast_scene)
+			if _local != null:
+				rusher.match_player_speed(_local.player.walk_speed,
+					toast_rusher_speed_fraction)
+			rusher.position = StreetMap.from_pixels(
+				spawn[0] + TOAST_RUSHER_PAIR_OFFSETS[pair_index], spawn[1]) \
+				+ Vector3(0.0, rusher.stand_height(), 0.0)
+			_enemies.push_back(rusher)
 
 
 ## One step of the fight, on the authority: every enemy walks, and whatever it

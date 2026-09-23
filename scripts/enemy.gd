@@ -1,20 +1,13 @@
 class_name MayoEnemy
 extends CharacterBody3D
 
+enum EnemyKind { BRUISER, MOLDY_TOAST_RUSHER }
+
 ## The thing that walks at you.
 ##
-## It is built out of capsules -- head, torso, two arms, two legs -- welded into
-## one mesh, and that welding is the whole trick. `BodyContamination` unwraps a
-## body about its own axis, and the shader derives the same coordinate from the
-## vertex position in the mesh's own space, so the two agree only while there is
-## one mesh whose vertices are in the body's space. Six separate MeshInstances
-## would each unwrap about their own centre and slide every stain. So the parts
-## are baked into a single `ArrayMesh` with their offsets folded into the
-## vertices, and the grid, the shader and the two-int network splat all carry on
-## working exactly as they do on a player.
-##
-## Sauce sticking to it is not decoration: it is how you see what you have
-## already hit.
+## Gameplay uses the capsule skeleton for stable collision, sauce coordinates,
+## falling and network state. Bruisers draw the authored animated hamburger;
+## toast rushers use their smaller imported visual and collision envelope.
 ##
 ## Everything that decides anything runs on the authority only. A client's
 ## enemies are placed by the packets the server sends, the same way its players
@@ -26,6 +19,9 @@ extends CharacterBody3D
 ## means the two cannot drift apart.
 const WIDTH_MULTIPLE := 2.0
 const HEIGHT_MULTIPLE := 2.0
+const HAMBURGER_MONSTER := preload(
+	"res://assets/enemies/hamburger_monster/hamburger_monster.glb")
+const HAMBURGER_SOURCE_HEIGHT := 1.7729597
 
 @export_group("Health")
 @export_range(10.0, 2000.0, 1.0) var max_health := 240.0
@@ -73,9 +69,17 @@ var height := 4.1
 var facing_yaw := 0.0
 ## 0 standing, TAU/4 flat on its back.
 var fall_angle := 0.0
+var kind := EnemyKind.BRUISER
+var impact_push_speed := 0.0
+var impact_lift_speed := 0.0
 
 var _contact_cooldown := 0.0
 var _body_mesh: MeshInstance3D
+var _visual_root: Node3D
+var _animation_player: AnimationPlayer
+var _playing_action := ""
+var _ram_animation_timer := 0.0
+var _hit_animation_timer := 0.0
 ## World point the feet were planted on when it died -- the axis it goes over.
 var _fall_pivot := Vector3.ZERO
 ## Half the thickness of the torso: what it comes to rest on.
@@ -92,6 +96,7 @@ func _ready() -> void:
 ## contamination grid wrapped round the whole silhouette. `body_color` is the
 ## grid's clean colour, so the stain and the skin are one material.
 func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
+	kind = EnemyKind.BRUISER
 	var station: Vector3 = StreetMap.VENDING_SIZE
 	radius = station.x * WIDTH_MULTIPLE * 0.5
 	height = station.y * HEIGHT_MULTIPLE
@@ -119,7 +124,11 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	_body_mesh = MeshInstance3D.new()
 	_body_mesh.name = "EnemyBody"
 	_body_mesh.mesh = _welded_mesh(bones)
+	# The welded body remains the deterministic sauce-mask target, but the
+	# authored hamburger is the only visible bruiser geometry.
+	_body_mesh.visible = false
 	add_child(_body_mesh)
+	_build_hamburger_visual()
 
 	contamination = BodyContamination.new()
 	contamination.name = "BodyContamination"
@@ -142,8 +151,125 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	# fix without that compromise is a per-bone atlas, which is a much bigger
 	# change than the one it would improve on.
 	contamination.configure(self, _body_mesh, bones[BONE_TORSO][2], height, body_color)
+	contamination.add_visual_overlay(_visual_root)
 
 	health = max_health
+	_play_action("Idle", true)
+
+
+func _build_hamburger_visual() -> void:
+	_visual_root = HAMBURGER_MONSTER.instantiate() as Node3D
+	if _visual_root == null:
+		push_error("Hamburger monster GLB did not instantiate as Node3D")
+		return
+	_visual_root.name = "HamburgerMonsterVisual"
+	var model_scale := height / HAMBURGER_SOURCE_HEIGHT
+	_visual_root.scale = Vector3.ONE * model_scale
+	_visual_root.position = Vector3(0.0, -stand_height(), 0.0)
+	# The authored -Y face becomes +Z through glTF Y-up conversion. MayoEnemy's
+	# gameplay front is -Z, so this makes the burger bite where it is walking.
+	_visual_root.rotation.y = PI
+	add_child(_visual_root)
+	var visual_meshes: Array[MeshInstance3D] = []
+	_collect_visual_nodes(_visual_root, visual_meshes)
+	if _animation_player == null:
+		push_error("Hamburger monster has no AnimationPlayer")
+	for required in ["Idle", "Walk", "Attack", "Death"]:
+		if not _has_action(required):
+			push_error("Hamburger monster is missing the %s animation" % required)
+
+
+## Small, fast companion to the original enemy.  The imported visual keeps the
+## supplied moldy-toast language, while collision, health, sauce damage, and
+## network state remain in this authoritative gameplay body.
+func build_moldy_toast_rusher(cell_size: float, brush_radius: float,
+		visual_scene: PackedScene) -> void:
+	kind = EnemyKind.MOLDY_TOAST_RUSHER
+	radius = 0.675
+	height = 1.10
+	_rest_radius = 0.15
+	max_health = 52.0
+	sauce_damage_per_hit = 0.65
+	turn_speed = 9.0
+	contact_damage = 9.0
+	contact_interval = 0.9
+	contact_reach = 0.18
+	fall_duration = 0.55
+	impact_push_speed = 7.5
+	impact_lift_speed = 2.0
+
+	# The toast is a thin slab. Two compact capsules cover its body and feet
+	# without turning its collision into the much wider original humanoid.
+	for spec in [
+		[Vector3(0.0, -0.30, 0.0), Vector3(0.0, 0.30, 0.0), 0.32],
+		[Vector3(-0.22, -0.47, -0.04), Vector3(-0.22, -0.47, -0.04), 0.18],
+		[Vector3(0.22, -0.47, -0.04), Vector3(0.22, -0.47, -0.04), 0.18],
+	]:
+		var shape := CapsuleShape3D.new()
+		var span: Vector3 = spec[1] - spec[0]
+		shape.radius = spec[2]
+		shape.height = span.length() + spec[2] * 2.0
+		var collision := CollisionShape3D.new()
+		collision.shape = shape
+		collision.transform = Transform3D(_aligned_basis(span), (spec[0] + spec[1]) * 0.5)
+		add_child(collision)
+
+	_visual_root = visual_scene.instantiate() as Node3D
+	_visual_root.name = "MoldyToastVisual"
+	# Blender assets are ground-origin; MayoEnemy is centre-origin so its fall
+	# pivot and contact math stay compatible with the original enemy. The GLB's
+	# face points along +Z after Blender's axis conversion, while gameplay moves
+	# enemies along their -Z front, so turn only the visual half a revolution.
+	_visual_root.position.y = -stand_height()
+	_visual_root.rotation.y = PI
+	add_child(_visual_root)
+	var visual_meshes: Array[MeshInstance3D] = []
+	_collect_visual_nodes(_visual_root, visual_meshes)
+	if not visual_meshes.is_empty():
+		_body_mesh = visual_meshes[0]
+	contamination = BodyContamination.new()
+	contamination.name = "BodyContamination"
+	contamination.cell_size = cell_size
+	contamination.brush_radius = brush_radius
+	add_child(contamination)
+	contamination.configure_meshes(self, visual_meshes, 0.32, height,
+		Color("56651b"), -stand_height(), 0.5)
+	health = max_health
+	_play_action("Run", true)
+
+
+func _collect_visual_nodes(node: Node, meshes: Array[MeshInstance3D]) -> void:
+	if node is MeshInstance3D:
+		meshes.push_back(node as MeshInstance3D)
+	if node is AnimationPlayer and _animation_player == null:
+		_animation_player = node as AnimationPlayer
+	for child in node.get_children():
+		_collect_visual_nodes(child, meshes)
+
+
+func _play_action(short_name: String, loop := false) -> void:
+	if _animation_player == null or _playing_action == short_name:
+		return
+	for animation_name in _animation_player.get_animation_list():
+		if animation_name == "RESET":
+			continue
+		if animation_name.to_lower().contains(short_name.to_lower()):
+			var animation := _animation_player.get_animation(animation_name)
+			if animation != null:
+				animation.loop_mode = Animation.LOOP_LINEAR if loop else Animation.LOOP_NONE
+			_animation_player.play(animation_name)
+			_playing_action = short_name
+			return
+
+
+func _has_action(short_name: String) -> bool:
+	if _animation_player == null:
+		return false
+	for animation_name in _animation_player.get_animation_list():
+		if animation_name != "RESET" \
+				and animation_name.to_lower().contains(short_name.to_lower()):
+			return true
+	return false
 
 
 ## Index of the torso in `_bones()`. It is what the body comes to rest on, so
@@ -264,9 +390,16 @@ func take_sauce_hit() -> bool:
 		return false
 	health = maxf(health - sauce_damage_per_hit, 0.0)
 	if is_alive():
+		if kind == EnemyKind.MOLDY_TOAST_RUSHER and _ram_animation_timer <= 0.0 \
+				and _hit_animation_timer <= 0.0:
+			_playing_action = ""
+			_play_action("Hit")
+			_hit_animation_timer = 0.16
 		return false
 	# The soles it is standing on, on the ground: the line it goes over.
 	_fall_pivot = global_position - Vector3.UP * (height * 0.5)
+	_playing_action = ""
+	_play_action("Death")
 	return true
 
 
@@ -334,6 +467,9 @@ func network_state() -> Array:
 
 func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 		new_fall_angle: float) -> void:
+	var was_alive := is_alive()
+	var travelled := Vector2(new_position.x - global_position.x,
+		new_position.z - global_position.z).length_squared()
 	facing_yaw = yaw
 	fall_angle = new_fall_angle
 	health = new_health
@@ -341,6 +477,14 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	# rather than derived from a pivot this peer never saw.
 	global_transform = Transform3D(
 		Basis(Vector3.UP, facing_yaw) * Basis(Vector3.RIGHT, fall_angle), new_position)
+	if was_alive and not is_alive():
+		_playing_action = ""
+		_play_action("Death")
+	elif is_alive():
+		if kind == EnemyKind.MOLDY_TOAST_RUSHER:
+			_play_action("Run", true)
+		else:
+			_play_action("Walk" if travelled > 0.000001 else "Idle", true)
 
 
 ## Walks at `targets`' nearest member and hits it when it gets there. Returns
@@ -354,6 +498,8 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		_advance_fall(delta)
 		return null
 	_contact_cooldown = maxf(_contact_cooldown - delta, 0.0)
+	_ram_animation_timer = maxf(_ram_animation_timer - delta, 0.0)
+	_hit_animation_timer = maxf(_hit_animation_timer - delta, 0.0)
 
 	var target := _nearest(targets)
 	var flat := Vector3.ZERO
@@ -384,6 +530,12 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	else:
 		velocity.y -= fall_gravity * delta
 	move_and_slide()
+	if _ram_animation_timer <= 0.0 and _hit_animation_timer <= 0.0:
+		if kind == EnemyKind.MOLDY_TOAST_RUSHER:
+			_play_action("Run", true)
+		else:
+			var moving := Vector2(velocity.x, velocity.z).length_squared() > 0.000001
+			_play_action("Walk" if moving else "Idle", true)
 
 	if target == null or _contact_cooldown > 0.0:
 		return null
@@ -395,6 +547,16 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	if gap.length() > reach:
 		return null
 	_contact_cooldown = contact_interval
+	if kind == EnemyKind.MOLDY_TOAST_RUSHER:
+		_ram_animation_timer = 0.48
+		_playing_action = ""
+		_play_action("Ram")
+		if target.has_method("apply_enemy_impact"):
+			target.apply_enemy_impact(gap.normalized(), impact_push_speed, impact_lift_speed)
+	else:
+		_ram_animation_timer = 0.7
+		_playing_action = ""
+		_play_action("Attack")
 	return target
 
 

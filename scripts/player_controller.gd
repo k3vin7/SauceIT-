@@ -73,6 +73,9 @@ var fall_direction := 1.0
 var _state_timer := 0.0
 var _recovery_timer := 0.0
 var _network_previous_position := Vector3.ZERO
+## Contact rushers queue their shove here. It is consumed by the authoritative
+## movement step, so the result is not lost regardless of node process order.
+var _pending_enemy_impact := Vector3.ZERO
 ## The jump is taken on the press, not while the key is down, and the press is
 ## found here rather than with Input.is_action_just_pressed: a client's jump
 ## arrives as a held flag in a packet, and the server has to see the edge in it.
@@ -110,6 +113,12 @@ func heal_to_full() -> void:
 
 func health_fraction() -> float:
 	return clampf(health / maxf(max_health, 0.001), 0.0, 1.0)
+
+
+func apply_enemy_impact(flat_direction: Vector3, push_speed: float,
+		lift_speed: float) -> void:
+	var direction := Vector3(flat_direction.x, 0.0, flat_direction.z).normalized()
+	_pending_enemy_impact += direction * push_speed + Vector3.UP * lift_speed
 
 
 ## The strand marks a body the same way it marks a wall. Purely cosmetic: the
@@ -165,6 +174,9 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity.y -= fall_gravity * delta
 	_jump_was_held = jump_held
+	if _pending_enemy_impact.length_squared() > 0.0:
+		velocity += _pending_enemy_impact
+		_pending_enemy_impact = Vector3.ZERO
 
 	var before := global_position
 	move_and_slide()

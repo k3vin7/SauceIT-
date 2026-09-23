@@ -148,6 +148,13 @@ func _run() -> void:
 	if failures.size() > 0:
 		_finish()
 		return
+	# The remaining cases isolate player input, body/visor splats, refills, and
+	# slipping. Fast contact rushers can now reach this long-running harness and
+	# physically move its carefully placed bodies, so remove enemies on both
+	# deterministic worlds before those unrelated measurements begin.
+	server_world.debug_clear_enemies()
+	client_world.debug_clear_enemies()
+	await _wait(4)
 
 	# --- a client's packets cannot ask for more than its keyboard could ---
 	# The server simulates both bodies off these values, so an unclamped one is
