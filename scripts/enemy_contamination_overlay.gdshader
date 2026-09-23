@@ -1,14 +1,25 @@
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque;
 
-// Draw only the painted cells over the imported hamburger materials. Positions
-// are converted from each animated mesh into MayoEnemy's body space, keeping
-// the CPU's cylindrical grid and the visible splat in the same coordinate
-// system even though the model is split into many skinned pieces.
+// Draw only the painted cells over the imported hamburger materials.
+//
+// **Each mesh is mapped from its rest pose, not from where it is now.** The
+// colliders the sauce actually lands on do not animate -- they are the burger's
+// three tiers and its arms, fixed to the body -- so the painter is recording
+// against the rest pose whether it means to or not. Mapping the drawn vertices
+// by their animated position instead made the two disagree the moment anything
+// moved: through the death clip the parts travel 1.3 m to 3.5 m in the body's
+// own space, and the stain slid off the monster as it went over. Walking did a
+// milder version of the same thing to the arms.
+//
+// So the matrix is per mesh and captured once, at build, rather than the body's
+// live inverse pushed every frame. It is the mesh's own place in the body, and
+// the animation moves the mesh with the stain painted on it.
 uniform sampler2D mask_texture : filter_linear, repeat_enable, hint_default_black;
 uniform vec4 mayo_color : source_color = vec4(1.0, 0.941, 0.659, 1.0);
 uniform float body_height = 4.1;
-uniform mat4 world_to_body;
+// Where this mesh sits in the body, in the pose it was imported in.
+uniform mat4 rest_to_body;
 // Half a single splat's worth, normalised. **Not 0.5.** The mask holds a
 // thickness now, 0 to 255, rather than a painted flag that was either 0 or 255
 // -- so a cut at 0.5 means a cell has to be hit about 128 times before any of
@@ -53,8 +64,8 @@ varying vec3 body_position;
 varying vec3 body_normal;
 
 void vertex() {
-	body_position = (world_to_body * MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	body_normal = (world_to_body * MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz;
+	body_position = (rest_to_body * vec4(VERTEX, 1.0)).xyz;
+	body_normal = (rest_to_body * vec4(NORMAL, 0.0)).xyz;
 }
 
 void fragment() {

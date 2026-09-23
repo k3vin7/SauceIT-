@@ -335,6 +335,14 @@ Your own sauce counts. A point cannot hit the player who fired it until it has t
 
 The stain is placed by the angle a hit makes about the body's axis. The burger sits a third of a metre back of its own node, so measuring that angle about the node skewed a stain by up to **ten degrees** around the flanks — which is exactly where anyone aims. `BodyContamination.axis_offset` is that offset, shared by the painter and by both overlay shaders so all three agree; a player is centred on their own node and leaves it at zero. `probe_enemy` fires at four azimuths through the real paint path and compares the stain's angle with the hit's: worst case is now 1.5°, against 10° before.
 
+### The stain is drawn from the rest pose
+
+The overlay reads its mask by where a vertex sits in the body. That was the **animated** position, which meant every clip dragged the stain across the model: measured through the death clip, the parts travel **1.3 m to 3.5 m** in the body's own space — the top bun 1.37, the eye 2.38, the mouth 2.18 — so a monster shot in the face went over with the sauce sliding off it, and walking did a milder version of the same to the arms.
+
+The sauce lands on colliders that do not animate — the burger's three tiers and its arms, fixed to the body — so the painter was recording against the rest pose whether it meant to or not. Now the drawn side agrees: each mesh carries its own material with `rest_to_body`, its place in the body in the pose it was imported in, captured once at build. The body's live inverse is no longer pushed every frame, because nothing reads it any more.
+
+The rotation was never the problem. Measured on rendered frames through the whole topple, the matrix the shader was handed was exact to 0.0000 m; it was the clip underneath it that moved. `probe_enemy` kills a monster of its own, runs the clip on both clocks — the animation advances on rendered frames, and waiting on physics alone leaves it standing still, which is how this went unnoticed the first time — and fails if any mesh's frame moves more than a centimetre.
+
 ### The mask carries three charts, not one
 
 The side chart maps a point by its angle and its height and throws the radius away. On a vertical wall that is exact. On a horizontal one it is degenerate: every point on the crown of the bun at the same angle shares one texel whatever its radius, so a stain up there drew as a streak running from the middle to the rim rather than as a blob. It never showed while the monster stood up and you looked at its side, and it showed the moment it toppled and the crown turned to face you — which is why "the stain goes odd when it falls" and "the underside of the lip never takes sauce" were the same defect twice. The lip overhang faces down; the crown faces up.

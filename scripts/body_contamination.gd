@@ -99,14 +99,17 @@ func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 
 func _process(_delta: float) -> void:
 	grid.upload_if_dirty()
-	if _visual_overlay != null and _body != null:
-		_visual_overlay.set_shader_parameter(
-			"world_to_body", _body.global_transform.affine_inverse())
 
 
 ## Projects the same deterministic mask over an authored multi-mesh visual.
-## `material_overlay` preserves every imported burger material underneath it;
-## only pixels whose mask cells are painted survive the overlay shader.
+## `material_overlay` preserves every imported material underneath it; only
+## pixels whose mask cells are painted survive the overlay shader.
+##
+## **A material per mesh, carrying that mesh's place in the body at rest.** The
+## sauce lands on colliders that do not animate, so the painter records against
+## the rest pose; drawing from the animated pose instead made the two disagree
+## the moment anything moved, and the stain slid off a monster as it went over.
+## Captured here, once, rather than pushed every frame.
 func add_visual_overlay(visual_root: Node) -> void:
 	if visual_root == null:
 		return
@@ -118,11 +121,13 @@ func add_visual_overlay(visual_root: Node) -> void:
 	_visual_overlay.set_shader_parameter("axis_offset", axis_offset)
 	_visual_overlay.set_shader_parameter("cap_depth", cap_depth)
 	_visual_overlay.set_shader_parameter("cap_normal_cut", cap_normal_cut)
-	_visual_overlay.set_shader_parameter(
-		"world_to_body", _body.global_transform.affine_inverse())
+	var into_body := _body.global_transform.affine_inverse()
 	for child in visual_root.find_children("*", "MeshInstance3D", true, false):
 		var mesh_instance := child as MeshInstance3D
-		mesh_instance.material_overlay = _visual_overlay
+		var own := _visual_overlay.duplicate() as ShaderMaterial
+		own.set_shader_parameter("rest_to_body",
+			into_body * mesh_instance.global_transform)
+		mesh_instance.material_overlay = own
 
 
 ## Marks the hit and returns the centre cell, or (-1, -1) if it landed off the

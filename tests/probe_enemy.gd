@@ -582,6 +582,69 @@ func _run() -> void:
 		"a replayed enemy splat did not reproduce the server's mask")
 	replay.queue_free()
 
+	# --- the stain stays on the monster while the monster moves ---
+	# It reads its mask by where a vertex sits in the body. If that is the
+	# **animated** position, every clip drags the stain across the model: through
+	# the death clip the parts travel 1.3 m to 3.5 m in the body's own space, so
+	# a monster shot in the face went over with the sauce sliding off it. The
+	# sauce lands on colliders that do not animate, so the painter records
+	# against the rest pose either way -- the drawn side has to agree, and that
+	# means a matrix per mesh, fixed at build.
+	#
+	# On a monster of its own: this one has to die for the clip to run, and
+	# everything above needs the map's own still standing.
+	var doomed: MayoEnemy = MayoEnemy.new()
+	root.add_child(doomed)
+	doomed.build(scene.body_cell_size, scene.contamination_brush_radius, Color("4d3f6b"))
+	await physics_frame
+	var rest_places := {}
+	for node in doomed._visual_root.find_children("*", "MeshInstance3D", true, false):
+		var mesh_node := node as MeshInstance3D
+		var carried: ShaderMaterial = mesh_node.material_overlay
+		_check(carried != null, "a mesh lost its sauce overlay")
+		if carried == null:
+			continue
+		var held: Variant = carried.get_shader_parameter("rest_to_body")
+		_check(held != null,
+			"%s has no rest pose, so its stain is drawn from wherever it is now"
+				% mesh_node.name)
+		if held != null:
+			rest_places[mesh_node.name] = Transform3D(held as Transform3D)
+	_check(rest_places.size() > 20,
+		"only %d meshes carry a rest pose" % rest_places.size())
+
+	var deaths := 0
+	while doomed.is_alive() and deaths < 5000:
+		doomed.take_sauce_hit()
+		deaths += 1
+	var stain_drift := 0.0
+	var stain_drifted := ""
+	for _step in 14:
+		# Both clocks: the clip runs on rendered frames, and a headless run hands
+		# those out sparingly -- waiting on physics alone leaves the animation
+		# standing still, which is how this went unnoticed the first time round.
+		await process_frame
+		for _f in 6:
+			await physics_frame
+		for node in doomed._visual_root.find_children("*", "MeshInstance3D", true, false):
+			var mesh_node := node as MeshInstance3D
+			if not rest_places.has(mesh_node.name):
+				continue
+			var carried: ShaderMaterial = mesh_node.material_overlay
+			var now := Transform3D(carried.get_shader_parameter("rest_to_body") as Transform3D)
+			var was: Transform3D = rest_places[mesh_node.name]
+			var shifted := (now.origin - was.origin).length()
+			if shifted > stain_drift:
+				stain_drift = shifted
+				stain_drifted = String(mesh_node.name)
+	print("through the death clip the stain's own frame moved %.3f m at worst (%s)" % [
+		stain_drift, stain_drifted.replace("Stage1_HamburgerMonster_", "")])
+	_check(stain_drift < 0.01,
+		"the stain's frame moved %.2f m during the death clip: it is sliding off the monster"
+			% stain_drift)
+	doomed.queue_free()
+	await physics_frame
+
 	if failures.is_empty():
 		print("MAYO_ENEMY_OK")
 		quit(0)
