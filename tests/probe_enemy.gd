@@ -582,17 +582,18 @@ func _run() -> void:
 		"a replayed enemy splat did not reproduce the server's mask")
 	replay.queue_free()
 
-	# --- the stain stays on the monster while the monster moves ---
-	# It reads its mask by where a vertex sits in the body. If that is the
-	# **animated** position, every clip drags the stain across the model: through
-	# the death clip the parts travel 1.3 m to 3.5 m in the body's own space, so
-	# a monster shot in the face went over with the sauce sliding off it. The
-	# sauce lands on colliders that do not animate, so the painter records
-	# against the rest pose either way -- the drawn side has to agree, and that
-	# means a matrix per mesh, fixed at build.
+	# --- the fallen visual stays inside the body its sauce actually hits ---
+	# `fall_angle` already turns the whole enemy, including every collider. The
+	# imported Death clip used to move the Body bone and arms a second time
+	# inside that turn. An old stain stayed attached because its rest-space
+	# matrix was fixed, but a new hit landed on the fixed collider and appeared
+	# metres away on the displaced visual. So death stops the clip and resets the
+	# rig; the node fall is the one and only fall.
 	#
-	# On a monster of its own: this one has to die for the clip to run, and
-	# everything above needs the map's own still standing.
+	# On a monster of its own: while it falls, every mesh's actual body-space
+	# transform must remain where `rest_to_body` says that mesh is. Comparing the
+	# two directly closes the hole in the old test, which only checked that the
+	# shader uniform itself did not change.
 	var doomed: MayoEnemy = MayoEnemy.new()
 	root.add_child(doomed)
 	doomed.build(scene.body_cell_size, scene.contamination_brush_radius, Color("4d3f6b"))
@@ -617,31 +618,31 @@ func _run() -> void:
 	while doomed.is_alive() and deaths < 5000:
 		doomed.take_sauce_hit()
 		deaths += 1
-	var stain_drift := 0.0
-	var stain_drifted := ""
+	var visual_drift := 0.0
+	var drifted_part := ""
 	for _step in 14:
-		# Both clocks: the clip runs on rendered frames, and a headless run hands
-		# those out sparingly -- waiting on physics alone leaves the animation
-		# standing still, which is how this went unnoticed the first time round.
-		await process_frame
 		for _f in 6:
+			doomed.advance(1.0 / 60.0, [])
 			await physics_frame
+		await process_frame
+		var into_doomed := doomed.global_transform.affine_inverse()
 		for node in doomed._visual_root.find_children("*", "MeshInstance3D", true, false):
 			var mesh_node := node as MeshInstance3D
 			if not rest_places.has(mesh_node.name):
 				continue
-			var carried: ShaderMaterial = mesh_node.material_overlay
-			var now := Transform3D(carried.get_shader_parameter("rest_to_body") as Transform3D)
-			var was: Transform3D = rest_places[mesh_node.name]
-			var shifted := (now.origin - was.origin).length()
-			if shifted > stain_drift:
-				stain_drift = shifted
-				stain_drifted = String(mesh_node.name)
-	print("through the death clip the stain's own frame moved %.3f m at worst (%s)" % [
-		stain_drift, stain_drifted.replace("Stage1_HamburgerMonster_", "")])
-	_check(stain_drift < 0.01,
-		"the stain's frame moved %.2f m during the death clip: it is sliding off the monster"
-			% stain_drift)
+			var actual := into_doomed * mesh_node.global_transform
+			var expected_transform: Transform3D = rest_places[mesh_node.name]
+			var shifted := (actual.origin - expected_transform.origin).length()
+			if shifted > visual_drift:
+				visual_drift = shifted
+				drifted_part = String(mesh_node.name)
+	print("through the fall the visual left its collision/rest frame by %.3f m at worst (%s)" % [
+		visual_drift, drifted_part.replace("Stage1_HamburgerMonster_", "")])
+	_check(is_equal_approx(doomed.fall_angle, MayoEnemy.FLAT),
+		"the isolated monster did not finish its procedural fall")
+	_check(visual_drift < 0.01,
+		"after falling, %s is %.2f m from the body its sauce hits"
+			% [drifted_part, visual_drift])
 	doomed.queue_free()
 	await physics_frame
 
@@ -657,13 +658,13 @@ func _run() -> void:
 	# being paddled along looks like. Fed the ground directly rather than walked
 	# across the map for it: this is about the coupling, and a monster that
 	# catches a kerb on the way would be testing the pathing instead.
-	# The monsters on the street have this off -- this rig's arms cannot reach
-	# the floor, so planting them puts the hands in the air -- but the code is
-	# still worth holding to its contract for the day a rig can carry it.
-	_check(not enemy.procedural_gait,
-		"the street's monsters are planting hands their arms cannot reach the floor with")
+	# The shipped monsters use it: the plant target stays at the authored floor
+	# height and the body crouches enough for the short arms to reach it.
+	_check(enemy.procedural_gait,
+		"the street's monsters still use the floating paddle walk")
+	_check(enemy._gait != null,
+		"the street's monsters enable the hand walk but have no gait modifier")
 	var strider: MayoEnemy = MayoEnemy.new()
-	strider.procedural_gait = true
 	root.add_child(strider)
 	strider.build(scene.body_cell_size, scene.contamination_brush_radius, Color("4d3f6b"))
 	await physics_frame
@@ -673,6 +674,27 @@ func _run() -> void:
 		_check(gait.has_rig(),
 			"the gait did not find the arm bones it bends, so it does nothing")
 		_check(gait.get_skeleton() != null, "the gait is not attached to the rig")
+		var support_crouch: float = gait.support_crouch_metres()
+		print("support crouch %.3f m (limit %.3f), planted wrist y %.3f" % [
+			support_crouch, gait.support_crouch_limit_metres, gait.plant_height()])
+		_check(support_crouch > 0.02,
+			"the short arms get no support crouch, so their plant target is unreachable")
+		_check(support_crouch < 0.35,
+			"the hand walk lowers the whole burger by %.2f m instead of using a small crouch"
+				% support_crouch)
+		var arm_stretch: float = gait.arm_stretch_in_use()
+		print("arm stretch %.3f (limit %.3f)" % [arm_stretch, gait.arm_stretch_limit])
+		_check(arm_stretch >= 1.0 and arm_stretch <= gait.arm_stretch_limit + 0.001,
+			"the arm correction is %.2f; expected no compression and at most the configured stretch"
+				% arm_stretch)
+		var expected_plant: float = gait._plant_height \
+			+ gait.plant_height_offset / gait._scale
+		_check(absf(gait.plant_height() - expected_plant) < 0.001,
+			"the gait moved the wrist away from the asset's authored palm contact height")
+		_check(gait.hand_contact_weight(0, gait.stance_share * 0.5) > 0.999,
+			"the wrist is not locked flat while the hand is bearing weight")
+		_check(gait.hand_contact_weight(0, (gait.stance_share + 1.0) * 0.5) < 0.001,
+			"the wrist is still forced into its contact angle halfway through the swing")
 
 		var tick := 1.0 / 60.0
 		for _f in 40:
@@ -691,7 +713,7 @@ func _run() -> void:
 			for _f in 60:
 				strider._advance_gait(Vector3(0.0, 0.0, -step), true, tick)
 			var turned: float = gait.phase - before
-			var due: float = (step * 60.0) / gait.stride_metres
+			var due: float = (step * 60.0) / gait.stride_in_use()
 			print("  %-14s %.2f m of ground -> %.3f cycles (%.3f due)" % [
 				pace, step * 60.0, turned, due])
 			_check(absf(turned - due) < 0.001,
@@ -769,7 +791,7 @@ func _run() -> void:
 			await physics_frame
 		# One step's worth of ground, a slice at a time, watching the hand that is
 		# down for it. The body travels; the hand must not.
-		var slice: float = gait.stride_metres / 60.0
+		var slice: float = gait.stride_in_use() / 60.0
 		var planted_wander := 0.0
 		var swinging_travel := 0.0
 		var body_travel := 0.0
@@ -799,6 +821,26 @@ func _run() -> void:
 		_check(planted_wander < slice * 0.5,
 			"a planted hand slid %.3f m a frame while the body moved %.3f: it is skating, not standing"
 				% [planted_wander, slice])
+
+		# A client never calls `advance`; packets are its only record of the ground
+		# an enemy covered. Applying a remote position must therefore advance the
+		# same gait instead of leaving other peers with a frozen or floating monster.
+		strider.authority = false
+		strider._ground_covered = 0.0
+		gait.phase = 0.0
+		gait.strength = 0.0
+		var remote_start := Vector3(8.0, strider.stand_height(), 8.0)
+		strider.global_position = remote_start
+		strider.apply_network_state(remote_start + Vector3(0.0, 0.0, -0.6),
+			0.0, strider.health, 0.0)
+		var remote_due: float = 0.6 / gait.stride_in_use()
+		print("remote packet: 0.60 m -> %.3f gait cycles (%.3f due)" % [
+			gait.phase, remote_due])
+		_check(absf(gait.phase - remote_due) < 0.001,
+			"a remote monster moved 0.60 m but its gait advanced %.3f cycles"
+				% gait.phase)
+		_check(gait.strength > 0.0,
+			"a moving remote monster leaves the procedural gait switched off")
 
 	strider.queue_free()
 	await physics_frame
