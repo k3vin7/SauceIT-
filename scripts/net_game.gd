@@ -946,6 +946,35 @@ func _apply_enemy_state(data: PackedFloat32Array) -> void:
 	world.apply_enemy_state(data)
 
 
+## An enemy flinched or went down, and these players should feel it.
+##
+## **Reliable, and separate from the enemy state.** That state is
+## `unreliable_ordered` and describes where a body *is*; this describes
+## something that *happened*, once. A dropped state packet is corrected by the
+## next one, but a dropped event is simply never seen -- and a flinch is over in
+## a fifth of a second, so there is no next one to correct it.
+func send_enemy_shake(enemy_index: int, peers: PackedInt32Array,
+		degrees: float, seconds: float) -> void:
+	if not _online or not multiplayer.is_server():
+		return
+	if multiplayer.get_peers().is_empty():
+		return
+	_apply_enemy_shake.rpc(enemy_index, peers, degrees, seconds)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
+		degrees: float, seconds: float) -> void:
+	# From the server, so the range checks are about surviving a corrupt packet
+	# rather than about a hostile client -- but they are free and the rule in
+	# this file is that nothing off the wire is trusted unchecked.
+	if not all_finite([degrees, seconds]):
+		rejected_packets += 1
+		return
+	world.apply_enemy_shake(enemy_index, peers,
+		clamp_range(degrees, 0.0, 90.0), clamp_range(seconds, 0.0, 5.0))
+
+
 @rpc("authority", "call_remote", "reliable")
 func _apply_splats(data: PackedInt32Array) -> void:
 	world.apply_splats(data)

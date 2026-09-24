@@ -160,7 +160,9 @@ func _run() -> void:
 	# ignores it until transparency is switched on -- so this was set
 	# see-through and drawn solid, with the gauge sealed inside it. Nothing
 	# failed; the bottle simply told you nothing.
-	var body: MeshInstance3D = shooter.weapon.get_node("Body")
+	# Under "Sway" rather than straight on the weapon: the nozzle wander turns
+	# that node, and the muzzle is deliberately left outside it.
+	var body: MeshInstance3D = shooter.weapon.get_node("Sway/Body")
 	var body_material: StandardMaterial3D = body.material_override
 	print("bottle body: alpha %.2f, transparency mode %d, contents visible=%s" % [
 		body_material.albedo_color.a, body_material.transparency,

@@ -83,8 +83,11 @@ func _run() -> void:
 	# trail back toward the player rather than leave a puddle at full range.
 	_check(released_near < sustained_near - 0.5,
 		"released strand landed at sustained range instead of retracting toward the muzzle")
-	_check(get_nodes_in_group("mayo_droplets").size() == 1,
-		"landing droplets created nodes instead of reusing the single pool")
+	# Two fixed pools now, not one: the landing droplets and the impact spray.
+	# What the check is for is unchanged -- a *fixed* number of pool nodes,
+	# rather than one created per landing.
+	_check(get_nodes_in_group("mayo_droplets").size() == 2,
+		"sauce particles created nodes instead of reusing the two fixed pools")
 
 	# Multiple distinct dirty writes in one frame must result in one texture upload.
 	scene.set_physics_process(false)
