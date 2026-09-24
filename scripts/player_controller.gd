@@ -73,6 +73,10 @@ var fall_direction := 1.0
 var _state_timer := 0.0
 var _recovery_timer := 0.0
 var _network_previous_position := Vector3.ZERO
+## Velocity handed over by something that ran into this player, applied on the
+## next physics step and then cleared. Accumulated rather than assigned so two
+## rushers arriving on the same frame both count.
+var _pending_enemy_impact := Vector3.ZERO
 ## The jump is taken on the press, not while the key is down, and the press is
 ## found here rather than with Input.is_action_just_pressed: a client's jump
 ## arrives as a held flag in a packet, and the server has to see the edge in it.
@@ -114,6 +118,20 @@ func health_fraction() -> float:
 
 ## The strand marks a body the same way it marks a wall. Purely cosmetic: the
 ## grid here is never read back, and slipping is decided by the floor alone.
+## Something charged into this player. Flat direction plus a little lift, so a
+## rusher knocks them back and slightly up rather than grinding them along the
+## floor.
+##
+## Authority only in practice: it is called from the enemy's contact step, which
+## a client never runs, and the resulting position travels in the state packet.
+func apply_enemy_impact(flat_direction: Vector3, push_speed: float,
+		lift_speed: float) -> void:
+	var direction := Vector3(flat_direction.x, 0.0, flat_direction.z)
+	if direction.length_squared() < 0.000001:
+		return
+	_pending_enemy_impact += direction.normalized() * push_speed + Vector3.UP * lift_speed
+
+
 func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
 	if contamination == null:
 		return Vector2i(-1, -1)
@@ -165,6 +183,9 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity.y -= fall_gravity * delta
 	_jump_was_held = jump_held
+	if _pending_enemy_impact.length_squared() > 0.0:
+		velocity += _pending_enemy_impact
+		_pending_enemy_impact = Vector3.ZERO
 
 	var before := global_position
 	move_and_slide()

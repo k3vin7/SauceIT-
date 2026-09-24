@@ -11,6 +11,7 @@ const VisorScript := preload("res://scripts/visor_contamination.gd")
 const VisorOverlayScript := preload("res://scripts/visor_overlay.gd")
 const HealthHudScript := preload("res://scripts/health_hud.gd")
 const MinimapScript := preload("res://scripts/minimap.gd")
+const KeyLegendScript := preload("res://scripts/key_legend.gd")
 const StallRoofScript := preload("res://scripts/stall_roof.gd")
 const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 	preload("res://assets/food_booths/food_booth_s1.glb"),
@@ -20,6 +21,10 @@ const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 ]
 const FOOD_TRUCK_SCENE: PackedScene = preload(
 	"res://assets/food_booths/food_truck_s1.glb")
+## Loaded rather than preloaded: it is an imported `.scn`, and a fresh clone has
+## not built it yet when this script is first parsed.
+const MOLDY_TOAST_RUSHER_SCENE_PATH := \
+	"res://assets/enemies/Stage1_MoldyToastRusher/Stage1_MoldyToastRusher.scn"
 
 # Splat batch entry kinds. Four ints per splat: kind, target, cell x, cell y.
 # What `target` means is the kind's business -- a wall packs its index and the
@@ -323,6 +328,16 @@ class MayoSpeck:
 ## walk, so the escape is always there. It is the comparison that matters, so it
 ## is stored as the fraction and not as a speed.
 @export_range(0.1, 2.0, 0.05) var enemy_speed_fraction := 0.7
+## The toast rushers can be outrun, but not merely walked away from. Their low
+## health makes turning to spray one down the intended answer to the charge.
+@export_range(0.1, 3.0, 0.05) var toast_rusher_speed_fraction := 1.65
+## Draws every enemy's sight and give-up ranges on the ground. **`F3` toggles
+## it.** A development aid: the ranges are invisible otherwise, so tuning them
+## is guesswork about why a body did or did not set off.
+@export var show_enemy_sight := false:
+	set(value):
+		show_enemy_sight = value
+		_apply_enemy_sight_rings()
 
 @export_group("Sauce Supply")
 ## How fast the bottle empties while sauce is actually coming out, as a fraction
@@ -505,6 +520,14 @@ class MayoSpeck:
 ## a stream that now reaches twice as far.
 @export_range(0.5, 12.0, 0.05, "suffix:m") var aim_convergence_distance := 4.4
 @export var show_crosshair := true
+## The key list in the corner of the screen. **`F4` toggles it.** On by default
+## while this is a prototype: every switch here is a key and nothing else says
+## which.
+@export var show_key_legend := true:
+	set(value):
+		show_key_legend = value
+		if is_instance_valid(_key_legend):
+			_key_legend.visible = value
 
 @export_group("Firing Feel")
 ## How far the view noses up at the start of a squirt. One impulse per squirt,
@@ -803,6 +826,7 @@ var _refill_stations: Array[Dictionary] = []
 var _nav: StreetNav
 var _health_hud: HealthHud
 var _minimap: Minimap
+var _key_legend: Control
 var _sauce_audio: AudioStreamPlayer
 ## The squirt's own voice, kept on two players rather than one: the loop has to
 ## go on sounding while the start and end one-shots play over it, and a single
@@ -1612,6 +1636,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("mute_sound"):
 		set_muted(not muted)
 		return
+	if event.is_action_pressed("toggle_enemy_sight"):
+		show_enemy_sight = not show_enemy_sight
+		return
+	if event.is_action_pressed("toggle_key_legend"):
+		show_key_legend = not show_key_legend
+		return
 	if not _input_enabled:
 		return
 	if event.is_action_pressed("wipe_screen"):
@@ -1681,6 +1711,16 @@ func _ensure_input_actions() -> void:
 		var refill := InputEventKey.new()
 		refill.physical_keycode = KEY_E
 		InputMap.action_add_event("refill_sauce", refill)
+	if not InputMap.has_action("toggle_key_legend"):
+		InputMap.add_action("toggle_key_legend")
+		var legend := InputEventKey.new()
+		legend.physical_keycode = KEY_F4
+		InputMap.action_add_event("toggle_key_legend", legend)
+	if not InputMap.has_action("toggle_enemy_sight"):
+		InputMap.add_action("toggle_enemy_sight")
+		var sight := InputEventKey.new()
+		sight.physical_keycode = KEY_F3
+		InputMap.action_add_event("toggle_enemy_sight", sight)
 	if not InputMap.has_action("mute_sound"):
 		InputMap.add_action("mute_sound")
 		var mute := InputEventKey.new()
@@ -1938,6 +1978,8 @@ func _layout_view() -> void:
 		_health_hud.set_frame(frame)
 	if _minimap != null:
 		_minimap.set_frame(frame)
+	if _key_legend != null:
+		_key_legend.set_frame(frame)
 	_layout_letterbox(size, frame)
 
 
@@ -1960,6 +2002,14 @@ func _layout_letterbox(size: Vector2, frame: Rect2) -> void:
 
 ## Joining or leaving a session changes who simulates the enemies, the same way
 ## it changes who simulates the bodies.
+## Pushes the debug rings out to every enemy. One switch rather than a flag per
+## body: they are a development aid, and hunting nine inspectors for it is not.
+func _apply_enemy_sight_rings() -> void:
+	for enemy in _enemies:
+		if is_instance_valid(enemy):
+			enemy.show_sight_rings = show_enemy_sight
+
+
 func _refresh_enemy_authority() -> void:
 	set_enemy_authority(_is_authority())
 
@@ -2051,6 +2101,12 @@ func _build_crosshair() -> void:
 	_health_hud.world = self
 	_health_hud.set_frame(_view_layout)
 	layer.add_child(_health_hud)
+	# Under the crosshair, in the corner the bars and the map leave free.
+	_key_legend = KeyLegendScript.new()
+	_key_legend.world = self
+	_key_legend.visible = show_key_legend
+	_key_legend.set_frame(_view_layout)
+	layer.add_child(_key_legend)
 	# Above the sauce, so there is always something to aim with.
 	_crosshair = CrosshairScript.new()
 	_crosshair.visible = show_crosshair
@@ -2715,6 +2771,13 @@ const ENEMY_SPAWNS := [
 	[270, 420],   # halfway along Karja tänav
 	[370, 550],   # waiting in the festival square
 ]
+## A pair flanks each bruiser, this far to either side of it.
+##
+## **In metres, off the bruiser's own position -- not in map pixels.** The pair
+## was originally offset by 18 pixels, which was a few metres when it was
+## written and is about ten now: `f4f4061` doubled the promenade and every
+## pixel with it. Measuring from the body they flank cannot drift that way.
+const TOAST_RUSHER_PAIR_OFFSETS := [-3.0, 3.0]
 
 
 ## Drops the enemies in. They are built after the local player so their speed
@@ -2725,10 +2788,12 @@ func _build_enemies() -> void:
 	# standing on the street as well as the street itself.
 	_nav = StreetNav.new()
 	_nav.build()
+	var toast_scene := load(MOLDY_TOAST_RUSHER_SCENE_PATH) as PackedScene
+	assert(toast_scene != null, "Moldy toast rusher scene was not imported")
 	for index in ENEMY_SPAWNS.size():
 		var spawn: Array = ENEMY_SPAWNS[index]
 		var enemy := MayoEnemy.new()
-		enemy.name = "Enemy%02d" % index
+		enemy.name = "Enemy%02d_Bruiser" % index
 		enemy.authority = _is_authority()
 		add_child(enemy)
 		enemy.build(body_cell_size, contamination_brush_radius, Color("4d3f6b"))
@@ -2738,6 +2803,22 @@ func _build_enemies() -> void:
 		enemy.position = StreetMap.from_pixels(spawn[0], spawn[1]) \
 			+ Vector3(0.0, enemy.stand_height(), 0.0)
 		_enemies.push_back(enemy)
+		for pair_index in TOAST_RUSHER_PAIR_OFFSETS.size():
+			var rusher := MayoEnemy.new()
+			rusher.name = "Enemy%02d_ToastRusher%d" % [index, pair_index + 1]
+			rusher.authority = _is_authority()
+			add_child(rusher)
+			rusher.build_moldy_toast_rusher(body_cell_size,
+				contamination_brush_radius, toast_scene)
+			rusher.nav = _nav
+			if _local != null:
+				rusher.match_player_speed(_local.player.walk_speed,
+					toast_rusher_speed_fraction)
+			rusher.position = enemy.position \
+				+ Vector3(TOAST_RUSHER_PAIR_OFFSETS[pair_index], 0.0, 0.0)
+			rusher.position.y = rusher.stand_height()
+			_enemies.push_back(rusher)
+	_apply_enemy_sight_rings()
 	# Scale them to the party that exists now. Offline that is one player and
 	# the multiplier is 1, so a solo game is untouched.
 	rescale_enemies()

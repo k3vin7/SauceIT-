@@ -135,11 +135,17 @@ func _run() -> void:
 		"the hamburger monster visual was not instantiated")
 	_check(enemy._animation_player != null,
 		"the hamburger monster has no usable AnimationPlayer")
+	# Three, not four: the Death clip is deliberately not bound any more. It
+	# rocks the body 40 degrees to its own left and stops there, never reaching
+	# the floor, while translating and scaling the Body bone -- played over the
+	# node fall it toppled the corpse a second time inside its already-toppled
+	# collider. The node fall is the whole death motion now.
 	_check(not enemy._idle_animation.is_empty()
 			and not enemy._walk_animation.is_empty()
-			and not enemy._attack_animation.is_empty()
-			and not enemy._death_animation.is_empty(),
-		"the hamburger monster did not import all four required animations")
+			and not enemy._attack_animation.is_empty(),
+		"the hamburger monster did not import all three required animations")
+	_check(not ("_death_animation" in enemy),
+		"a Death clip is bound again: it fights the node fall the corpse is on")
 	var visual_meshes := enemy._visual_root.find_children(
 		"*", "MeshInstance3D", true, false)
 	_check(not visual_meshes.is_empty(), "the hamburger monster imported no meshes")

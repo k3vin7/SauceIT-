@@ -67,6 +67,40 @@ var solo_health := 240.0
 ## change of scale doing it again.
 @export_range(0.2, 2.0, 0.05, "suffix:cells") var waypoint_reached_cells := 0.7
 
+@export_group("What it notices")
+## How close a player has to get before it starts coming for them.
+##
+## Without this every body on the map walks at you from the moment the world
+## loads: `_nearest` has no notion of distance beyond picking the closest, so a
+## monster three streets away sets off just the same as one in the next doorway.
+@export_range(1.0, 200.0, 0.5, "suffix:m") var sight_range := 26.0
+## And how far away they have to get before it gives up and settles again.
+##
+## **Deliberately larger than `sight_range`.** With one distance for both, a
+## player standing on the line makes the body start and stop several times a
+## second; the gap between the two is what stops that, and it doubles as the
+## chase having some commitment to it.
+@export_range(1.0, 300.0, 0.5, "suffix:m") var give_up_range := 44.0
+## Whether being hit wakes it regardless of range. A body being hosed from
+## outside its own sight is being told where you are.
+@export var sauce_alerts := true
+## Draws the two ranges on the ground as rings, the way a tutorial draws a
+## tower's reach. **A development aid** -- it is off in a built game unless
+## something turns it on, and `MayoPrototype` does so from one place.
+@export var show_sight_rings := false:
+	set(value):
+		show_sight_rings = value
+		_refresh_sight_rings()
+@export var sight_ring_color := Color(0.95, 0.15, 0.15, 0.85)
+@export var give_up_ring_color := Color(0.95, 0.45, 0.15, 0.35)
+
+@export_group("Its charge")
+## How hard a contact hit throws the player, flat and upward. **Zero on the
+## bruiser**, which lands a bite rather than a charge; the rusher runs into you
+## and the shove is the point of it.
+@export_range(0.0, 30.0, 0.1, "suffix:m/s") var impact_push_speed := 0.0
+@export_range(0.0, 15.0, 0.1, "suffix:m/s") var impact_lift_speed := 0.0
+
 @export_group("Its attack")
 ## Weak on purpose. At one hit every `contact_interval` this is about 7 damage a
 ## second, so a player who walks into one and stays there has a good while to
@@ -81,12 +115,22 @@ var solo_health := 240.0
 ## heavies soak a party's worth of sauce and flinch on the way down.
 enum Grade { MINION, HEAVY }
 
+## Which of the two bodies this is. The bruiser is the hamburger: slow, heavy,
+## and built by `build`. The rusher is the moldy toast: small, quick, low on
+## health, and built by `build_moldy_toast_rusher`. They share everything else
+## -- the chase, the contamination, the topple and the state packet -- because
+## the difference between them is proportions and numbers, not behaviour.
+enum EnemyKind { BRUISER, MOLDY_TOAST_RUSHER }
+
 @export_group("Its kind")
 ## What this one counts as. It changes nothing on its own -- what reads it is
 ## the flinch list below and the world's health scaling -- but it is the one
 ## place that says which of the two a body is, so neither has to guess from a
 ## health figure.
 @export var grade: Grade = Grade.HEAVY
+## Set by whichever builder ran. Read where the two genuinely differ: which
+## clip to play, and whether a contact hit shoves the player.
+var kind := EnemyKind.BRUISER
 ## The contamination fractions that make it flinch as they are crossed. **A
 ## minion's is empty**: small things do not stagger, they just die. A heavy's
 ## default is a quarter, a half and three quarters.
@@ -192,6 +236,11 @@ var _attack_animation_active := false
 ## needs nothing added to the state packet: the angle already travels.
 ## Where the stream is currently pushing it, in metres a second, decaying.
 var _shove := Vector3.ZERO
+## Whether it has noticed anybody. Latched rather than recomputed from the
+## distance every frame -- see `give_up_range`.
+var _alerted := false
+var _sight_ring: MeshInstance3D
+var _give_up_ring: MeshInstance3D
 var _flinch_left := 0.0
 ## The highest threshold already crossed, so each one fires once. Held as an
 ## index into `flinch_thresholds` rather than as a fraction, because the list is
@@ -206,6 +255,7 @@ var _rest_radius := 0.37
 
 
 func _ready() -> void:
+	_refresh_sight_rings()
 	add_to_group("mayo_enemy")
 	# What the strand looks for. Being in this group is what makes sauce stick.
 	add_to_group("mayo_contaminable")
@@ -342,13 +392,120 @@ func _build_visual() -> void:
 			break
 
 
-func _find_animation(suffix: String) -> StringName:
+## The moldy toast rusher: small, quick, and it charges rather than bites.
+##
+## Built beside `build` rather than inside it. The two share every system that
+## matters -- the chase, the contamination unwrap, the topple, the state packet
+## -- and differ only in proportions, numbers and which clips exist, so the
+## fork is kept to the one function that sets those.
+##
+## It is a **minion**: `flinch_thresholds` is empty. Small things do not
+## stagger, they die, and at 52 health a squirt puts one down.
+func build_moldy_toast_rusher(cell_size: float, brush_radius: float,
+		visual_scene: PackedScene) -> void:
+	kind = EnemyKind.MOLDY_TOAST_RUSHER
+	grade = Grade.MINION
+	flinch_thresholds = []
+	radius = 0.675
+	height = 1.10
+	_rest_radius = 0.15
+	max_health = 52.0
+	solo_health = max_health
+	health = max_health
+	sauce_damage_per_hit = 0.65
+	turn_speed = 9.0
+	contact_damage = 9.0
+	contact_interval = 0.9
+	contact_reach = 0.18
+	fall_duration = 0.55
+	# It spots you from further than a bruiser does and it closes at 8.6 m/s,
+	# which is what makes it a rusher rather than a small bruiser. The bruiser's
+	# 26 m at 3.6 m/s is a long slow walk; this is a charge.
+	sight_range = 34.0
+	give_up_range = 55.0
+	impact_push_speed = 7.5
+	impact_lift_speed = 2.0
+	# It weighs nothing, so the hose throws it further than it throws a burger.
+	shove_speed = 9.0
+
+	# The toast is a thin slab. Two compact capsules cover its body and feet
+	# without turning its collision into the much wider original humanoid.
+	for spec in [
+		[Vector3(0.0, -0.30, 0.0), Vector3(0.0, 0.30, 0.0), 0.32],
+		[Vector3(-0.22, -0.47, -0.04), Vector3(-0.22, -0.47, -0.04), 0.18],
+		[Vector3(0.22, -0.47, -0.04), Vector3(0.22, -0.47, -0.04), 0.18],
+	]:
+		var shape := CapsuleShape3D.new()
+		var span: Vector3 = spec[1] - spec[0]
+		shape.radius = spec[2]
+		shape.height = span.length() + spec[2] * 2.0
+		var collision := CollisionShape3D.new()
+		collision.shape = shape
+		collision.transform = Transform3D(_aligned_basis(span), (spec[0] + spec[1]) * 0.5)
+		add_child(collision)
+
+	# The mask target, hidden, exactly as the bruiser keeps its capsule mock-up:
+	# the sauce grid is unwrapped from a shape that does not animate.
+	_body_mesh = MeshInstance3D.new()
+	_body_mesh.name = "EnemyBody"
+	var slab := BoxMesh.new()
+	slab.size = Vector3(radius * 2.0, height, radius * 0.6)
+	_body_mesh.mesh = slab
+	_body_mesh.visible = false
+	add_child(_body_mesh)
+
+	_visual_root = visual_scene.instantiate() as Node3D
+	if _visual_root == null:
+		push_error("Moldy toast rusher scene did not instantiate as Node3D")
+		return
+	_visual_root.name = "MoldyToastVisual"
+	# Blender assets are ground-origin; MayoEnemy is centre-origin so its fall
+	# pivot and contact math stay compatible with the bruiser. The GLB's face
+	# points along +Z after Blender's axis conversion, while gameplay moves
+	# enemies along their -Z front, so turn only the visual half a revolution.
+	_visual_root.position.y = -stand_height()
+	_visual_root.rotation.y = PI
+	add_child(_visual_root)
+
+	var players := _visual_root.find_children("*", "AnimationPlayer", true, false)
+	if not players.is_empty():
+		_animation_player = players[0] as AnimationPlayer
+		_idle_animation = _find_animation("Idle", false)
+		_walk_animation = _find_animation("Run", false)
+		if _walk_animation.is_empty():
+			_walk_animation = _find_animation("Walk", false)
+		_attack_animation = _find_animation("Ram", false)
+		if _attack_animation.is_empty():
+			_attack_animation = _find_animation("Attack", false)
+		if _idle_animation.is_empty():
+			_idle_animation = _walk_animation
+		_animation_player.animation_finished.connect(_on_animation_finished)
+
+	contamination = BodyContamination.new()
+	contamination.name = "BodyContamination"
+	contamination.cell_size = cell_size
+	contamination.brush_radius = brush_radius
+	# A slab, not a burger: no flat crown worth its own polar chart, and the
+	# body sits on its own axis, so both corrections the bruiser needs are off.
+	add_child(contamination)
+	contamination.configure(self, _body_mesh, radius, height, Color("56651b"))
+	# The same per-mesh rest matrix the bruiser uses, captured once at build --
+	# not a live world-to-body inverse pushed every frame, which slides the
+	# stain off anything that animates.
+	contamination.add_visual_overlay(_visual_root)
+	_play_animation(_idle_animation)
+
+
+## `required` is false for the rusher, whose rig has a different set of clips:
+## a missing one there is a fallback, not a fault.
+func _find_animation(suffix: String, required := true) -> StringName:
 	if _animation_player == null:
 		return &""
 	for animation in _animation_player.get_animation_list():
 		if String(animation).to_lower().ends_with(suffix.to_lower()):
 			return animation
-	push_error("Hamburger monster is missing the %s animation" % suffix)
+	if required:
+		push_error("Hamburger monster is missing the %s animation" % suffix)
 	return &""
 
 
@@ -576,6 +733,9 @@ func take_sauce_hit(from := Vector3.INF) -> bool:
 	if not is_alive():
 		return false
 	health = maxf(health - sauce_damage_per_hit, 0.0)
+	# Being hit is being told where you are, whatever the range says.
+	if sauce_alerts:
+		_alerted = true
 	if is_alive():
 		_note_flinch()
 		return false
@@ -633,6 +793,87 @@ func take_shove(from: Vector3) -> void:
 	if away.length_squared() < 0.000001:
 		return
 	_shove = away.normalized() * shove_speed
+
+
+## Whether it has noticed a player and is coming for them.
+func is_alerted() -> bool:
+	return _alerted
+
+
+## A flat annulus on the XZ plane: the ring itself, not a filled disc, so what
+## is inside it stays readable.
+static func _ring_mesh(ring_radius: float, thickness: float) -> ArrayMesh:
+	const SEGMENTS := 72
+	var vertices := PackedVector3Array()
+	var inner := maxf(ring_radius - thickness * 0.5, 0.01)
+	var outer := ring_radius + thickness * 0.5
+	for step in SEGMENTS:
+		var a := TAU * float(step) / float(SEGMENTS)
+		var b := TAU * float(step + 1) / float(SEGMENTS)
+		var a_in := Vector3(cos(a) * inner, 0.0, sin(a) * inner)
+		var a_out := Vector3(cos(a) * outer, 0.0, sin(a) * outer)
+		var b_in := Vector3(cos(b) * inner, 0.0, sin(b) * inner)
+		var b_out := Vector3(cos(b) * outer, 0.0, sin(b) * outer)
+		vertices.append_array([a_in, a_out, b_out, a_in, b_out, b_in])
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _make_ring(ring_name: String, ring_radius: float, thickness: float,
+		color: Color) -> MeshInstance3D:
+	var ring := MeshInstance3D.new()
+	ring.name = ring_name
+	ring.mesh = _ring_mesh(ring_radius, thickness)
+	# **Independent of this node's own transform.** `_apply_pose` turns the
+	# whole body -- flinching and toppling included -- and a ring parented
+	# normally would roll over with it. `top_level` cuts it loose, and
+	# `_process` puts it back on the ground under the body every frame.
+	ring.top_level = true
+	var material := StandardMaterial3D.new()
+	material.albedo_color = color
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	ring.material_override = material
+	add_child(ring)
+	return ring
+
+
+func _refresh_sight_rings() -> void:
+	if not is_inside_tree():
+		return
+	if not show_sight_rings:
+		if _sight_ring != null:
+			_sight_ring.queue_free()
+			_sight_ring = null
+		if _give_up_ring != null:
+			_give_up_ring.queue_free()
+			_give_up_ring = null
+		return
+	if _sight_ring == null:
+		_sight_ring = _make_ring("SightRing", sight_range, 0.35, sight_ring_color)
+	if _give_up_ring == null:
+		_give_up_ring = _make_ring("GiveUpRing", give_up_range, 0.2, give_up_ring_color)
+
+
+func _process(_delta: float) -> void:
+	if _sight_ring == null:
+		return
+	# Flat on the ground under the body, whatever the body is doing. A little
+	# clear of it so it does not fight the street for the same pixels.
+	var under := Vector3(global_position.x, global_position.y - stand_height() + 0.06,
+		global_position.z)
+	_sight_ring.global_transform = Transform3D(Basis(), under)
+	_give_up_ring.global_transform = Transform3D(Basis(), under)
+	# Lit up while it is actually coming for someone, so the two states can be
+	# told apart at a glance.
+	var tint := sight_ring_color
+	tint.a = sight_ring_color.a if _alerted else sight_ring_color.a * 0.45
+	(_sight_ring.material_override as StandardMaterial3D).albedo_color = tint
 
 
 ## True while it is rocking back from a threshold. The world asks so it can send
@@ -858,6 +1099,21 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	_advance_flinch(delta)
 
 	var target := _nearest(targets)
+	# Noticed, or given up on. Measured flat: a player on a stall roof is as
+	# close as one standing under it, and height should not decide a chase.
+	if target != null:
+		var gap_to_target := Vector2(target.global_position.x - global_position.x,
+			target.global_position.z - global_position.z).length()
+		if _alerted:
+			if gap_to_target > give_up_range:
+				_alerted = false
+		elif gap_to_target <= sight_range:
+			_alerted = true
+	else:
+		_alerted = false
+	if not _alerted:
+		target = null
+
 	var flat := Vector3.ZERO
 	if target != null:
 		flat = _step_toward(target, delta) - global_position
@@ -915,6 +1171,10 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		return null
 	_contact_cooldown = contact_interval
 	_play_attack_animation()
+	# A rusher does not bite, it runs into you: the shove is what it is for, and
+	# it is what stops a swarm of them being a stationary damage tick.
+	if impact_push_speed > 0.0 or impact_lift_speed > 0.0:
+		target.apply_enemy_impact(gap, impact_push_speed, impact_lift_speed)
 	return target
 
 
