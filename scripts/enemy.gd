@@ -30,6 +30,11 @@ const MODEL_HEIGHT := 4.1
 
 @export_group("Health")
 @export_range(10.0, 2000.0, 1.0) var max_health := 240.0
+## What `max_health` is for one player. `max_health` itself is rewritten as
+## people join and leave, so the figure the scaling multiplies has to be kept
+## somewhere it is not: scaling off `max_health` would compound, and a party
+## that gained and lost a player would leave a heavy permanently tougher.
+var solo_health := 240.0
 ## Per strand point that lands on it. The nozzle emits `extend_speed /
 ## point_spacing` points a second -- about 187 at the reference values -- so a
 ## per-hit figure this small is still roughly 75 damage a second of accurate,
@@ -72,22 +77,79 @@ const MODEL_HEIGHT := 4.1
 ## for them.
 @export_range(0.0, 3.0, 0.05, "suffix:m") var contact_reach := 0.5
 
+## The two kinds a body can be. Minions die to a squirt and never stagger;
+## heavies soak a party's worth of sauce and flinch on the way down.
+enum Grade { MINION, HEAVY }
+
+@export_group("Its kind")
+## What this one counts as. It changes nothing on its own -- what reads it is
+## the flinch list below and the world's health scaling -- but it is the one
+## place that says which of the two a body is, so neither has to guess from a
+## health figure.
+@export var grade: Grade = Grade.HEAVY
+## The contamination fractions that make it flinch as they are crossed. **A
+## minion's is empty**: small things do not stagger, they just die. A heavy's
+## default is a quarter, a half and three quarters.
+##
+## Crossing two in one frame is still one flinch: what the player did was land
+## one burst, and staggering twice for it reads as a stutter.
+@export var flinch_thresholds: Array[float] = [0.25, 0.5, 0.75]
+
 @export_group("Going down")
 ## Long enough to read as toppling rather than as being deleted.
 @export_range(0.1, 4.0, 0.05, "suffix:s") var fall_duration := 0.9
+## How far back it rocks when it bounces off the ground, as a share of the full
+## topple. Zero lands it dead flat with no bounce at all.
+@export_range(0.0, 0.5, 0.005) var fall_bounce := 0.06
+## And how long that bounce takes to play out, once the body is down.
+@export_range(0.0, 2.0, 0.01, "suffix:s") var fall_bounce_seconds := 0.22
+## Where the lowest part of the body ends up once it has settled: this far above
+## whatever it came to rest on.
+@export_range(0.0, 0.2, 0.001, "suffix:m") var ground_clearance := 0.02
+
+@export_group("Being hosed")
+## How hard a stream landing on it shoves it back, in metres a second.
+##
+## **This is the continuous answer to a continuous weapon.** A flinch is an
+## event, and a stream has no events -- 187 points land a second and no single
+## one of them means anything. Being pushed while the sauce is on you, and
+## walking again the moment it comes off, is force the player can read at any
+## instant rather than at three arbitrary percentages.
+## Above `move_speed` on purpose, so a body being hosed actually goes backwards
+## instead of leaning in. Below it the shove is invisible exactly when it is
+## wanted -- at full health, on the first engagement -- because the walk simply
+## out-runs it.
+##
+## What keeps it from making a player unkiteable is the **bottle**, not the
+## reach: a burst runs about a second and then the nozzle is shut for
+## `spent_burst_cooldown`, and the body closes through every one of those gaps.
+## The push and the gap are the rhythm of the fight. Worth re-checking whenever
+## `stream_range` moves -- it was doubled once already, and a longer reach means
+## more of the push happens before the body is out of it.
+@export_range(0.0, 20.0, 0.1, "suffix:m/s") var shove_speed := 4.8
+## How quickly the shove dies once the stream comes off. Short: the tell is that
+## it starts walking again, and a long tail blurs the moment it does.
+@export_range(0.02, 2.0, 0.01, "suffix:s") var shove_decay_seconds := 0.16
+## How much of its walk it loses at full contamination. At 0.6 a nearly ruined
+## body moves at 40% of its speed -- so the fight visibly winds down rather than
+## ending at a threshold.
+@export_range(0.0, 1.0, 0.05) var soiled_slowdown := 0.55
+
+@export_group("Flinching")
+## How far it rocks back when a threshold is crossed.
+@export_range(0.0, 45.0, 0.5, "suffix:°") var flinch_degrees := 9.0
+## And how long the whole rock-back-and-recover takes.
+@export_range(0.05, 1.0, 0.01, "suffix:s") var flinch_seconds := 0.18
 
 @export_group("Its walk")
 ## How long the gait takes to come on or go off. Faded rather than switched: cut
 ## at the moment a monster stops, it freezes mid-step with one elbow bent.
 @export_range(0.05, 2.0, 0.05, "suffix:s") var gait_settle_seconds := 0.25
 
-## Whether to plant the hands and solve the arms back from them at all.
-##
-## **Off.** See where it is built for why: this rig's arms cannot reach the
-## floor, so planting them puts the hands in the air. Left in because the rest
-## of the walk -- the clip keeping pace with the ground -- is worth having on
-## its own, and because a rig that can reach would only need this turned on.
-@export var procedural_gait := false
+## Whether to plant the hands and solve the arms back from them. The modifier
+## keeps the palm at its authored floor height and lowers the body just enough
+## to give the short arms a usable, bent reach.
+@export var procedural_gait := true
 
 var health := 240.0
 ## Clients simulate no enemies at all, exactly as they simulate no bodies.
@@ -124,8 +186,19 @@ var _animation_player: AnimationPlayer
 var _idle_animation := &""
 var _walk_animation := &""
 var _attack_animation := &""
-var _death_animation := &""
 var _attack_animation_active := false
+## How far through the flinch it is, in seconds, counting down. The flinch is
+## driven **through `fall_angle`** rather than through a field of its own, so it
+## needs nothing added to the state packet: the angle already travels.
+## Where the stream is currently pushing it, in metres a second, decaying.
+var _shove := Vector3.ZERO
+var _flinch_left := 0.0
+## The highest threshold already crossed, so each one fires once. Held as an
+## index into `flinch_thresholds` rather than as a fraction, because the list is
+## what the designer edits.
+var _flinch_crossed := 0
+## Seconds since the body reached the ground, for the bounce.
+var _settled_for := 0.0
 ## World point the feet were planted on when it died -- the axis it goes over.
 var _fall_pivot := Vector3.ZERO
 ## Half the thickness of the torso: what it comes to rest on.
@@ -142,6 +215,10 @@ func _ready() -> void:
 ## contamination grid wrapped round the whole silhouette. `body_color` is the
 ## grid's clean colour, so the stain and the skin are one material.
 func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
+	# Whatever the scene or the inspector set is the one-player figure; the party
+	# scaling multiplies up from here and never from the scaled value.
+	solo_health = max_health
+	health = max_health
 	var station: Vector3 = StreetMap.VENDING_SIZE
 	height = station.y * HEIGHT_MULTIPLE
 	# The burger is very nearly as wide as it is tall, so its width comes
@@ -250,22 +327,13 @@ func _build_visual() -> void:
 	_idle_animation = _find_animation("Idle")
 	_walk_animation = _find_animation("Walk")
 	_attack_animation = _find_animation("Attack")
-	_death_animation = _find_animation("Death")
 	_animation_player.animation_finished.connect(_on_animation_finished)
 
-	# **Off by default, and it should stay off until the rig can carry it.**
-	#
-	# `EnemyGait` plants the hands and solves the arms back from them, which is
-	# what walking on your hands is. The monster cannot do it: its shoulders
-	# sit 1.12 units up and its arms span 0.87, so an arm stretched straight
-	# down leaves the hand 0.71 m clear of the ground. The asset is rigged as a
-	# burger floating with its arms dangling, and the only way to plant those
-	# hands is to drop the whole body two thirds of a metre into a crouch --
-	# which is a different silhouette, and a different set of colliders.
-	#
-	# Forced anyway, the solver does the only thing it can: it plants the hands
-	# at the height the arms *can* reach and holds them there, in mid-air, at
-	# whatever wrist angle the solve lands on. Which is what it looked like.
+	# `EnemyGait` plants the hands and solves the arms back from them. The rig's
+	# arms are too short to move fore and aft while the body stays at its authored
+	# height, so the modifier adds a small support crouch to the body instead of
+	# lifting the plant point into the air. That preserves the floor contact and
+	# gives the elbows room to bend under load.
 	if procedural_gait:
 		for node in _visual_root.find_children("*", "Skeleton3D", true, false):
 			_gait = GaitScript.new()
@@ -310,15 +378,30 @@ func _play_attack_animation() -> void:
 
 func _play_death_animation() -> void:
 	_attack_animation_active = false
-	# The gait is a walk, and this is not one. Both of its levers are left
-	# wherever the last step put them otherwise, so a monster killed mid-stride
-	# would go over with one elbow tucked and the clip running at whatever pace
-	# it had been walking at.
+	# `fall_angle` turns the gameplay body, its colliders and the visual together.
+	# The imported Death clip also translates, rotates and scales the Body bone
+	# and throws both arms elsewhere. Playing both made the visible corpse fall a
+	# second time inside its already-fallen collision body, so a new hit was
+	# recorded at the collider and drawn metres away on the animated mesh.
+	#
+	# The gait is a walk, and this is not one. Stop every animation write and put
+	# the rig back in the same rest pose its fixed colliders and contamination
+	# projection were authored from; the procedural node fall supplies the whole
+	# death motion and travels over the network as `fall_angle`.
 	if _gait != null:
 		_gait.strength = 0.0
 	if _animation_player != null:
 		_animation_player.speed_scale = 1.0
-	_play_animation(_death_animation)
+		_animation_player.stop()
+	# There is deliberately **no Death clip lookup**. The imported one rocks the
+	# body 40 degrees to its own left and stops there, never reaching the floor,
+	# while translating and scaling the Body bone -- so played over the node
+	# fall it toppled the corpse a second time inside its already-toppled
+	# collider, and a hit recorded at the collider was drawn metres away on the
+	# mesh. The node fall is the whole death motion.
+	if _visual_root != null:
+		for node in _visual_root.find_children("*", "Skeleton3D", true, false):
+			(node as Skeleton3D).reset_bone_poses()
 
 
 func _on_animation_finished(animation: StringName) -> void:
@@ -486,16 +569,88 @@ func health_fraction() -> float:
 
 ## A strand point landed on it. Returns true if that was the hit that killed it,
 ## so the world can take it out of the fight in one place rather than polling.
-func take_sauce_hit() -> bool:
+## `from` is where the hit came from, so a killing one can turn the body to face
+## it. `Vector3.INF` means "not stated", which is what the checks that call this
+## without a shooter pass.
+func take_sauce_hit(from := Vector3.INF) -> bool:
 	if not is_alive():
 		return false
 	health = maxf(health - sauce_damage_per_hit, 0.0)
 	if is_alive():
+		_note_flinch()
 		return false
+	# Turned to face whoever landed the last hit, so the topple -- which is
+	# always onto its own back -- takes it away from them rather than in
+	# whatever direction it happened to be walking. Done before the pivot is
+	# taken, since the pivot is read off the pose.
+	if from != Vector3.INF:
+		var away := Vector3(from.x - global_position.x, 0.0, from.z - global_position.z)
+		if away.length_squared() > 0.000001:
+			facing_yaw = atan2(-away.x, -away.z)
 	# The soles it is standing on, on the ground: the line it goes over.
 	_fall_pivot = global_position - Vector3.UP * (height * 0.5)
+	# A flinch under way is abandoned rather than finished: it is going over now.
+	_flinch_left = 0.0
+	_settled_for = 0.0
 	_play_death_animation()
 	return true
+
+
+## True if this hit crossed a threshold, having started the flinch if it did.
+##
+## Contamination is counted **up** -- 0 clean, 1 ruined -- so the list reads the
+## way the designer wrote it. `health` runs the other way, which is why this is
+## one minus the health fraction rather than the fraction itself.
+##
+## Several thresholds crossed by one hit still start one flinch: `_flinch_crossed`
+## walks to the last one passed rather than firing per step.
+func _note_flinch() -> bool:
+	if flinch_thresholds.is_empty():
+		return false
+	var soiled := 1.0 - health_fraction()
+	var crossed := _flinch_crossed
+	while crossed < flinch_thresholds.size() and soiled >= flinch_thresholds[crossed]:
+		crossed += 1
+	if crossed == _flinch_crossed:
+		return false
+	_flinch_crossed = crossed
+	_flinch_left = flinch_seconds
+	return true
+
+
+## Sauce is landing on it from `from`, so it is pushed away from there.
+##
+## Set rather than accumulated: every one of the stream's points would otherwise
+## pile onto the last, and the shove would depend on the frame rate and the
+## point density rather than on whether the stream is on the body. Refreshed
+## while it is being hit and decaying the moment it is not is the whole effect.
+##
+## Authority only -- the position it moves is what travels.
+func take_shove(from: Vector3) -> void:
+	if not authority or not is_alive():
+		return
+	var away := Vector3(global_position.x - from.x, 0.0, global_position.z - from.z)
+	if away.length_squared() < 0.000001:
+		return
+	_shove = away.normalized() * shove_speed
+
+
+## True while it is rocking back from a threshold. The world asks so it can send
+## the camera shake to whoever is hitting it.
+func is_flinching() -> bool:
+	return _flinch_left > 0.0
+
+
+## Rocks back and recovers, writing `fall_angle` -- which is why nothing is
+## added to the state packet for it. A half-sine: away from upright and back,
+## reaching the full angle in the middle rather than at the end.
+func _advance_flinch(delta: float) -> void:
+	if _flinch_left <= 0.0:
+		return
+	_flinch_left = maxf(_flinch_left - delta, 0.0)
+	var through := 1.0 - _flinch_left / maxf(flinch_seconds, 0.001)
+	fall_angle = deg_to_rad(flinch_degrees) * sin(through * PI)
+	_apply_pose()
 
 
 ## Goes over backwards about its own feet. The feet stay where they were planted
@@ -508,9 +663,28 @@ func take_sauce_hit() -> bool:
 ## is the torso's own thickness above them, and the sine carries it between the
 ## two in step with the rotation.
 func _advance_fall(delta: float) -> void:
-	if fall_angle >= FLAT:
+	# Past the ground: the one small bounce, and then still.
+	if _settled_for > 0.0 or fall_angle >= FLAT:
+		_settled_for += delta
+		if _settled_for >= fall_bounce_seconds or fall_bounce <= 0.0:
+			fall_angle = FLAT
+			_apply_pose()
+			_settle_onto_ground()
+			return
+		# Back off the floor and settle again, once. A half sine, so it leaves
+		# the ground and returns to it rather than stopping partway.
+		var through := _settled_for / maxf(fall_bounce_seconds, 0.001)
+		fall_angle = FLAT - FLAT * fall_bounce * sin(through * PI)
+		_apply_pose()
 		return
-	fall_angle = minf(fall_angle + FLAT / maxf(fall_duration, 0.01) * delta, FLAT)
+	# Fast off the mark and slowing into the floor, rather than the constant
+	# rate this turned at before: a body going over accelerates under its own
+	# weight at first, and what sells the landing is that it arrives quickly.
+	var rate := FLAT / maxf(fall_duration, 0.01)
+	var through_fall := fall_angle / FLAT
+	fall_angle = minf(fall_angle + rate * (1.6 - 0.9 * through_fall) * delta, FLAT)
+	if fall_angle >= FLAT:
+		_settled_for = 0.0001
 	_apply_pose()
 
 
@@ -546,12 +720,64 @@ func _advance_gait(step: Vector3, walking: bool, delta: float) -> void:
 
 func _apply_pose() -> void:
 	var pose := Basis(Vector3.UP, facing_yaw) * Basis(Vector3.RIGHT, fall_angle)
-	if fall_angle <= 0.0:
+	# **Alive, not `fall_angle <= 0`.** A flinch turns `fall_angle` too, and the
+	# pivot below is the spot the feet were planted on when it *died* -- unset
+	# while it is still up. Branching on the angle sent a flinching body to the
+	# world origin, because that is where an unset pivot is.
+	if is_alive():
 		global_transform = Transform3D(pose, global_position)
 		return
 	global_transform = Transform3D(pose, _fall_pivot
 		+ pose.y * (height * 0.5)
 		+ Vector3.UP * (_rest_radius * sin(fall_angle)))
+
+
+## Lifts the settled body until nothing of it is through the floor.
+##
+## The topple is an arc about the feet with a fixed allowance for the torso's
+## thickness, which is right on flat ground and wrong everywhere else -- a body
+## that dies on a kerb, on a ramp or half under a stall counter arrives with
+## part of itself inside the geometry. So once it is down, the three bones that
+## decide the silhouette -- **head, middle and feet**, indices 2, 1 and 0 of
+## `_bones()` -- are dropped onto whatever is under them and the **whole node**
+## is raised by the worst of them.
+##
+## The node, not the mesh. Lifting the mesh alone is what put the visible body
+## somewhere the collider was not, which is the fault the death animation was
+## taken out for; the colliders and the contamination unwrap are authored
+## against this node's own transform and have to move with it.
+##
+## Authority only, and it changes `global_position`, which is already in the
+## state packet -- so every peer gets the corrected pose without anything new
+## being sent.
+func _settle_onto_ground() -> void:
+	if not authority:
+		return
+	var space := get_world_3d().direct_space_state
+	var bones := _bones()
+	var worst := -INF
+	for index in [2, 1, 0]:
+		var bone: Dictionary = bones[index]
+		var centre: Vector3 = global_transform * (bone["centre"] as Vector3)
+		# Flat on its back, a disc rests on its side, so what hangs below its
+		# centre is its radius rather than half its height.
+		var reach: float = bone["radius"]
+		var query := PhysicsRayQueryParameters3D.create(
+			centre, centre - Vector3.UP * (reach + height))
+		query.exclude = [get_rid()]
+		query.collide_with_areas = false
+		var hit := space.intersect_ray(query)
+		if hit.is_empty():
+			continue
+		# Positive when the bone's underside is through the surface.
+		worst = maxf(worst, (hit.position.y as float) - (centre.y - reach))
+	if worst == -INF:
+		return
+	var lift := worst + ground_clearance
+	if absf(lift) < 0.0005:
+		return
+	global_position += Vector3.UP * lift
+	_fall_pivot += Vector3.UP * lift
 
 
 func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
@@ -590,8 +816,8 @@ func network_state() -> Array:
 func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 		new_fall_angle: float) -> void:
 	var was_alive := is_alive()
-	var travelled := Vector2(new_position.x - global_position.x,
-		new_position.z - global_position.z).length_squared()
+	var step := new_position - global_position
+	var walking := Vector2(step.x, step.z).length_squared() > 0.000001
 	facing_yaw = yaw
 	fall_angle = new_fall_angle
 	health = new_health
@@ -602,7 +828,17 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	if was_alive and not is_alive():
 		_play_death_animation()
 	elif is_alive():
-		_set_locomotion_animation(travelled > 0.000001)
+		_set_locomotion_animation(walking)
+		# Clients do not simulate enemies; this packet is the only ground distance
+		# they see. Feed it through the same odometer as the authority so planted
+		# hands walk on every peer instead of freezing in the idle pose remotely.
+		#
+		# TODO: the delta here is a physics tick, but this runs on packet arrival
+		# and the enemy state packet is `unreliable_ordered`. `phase` is a
+		# distance and so stays right when one is dropped; `strength`, which is
+		# a time fade, is under-advanced by exactly the packets that went
+		# missing. Wants the real interval between packets.
+		_advance_gait(step, walking, 1.0 / float(Engine.physics_ticks_per_second))
 
 
 ## Walks at `targets`' nearest member and hits it when it gets there. Returns
@@ -616,6 +852,10 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		_advance_fall(delta)
 		return null
 	_contact_cooldown = maxf(_contact_cooldown - delta, 0.0)
+	# Rocking back from a threshold. It keeps walking through it: the flinch is
+	# a stagger, not a stun, and stopping the chase would make a steady stream
+	# of hits into a hold.
+	_advance_flinch(delta)
 
 	var target := _nearest(targets)
 	var flat := Vector3.ZERO
@@ -623,10 +863,15 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		flat = _step_toward(target, delta) - global_position
 		flat.y = 0.0
 
+	# A body that is more sauce than burger walks like it. Continuous, like the
+	# shove: what it reads as is the fight winding down rather than a state
+	# change at a percentage.
+	var soiled := 1.0 - health_fraction()
+	var pace := move_speed * (1.0 - soiled_slowdown * soiled)
 	if flat.length_squared() > 0.000001:
 		var direction := flat.normalized()
-		velocity.x = direction.x * move_speed
-		velocity.z = direction.z * move_speed
+		velocity.x = direction.x * pace
+		velocity.z = direction.z * pace
 		# Turned toward the player rather than snapped: a snap makes it read as
 		# a camera-facing sprite, and the stain on its back is worth seeing.
 		# A body's front is its -z, so facing a direction is atan2 of its
@@ -640,6 +885,14 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	else:
 		velocity.x = 0.0
 		velocity.z = 0.0
+
+	# The shove rides on top of the walk rather than replacing it, so a body
+	# being hosed head-on is pushed backwards while still trying to come at you
+	# -- which is what leaning into a hose looks like.
+	velocity.x += _shove.x
+	velocity.z += _shove.z
+	_shove = _shove.move_toward(Vector3.ZERO,
+		shove_speed / maxf(shove_decay_seconds, 0.01) * delta)
 
 	if is_on_floor():
 		velocity.y = 0.0

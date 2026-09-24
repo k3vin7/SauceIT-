@@ -137,6 +137,14 @@ class Shooter:
 	var sauce := 1.0
 	## How long the squirt under way has been running.
 	var burst_time := 0.0
+	## And how long sauce has actually been *coming out* of it.
+	##
+	## Kept apart from `burst_time` above, which only the authority advances --
+	## every peer has to work the emission speed out for itself, because nothing
+	## about the strand goes over the wire. This one is advanced wherever the
+	## nozzle is delivering, and the nozzle state is replicated, so every peer
+	## reaches the same number.
+	var burst_elapsed := 0.0
 	## What the nozzle is doing, from the enum above. The authority works it out;
 	## everyone else is told.
 	var nozzle := 0
@@ -171,6 +179,49 @@ class Shooter:
 	## be: only the host rolls, and the answer travels in the state packet, so
 	## this one is free to be random.
 	var catch_rng := RandomNumberGenerator.new()
+	## The dice for how firing *looks and sounds*, kept apart from both of the
+	## above for the same reason `catch_rng` is kept apart from `rng`: nothing
+	## drawn from it reaches the simulation, so it must not be allowed to shift
+	## the strand's own jitter sequence that `probe_determinism` rests on.
+	## Randomized rather than seeded -- two players' bottles shaking in step
+	## would read as one animation played twice.
+	var feel_rng := RandomNumberGenerator.new()
+	## Camera kick from the start of a squirt, in radians, and always a pitch:
+	## the bottle is squeezed, not fired, so it noses up and settles back.
+	var recoil_pitch := 0.0
+	## The part of the kick that has not been let into the view yet. A squirt's
+	## kick is fed in over `recoil_attack_seconds` rather than applied whole on
+	## the frame the trigger goes down: the same 4 degrees arriving in one frame
+	## is a snap, and arriving over three or four is a shove.
+	var recoil_pending := 0.0
+	## Seconds of credit left on "this stream is landing on a body". Held as a
+	## short countdown rather than as a flag because the stream lands in points
+	## and a raw per-frame flag flickers several times a second on a target
+	## being held perfectly still.
+	var on_target_left := 0.0
+	## The same thing faded to 0..1, which is what the reticle and the sound
+	## actually read.
+	var connection := 0.0
+	## Where the nozzle is pointed away from where the bottle is held, in
+	## radians. **Visual only** -- see `_apply_nozzle_sway` for why it can never
+	## reach the strand.
+	var sway_pitch := 0.0
+	var sway_yaw := 0.0
+	## What it is moving toward, and how long until the next one is drawn. The
+	## sway walks between held targets rather than being re-rolled every frame:
+	## fresh noise at 60 Hz reads as a buzz, not as a hand.
+	var sway_target_pitch := 0.0
+	var sway_target_yaw := 0.0
+	var sway_retarget := 0.0
+	## Node the bottle's meshes hang off, which is the thing the sway turns.
+	var weapon_sway: Node3D
+	## The hit shake: how much is left of it, how long it ran for, and which way
+	## the enemy that caused it was. Driven by an RPC rather than by the enemy
+	## state packet -- see `shake_from_enemy`.
+	var shake_left := 0.0
+	var shake_span := 0.0
+	var shake_degrees := 0.0
+	var shake_direction := Vector3.ZERO
 	var air_visual: StreamVisual
 	var landing_visual: StreamVisual
 	var shadow_visual: StreamVisual
@@ -182,8 +233,47 @@ class MayoDroplet:
 	var radius := 0.014
 	var expires_at := 0.0
 
+
+## One thrown piece of an impact: the fat blob that comes off the hit, or one of
+## the small specks around it. Unlike `MayoDroplet`, which is settled sauce
+## sitting where it landed, these fly -- so they carry a velocity and fall.
+class MayoSpeck:
+	var active := false
+	var position := Vector3.ZERO
+	var velocity := Vector3.ZERO
+	var radius := 0.02
+	## Per-axis multipliers on `radius`, drawn once. Mayonnaise does not come
+	## off a surface as beads: it comes off in lumps, and a lump is not round.
+	var lumps := Vector3.ONE
+	## Which way it was thrown, kept so it can be drawn stretched along its own
+	## travel without renormalising a velocity that gravity is bending.
+	var heading := Vector3.FORWARD
+	## Where it was when it was last tested for landing: the swept ray runs from
+	## here, so a lump moving faster than its own size cannot pass through a
+	## floor between two frames.
+	var last_tested := Vector3.ZERO
+	## Whose squirt threw it, so the mark it leaves belongs to the same coat as
+	## the strand that caused it. Held as a peer id rather than as the `Shooter`
+	## so a player leaving mid-flight cannot keep a freed one alive.
+	var peer_id := 1
+	## Which frame it is allowed to cast on, spreading the tests over the stride
+	## exactly as `MayoPoint.collision_slot` does for the strand.
+	var cast_slot := 0
+	## The two axes across `heading`, already rolled and already scaled by this
+	## lump's own uneven proportions.
+	##
+	## **Worked out once, at spawn.** `heading` never changes after the lump is
+	## thrown, so the two cross products, two normalises and the roll's sine and
+	## cosine that used to run per lump per frame were recomputing a constant
+	## sixty times a second.
+	var axis_x := Vector3.RIGHT
+	var axis_y := Vector3.UP
+	## And `heading` scaled by the third proportion, for the same reason.
+	var axis_z := Vector3.FORWARD
+	var expires_at := 0.0
+
 @export_group("Mayo Stream — Reference Values")
-@export_range(0.2, 6.0, 0.01, "suffix:m") var stream_range := 2.94
+@export_range(0.2, 12.0, 0.01, "suffix:m") var stream_range := 5.88
 @export_range(0.5, 25.0, 0.1, "suffix:m/s") var extend_speed := 14.0
 ## A tap keeps firing for at least this long. Emission is a couple of points a
 ## frame, so a click held for one frame put out two of them -- not enough to be
@@ -201,10 +291,30 @@ class MayoDroplet:
 @export_range(0.0, 0.5, 0.01, "suffix:m") var muzzle_forward_offset := 0.15
 ## Matched to stream_range at extend_speed, so neither silently cuts first:
 ## 2.94 m at 14 m/s is 0.21 s.
-@export_range(0.02, 1.5, 0.001, "suffix:s") var point_time_lifetime := 0.21
+@export_range(0.02, 1.5, 0.001, "suffix:s") var point_time_lifetime := 0.42
 @export var use_time_lifetime := true
 @export var use_distance_lifetime := true
 @export_range(0.0, 30.0, 0.1, "suffix:m/s²") var gravity_acceleration := 9.8
+
+@export_subgroup("Squeeze Pressure")
+## How much of its speed the stream loses by the end of a squirt.
+##
+## A squeeze bottle is not a tap. The first of a squirt is the bottle at full
+## pressure and it carries; by the time the hand has closed there is almost
+## nothing behind it and what comes out drops at your feet. Without this the
+## emission speed was a flat `extend_speed` from the first frame of a burst to
+## the last, so a squirt reached exactly as far at the end as at the start and
+## then stopped dead.
+##
+## 0 restores that flat behaviour.
+@export_range(0.0, 0.95, 0.01) var burst_pressure_falloff := 0.72
+## How long the squeeze takes to run down to that. Defaults to the length of a
+## full-tank burst, so a squirt held to its limit ends at the bottom of the
+## curve -- which is the case this is for.
+@export_range(0.1, 10.0, 0.05, "suffix:s") var burst_pressure_seconds := 1.0
+## The shape of the run-down. 1 is a straight line; above 1 holds the pressure
+## and drops it late, below 1 loses it early.
+@export_range(0.2, 4.0, 0.05) var burst_pressure_curve := 1.7
 
 @export_group("Enemies")
 ## How fast they walk, as a fraction of the player's walking speed. Under 1 they
@@ -387,8 +497,252 @@ class MayoDroplet:
 @export_range(0.08, 0.5, 0.01, "suffix:m") var bottle_length := 0.20
 ## The strand is launched at the point the crosshair marks, this far down the
 ## camera forward axis, so an off-centre nozzle still fires through the centre.
-@export_range(0.5, 8.0, 0.05, "suffix:m") var aim_convergence_distance := 2.2
+##
+## Kept at about three quarters of `stream_range`: the strand crosses the
+## reticle here exactly and parallaxes away from it on either side, so the place
+## it is honest wants to be out where the fighting is. Doubling the range and
+## leaving this at the old 2.2 m would have put the crossing point halfway down
+## a stream that now reaches twice as far.
+@export_range(0.5, 12.0, 0.05, "suffix:m") var aim_convergence_distance := 4.4
 @export var show_crosshair := true
+
+@export_group("Firing Feel")
+## How far the view noses up at the start of a squirt. One impulse per squirt,
+## and a squirt that runs its allowance out and restarts by itself is a new one,
+## so holding the trigger gives a kick per burst rather than a continuous climb.
+## **Off.** Every one of the four numbers that moves the view is shipped at
+## zero, to be turned up one at a time: taken together they read as a much
+## bigger shake than any of them is, and there is no way to tell which one is
+## doing it while they are all on. The mechanisms are all here and tested --
+## this is a starting value, not a removal.
+@export_range(0.0, 15.0, 0.1, "suffix:°") var recoil_kick_degrees := 0.0
+## How long the kick takes to arrive. Zero puts it all in on one frame, which is
+## what this did first and what made 4 degrees read as a punch -- the view
+## teleported rather than moved. Spread over a few frames the same angle reads
+## as the bottle being squeezed.
+@export_range(0.0, 0.5, 0.005, "suffix:s") var recoil_attack_seconds := 0.05
+## How long the kick takes to come back **while the squirt is still running**.
+## An exponential settle rather than a sprung one: a spring stiff enough to
+## return in a tenth of a second overshoots at 60 Hz, and the overshoot reads as
+## a second, smaller kick downward that nothing in the fiction caused.
+@export_range(0.02, 1.0, 0.01, "suffix:s") var recoil_settle_seconds := 0.10
+## And how long whatever is left of it takes once the trigger is let go.
+@export_range(0.02, 1.0, 0.01, "suffix:s") var recoil_release_seconds := 0.16
+## The bottle's own wander while sauce is coming out, drawn between these two.
+@export_range(0.0, 15.0, 0.1, "suffix:°") var nozzle_sway_min_degrees := 2.0
+@export_range(0.0, 15.0, 0.1, "suffix:°") var nozzle_sway_max_degrees := 4.0
+## How often a new wander target is drawn.
+@export_range(0.01, 1.0, 0.01, "suffix:s") var nozzle_sway_interval := 0.07
+## How fast the bottle chases the target it was given.
+@export_range(0.02, 1.0, 0.01, "suffix:s") var nozzle_sway_follow_seconds := 0.05
+## The share of the bottle's wander the view is allowed to pick up. Small on
+## purpose: the hand shakes, the head does not.
+## Off with the rest of them -- see `recoil_kick_degrees`. The bottle still
+## wanders; this is only how much of that the *view* picks up.
+@export_range(0.0, 1.0, 0.01) var camera_sway_fraction := 0.0
+
+@export_group("Party Scaling")
+## How much tougher a heavy gets per extra player. Solo health times
+## `1 + heavy_health_per_player * (players - 1)`: at 0.6 a four-player heavy has
+## 2.8 times a solo one's contamination to soak.
+@export_range(0.0, 3.0, 0.05) var heavy_health_per_player := 0.6
+## And how many more minions a wave puts out per extra player, on the same
+## shape. **Worked out but not wired to anything**: there is no wave system in
+## this prototype -- the three enemies are placed once when the street is built
+## -- so `minion_spawn_count` is the answer a spawner would ask for when there
+## is one to ask.
+@export_range(0.0, 3.0, 0.05) var minion_spawn_per_player := 0.75
+
+@export_group("Enemy Feedback")
+## How long after landing a hit a player still counts as "hitting" that enemy,
+## and so still gets the camera shake when it flinches or goes down.
+##
+## It is a window rather than an instant because a flinch is decided by the hit
+## that crossed the threshold, and at 187 landings a second the odds that *your*
+## point was the exact one are poor -- everyone hosing it should feel it.
+@export_range(0.02, 2.0, 0.01, "suffix:s") var hit_credit_seconds := 0.2
+## How hard the view kicks when an enemy you are hitting flinches, and when one
+## goes down. The kick is toward the enemy, so it reads as the hit connecting.
+## **Both off** -- see `recoil_kick_degrees`. Who the shake is sent to is still
+## worked out and still sent; these decide how far it moves anything.
+@export_range(0.0, 20.0, 0.1, "suffix:°") var flinch_shake_degrees := 0.0
+@export_range(0.02, 1.0, 0.01, "suffix:s") var flinch_shake_seconds := 0.12
+@export_range(0.0, 30.0, 0.1, "suffix:°") var kill_shake_degrees := 0.0
+@export_range(0.02, 2.0, 0.01, "suffix:s") var kill_shake_seconds := 0.3
+
+@export_group("Sound")
+## Everything this prototype makes a noise with goes through here: the squirt,
+## the impact splats, the air puff. **`M` toggles it in game.**
+##
+## It exists because the sounds are still generated placeholders, and a
+## generated placeholder is a tone or a band of noise -- which is what a bottle
+## and a splat both come out as until there are clips. Muting is the honest
+## answer to that until then, rather than tuning noise to sound less like noise.
+@export var muted := false:
+	set(value):
+		muted = value
+		_apply_mute()
+
+@export_group("Connection")
+## How long a landing keeps the stream counted as "on a body".
+##
+## **This is the answer to a continuous weapon.** There is no hit event to
+## punctuate -- 187 points land a second and no one of them means anything --
+## but there is a hit *state*, and it is true or false on every frame. The
+## reticle, the sound and the spray all read it, so the moment the stream comes
+## onto a monster everything changes at once, and the moment it slides off,
+## everything goes back.
+@export_range(0.02, 1.0, 0.01, "suffix:s") var on_target_window := 0.12
+## How fast that state fades in and out. Faded, because the stream lands in
+## points: switched, the reticle strobes.
+@export_range(0.01, 1.0, 0.01, "suffix:s") var connection_fade_seconds := 0.07
+## The loop's pitch while the stream is on a body, against 1.0 in the air. Below
+## one on purpose: sauce hitting meat should sound thicker, not brighter.
+@export_range(0.5, 1.5, 0.01) var on_target_pitch := 0.82
+## And how much louder it gets there.
+@export_range(-12.0, 24.0, 0.5, "suffix:dB") var on_target_volume_db := 3.0
+## Swapped in for `spray_loop_sound` while the stream is on a body, when there
+## is one. Empty falls back to the pitch and volume above, which is enough to
+## tell the two apart on its own.
+@export var spray_loop_on_target_sound: AudioStream
+## The spray thrown off a body rather than off the street: more of it, thrown
+## wider. The blob and speck sizes are shared with the world impact.
+@export_range(1.0, 6.0, 0.1) var body_impact_multiplier := 2.0
+
+@export_group("Impact Spray")
+## The fat blob thrown back off a hit, and the fine stuff around it. Two sizes
+## rather than one spread: a single random range gives a cloud of middling
+## specks, and what an impact reads as is one big piece and a scatter.
+## **Tuned as mayonnaise, not as water.** Sauce this thick does not atomise: it
+## leaves a surface as a few fat lumps travelling slowly and dying quickly, not
+## as a fine fast mist. Every default below is that one decision -- fewer, much
+## bigger, much slower, and stopped by the air almost at once.
+@export_range(0, 8, 1) var impact_blobs := 1
+@export_range(0, 24, 1) var impact_specks := 1
+@export_range(0.005, 0.25, 0.001, "suffix:m") var impact_blob_radius := 0.135
+@export_range(0.002, 0.15, 0.001, "suffix:m") var impact_speck_radius := 0.085
+## How fast they come off. Slow, and slower than a liquid would be: sauce this
+## thick barely separates from what it hits. A lump goes an arm's length and
+## lands; it does not carry across a room.
+@export_range(0.1, 20.0, 0.1, "suffix:m/s") var impact_blob_speed := 1.3
+@export_range(0.1, 20.0, 0.1, "suffix:m/s") var impact_speck_speed := 2.1
+## How far the lumps stray from the bounce, 0 to 1.
+##
+## **0 throws them all straight along the bounce; 1 throws them anywhere at all
+## off the surface.** This replaced a pair of offsets added either side of the
+## bounce direction, which could not do what it says: adding even a very large
+## offset across a unit vector still lands inside a cone about it, so the old
+## knob approached 90 degrees and never passed it however far it was turned up.
+## Sauce hitting a wall hard throws some of itself back along that wall, and
+## that needs the whole hemisphere.
+@export_range(0.0, 1.0, 0.01) var impact_scatter := 0.85
+@export_range(0.05, 6.0, 0.01, "suffix:s") var impact_lifetime := 2.4
+## What share of gravity the lumps feel. Under one so the fan has time to read
+## before they drop -- but not so light that they hang. Together with
+## `impact_lifetime` this has to actually land them: at 0.5 g a lump falling a
+## metit and a half takes 0.78 s, and it used to be given 0.55 s, so most of
+## them simply expired in mid-air and left nothing on the ground.
+@export_range(0.0, 1.0, 0.01) var impact_gravity_scale := 0.62
+## How long a lump spends popping up to full size. Cartoon squash and stretch:
+## it arrives *growing* rather than at full size, which is what makes it read as
+## drawn rather than simulated.
+##
+## In seconds rather than as a share of the lifetime, because the lifetime is
+## now a long safety net -- as a share it stretched the pop to half a second and
+## the snap went out of it.
+@export_range(0.0, 0.5, 0.005, "suffix:s") var impact_pop_seconds := 0.08
+## How far past full size the pop swells before settling back. **The bounce in
+## squash and stretch.** The first version of this claimed to overshoot and did
+## not -- the curve it used rose to exactly 1.0 and no further, so the lump grew
+## and then only ever shrank. Zero here restores that behaviour.
+@export_range(0.0, 1.5, 0.05) var impact_pop_overshoot := 0.45
+## And what it shrinks to by the end.
+##
+## **`impact_lifetime` is now a safety net rather than the normal ending.** A
+## lump is meant to land, mark what it hit and be taken out of the air there, so
+## the size curve has to stay near full for the whole flight -- which is why
+## this sits close to one. Only a lump that never reaches anything runs the
+## clock out.
+@export_range(0.0, 1.0, 0.01) var impact_end_scale := 0.2
+## How long the shrink at the end takes. Only a lump that never reached anything
+## gets this far -- one that lands is taken out of the air at full size.
+@export_range(0.05, 2.0, 0.01, "suffix:s") var impact_fade_seconds := 0.3
+## Whether the thrown lumps mark whatever they come down on.
+##
+## They are decoration everywhere else, but sauce this thick does not evaporate:
+## what gets flicked off a monster lands on the street around it, and the ring
+## of spatter is most of what says a fight happened here. Marks only -- see
+## `_record_splat`'s `damaging`.
+@export var impact_paints := true
+## One in this many frames is when a given lump is tested for landing. The
+## strand's own casts are budgeted the same way and for the same reason: with a
+## few hundred lumps in the air, a cast each per frame is the whole budget.
+@export_range(1, 4, 1) var impact_raycast_stride := 3
+## How hard the air stops them, per second. Gentle: turned up, the lumps lost
+## their throw in a few frames and simply fell, which read as dripping rather
+## than splatting. Enough to take the edge off the launch and no more.
+@export_range(0.0, 20.0, 0.1) var impact_drag := 1.1
+## How far a lump is drawn out along its own travel, per metre a second. Small:
+## turned up it stopped reading as a stretched blob and started reading as a
+## splinter, which is worse than a bead.
+@export_range(0.0, 2.0, 0.01) var impact_stretch := 0.22
+## How irregular the lumps are: 0 is round beads, 1 is badly squashed. Drawn per
+## lump, so no two are the same shape.
+@export_range(0.0, 1.0, 0.01) var impact_lumpiness := 0.3
+## How deeply the lump mesh itself is dented, before any per-instance scaling.
+## This is what stops them reading as beads: `impact_lumpiness` only stretches a
+## ball into an egg, whereas this puts hollows in the silhouette.
+@export_range(0.0, 0.8, 0.01) var impact_lump_dents := 0.34
+## The ceiling on how many can be in the air at once, and the size of the
+## buffer uploaded to the renderer whenever any of them moves -- so it is a
+## per-frame cost whether the slots are used or not, and worth keeping tight.
+## At `impact_min_interval` 0.18 s and two pieces an impact, about eleven are
+## thrown a second; even a long flight leaves this most of an order of magnitude
+## of headroom. Reached, the oldest is replaced.
+@export_range(16, 2048, 16) var impact_pool_size := 96
+## And the ceiling on how often one may be thrown at all, per surface hit.
+##
+## **This is the number that decides how much is on screen**, more than the
+## piece counts do, and it was far too generous: at 0.03 s a held stream threw
+## 33 impacts a second, which at four pieces and three quarters of a second
+## apiece is a hundred lumps in the air at once. That is a cloud, not a splat.
+## At 0.09 s it is about a dozen.
+@export_range(0.0, 1.0, 0.005, "suffix:s") var impact_min_interval := 0.18
+
+@export_group("Impact Sound")
+## Empty means silent: there is no generated stand-in, because a generated one
+## is a band of noise and so is every other generated stand-in here. Several
+## clips rather than one, drawn at random and pitched at random on top, because
+## the one thing a repeated impact sound must not do is sound repeated.
+@export var splat_sounds: Array[AudioStream] = []
+@export_range(0.5, 1.0, 0.01) var splat_pitch_min := 0.9
+@export_range(1.0, 2.0, 0.01) var splat_pitch_max := 1.1
+@export_range(-60.0, 12.0, 0.5, "suffix:dB") var splat_volume_db := -6.0
+## How far a splat can be heard.
+@export_range(1.0, 200.0, 1.0, "suffix:m") var splat_audible_distance := 40.0
+## **One timer per enemy, not per stream.** Four players hosing the same monster
+## is one monster being hit, and it should sound like one -- a timer per strand
+## gives four overlapping trains of the same noise.
+@export_range(0.01, 1.0, 0.005, "suffix:s") var splat_interval_min := 0.07
+@export_range(0.01, 1.0, 0.005, "suffix:s") var splat_interval_max := 0.10
+## How many splats may sound at once. Past this the hit is silent rather than
+## cutting one already playing: a clipped splat is more obvious than a missing
+## one.
+@export_range(1, 32, 1) var splat_voices := 6
+
+@export_group("Firing Sound")
+## Empty means silent -- see `_begin_spray_feel`. Drop clips in and nothing else
+## here changes. `spray_loop_sound` wants a stream that loops by itself: the
+## player is started once and left running, so a clip with a hard tail will tick.
+@export var spray_start_sound: AudioStream
+@export var spray_loop_sound: AudioStream
+@export var spray_end_sound: AudioStream
+@export_range(-60.0, 12.0, 0.5, "suffix:dB") var spray_volume_db := -8.0
+## How far the loop is allowed to swing on either side of that with the
+## pressure behind the squirt.
+@export_range(0.0, 24.0, 0.5, "suffix:dB") var spray_pressure_volume_db := 6.0
+## And how far its pitch is, as a fraction either side of 1.0.
+@export_range(0.0, 0.8, 0.01) var spray_pressure_pitch := 0.15
 
 var _local: Shooter
 ## peer id -> Shooter. Offline this holds the local player alone under id 1.
@@ -450,6 +804,11 @@ var _nav: StreetNav
 var _health_hud: HealthHud
 var _minimap: Minimap
 var _sauce_audio: AudioStreamPlayer
+## The squirt's own voice, kept on two players rather than one: the loop has to
+## go on sounding while the start and end one-shots play over it, and a single
+## player would cut whichever was already running.
+var _spray_loop_audio: AudioStreamPlayer
+var _spray_edge_audio: AudioStreamPlayer
 
 # The single-player fields the checks and the rest of this file grew up with,
 # now views onto the local player's Shooter. Nothing assigns through them.
@@ -492,6 +851,35 @@ var _active_droplet_indices := PackedInt32Array()
 var _droplet_buffer := PackedFloat32Array()
 var _droplet_buffer_dirty := false
 var _droplet_cursor := 0
+## The impact spray's own pool, built and stepped exactly like the landing
+## droplets' -- see `_build_impact_pool` -- but its members move.
+var _speck_multimesh: MultiMesh
+var _speck_pool: MultiMeshInstance3D
+var _specks: Array[MayoSpeck] = []
+var _active_speck_indices := PackedInt32Array()
+var _speck_buffer := PackedFloat32Array()
+var _speck_buffer_dirty := false
+var _speck_cursor := 0
+## Counts down to when an impact may next be thrown, so a held stream does not
+## ask for one on every one of its 187 landings a second.
+var _impact_clock := 0.0
+## enemy instance id -> seconds until it may next be heard being hit. Keyed by
+## the enemy rather than by the strand: see `splat_interval_min`.
+var _enemy_splat_clock: Dictionary = {}
+## enemy instance id -> { peer id: seconds left of that peer's credit }.
+##
+## **The authority's book of who is hitting what.** A flinch or a kill shakes
+## the view of everyone whose credit has not run out, which is how "the player
+## currently hitting it" is decided without asking each client to guess.
+var _hit_credit: Dictionary = {}
+var _splat_voices: Array[AudioStreamPlayer3D] = []
+var _splat_voice_cursor := 0
+## The world's own dice for effects, alongside each shooter's `feel_rng`. An
+## impact belongs to the surface that was hit rather than to the player who hit
+## it -- two players hosing one monster is one monster being hit -- so the
+## scatter and the pitch are drawn here. **Never `_rng`**: that is the local
+## shooter's fixed-seed strand jitter, which `probe_determinism` rests on.
+var _feel_rng := RandomNumberGenerator.new()
 var _first_person := true
 var debug_input_override := false
 var debug_input_move := Vector2.ZERO
@@ -524,8 +912,10 @@ var debug_timings_us := {
 
 
 func _ready() -> void:
+	_feel_rng.randomize()
 	_ensure_input_actions()
 	_build_world()
+	_apply_mute()
 	set_first_person(start_in_first_person)
 	_capture_mouse()
 	_floor.configure(grid_cell_size, contamination_brush_radius)
@@ -561,6 +951,12 @@ func _physics_process(delta: float) -> void:
 		_simulate_points(delta, shooter)
 		_update_connections(shooter)
 	_simulate_droplets(delta)
+	_simulate_specks(delta)
+	_advance_impact_clocks(delta)
+	if _is_authority():
+		_advance_hit_credit(delta)
+	for shooter in _shooters.values():
+		_advance_shake(shooter, delta)
 	if debug_profile_enabled:
 		debug_timings_us.point_physics += Time.get_ticks_usec() - step_started
 		step_started = Time.get_ticks_usec()
@@ -643,11 +1039,22 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 	var delivering := shooter.nozzle == Nozzle.STREAM
 	_report_air_shot(shooter, delta)
 
+	# The squirt's own feel, run for every shooter rather than for the local one
+	# alone: everybody else's bottle is visible and carries their sauce level,
+	# so it should shake in their hands too. What *is* local-only is inside --
+	# the camera reads `_local` and nothing else, and only `_local` is heard.
+	_advance_spray_feel(shooter, delta, delivering)
 	if delivering:
 		if not shooter.was_firing:
 			shooter.burst_index += 1
+			# A new squeeze starts at full pressure.
+			shooter.burst_elapsed = 0.0
 		_apply_inertial_follow(shooter.player.frame_movement, shooter)
-		shooter.emit_distance += extend_speed * delta
+		# The nozzle feeds the strand at the speed it is actually delivering, so
+		# a squeeze running out of pressure lays its points down more slowly
+		# instead of packing them closer together.
+		shooter.emit_distance += extend_speed * squeeze_pressure(shooter) * delta
+		shooter.burst_elapsed += delta
 		while shooter.emit_distance >= point_spacing:
 			shooter.emit_distance -= point_spacing
 			# Full: the nozzle stops until some of what is already out lands.
@@ -691,6 +1098,164 @@ func _report_air_shot(shooter: Shooter, delta: float) -> void:
 	var from: Vector3 = shooter.muzzle.global_position if shooter.muzzle != null \
 		else shooter.player.global_position
 	air_shot_fired.emit(shooter.peer_id, from, shooter.attack_direction)
+
+
+## How hard the squirt is coming out, 0 to 1. What is left of the allowance this
+## press was given, which is the thing the player can already see: the stream
+## shortens as it runs down. Deliberately *not* the tank level -- a full tank
+## fired in short taps should sound the same every tap, and it does.
+##
+## The authority owns `burst_allowance` and it does not travel, so on a client
+## a remote shooter's reads 1.0 throughout. That is fine while nothing but the
+## local player is heard; a remote bottle would need it sent.
+func _spray_pressure(shooter: Shooter) -> float:
+	if shooter.burst_allowance <= 0.0:
+		return 1.0
+	return clampf(1.0 - shooter.burst_time / shooter.burst_allowance, 0.0, 1.0)
+
+
+## One squirt starting: the view noses up, and the bottle is heard.
+func _begin_spray_feel(shooter: Shooter) -> void:
+	# Queued rather than applied: `_advance_spray_feel` lets it in over the
+	# attack. Replaced rather than added to, so a burst restarting on a held
+	# trigger cannot stack two kicks into one lurch.
+	shooter.recoil_pending = deg_to_rad(recoil_kick_degrees)
+	_draw_sway_target(shooter)
+	if not shooter.is_local:
+		return
+	# **Silent until there are clips.** A generated stand-in can only be a tone
+	# or a band of noise, and a squirt, a splat and a puff of air generated that
+	# way all come out as the same hiss -- which is worse than nothing, because
+	# it is noise you have to listen past while tuning everything else.
+	if spray_start_sound != null:
+		_spray_edge_audio.stream = spray_start_sound
+		_spray_edge_audio.volume_db = spray_volume_db
+		_spray_edge_audio.play()
+	if spray_loop_sound != null:
+		_spray_loop_audio.stream = spray_loop_sound
+		_spray_loop_audio.play()
+
+
+## And one ending. The recoil is not zeroed -- whatever is left of it settles on
+## the longer constant, which is what makes letting go read as relaxing rather
+## than as a cut.
+func _end_spray_feel(shooter: Shooter) -> void:
+	if not shooter.is_local:
+		return
+	if _spray_loop_audio.playing:
+		_spray_loop_audio.stop()
+	if spray_end_sound != null:
+		_spray_edge_audio.stream = spray_end_sound
+		_spray_edge_audio.volume_db = spray_volume_db
+		_spray_edge_audio.play()
+
+
+## Draws where the nozzle wanders to next, as a direction and a magnitude rather
+## than as two independent numbers: rolling pitch and yaw separately piles the
+## targets into the corners of a square and leaves the middle empty, so the
+## bottle spends its time at the extremes of both axes at once.
+func _draw_sway_target(shooter: Shooter) -> void:
+	var low := minf(nozzle_sway_min_degrees, nozzle_sway_max_degrees)
+	var high := maxf(nozzle_sway_min_degrees, nozzle_sway_max_degrees)
+	var magnitude := deg_to_rad(shooter.feel_rng.randf_range(low, high))
+	var angle := shooter.feel_rng.randf_range(0.0, TAU)
+	shooter.sway_target_pitch = sin(angle) * magnitude
+	shooter.sway_target_yaw = cos(angle) * magnitude
+	shooter.sway_retarget = nozzle_sway_interval
+
+
+## The recoil, the wander and the loop, advanced one physics step.
+##
+## `delivering` is the nozzle's answer, not the trigger's: a squirt held back by
+## a catch is not a squirt, and shaking the bottle and hissing through a moment
+## when nothing is coming out is exactly the tell that would give the catch away
+## before the player saw it.
+func _advance_spray_feel(shooter: Shooter, delta: float, delivering: bool) -> void:
+	if delivering and not shooter.was_firing:
+		_begin_spray_feel(shooter)
+	elif not delivering and shooter.was_firing:
+		_end_spray_feel(shooter)
+
+	# Exponential settle toward rest, on the short constant while sauce is
+	# coming out and the long one once it has stopped. `exp` rather than a
+	# per-frame fraction so the time it takes is the time it says, whatever the
+	# tick rate.
+	# The kick arrives over the attack, and decays the whole time -- so the peak
+	# is a little under what was asked for, which is the point: what the number
+	# buys is the shove, not an instantaneous offset.
+	if shooter.recoil_pending > 0.0:
+		var arriving := deg_to_rad(recoil_kick_degrees) * delta \
+			/ maxf(recoil_attack_seconds, 0.001)
+		arriving = minf(arriving, shooter.recoil_pending)
+		shooter.recoil_pitch += arriving
+		shooter.recoil_pending -= arriving
+	var settle := recoil_settle_seconds if delivering else recoil_release_seconds
+	shooter.recoil_pitch *= exp(-delta / maxf(settle, 0.001))
+
+	if delivering:
+		shooter.sway_retarget -= delta
+		if shooter.sway_retarget <= 0.0:
+			_draw_sway_target(shooter)
+		var chase := 1.0 - exp(-delta / maxf(nozzle_sway_follow_seconds, 0.001))
+		shooter.sway_pitch = lerpf(shooter.sway_pitch, shooter.sway_target_pitch, chase)
+		shooter.sway_yaw = lerpf(shooter.sway_yaw, shooter.sway_target_yaw, chase)
+	else:
+		# Home on the release constant, the same as the recoil, so the bottle
+		# comes back level over the same moment the view does.
+		var release := 1.0 - exp(-delta / maxf(recoil_release_seconds, 0.001))
+		shooter.sway_pitch = lerpf(shooter.sway_pitch, 0.0, release)
+		shooter.sway_yaw = lerpf(shooter.sway_yaw, 0.0, release)
+
+	# The connection runs down whether or not sauce is going out, so letting go
+	# while on target drops it rather than freezing it lit.
+	shooter.on_target_left = maxf(shooter.on_target_left - delta, 0.0)
+	var wanted := 1.0 if (shooter.on_target_left > 0.0 and delivering) else 0.0
+	var fade := 1.0 - exp(-delta / maxf(connection_fade_seconds, 0.001))
+	shooter.connection = lerpf(shooter.connection, wanted, fade)
+
+	_apply_nozzle_sway(shooter)
+	if shooter.is_local and _crosshair is Crosshair:
+		(_crosshair as Crosshair).connection = shooter.connection
+	if delivering and shooter.is_local:
+		_update_spray_loop(shooter)
+
+
+## Turns the bottle's meshes, and **only** its meshes.
+##
+## The sway hangs on a node between the weapon and its parts, with `muzzle` left
+## a child of the weapon itself, so a shaking bottle moves nothing the strand is
+## emitted from. Turning the weapon node instead would work the sway into the
+## muzzle's world position, and `_emit_point` starts every point there -- a
+## 4-degree wander over a 20 cm bottle is about a centimetre of launch offset,
+## small, but it is the aim, and the aim is not allowed to be decided by an
+## effect. The direction is safe either way: `_emit_point` aims at the
+## convergence point off `aim_pivot`, above the sway.
+func _apply_nozzle_sway(shooter: Shooter) -> void:
+	if shooter.weapon_sway == null or not is_instance_valid(shooter.weapon_sway):
+		return
+	shooter.weapon_sway.rotation = Vector3(shooter.sway_pitch, shooter.sway_yaw, 0.0)
+
+
+## Volume and pitch follow the pressure behind the squirt, and both are a small
+## swing about the tuned value rather than a range starting at silence: the
+## bottle at the end of its allowance is weaker, not inaudible.
+func _update_spray_loop(shooter: Shooter) -> void:
+	var pressure := _spray_pressure(shooter)
+	var connected := shooter.connection
+	# A second clip for "on a body" when there is one; otherwise the same loop
+	# dropped in pitch and pushed in level, which is enough on its own to tell
+	# the air from the meat.
+	if spray_loop_on_target_sound != null and spray_loop_sound != null:
+		var wanted: AudioStream = spray_loop_on_target_sound if connected > 0.5 else spray_loop_sound
+		if _spray_loop_audio.stream != wanted:
+			var at := _spray_loop_audio.get_playback_position()
+			_spray_loop_audio.stream = wanted
+			_spray_loop_audio.play(at)
+	_spray_loop_audio.volume_db = spray_volume_db \
+		+ spray_pressure_volume_db * (pressure - 0.5) * 2.0 \
+		+ on_target_volume_db * connected
+	_spray_loop_audio.pitch_scale = (1.0 + spray_pressure_pitch * (pressure - 0.5) * 2.0) \
+		* lerpf(1.0, on_target_pitch, connected)
 
 
 ## The authority's decision about what the nozzle does with the trigger it has
@@ -748,6 +1313,18 @@ func _decide_nozzle(shooter: Shooter, delta: float, firing: bool) -> void:
 	shooter.catch_hold = shooter.catch_rng.randf_range(
 		minf(catch_delay_min, catch_delay_max), maxf(catch_delay_min, catch_delay_max))
 	shooter.nozzle = Nozzle.CAUGHT
+
+
+## What is left of the squeeze, 1 at the start of a burst and
+## `1 - burst_pressure_falloff` once it has run `burst_pressure_seconds`.
+##
+## Worked out from `burst_elapsed`, which every peer advances for itself off the
+## replicated nozzle state -- see that field for why it cannot read `burst_time`.
+func squeeze_pressure(shooter: Shooter) -> float:
+	if burst_pressure_falloff <= 0.0:
+		return 1.0
+	var through := clampf(shooter.burst_elapsed / maxf(burst_pressure_seconds, 0.001), 0.0, 1.0)
+	return 1.0 - burst_pressure_falloff * pow(through, burst_pressure_curve)
 
 
 ## Which band a bottle at this level is in.
@@ -906,6 +1483,25 @@ func _build_sauce_audio() -> void:
 	_sauce_audio.name = "SauceAudio"
 	_sauce_audio.bus = "Master"
 	add_child(_sauce_audio)
+	_spray_loop_audio = AudioStreamPlayer.new()
+	_spray_loop_audio.name = "SprayLoopAudio"
+	_spray_loop_audio.bus = "Master"
+	add_child(_spray_loop_audio)
+	_spray_edge_audio = AudioStreamPlayer.new()
+	_spray_edge_audio.name = "SprayEdgeAudio"
+	_spray_edge_audio.bus = "Master"
+	add_child(_spray_edge_audio)
+	# The splat voices are positional -- a monster being hit across the street
+	# should sound like it is across the street -- which is why they are
+	# `AudioStreamPlayer3D` where everything else here is not.
+	for index in splat_voices:
+		var voice := AudioStreamPlayer3D.new()
+		voice.name = "SplatVoice%02d" % index
+		voice.bus = "Master"
+		voice.max_distance = splat_audible_distance
+		voice.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
+		add_child(voice)
+		_splat_voices.push_back(voice)
 	sauce_stage_changed.connect(_on_sauce_stage_changed)
 	air_shot_fired.connect(_on_air_shot_fired)
 
@@ -935,6 +1531,14 @@ func _on_air_shot_fired(peer_id: int, _from: Vector3, _direction: Vector3) -> vo
 ## this exists so the feedback can be heard and tuned before there are any.
 func _play_tone(player: AudioStreamPlayer, hertz: float, seconds: float,
 		noisy := false) -> void:
+	player.stream = _placeholder_tone(hertz, seconds, noisy)
+	player.play()
+
+
+## The generator on its own, because `AudioStreamPlayer` and
+## `AudioStreamPlayer3D` share no base but `Node` -- the splat voices are
+## positional and could not be handed to the typed helper above.
+func _placeholder_tone(hertz: float, seconds: float, noisy := false) -> AudioStreamWAV:
 	var rate := 22050.0
 	var frames := int(rate * seconds)
 	var wave := AudioStreamWAV.new()
@@ -951,8 +1555,7 @@ func _play_tone(player: AudioStreamPlayer, hertz: float, seconds: float,
 			sample = noise.randf_range(-1.0, 1.0)
 		data[i] = int(clampf(sample * fade * 90.0, -127.0, 127.0)) + 128
 	wave.data = data
-	player.stream = wave
-	player.play()
+	return wave
 
 
 ## Puts the local player's aim nodes where the mouse has already said they are.
@@ -1005,6 +1608,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event.is_action_pressed("toggle_network_panel"):
 		set_network_panel_open(not _net_panel.visible)
+		return
+	if event.is_action_pressed("mute_sound"):
+		set_muted(not muted)
 		return
 	if not _input_enabled:
 		return
@@ -1075,11 +1681,30 @@ func _ensure_input_actions() -> void:
 		var refill := InputEventKey.new()
 		refill.physical_keycode = KEY_E
 		InputMap.action_add_event("refill_sauce", refill)
+	if not InputMap.has_action("mute_sound"):
+		InputMap.add_action("mute_sound")
+		var mute := InputEventKey.new()
+		mute.physical_keycode = KEY_M
+		InputMap.action_add_event("mute_sound", mute)
 	if not InputMap.has_action("toggle_network_panel"):
 		InputMap.add_action("toggle_network_panel")
 		var network := InputEventKey.new()
 		network.physical_keycode = KEY_F2
 		InputMap.action_add_event("toggle_network_panel", network)
+
+
+## Turns the sound off at the bus, which is the only place that catches all of
+## it: the players are built at different times, some are positional and some
+## are not, and one of them is restarted from inside the frame loop.
+func set_muted(value: bool) -> void:
+	muted = value
+
+
+func _apply_mute() -> void:
+	var bus := AudioServer.get_bus_index("Master")
+	if bus < 0:
+		return
+	AudioServer.set_bus_mute(bus, muted)
 
 
 func _capture_mouse() -> void:
@@ -1149,6 +1774,7 @@ func _build_world() -> void:
 	_shadow_material = shadow_material
 	_build_shooter_visuals(_local)
 	_build_droplet_pool(mayo_material)
+	_build_impact_pool(mayo_material)
 	_build_crosshair()
 	_build_network_panel()
 	_build_enemies()
@@ -1195,6 +1821,9 @@ func create_avatar(peer_id: int, slot: int, is_local: bool) -> Shooter:
 	shooter.player.authority = _is_authority()
 	if is_local:
 		_adopt_local(shooter)
+	# Somebody arrived: the heavies get tougher, keeping how ruined they already
+	# are. A body half gone stays half gone -- see `rescale_enemies`.
+	rescale_enemies()
 	return shooter
 
 
@@ -1203,6 +1832,8 @@ func remove_avatar(peer_id: int) -> void:
 		return
 	_free_shooter(_shooters[peer_id])
 	_shooters.erase(peer_id)
+	# And somebody left, which walks it back the same way.
+	rescale_enemies()
 
 
 ## Joining a session throws away the offline body: the server decides who is in
@@ -1367,6 +1998,9 @@ func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
 	shooter.rng.seed = 0x4d41594f + peer_id - 1
 	# Not seeded to match: see `catch_rng`. It is the host's alone.
 	shooter.catch_rng.randomize()
+	# Nor this one: see `feel_rng`. It decides nothing, so it is free to differ
+	# between peers and between runs.
+	shooter.feel_rng.randomize()
 	shooter.player = PlayerScript.new()
 	shooter.player.peer_id = peer_id
 	# The name is the address the network state is applied through, so it must
@@ -1540,6 +2174,13 @@ func _build_weapon(shooter: Shooter) -> void:
 	weapon.transform = Transform3D(Basis.looking_at(to_crosshair, Vector3.UP), hold)
 	shooter.aim_pivot.add_child(weapon)
 	shooter.weapon = weapon
+	# Everything you can see about the bottle hangs off here; `muzzle` below
+	# does not. See `_apply_nozzle_sway`: this is the node the wander turns, and
+	# the split is what keeps the wander out of the strand.
+	var sway := Node3D.new()
+	sway.name = "Sway"
+	weapon.add_child(sway)
+	shooter.weapon_sway = sway
 
 	# Translucent, so what is inside it is what you read. A squeeze bottle is a
 	# translucent bottle with sauce in it, and that is the whole gauge.
@@ -1549,16 +2190,16 @@ func _build_weapon(shooter: Shooter) -> void:
 	var cursor := 0.0
 	# Squeeze-bottle silhouette: tapering body, a label band, then a dark cap and
 	# tip that clear the body so the nozzle reads against the scene.
-	cursor = _add_bottle_part(weapon, "Body", bottle_radius, bottle_radius * 0.72,
+	cursor = _add_bottle_part(sway, "Body", bottle_radius, bottle_radius * 0.72,
 		bottle_length, cursor, body_color, 0.45, 16)
-	_add_bottle_contents(shooter, weapon)
-	_add_bottle_part(weapon, "Label", bottle_radius * 1.04, bottle_radius * 0.95,
+	_add_bottle_contents(shooter, sway)
+	_add_bottle_part(sway, "Label", bottle_radius * 1.04, bottle_radius * 0.95,
 		bottle_length * 0.3, bottle_length * 0.22, label_color, 0.6, 16)
-	cursor = _add_bottle_part(weapon, "Shoulder", bottle_radius * 0.72, bottle_radius * 0.4,
+	cursor = _add_bottle_part(sway, "Shoulder", bottle_radius * 0.72, bottle_radius * 0.4,
 		bottle_length * 0.26, cursor, body_color, 0.45, 14)
-	cursor = _add_bottle_part(weapon, "Cap", bottle_radius * 0.46, bottle_radius * 0.42,
+	cursor = _add_bottle_part(sway, "Cap", bottle_radius * 0.46, bottle_radius * 0.42,
 		bottle_length * 0.26, cursor, cap_color, 0.55, 14)
-	cursor = _add_bottle_part(weapon, "Tip", bottle_radius * 0.42, bottle_radius * 0.16,
+	cursor = _add_bottle_part(sway, "Tip", bottle_radius * 0.42, bottle_radius * 0.16,
 		bottle_length * 0.22, cursor, cap_color, 0.5, 12)
 
 	var muzzle := Marker3D.new()
@@ -2097,6 +2738,9 @@ func _build_enemies() -> void:
 		enemy.position = StreetMap.from_pixels(spawn[0], spawn[1]) \
 			+ Vector3(0.0, enemy.stand_height(), 0.0)
 		_enemies.push_back(enemy)
+	# Scale them to the party that exists now. Offline that is one player and
+	# the multiplier is 1, so a solo game is untouched.
+	rescale_enemies()
 
 
 ## One step of the fight, on the authority: every enemy walks, and whatever it
@@ -2322,6 +2966,18 @@ func _update_camera() -> void:
 	if wobble != 0.0:
 		aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(stumble_camera_roll_degrees) * wobble)
 		aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(stumble_camera_pitch_degrees) * wobble)
+	# The squirt's kick and the share of the bottle's wander the view picks up.
+	# Applied to the camera's basis and nowhere else: `aim_yaw`/`aim_pitch` are
+	# what the strand is fired along and what the network state carries, and
+	# neither is touched here -- the view moves off the aim, the aim does not
+	# move. Both camera modes get it, since both are built from this basis.
+	var shake := _shake_offset(_local)
+	var kick := _local.recoil_pitch + _local.sway_pitch * camera_sway_fraction + shake.x
+	if kick != 0.0:
+		aim_basis = aim_basis.rotated(aim_basis.x, kick)
+	var drift := _local.sway_yaw * camera_sway_fraction + shake.y
+	if drift != 0.0:
+		aim_basis = aim_basis.rotated(aim_basis.y, drift)
 	if _first_person:
 		if tilt > 0.0:
 			# Landing on your back means you end up looking up, so the view
@@ -2394,7 +3050,12 @@ func _emit_point(shooter: Shooter = null) -> void:
 	# Speed jitter is independent of the yaw jitter above: it spreads where a
 	# point runs out of pressure, and so spreads the landing point along the
 	# strand axis rather than across it.
-	var speed := extend_speed * (1.0 + shooter.rng.randf_range(-speed_magnitude_jitter, speed_magnitude_jitter))
+	# The squeeze's own pressure, which falls away across a burst -- this is what
+	# shortens the throw as the hand closes. Applied here rather than to the
+	# points already out: those have left the nozzle and keep whatever they were
+	# given.
+	var speed := extend_speed * squeeze_pressure(shooter) \
+		* (1.0 + shooter.rng.randf_range(-speed_magnitude_jitter, speed_magnitude_jitter))
 	var player_velocity := shooter.player.velocity
 	point.velocity = direction * speed + Vector3(player_velocity.x, 0.0, player_velocity.z) * inherited_player_velocity
 	point.launch_direction = direction
@@ -2549,11 +3210,25 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 				# waits for the broadcast.
 				var collider := hit.collider as Node
 				var on_floor: bool = collider != null and collider.is_in_group("mayo_floor")
+				# Presentation first, and **above the authority test on purpose**:
+				# the spray and the splat are what the hit looks and sounds like,
+				# and a client that waited for the server's splat broadcast would
+				# see the sauce arrive, pause, and only then react. Nothing below
+				# paints, damages or is sent.
+				if collider != null:
+					var on_body := collider is MayoEnemy
+					_spawn_impact_spray(hit.position, hit.normal, point.velocity, on_body, shooter)
+					if on_body:
+						# The stream is on a monster *now*. Local, and on every
+						# peer: what it drives is this player's own reticle and
+						# their own sound.
+						shooter.on_target_left = on_target_window
+						_play_enemy_splat(collider as MayoEnemy, hit.position)
 				if _is_authority() and collider != null:
 					if on_floor:
 						_record_floor_splat(shooter, point.burst_index, hit.position)
 					elif collider.is_in_group("mayo_contaminable"):
-						_record_splat(collider, hit.position, hit.normal)
+						_record_splat(collider, hit.position, hit.normal, shooter)
 				_begin_landing(point, hit.position, hit.normal, on_floor)
 			else:
 				point.position = next
@@ -2610,7 +3285,14 @@ func _record_floor_splat(shooter: Shooter, burst_index: int,
 ## The server paints whatever was hit and queues the same splat for the peers.
 ## Walls and bodies differ only in how the surface is addressed; the strand and
 ## the batch do not care which one it was.
-func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3) -> void:
+## `damaging` is false for a lump of thrown spray landing rather than a strand
+## point arriving. It marks the surface exactly the same way and does nothing
+## else: no contamination damage, no shove, no hit credit. Spray is what the
+## impact threw off, not a second impact -- letting it hurt would make the
+## damage depend on how many decorative lumps happened to come back down on the
+## thing that threw them.
+func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
+		shooter: Shooter, damaging := true) -> void:
 	if surface is ContaminableObject:
 		var wall := surface as ContaminableObject
 		var splat := wall.paint_mayo(hit_position, hit_normal)
@@ -2649,7 +3331,20 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3) ->
 		# it is what you have actually done to it. A body already on the floor
 		# still takes the stain -- `take_sauce_hit` is what refuses to hurt it
 		# twice -- because sauce landing on something has to leave a mark on it.
-		enemy.take_sauce_hit()
+		# Credit first: the flinch this hit may cause has to shake the view of
+		# whoever has been hitting it, this shooter included.
+		if damaging:
+			_credit_hit(enemy, shooter)
+			# Pushed away from whoever is hosing it, for as long as they keep
+			# doing it. Set per hit rather than accumulated -- see `take_shove`.
+			enemy.take_shove(shooter.player.global_position)
+			var was_alive := enemy.is_alive()
+			enemy.take_sauce_hit(shooter.player.global_position)
+			if was_alive:
+				if not enemy.is_alive():
+					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds)
+				elif enemy.is_flinching():
+					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds)
 		var enemy_cell := enemy.paint_mayo(hit_position, hit_normal)
 		if enemy_cell.x < 0:
 			return
@@ -3080,6 +3775,588 @@ func _build_droplet_pool(mayo_material: Material) -> void:
 	_droplets.resize(POOL_SIZE)
 	for i in POOL_SIZE:
 		_droplets[i] = MayoDroplet.new()
+
+
+## The impact spray's pool, built on the same terms as the landing droplets':
+## one fixed-capacity `MultiMesh`, a cursor that walks it in order, and the
+## oldest entry replaced when it is full.
+##
+## Sized against the same arithmetic. An impact is thrown from a *landing*, and
+## a strand lands about `extend_speed / point_spacing` points a second -- 187 at
+## the reference values, per player -- so four players hosing a wall would ask
+## for 748 impacts a second. At `impact_blobs + impact_specks` pieces each and
+## `impact_lifetime` seconds apiece that is thousands, which is why the rate is
+## capped at the source by `impact_min_interval` as well as here: 0.03 s gives
+## at most 33 impacts a second per world, or about 200 live pieces at the
+## default counts and lifetime. The pool is nearly twice that so a burst of
+## simultaneous hits still has somewhere to go.
+func _build_impact_pool(mayo_material: Material) -> void:
+	# **Lit, unlike everything else made of sauce here.**
+	#
+	# The strand and the landing droplets are unshaded, which is right for them:
+	# a stream of sauce reads as one bright mass and shading it only breaks that
+	# up. A lump thrown off an impact is the opposite -- it is a small solid
+	# object in the air, and unshaded it is a flat pale silhouette, which is
+	# exactly what a splash of paint looks like. Lighting each one gives it a
+	# highlight and a shaded side, and that alone is most of the difference
+	# between paint and something thick.
+	var spray_material := StandardMaterial3D.new()
+	spray_material.albedo_color = Color("f7e7a2")
+	# Not shiny -- mayonnaise is a soft matte gloss, not a wet plastic bead --
+	# but far from flat, so the highlight rolls across a lump as it tumbles.
+	spray_material.roughness = 0.42
+	spray_material.metallic = 0.0
+	spray_material.metallic_specular = 0.35
+	# A little of its own light so a lump in shadow still reads as sauce rather
+	# than as a dark speck, without going back to flat.
+	spray_material.emission_enabled = true
+	spray_material.emission = Color("fff0c0")
+	spray_material.emission_energy_multiplier = 0.18
+	var speck_mesh := _build_lump_mesh(spray_material)
+
+	_speck_multimesh = MultiMesh.new()
+	_speck_multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	_speck_multimesh.mesh = speck_mesh
+	_speck_multimesh.instance_count = impact_pool_size
+	_speck_buffer.resize(impact_pool_size * 12)
+	_speck_buffer.fill(0.0)
+	_speck_multimesh.buffer = _speck_buffer
+	var instance := MultiMeshInstance3D.new()
+	instance.name = "ImpactSprayPool"
+	instance.add_to_group("mayo_droplets")
+	instance.multimesh = _speck_multimesh
+	_speck_pool = instance
+	_update_speck_bounds()
+	add_child(instance)
+
+	_specks.resize(impact_pool_size)
+	for i in impact_pool_size:
+		_specks[i] = MayoSpeck.new()
+
+
+## One irregular lump, built once and used by every instance in the pool.
+##
+## A `SphereMesh` is a ball however it is scaled, and a ball reads as a bead of
+## water. Squashing the instances unevenly only makes it an egg. What is needed
+## is a silhouette with dents in it, so the mesh itself is pushed in and out
+## before it is ever drawn.
+##
+## The offset is a hash of the vertex's **direction** rather than a fresh random
+## number per vertex, so the two copies of a vertex on the seam move together
+## and the surface does not split open. It is then flat-shaded, which suits a
+## blob of something thick and makes each dent catch the light as its own facet.
+##
+## Every instance shares this one lump; what makes them look different is the
+## per-instance roll and the uneven axis scaling applied on top.
+func _build_lump_mesh(material: Material) -> ArrayMesh:
+	var source := SphereMesh.new()
+	source.radius = 0.5
+	source.height = 1.0
+	source.radial_segments = 11
+	source.rings = 6
+	var arrays := source.get_mesh_arrays()
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	var dented := PackedVector3Array()
+	dented.resize(vertices.size())
+	for i in vertices.size():
+		var vertex := vertices[i]
+		var direction := vertex.normalized()
+		# A cheap stable hash of the direction, 0 to 1.
+		var noise := sin(direction.x * 12.9898 + direction.y * 78.233
+			+ direction.z * 37.719) * 43758.5453
+		noise -= floor(noise)
+		var second := sin(direction.x * 39.346 - direction.y * 11.135
+			+ direction.z * 83.155) * 24634.6345
+		second -= floor(second)
+		dented[i] = vertex * (1.0 + (noise - 0.5) * impact_lump_dents
+			+ (second - 0.5) * impact_lump_dents * 0.5)
+	# Flat shading: the triangles are expanded so each carries its own normal.
+	var out_vertices := PackedVector3Array()
+	var out_normals := PackedVector3Array()
+	for at in range(0, indices.size(), 3):
+		var a := dented[indices[at]]
+		var b := dented[indices[at + 1]]
+		var c := dented[indices[at + 2]]
+		var face := (b - a).cross(c - a)
+		if face.length_squared() < 0.0000001:
+			continue
+		face = face.normalized()
+		out_vertices.push_back(a)
+		out_vertices.push_back(b)
+		out_vertices.push_back(c)
+		for _n in 3:
+			out_normals.push_back(face)
+	var built := []
+	built.resize(Mesh.ARRAY_MAX)
+	built[Mesh.ARRAY_VERTEX] = out_vertices
+	built[Mesh.ARRAY_NORMAL] = out_normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, built)
+	mesh.surface_set_material(0, material)
+	return mesh
+
+
+## A hit: one fat blob and a scatter of small stuff, thrown back off the
+## surface.
+##
+## `direction` is what the point was doing when it arrived. The spray comes off
+## along the bounce -- reflected about the surface normal -- rather than along
+## the normal itself, so sauce hitting a wall at a glance runs along it instead
+## of jumping straight out of it.
+##
+## **Called on every peer, before the authority test**, because this is
+## presentation: a client that waited for the splat broadcast would see the
+## sauce arrive, pause, and only then spit. Nothing here paints, damages or is
+## sent -- the pool, the dice and the sound are all local.
+func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
+		on_body := false, shooter: Shooter = null) -> void:
+	if _speck_multimesh == null or _impact_clock > 0.0:
+		return
+	_impact_clock = impact_min_interval
+	var bounce := direction
+	if direction.length_squared() > 0.000001:
+		bounce = direction.normalized().bounce(normal)
+	if bounce.length_squared() < 0.000001:
+		bounce = normal
+	bounce = bounce.normalized()
+	var now := Time.get_ticks_msec() * 0.001
+	# Sauce hitting a body throws more of itself, and throws it wider, than
+	# sauce hitting a kerb. Without this a monster and a wall spit identically
+	# and the spray says nothing about what is being hit.
+	var plenty := body_impact_multiplier if on_body else 1.0
+	var blobs := impact_blobs if not on_body else maxi(1, int(round(float(impact_blobs) * plenty)))
+	var specks := impact_specks if not on_body else int(round(float(impact_specks) * plenty))
+	for index in blobs + specks:
+		var is_blob := index < blobs
+		var speed := impact_blob_speed if is_blob else impact_speck_speed
+		var radius := impact_blob_radius if is_blob else impact_speck_radius
+		# A direction anywhere in the hemisphere the surface faces, mixed toward
+		# the bounce by however much scatter allows. Built this way round rather
+		# than as a cone so that at full scatter it really is every direction,
+		# including back along the surface -- see `impact_scatter`.
+		var loose := Vector3(_feel_rng.randfn(), _feel_rng.randfn(), _feel_rng.randfn())
+		if loose.length_squared() < 0.000001:
+			loose = normal
+		loose = loose.normalized()
+		# Never into the surface it just came off.
+		if loose.dot(normal) < 0.0:
+			loose = -loose
+		# The big lump keeps more of the bounce; the small stuff goes wherever.
+		var scatter := clampf(impact_scatter * (0.4 if is_blob else 1.0)
+			* (1.15 if on_body else 1.0), 0.0, 1.0)
+		var thrown := bounce.lerp(loose, scatter)
+		if thrown.length_squared() < 0.000001:
+			thrown = normal
+		thrown = thrown.normalized()
+		_take_speck(now, at + normal * 0.02, thrown * speed * _feel_rng.randf_range(0.7, 1.3),
+			radius * _feel_rng.randf_range(0.75, 1.3),
+			shooter.peer_id if shooter != null else 1)
+	_speck_buffer_dirty = true
+
+
+## Takes the next slot in the pool, replacing whatever is in it. The cursor
+## walks in order and every speck is given the same lifetime, so the slot it
+## arrives at holds the one taken longest ago.
+func _take_speck(now: float, at: Vector3, velocity: Vector3, radius: float,
+		peer_id := 1) -> void:
+	var slot := _speck_cursor
+	var speck: MayoSpeck = _specks[slot]
+	if not speck.active:
+		_active_speck_indices.push_back(slot)
+	_speck_cursor = (_speck_cursor + 1) % _specks.size()
+	speck.active = true
+	speck.position = at
+	speck.velocity = velocity
+	speck.radius = radius
+	# Drawn once and kept: a lump that changed shape every frame would boil.
+	var lump := impact_lumpiness
+	speck.lumps = Vector3(
+		1.0 + _feel_rng.randf_range(-lump, lump),
+		1.0 + _feel_rng.randf_range(-lump, lump),
+		1.0 + _feel_rng.randf_range(-lump, lump))
+	speck.heading = velocity.normalized() if velocity.length_squared() > 0.000001 \
+		else Vector3.FORWARD
+	_settle_speck_axes(speck, _feel_rng.randf_range(0.0, TAU))
+	speck.last_tested = at
+	speck.peer_id = peer_id
+	speck.cast_slot = _speck_cursor % maxi(impact_raycast_stride, 1)
+	speck.expires_at = now + impact_lifetime
+	_write_speck_transform(slot, speck, 0.0, impact_lifetime)
+
+
+## Sweeps a lump against the world and, if it came down on something, marks it.
+## Returns true when the lump has landed and should be taken out of the air.
+##
+## **Every peer runs the sweep; only the authority marks.** The lump has to stop
+## visibly on the floor on every screen, and it can, because each peer throws
+## its own -- but where they were thrown is drawn from `_feel_rng`, which is
+## randomized per machine, so the lumps are in *different places* on each one.
+## Letting a client mark off its own would put the two grids permanently out of
+## step. So the host marks and broadcasts the cell down the same splat batch the
+## strand uses, and the client's lump simply stops.
+##
+## Budgeted like the strand's own casts: one lump in `impact_raycast_stride`
+## frames, swept from where it was last tested rather than from last frame, so
+## spreading the tests out cannot let one tunnel through a floor.
+func _land_speck(speck: MayoSpeck, space_state: PhysicsDirectSpaceState3D,
+		physics_frame: int, stride: int) -> bool:
+	if physics_frame % stride != speck.cast_slot:
+		return false
+	var from := speck.last_tested
+	var to := speck.position
+	speck.last_tested = to
+	if from.distance_squared_to(to) < 0.000001:
+		return false
+	var query := PhysicsRayQueryParameters3D.create(from, to)
+	query.collide_with_areas = false
+	var hit := space_state.intersect_ray(query)
+	if hit.is_empty():
+		return false
+	if debug_profile_enabled:
+		debug_raycast_count += 1
+	var collider := hit.collider as Node
+	if collider == null or not _is_authority() or not impact_paints:
+		return true
+	var shooter: Shooter = _shooters.get(speck.peer_id)
+	if shooter == null:
+		return true
+	if collider.is_in_group("mayo_floor"):
+		# The same coat as the burst that threw it, so a spatter landing on
+		# ground the stream has already covered does not stack a second layer on
+		# a cell the same trigger pull already raised.
+		_record_floor_splat(shooter, shooter.burst_index, hit.position)
+	elif collider.is_in_group("mayo_contaminable"):
+		_record_splat(collider, hit.position, hit.normal, shooter, false)
+	return true
+
+
+## Blanks a slot so it draws nothing.
+func _blank_speck(index: int) -> void:
+	var at := index * 12
+	for offset in 12:
+		_speck_buffer[at + offset] = 0.0
+
+
+## Ballistic, and deliberately without a raycast: these are decoration thrown
+## off a hit that has already been decided, and giving each of them its own cast
+## would cost more than the strand that threw them. They expire in the air.
+func _simulate_specks(delta: float) -> void:
+	if _speck_multimesh == null or _active_speck_indices.is_empty():
+		return
+	var now := Time.get_ticks_msec() * 0.001
+	var space_state := get_world_3d().direct_space_state
+	var physics_frame := int(Engine.get_physics_frames())
+	var stride := maxi(impact_raycast_stride, 1)
+	for active_index in range(_active_speck_indices.size() - 1, -1, -1):
+		var i := _active_speck_indices[active_index]
+		var speck: MayoSpeck = _specks[i]
+		if now >= speck.expires_at:
+			speck.active = false
+			_blank_speck(i)
+			_active_speck_indices.remove_at(active_index)
+			_speck_buffer_dirty = true
+			continue
+		speck.velocity *= maxf(1.0 - impact_drag * delta, 0.0)
+		# A fraction of real weight: see `impact_gravity_scale`. At full gravity
+		# the fan is over before it can be seen.
+		speck.velocity.y -= gravity_acceleration * impact_gravity_scale * delta
+		speck.position += speck.velocity * delta
+		if _land_speck(speck, space_state, physics_frame, stride):
+			speck.active = false
+			_blank_speck(i)
+			_active_speck_indices.remove_at(active_index)
+			_speck_buffer_dirty = true
+			continue
+		var remaining := speck.expires_at - now
+		_write_speck_transform(i, speck, impact_lifetime - remaining, remaining)
+		_speck_buffer_dirty = true
+	if _speck_buffer_dirty:
+		_speck_multimesh.buffer = _speck_buffer
+		_update_speck_bounds()
+		_speck_buffer_dirty = false
+
+
+func _update_speck_bounds() -> void:
+	if _speck_pool == null:
+		return
+	if _active_speck_indices.is_empty():
+		_speck_pool.custom_aabb = AABB()
+		return
+	var low := Vector3.INF
+	var high := -Vector3.INF
+	for i in _active_speck_indices:
+		var speck: MayoSpeck = _specks[i]
+		# The stretch can take a lump well past its own radius along its travel,
+		# so the box has to allow for it or a fast one is culled at the edge of
+		# the view while still on screen.
+		var reach: float = speck.radius * 2.0 \
+			* (1.0 + impact_stretch * speck.velocity.length()) \
+			* maxf(speck.lumps.x, maxf(speck.lumps.y, speck.lumps.z))
+		var extent := Vector3.ONE * reach
+		low = low.min(speck.position - extent)
+		high = high.max(speck.position + extent)
+	_speck_pool.custom_aabb = AABB(low, high - low)
+
+
+## Fixes the three axes a lump is drawn on. Run once, at spawn -- see `axis_x`.
+func _settle_speck_axes(speck: MayoSpeck, roll: float) -> void:
+	var forward := speck.heading
+	var across := forward.cross(Vector3.UP)
+	if across.length_squared() < 0.000001:
+		across = forward.cross(Vector3.RIGHT)
+	across = across.normalized()
+	var other := across.cross(forward).normalized()
+	# Rolled about its own travel, differently per lump. Every instance shares
+	# one dented mesh, so without this they would all present the same face and
+	# the dents would read as a repeated decal rather than as variety.
+	var turn_cos := cos(roll)
+	var turn_sin := sin(roll)
+	speck.axis_x = (across * turn_cos + other * turn_sin) * speck.lumps.x
+	speck.axis_y = (other * turn_cos - across * turn_sin) * speck.lumps.y
+	speck.axis_z = forward * speck.lumps.z
+
+
+## Writes one lump as an oriented, stretched, irregular box rather than as a
+## uniformly scaled ball.
+##
+## The ball is what made these read as water. Three things change it: the lump
+## is drawn out along the way it is travelling and by how fast, so a thrown one
+## is a streak and a spent one is a blob; its three axes are scaled unevenly by
+## `lumps`, so no two are the same shape; and because the drag above kills the
+## speed in a few frames, the stretch relaxes on its own as it slows -- which is
+## exactly how a flicked lump of something thick behaves.
+func _write_speck_transform(index: int, speck: MayoSpeck,
+		age := 999.0, remaining := 999.0) -> void:
+	# Cartoon timing, not physical: it pops up to full size in the first few
+	# frames and holds there for the whole flight, and only shrinks away at the
+	# very end -- which almost none of them reach, because landing takes them
+	# out of the air first.
+	var popping := clampf(age / maxf(impact_pop_seconds, 0.001), 0.0, 1.0)
+	# Rises quickly, swells past full size, and settles back to it: the sine
+	# reaches 1.0 at the end of the pop while the bulge peaks around two thirds
+	# of the way through and is gone by the end. Both terms land at exactly 1.0
+	# when `popping` is 1, so the pop hands over without a step.
+	var pop := sin(popping * PI * 0.5) * (1.0 + impact_pop_overshoot * sin(popping * PI))
+	var fading := clampf(remaining / maxf(impact_fade_seconds, 0.001), 0.0, 1.0)
+	var shrink := lerpf(impact_end_scale, 1.0, fading)
+	var size := speck.radius * 2.0 * pop * shrink
+	# Drawn out along its travel, and pinched across it by as much as it gains,
+	# so a stretched lump keeps roughly the volume a round one had. The axes
+	# themselves were settled at spawn; all that is left per frame is scaling
+	# three stored vectors.
+	var stretched := 1.0 + impact_stretch * speck.velocity.length()
+	var pinch := size / sqrt(stretched)
+	var x_axis := speck.axis_x * pinch
+	var y_axis := speck.axis_y * pinch
+	var z_axis := speck.axis_z * (size * stretched)
+	var at := index * 12
+	var position := speck.position
+	_speck_buffer[at] = x_axis.x
+	_speck_buffer[at + 1] = y_axis.x
+	_speck_buffer[at + 2] = z_axis.x
+	_speck_buffer[at + 3] = position.x
+	_speck_buffer[at + 4] = x_axis.y
+	_speck_buffer[at + 5] = y_axis.y
+	_speck_buffer[at + 6] = z_axis.y
+	_speck_buffer[at + 7] = position.y
+	_speck_buffer[at + 8] = x_axis.z
+	_speck_buffer[at + 9] = y_axis.z
+	_speck_buffer[at + 10] = z_axis.z
+	_speck_buffer[at + 11] = position.z
+
+
+## One enemy being hit, heard at most every `splat_interval_min`..`_max`.
+##
+## The timer is the **enemy's**, not the strand's. Four players hosing one
+## monster is one monster being hit: a timer per stream would give four
+## overlapping trains of the same noise out of one event. Keyed by instance id
+## so it survives anything that reorders `_enemies`.
+##
+## Local presentation, run on every peer off its own copy of the hit -- see
+## `_spawn_impact_spray`.
+func _play_enemy_splat(enemy: MayoEnemy, at: Vector3) -> void:
+	var key := enemy.get_instance_id()
+	if _enemy_splat_clock.get(key, 0.0) > 0.0:
+		return
+	_enemy_splat_clock[key] = _feel_rng.randf_range(
+		minf(splat_interval_min, splat_interval_max),
+		maxf(splat_interval_min, splat_interval_max))
+	# Silent until there are clips -- see `_begin_spray_feel`. The timer above
+	# still runs, so the rate stays measurable and tunable without them.
+	if splat_sounds.is_empty():
+		return
+	var voice := _free_splat_voice()
+	# No free voice: the hit goes unheard rather than cutting one that is still
+	# sounding. A clipped splat is more obvious than a missing one.
+	if voice == null:
+		return
+	voice.global_position = at
+	voice.volume_db = splat_volume_db
+	voice.pitch_scale = _feel_rng.randf_range(
+		minf(splat_pitch_min, splat_pitch_max), maxf(splat_pitch_min, splat_pitch_max))
+	voice.stream = splat_sounds[_feel_rng.randi_range(0, splat_sounds.size() - 1)]
+	voice.play()
+
+
+## Notes that this shooter is hitting this enemy, for `hit_credit_seconds`.
+## Authority only: it is the book the shake list is drawn from.
+## How many players the fight is being scaled for. Never below one: a world
+## mid-teardown has no shooters, and a zero would divide the scaling away.
+func party_size() -> int:
+	return maxi(_shooters.size(), 1)
+
+
+## What a heavy's maximum contamination should be for the party as it stands.
+func heavy_health_for(solo_health: float, players := -1) -> float:
+	var count := players if players > 0 else party_size()
+	return solo_health * (1.0 + heavy_health_per_player * float(count - 1))
+
+
+## How many minions a wave of `base_count` should put out for the party.
+##
+## **Nothing calls this to spawn anything.** There is no wave system here, and
+## inventing one to hang this off would be a much larger change than the scaling
+## it is meant to serve. It is the arithmetic, tested and ready, for the spawner
+## that will exist.
+func minion_spawn_count(base_count: int, players := -1) -> int:
+	var count := players if players > 0 else party_size()
+	return int(round(float(base_count) * (1.0 + minion_spawn_per_player * float(count - 1))))
+
+
+## Re-scales every heavy to the party as it now stands, **keeping how ruined
+## each one already is**.
+##
+## The fraction is what is preserved rather than the absolute figure: a heavy
+## three quarters of the way down stays three quarters of the way down when a
+## fourth player joins, instead of suddenly being a third of the way down
+## because the ceiling moved under it. Somebody leaving works the same way in
+## reverse, so a party that loses a player does not inherit a body it cannot
+## hurt.
+##
+## Authority only. `health` and nothing else travels, so the clients follow.
+func rescale_enemies() -> void:
+	if not _is_authority():
+		return
+	var count := party_size()
+	for enemy in _enemies:
+		if enemy.grade != MayoEnemy.Grade.HEAVY:
+			continue
+		var fraction := enemy.health_fraction()
+		enemy.max_health = heavy_health_for(enemy.solo_health, count)
+		enemy.health = enemy.max_health * fraction
+
+
+func _credit_hit(enemy: MayoEnemy, shooter: Shooter) -> void:
+	var key := enemy.get_instance_id()
+	var book: Dictionary = _hit_credit.get(key, {})
+	book[shooter.peer_id] = hit_credit_seconds
+	_hit_credit[key] = book
+
+
+## Runs the credit down, and forgets an enemy nobody is hitting any more.
+func _advance_hit_credit(delta: float) -> void:
+	for key in _hit_credit.keys():
+		var book: Dictionary = _hit_credit[key]
+		for peer_id in book.keys():
+			var left: float = book[peer_id] - delta
+			if left <= 0.0:
+				book.erase(peer_id)
+			else:
+				book[peer_id] = left
+		if book.is_empty():
+			_hit_credit.erase(key)
+
+
+## The authority tells everyone who should feel this enemy flinch or go down.
+##
+## **Reliable, and its own message.** The enemy state packet is
+## `unreliable_ordered` and carries a position rather than an event: a flinch
+## lasts a fifth of a second and a peer that dropped the packet it started on
+## would simply never see it, while a kill inferred from health crossing zero
+## would land on whichever frame the packet happened to arrive. An event that
+## happens once has to be sent once, and arrive.
+##
+## Offline there is no net, so it is applied directly.
+func _broadcast_enemy_shake(enemy: MayoEnemy, degrees: float, seconds: float) -> void:
+	var index := _enemies.find(enemy)
+	if index < 0:
+		return
+	var book: Dictionary = _hit_credit.get(enemy.get_instance_id(), {})
+	if book.is_empty():
+		return
+	var peers := PackedInt32Array()
+	for peer_id in book:
+		peers.append(peer_id)
+	if is_instance_valid(_net) and _net.is_online():
+		_net.send_enemy_shake(index, peers, degrees, seconds)
+	apply_enemy_shake(index, peers, degrees, seconds)
+
+
+## Starts the shake on this peer, for the listed players. Everybody runs it and
+## each keeps only its own: the list is short and the alternative is a message
+## per player.
+func apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
+		degrees: float, seconds: float) -> void:
+	if enemy_index < 0 or enemy_index >= _enemies.size():
+		return
+	if _local == null or not peers.has(_local.peer_id):
+		return
+	var enemy := _enemies[enemy_index]
+	var toward := enemy.global_position - _local.player.global_position
+	toward.y = 0.0
+	if toward.length_squared() < 0.000001:
+		toward = -_aim_basis(_local).z
+	_local.shake_left = seconds
+	_local.shake_span = seconds
+	_local.shake_degrees = degrees
+	_local.shake_direction = toward.normalized()
+
+
+## Runs the shake down. Its shape is a decaying wobble rather than a single
+## kick: a kick is what *firing* does, and the two would be indistinguishable.
+func _advance_shake(shooter: Shooter, delta: float) -> void:
+	if shooter.shake_left <= 0.0:
+		return
+	shooter.shake_left = maxf(shooter.shake_left - delta, 0.0)
+
+
+## How far the view is thrown by the hit shake this frame, as pitch and yaw in
+## radians. Zero once it has run out.
+func _shake_offset(shooter: Shooter) -> Vector2:
+	if shooter.shake_left <= 0.0 or shooter.shake_span <= 0.0:
+		return Vector2.ZERO
+	var left := shooter.shake_left / shooter.shake_span
+	# Three swings, fading out: enough to read as a jolt rather than a nudge.
+	var swing := sin((1.0 - left) * TAU * 3.0) * left * left
+	var magnitude := deg_to_rad(shooter.shake_degrees) * swing
+	# Thrown about the axis across the line to the enemy, so the view rocks
+	# toward what hit rather than in a direction nothing in the fight caused.
+	var basis := _aim_basis(shooter)
+	var forward := -basis.z
+	var alignment := forward.dot(shooter.shake_direction)
+	var sideways := basis.x.dot(shooter.shake_direction)
+	return Vector2(magnitude * alignment, magnitude * sideways)
+
+
+## The first voice that is not sounding, or null when they are all busy.
+func _free_splat_voice() -> AudioStreamPlayer3D:
+	for offset in _splat_voices.size():
+		var index := (_splat_voice_cursor + offset) % _splat_voices.size()
+		var voice := _splat_voices[index]
+		if not voice.playing:
+			_splat_voice_cursor = (index + 1) % _splat_voices.size()
+			return voice
+	return null
+
+
+## Steps both impact budgets: how soon another impact may be thrown at all, and
+## how soon each enemy may next be heard.
+func _advance_impact_clocks(delta: float) -> void:
+	_impact_clock = maxf(_impact_clock - delta, 0.0)
+	for key in _enemy_splat_clock:
+		var left: float = _enemy_splat_clock[key] - delta
+		_enemy_splat_clock[key] = maxf(left, 0.0)
 
 
 func _spawn_landing_droplets(position: Vector3) -> void:

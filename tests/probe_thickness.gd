@@ -291,19 +291,41 @@ func _run() -> void:
 			grid.painted_count, grid.deep_count, scanned_painted, scanned_deep])
 
 	# --- the slip test is the floor's, and reads the same cells ---
+	# Sampled at cells this check paints itself rather than at a fixed lattice
+	# over the whole floor. The lattice only worked while the fire earlier in
+	# this probe happened to land on one of its rows: retuning `stream_range`
+	# moved where the stream comes down, every sample missed, and the check
+	# passed over nothing. What is under test is that `is_slippery_at` reads the
+	# same thickness the grid stores, which does not care where the cells are.
+	var probes: Array[Vector3] = []
+	for step in 5:
+		var probe_at := home + Vector3(float(step) * 0.7 - 1.4, 0.0, -3.0)
+		probes.push_back(probe_at)
+		# Two of them deliberately over the line and three under it, so both
+		# answers are exercised.
+		var layers: int = floor_node.slip_thickness + 2 if step < 2 else 1
+		for _layer in layers:
+			floor_node.paint_mayo(probe_at)
+
 	var disagreed := 0
 	var sampled := 0
-	for cell_y in range(0, grid.height, 29):
-		for cell_x in range(0, grid.width, 31):
-			var thickness: int = grid.cells[cell_y * grid.width + cell_x]
-			if thickness == 0:
-				continue
-			sampled += 1
-			var at := floor_node.to_global(Vector3(
-				(float(cell_x) + 0.5) * grid.cell_size - grid.extent.x * 0.5, 0.0,
-				(float(cell_y) + 0.5) * grid.cell_size - grid.extent.y * 0.5))
-			if floor_node.is_slippery_at(at) != (thickness >= floor_node.slip_thickness):
-				disagreed += 1
+	for spot_at in probes:
+		var cell := grid.cell_of(Vector2(
+			spot_at.x - floor_node.global_position.x,
+			spot_at.z - floor_node.global_position.z))
+		if not grid.has_cell(cell):
+			continue
+		for cell_y in [cell.y]:
+			for cell_x in [cell.x]:
+				var thickness: int = grid.cells[cell_y * grid.width + cell_x]
+				if thickness == 0:
+					continue
+				sampled += 1
+				var at := floor_node.to_global(Vector3(
+					(float(cell_x) + 0.5) * grid.cell_size - grid.extent.x * 0.5, 0.0,
+					(float(cell_y) + 0.5) * grid.cell_size - grid.extent.y * 0.5))
+				if floor_node.is_slippery_at(at) != (thickness >= floor_node.slip_thickness):
+					disagreed += 1
 	print("slip test vs stored thickness over %d painted cells: %d disagree" % [sampled, disagreed])
 	_check(sampled > 0, "no painted cells were sampled, so this tests nothing")
 	_check(disagreed == 0,
