@@ -524,6 +524,14 @@ func _on_peer_connected(id: int) -> void:
 		var visor: PackedByteArray = world.visor_snapshot(existing_id)
 		if not visor.is_empty():
 			_load_visor_grid.rpc_id(id, existing_id, visor)
+	# The tutorial, if one is running: every body it has placed, in the order it
+	# placed them, and then where the sequence has got to. Bodies before stage,
+	# because the stage names them by index.
+	for spawn in world.tutorial_spawned():
+		_add_tutorial_enemy.rpc_id(id, spawn[0], spawn[1])
+	var tutorial = world.tutorial()
+	if tutorial != null:
+		send_tutorial_state(id, tutorial.state())
 	_set_status("player %d connected" % id)
 
 
@@ -973,6 +981,92 @@ func _apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
 		return
 	world.apply_enemy_shake(enemy_index, peers,
 		clamp_range(degrees, 0.0, 90.0), clamp_range(seconds, 0.0, 5.0))
+
+
+# ---------------------------------------------------------------------------
+# The tutorial
+#
+# Three messages, all from the server and all reliable, because all three are
+# *events*: a body was added, a caption was said, the stage moved on. None of
+# them is sent per frame -- which is what stops a caption from being replayed
+# every time an ordinary state packet lands.
+# ---------------------------------------------------------------------------
+
+## One body the tutorial asked for. Every peer appends it, so the list stays the
+## same list in the same order, which is what the state packet and the splat batch
+## address a body by.
+func broadcast_tutorial_enemy(kind: int, at: Vector3) -> void:
+	if not _online or not multiplayer.is_server():
+		return
+	if multiplayer.get_peers().is_empty():
+		return
+	_add_tutorial_enemy.rpc(kind, at)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _add_tutorial_enemy(kind: int, at: Vector3) -> void:
+	if not all_finite([at.x, at.y, at.z]):
+		rejected_packets += 1
+		return
+	world.tutorial_add_enemy(kind, at)
+
+
+## One caption. The index of the line, not the line: both ends hold the same
+## table, so the text cannot drift and a caption costs four bytes.
+func broadcast_tutorial_line(line_id: int, urgent := false, tag := 0) -> void:
+	if not _online or not multiplayer.is_server():
+		return
+	if multiplayer.get_peers().is_empty():
+		return
+	_apply_tutorial_line.rpc(line_id, urgent, tag)
+
+
+## A caption that has stopped applying. An event like the line itself, so the
+## withdrawal lands on every screen the same way the caption did.
+func broadcast_tutorial_cancel(tag: int) -> void:
+	if not _online or not multiplayer.is_server():
+		return
+	if multiplayer.get_peers().is_empty():
+		return
+	_apply_tutorial_cancel.rpc(tag)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _apply_tutorial_cancel(tag: int) -> void:
+	world.apply_tutorial_cancel(tag)
+
+
+## The same, to one peer: what somebody arriving mid-stage is told.
+func send_tutorial_line(peer_id: int, line_id: int) -> void:
+	if not _online or not multiplayer.is_server():
+		return
+	_apply_tutorial_line.rpc_id(peer_id, line_id, false, 0)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _apply_tutorial_line(line_id: int, urgent: bool, tag: int) -> void:
+	world.apply_tutorial_line(line_id, urgent, tag)
+
+
+## Stage, roster and who has topped up. Sent when one of them changes, and to a
+## peer as it joins so a late arrival is on the same stage as everyone else.
+func broadcast_tutorial_state(data: PackedInt32Array) -> void:
+	if not _online or not multiplayer.is_server():
+		return
+	if multiplayer.get_peers().is_empty():
+		return
+	_apply_tutorial_state.rpc(data)
+
+
+func send_tutorial_state(peer_id: int, data: PackedInt32Array) -> void:
+	if not _online or not multiplayer.is_server():
+		return
+	_apply_tutorial_state.rpc_id(peer_id, data)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _apply_tutorial_state(data: PackedInt32Array) -> void:
+	world.apply_tutorial_state(data)
 
 
 @rpc("authority", "call_remote", "reliable")

@@ -13,6 +13,8 @@ const HealthHudScript := preload("res://scripts/health_hud.gd")
 const MinimapScript := preload("res://scripts/minimap.gd")
 const KeyLegendScript := preload("res://scripts/key_legend.gd")
 const StallRoofScript := preload("res://scripts/stall_roof.gd")
+const TutorialScript := preload("res://scripts/tutorial.gd")
+const TutorialHudScript := preload("res://scripts/tutorial_hud.gd")
 const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 	preload("res://assets/food_booths/food_booth_s1.glb"),
 	preload("res://assets/food_booths/food_booth_s2.glb"),
@@ -67,7 +69,7 @@ signal air_shot_fired(peer_id: int, from: Vector3, direction: Vector3)
 signal sauce_stage_changed(peer_id: int, stage: int)
 ## Floats per enemy in an enemy state packet: position xyz, yaw, health, and
 ## how far over it has fallen.
-const ENEMY_STATE_STRIDE := 6
+const ENEMY_STATE_STRIDE := 7
 ## Ints per entry in a splat batch: kind, target, cell x, cell y.
 const SPLAT_STRIDE := 4
 const FACES_PER_WALL := 6
@@ -321,6 +323,21 @@ class MayoSpeck:
 ## and drops it late, below 1 loses it early.
 @export_range(0.2, 4.0, 0.05) var burst_pressure_curve := 1.7
 
+@export_group("Tutorial")
+## Whether this world runs the opening sequence.
+##
+## **Per world, not per process.** A scene that embeds `main.tscn` to get a real
+## street and a real player -- the two scale-comparison scenes do exactly that --
+## gets its own copy of this and can turn the sequence off in the scene file,
+## without touching whether it runs anywhere else. An exported property is set
+## while the instance is being built, which is before `_ready()` and therefore
+## before `_build_tutorial` looks at it.
+##
+## `MayoTutorial.disabled` is the other switch, and it is process-wide: it exists
+## for the headless probes, which have no scene file to put an override in. Either
+## one being set keeps the sequence out of this world.
+@export var tutorial_enabled := true
+
 @export_group("Enemies")
 ## How fast they walk, as a fraction of the player's walking speed. Under 1 they
 ## can always be walked away from, which is what makes a chase a decision rather
@@ -569,6 +586,17 @@ class MayoSpeck:
 ## `1 + heavy_health_per_player * (players - 1)`: at 0.6 a four-player heavy has
 ## 2.8 times a solo one's contamination to soak.
 @export_range(0.0, 3.0, 0.05) var heavy_health_per_player := 0.6
+## How many players hosing a heavy at once it takes to shove it at full
+## strength. Fewer than that and it is pushed by only that share.
+##
+## **Four rather than the party size, on purpose.** Measured against the party
+## size a solo player *is* the whole party and would get the full shove, which
+## is the opposite of the point. At four: one bottle pushes a heavy at 1.2 m/s
+## against its 3.6 m/s walk, so it comes on regardless; all four together push
+## at 4.8 and it goes backwards. There are no roles in this fight -- everybody
+## carries the same bottle -- so what a team does that one player cannot is
+## arrive together, and this is where that pays.
+@export_range(1, 8, 1) var shove_full_party := 4
 ## And how many more minions a wave puts out per extra player, on the same
 ## shape. **Worked out but not wired to anything**: there is no wave system in
 ## this prototype -- the three enemies are placed once when the street is built
@@ -823,6 +851,16 @@ var _roofs: Array[StallRoof] = []
 ## Where the refill stations are and which way they face, so the reach test
 ## does not have to walk the scene tree every frame.
 var _refill_stations: Array[Dictionary] = []
+## The opening sequence, or null when it is switched off. It owns the order of
+## events and nothing else -- every beat it runs is a system that was already
+## here. See `scripts/tutorial.gd`.
+var _tutorial: MayoTutorial
+var _tutorial_hud: MayoTutorialHud
+## Every enemy the tutorial has asked for, in the order it asked, as
+## `[kind, position]`. Replayed to a peer that joins late so that every peer's
+## enemy list is the same list in the same order -- the state packet addresses a
+## body by its index in it.
+var _tutorial_spawned: Array = []
 var _nav: StreetNav
 var _health_hud: HealthHud
 var _minimap: Minimap
@@ -833,6 +871,9 @@ var _sauce_audio: AudioStreamPlayer
 ## player would cut whichever was already running.
 var _spray_loop_audio: AudioStreamPlayer
 var _spray_edge_audio: AudioStreamPlayer
+## The tutorial's heavy footsteps. Placeholder, on the same generated tones as
+## the rest of the sound here.
+var _footstep_voice: AudioStreamPlayer
 
 # The single-player fields the checks and the rest of this file grew up with,
 # now views onto the local player's Shooter. Nothing assigns through them.
@@ -959,6 +1000,14 @@ func _physics_process(delta: float) -> void:
 	# is allowed to paint, and it broadcasts the cells it painted.
 	for shooter in _shooters.values():
 		_update_aim(shooter)
+	if _tutorial != null:
+		_tutorial.advance(delta)
+		# Every body, not just the local one: the server simulates all of them,
+		# so this is what makes the hold true for a guest as well. Read from the
+		# stage, which every peer has, so nothing extra travels.
+		var walking_allowed := _tutorial.allows_movement()
+		for shooter in _shooters.values():
+			shooter.player.frozen = not walking_allowed
 	if _is_authority():
 		for shooter in _shooters.values():
 			_update_slip(shooter)
@@ -1403,7 +1452,10 @@ func _burst_spent(shooter: Shooter) -> bool:
 func _read_local_input() -> void:
 	if _local == null:
 		return
-	var live := _input_enabled and not _local.player.is_incapacitated() \
+	# The sequence holds the trigger through its two spoken beats, and holds it
+	# from the start until there is something to shoot at.
+	var allowed := _tutorial == null or _tutorial.allows_firing()
+	var live := _input_enabled and allowed and not _local.player.is_incapacitated() \
 		and not _local.player.is_wiping()
 	_local.firing = live and _fire_held()
 	if debug_input_override:
@@ -1511,6 +1563,10 @@ func _build_sauce_audio() -> void:
 	_spray_loop_audio.name = "SprayLoopAudio"
 	_spray_loop_audio.bus = "Master"
 	add_child(_spray_loop_audio)
+	_footstep_voice = AudioStreamPlayer.new()
+	_footstep_voice.name = "TutorialFootsteps"
+	_footstep_voice.bus = "Master"
+	add_child(_footstep_voice)
 	_spray_edge_audio = AudioStreamPlayer.new()
 	_spray_edge_audio.name = "SprayEdgeAudio"
 	_spray_edge_audio.bus = "Master"
@@ -1657,6 +1713,10 @@ func _unhandled_input(event: InputEvent) -> void:
 ## Mouse-look. Both camera modes feed the same yaw/pitch, so aiming is
 ## identical in first and third person; only the camera placement differs.
 func apply_look(relative: Vector2) -> void:
+	# Asked to wait, not turned: the sequence never moves the camera itself, it
+	# only declines to move it for the beat it is talking over.
+	if _tutorial != null and not _tutorial.allows_looking():
+		return
 	var radians_per_pixel := deg_to_rad(mouse_sensitivity)
 	_local.aim_yaw = wrapf(_local.aim_yaw - relative.x * radians_per_pixel, -PI, PI)
 	var limit := deg_to_rad(pitch_limit_degrees)
@@ -1817,6 +1877,9 @@ func _build_world() -> void:
 	_build_impact_pool(mayo_material)
 	_build_crosshair()
 	_build_network_panel()
+	# Before the enemies: whether the tutorial is running decides whether the
+	# street's standing roster is placed at all.
+	_build_tutorial()
 	_build_enemies()
 	_build_sauce_audio()
 	# After the street, because it bakes the street's own cells into a texture.
@@ -1864,6 +1927,11 @@ func create_avatar(peer_id: int, slot: int, is_local: bool) -> Shooter:
 	# Somebody arrived: the heavies get tougher, keeping how ruined they already
 	# are. A body half gone stays half gone -- see `rescale_enemies`.
 	rescale_enemies()
+	# And they are caught up on the sequence. The stage itself travels in the
+	# tutorial's own state message, sent from `net_game` as the peer joins; this
+	# is the part that needs a body to exist first.
+	if _tutorial != null and not is_local:
+		_tutorial.peer_joined(peer_id)
 	return shooter
 
 
@@ -1874,6 +1942,10 @@ func remove_avatar(peer_id: int) -> void:
 	_shooters.erase(peer_id)
 	# And somebody left, which walks it back the same way.
 	rescale_enemies()
+	# Somebody who has gone is not waited for: a stage that needs everybody to
+	# top up would otherwise never end.
+	if _tutorial != null:
+		_tutorial.peer_left(peer_id)
 
 
 ## Joining a session throws away the offline body: the server decides who is in
@@ -1980,6 +2052,8 @@ func _layout_view() -> void:
 		_minimap.set_frame(frame)
 	if _key_legend != null:
 		_key_legend.set_frame(frame)
+	if _tutorial_hud != null:
+		_tutorial_hud.set_frame(frame)
 	_layout_letterbox(size, frame)
 
 
@@ -2106,6 +2180,8 @@ func _build_crosshair() -> void:
 	_key_legend.world = self
 	_key_legend.visible = show_key_legend
 	_key_legend.set_frame(_view_layout)
+	if _tutorial_hud != null and is_instance_valid(_tutorial_hud):
+		_tutorial_hud.set_frame(_view_layout)
 	layer.add_child(_key_legend)
 	# Above the sauce, so there is always something to aim with.
 	_crosshair = CrosshairScript.new()
@@ -2790,6 +2866,14 @@ func _build_enemies() -> void:
 	_nav.build()
 	var toast_scene := load(MOLDY_TOAST_RUSHER_SCENE_PATH) as PackedScene
 	assert(toast_scene != null, "Moldy toast rusher scene was not imported")
+	# The tutorial places its own bodies and needs the street to itself: a
+	# standing roster would wander into the opening fight, and an enemy list that
+	# is partly standing and partly spawned makes the index a splat is addressed
+	# by depend on when a peer joined. So it starts empty and the tutorial
+	# appends -- which is also why nothing here is ever removed.
+	if _tutorial != null and _tutorial.is_enabled():
+		_apply_enemy_sight_rings()
+		return
 	for index in ENEMY_SPAWNS.size():
 		var spawn: Array = ENEMY_SPAWNS[index]
 		var enemy := MayoEnemy.new()
@@ -2827,6 +2911,230 @@ func _build_enemies() -> void:
 ## One step of the fight, on the authority: every enemy walks, and whatever it
 ## reached gets hurt. Clients run none of this -- their enemies are placed by
 ## the state packet, like their players.
+# ---------------------------------------------------------------------------
+# The tutorial's connection points
+#
+# The sequence itself lives in `scripts/tutorial.gd`. Everything here is a thin
+# way in to something the world already did -- spawning a body, painting the
+# floor, sending a message -- so that the opening stretch is ordering rather than
+# a second set of systems.
+# ---------------------------------------------------------------------------
+
+## Built before the enemies, because whether it is running decides whether the
+## street's standing roster is placed.
+##
+## Two ways to switch it off, and either is enough: `tutorial_enabled` on this
+## world, which a scene embedding `main.tscn` sets in its own scene file, and
+## `MayoTutorial.disabled`, which is process-wide and is what the headless probes
+## use because they have no scene file to override anything in.
+func _build_tutorial() -> void:
+	if not tutorial_enabled or MayoTutorial.disabled:
+		return
+	_tutorial = TutorialScript.new() as MayoTutorial
+	_tutorial.world = self
+	add_child(_tutorial)
+	_tutorial.choose_station(_refill_stations)
+	_tutorial_hud = TutorialHudScript.new() as MayoTutorialHud
+	_tutorial_hud.world = self
+	_tutorial_hud.tutorial = _tutorial
+	_tutorial_hud.set_frame(_view_layout)
+	_hud_layer.add_child(_tutorial_hud)
+
+
+## The sequence, for the HUD and for the probes. Null when it is switched off.
+func tutorial() -> MayoTutorial:
+	return _tutorial
+
+
+## Adds one body the tutorial asked for and returns its index in the enemy list,
+## or -1. **Append only**: the index is how the state packet and the splat batch
+## address a body, so nothing is ever taken out of the middle of the list.
+##
+## On the authority this also tells every peer to append the same body, and
+## remembers it so a peer joining later can be caught up in the same order.
+func tutorial_spawn_enemy(kind: int, at: Vector3) -> int:
+	var index := tutorial_add_enemy(kind, at)
+	if index < 0 or not _is_authority():
+		return index
+	_tutorial_spawned.push_back([kind, at])
+	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
+		_net.broadcast_tutorial_enemy(kind, at)
+	return index
+
+
+## Everyone's side of that: build the body and append it. The same call on every
+## peer in the same order, so index 3 is the same monster everywhere.
+func tutorial_add_enemy(kind: int, at: Vector3) -> int:
+	var enemy := MayoEnemy.new()
+	enemy.authority = _is_authority()
+	add_child(enemy)
+	if kind == MayoTutorial.KIND_BRUISER:
+		enemy.name = "Tutorial%02d_Bruiser" % _enemies.size()
+		enemy.build(body_cell_size, contamination_brush_radius, Color("4d3f6b"))
+		if _local != null:
+			enemy.match_player_speed(_local.player.walk_speed, enemy_speed_fraction)
+	else:
+		var toast_scene := load(MOLDY_TOAST_RUSHER_SCENE_PATH) as PackedScene
+		if toast_scene == null:
+			enemy.queue_free()
+			return -1
+		enemy.name = "Tutorial%02d_ToastRusher" % _enemies.size()
+		enemy.build_moldy_toast_rusher(body_cell_size, contamination_brush_radius,
+			toast_scene)
+		if _local != null:
+			enemy.match_player_speed(_local.player.walk_speed,
+				toast_rusher_speed_fraction)
+	enemy.nav = _nav
+	enemy.position = Vector3(at.x, enemy.stand_height(), at.z)
+	_enemies.push_back(enemy)
+	_apply_enemy_sight_rings()
+	# A heavy arriving is scaled to the party that is here to meet it, by the same
+	# pass a joining player triggers.
+	rescale_enemies()
+	return _enemies.size() - 1
+
+
+## Everything the tutorial has spawned, for a peer that joined late.
+func tutorial_spawned() -> Array:
+	return _tutorial_spawned
+
+
+## A puddle on the real floor grid, at the spot a body burst.
+##
+## This is the ordinary floor paint -- the same cells the stream marks and the
+## same thickness the slip test reads -- broadcast down the same splat batch, so
+## the mess a client walks on is byte-identical to the mess the server tripped
+## them on. `coat` is -1 so every layer counts: a coat id exists to stop one
+## trigger pull stacking, and this is not a trigger pull.
+func tutorial_spill_sauce(at: Vector3, offsets: Array, layers: int) -> void:
+	if not _is_authority() or _floor == null:
+		return
+	# Never thinner than the floor's own threshold, whatever was asked for: the
+	# spill exists to be slipped on, and a puddle that is visible but safe would be
+	# worse than no puddle at all. Read off the floor so the two cannot drift.
+	var passes := maxi(layers, _floor.slip_thickness)
+	for offset in offsets:
+		var spot := Vector3(at.x + offset.x, 0.0, at.z + offset.y)
+		for _layer in passes:
+			var cell := _floor.paint_mayo(spot, -1)
+			if cell.x < 0:
+				continue
+			_pending_splats.append_array(PackedInt32Array([
+				SPLAT_FLOOR, -1, cell.x, cell.y]))
+
+
+## The stalls that hand out sauce, as position and facing. The tutorial picks the
+## one it sends the party to out of this list rather than keeping a copy.
+func refill_stations() -> Array:
+	return _refill_stations
+
+
+## Whether this world is the only one in the session. The sequence asks before it
+## slows the clock down: `Engine.time_scale` is process-wide and scales the delta
+## the networking runs on, so it is a solo-only flourish.
+func tutorial_is_solo() -> bool:
+	if not is_instance_valid(_net) or not _net.is_online():
+		return true
+	return multiplayer.get_peers().is_empty()
+
+
+## The layer a body goes on once it is down: one nothing walks into, and one the
+## stream's raycast still finds, so a corpse can be painted but cannot be leant on.
+const CORPSE_LAYER := 2
+
+
+## Takes a body that is down out of everybody's way.
+##
+## A toppled toast is a shape lying flat in the road, and it was being treated as
+## a wall: the opening fight's two rushers converge on whoever they are charging,
+## so they die side by side, and the pair of them walled off the very lane the
+## escape runs down. The player could not get past their own kill.
+##
+## The layer is changed rather than the body freed -- it is still there to look
+## at, still carries the sauce that killed it, and a ray still finds it, because
+## rays test every layer.
+func tutorial_clear_corpse(index: int) -> void:
+	var enemy: MayoEnemy = enemy_at(index)
+	if enemy == null or not is_instance_valid(enemy):
+		return
+	enemy.collision_layer = CORPSE_LAYER
+
+
+## Whether a body could stand here -- the router's own answer, so the burger is
+## never put down inside a stall or through a wall.
+func tutorial_can_stand_at(at: Vector3) -> bool:
+	if _nav == null:
+		return true
+	return _nav.is_walkable(StreetMap.cell_at(at))
+
+
+## Whether the floor under this spot is thick enough to put somebody down. The
+## floor's own answer, so what brings the drone in is the same fact that trips
+## them -- see `MayoTutorial._danger_reached`.
+func floor_is_slippery_at(at: Vector3) -> bool:
+	return _floor != null and _floor.is_slippery_at(at)
+
+
+## The heavy footsteps behind you. **Placeholder**: it reuses the tone generator
+## the sauce sounds already stand on, so there is one thing to replace when there
+## is a real clip -- and nothing new to wire up.
+func tutorial_stomp() -> void:
+	if _footstep_voice == null or not is_instance_valid(_footstep_voice):
+		return
+	_footstep_voice.stream = _placeholder_tone(46.0, 0.22, true)
+	_footstep_voice.play()
+
+
+## One caption, to everybody. Only the line's index travels: the text itself is a
+## table both ends already have.
+func tutorial_broadcast_line(line_id: int, urgent := false, tag := 0) -> void:
+	if not _is_authority():
+		return
+	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
+		_net.broadcast_tutorial_line(line_id, urgent, tag)
+
+
+## A caption that has stopped applying, withdrawn everywhere at once.
+func tutorial_broadcast_cancel(tag: int) -> void:
+	if not _is_authority():
+		return
+	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
+		_net.broadcast_tutorial_cancel(tag)
+
+
+func apply_tutorial_cancel(tag: int) -> void:
+	if _tutorial != null:
+		_tutorial.cancel_lines(tag)
+
+
+## One caption, to one peer -- what somebody who arrives mid-stage is told.
+func tutorial_line_to(peer_id: int, line_id: int) -> void:
+	if not _is_authority():
+		return
+	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
+		_net.send_tutorial_line(peer_id, line_id)
+
+
+## The stage, the roster and who has topped up. Sent when one of them changes and
+## to a peer as it joins -- never per frame, so no ordinary state packet can make
+## a caption play twice.
+func tutorial_broadcast_state() -> void:
+	if not _is_authority() or _tutorial == null:
+		return
+	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
+		_net.broadcast_tutorial_state(_tutorial.state())
+
+
+func apply_tutorial_state(data: PackedInt32Array) -> void:
+	if _tutorial != null:
+		_tutorial.apply_state(data)
+
+
+func apply_tutorial_line(line_id: int, urgent := false, tag := 0) -> void:
+	if _tutorial != null:
+		_tutorial.show_line(line_id, urgent, tag)
+
+
 func _advance_enemies(delta: float) -> void:
 	if _enemies.is_empty():
 		return
@@ -2839,16 +3147,36 @@ func _advance_enemies(delta: float) -> void:
 	for shooter in _shooters.values():
 		targets.push_back(shooter.player)
 	for enemy in _enemies:
+		# Which of the party this one is coming for. Normally all of them, and the
+		# body picks the nearest; the tutorial narrows it for the opening fight so
+		# a party of two is not both rushers' problem while the other player
+		# watches. The rule lives there, not here.
+		var chasing: Array = targets
+		if _tutorial != null:
+			chasing = _tutorial.targets_for(enemy, targets)
 		# Dead ones are advanced too: they are still toppling.
-		var hit := enemy.advance(delta, targets)
-		if hit != null:
-			_damage_player(hit, enemy.contact_damage)
+		var hit := enemy.advance(delta, chasing)
+		if hit == null:
+			continue
+		# The swing landed. Whether it costs anything is the sequence's to say
+		# during its scripted beats -- and it is asked about *this* body hitting
+		# *this* player, so a hold on the tutorial's burger never covers anything
+		# else on the street.
+		if _tutorial != null and not _tutorial.allows_contact_damage(enemy, hit):
+			continue
+		_damage_player(hit, enemy.contact_damage)
 
 
-## An empty bar puts the player back at the start, clean and whole. There is no
-## death or respawn system to hook into and inventing one is a bigger decision
-## than this is -- but leaving the player alive at zero with nothing happening
-## would make the bar a decoration, so they lose their ground instead.
+## An empty bar puts the player back at the start, whole, topped up and upright
+## -- but **not clean**. There is no death or respawn system to hook into and
+## inventing one is a bigger decision than this is; leaving the player alive at
+## zero with nothing happening would make the bar a decoration, so they lose their
+## ground instead.
+##
+## What it does not do is wash them. The sauce on the body and on the glasses is
+## the player's to deal with: the glasses come clean when they wipe them, and
+## nothing cleans the body. Handing back a spotless body on death would make
+## dying the fastest way to clean your glasses.
 func _damage_player(player: MayoPlayer, amount: float) -> void:
 	if not player.take_damage(amount):
 		return
@@ -2858,10 +3186,20 @@ func _damage_player(player: MayoPlayer, amount: float) -> void:
 		shooter.sauce = 1.0
 	player.velocity = Vector3.ZERO
 	player.global_position = spawn_position_for(_slot_of(player))
-	if player.contamination != null:
-		player.contamination.clear()
-	if player.visor != null:
-		player.visor.clear()
+	# Out of whatever they were in the middle of, as well as back at the start.
+	# The state machine travels in the player packet, so resetting it here is
+	# what puts an upright body on every screen -- see `MayoPlayer.reset_state`.
+	player.reset_state()
+	# **The sauce on them stays on them.** Losing your ground does not wash you:
+	# the body and the glasses keep every cell, on every peer, and the glasses
+	# come clean the one way they ever did -- the player wipes them. Dying is not
+	# a wipe.
+	#
+	# `reset_state` cancelled a wipe that was running, so the server's note that
+	# this player is mid-wipe has to go with it. Without this line `_finish_wipes`
+	# sees a wipe whose timer has "run out", and clears the lenses for everybody
+	# -- which would hand the player exactly the free clean this rule is against.
+	_wiping.erase(player.peer_id)
 
 
 func _shooter_of(player: MayoPlayer) -> Shooter:
@@ -2932,15 +3270,18 @@ func enemy_at(index: int) -> MayoEnemy:
 	return _enemies[index]
 
 
-## Position, yaw and health for every enemy, in index order -- the order every
-## peer built them in.
+## Position, yaw, health and health ceiling for every enemy, in index order --
+## the order every peer built them in. The ceiling is in here because the party
+## scaling moves it and only the server knows the party -- see
+## `MayoEnemy.network_state`.
 func enemy_state() -> PackedFloat32Array:
 	var data := PackedFloat32Array()
 	for enemy in _enemies:
 		var state: Array = enemy.network_state()
 		var position: Vector3 = state[0]
 		data.append_array(PackedFloat32Array([
-			position.x, position.y, position.z, state[1], state[2], state[3]]))
+			position.x, position.y, position.z, state[1], state[2], state[3],
+			state[4]]))
 	return data
 
 
@@ -2951,7 +3292,7 @@ func apply_enemy_state(data: PackedFloat32Array) -> void:
 			return
 		_enemies[index].apply_network_state(
 			Vector3(data[at], data[at + 1], data[at + 2]),
-			data[at + 3], data[at + 4], data[at + 5])
+			data[at + 3], data[at + 4], data[at + 5], data[at + 6])
 
 
 func set_enemy_authority(authority: bool) -> void:
@@ -3025,6 +3366,12 @@ func _update_slip(shooter: Shooter) -> void:
 	# function and get the same answer.
 	if _floor.is_slippery_at(player.global_position):
 		player.begin_slip()
+		# The sequence is told *that this player just went over*, rather than
+		# being left to notice a body that is not upright. A state poll cannot
+		# tell a fresh slip from the tail of an old one, and the opening fight
+		# leaves plenty of old ones lying around.
+		if _tutorial != null:
+			_tutorial.note_slip(shooter.peer_id)
 
 
 ## Orientation of the aim, shared by the camera and the strand direction.
@@ -3418,7 +3765,16 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 			_credit_hit(enemy, shooter)
 			# Pushed away from whoever is hosing it, for as long as they keep
 			# doing it. Set per hit rather than accumulated -- see `take_shove`.
-			enemy.take_shove(shooter.player.global_position)
+			#
+			# A heavy shares the shove out between however many players are on
+			# it, counted straight off the credit book updated just above: one
+			# bottle barely slows it, the party together holds it off. A minion
+			# is pushed by whoever hits it.
+			var shove_share := 1.0
+			if enemy.shove_needs_party:
+				var book: Dictionary = _hit_credit.get(enemy.get_instance_id(), {})
+				shove_share = float(book.size()) / float(maxi(shove_full_party, 1))
+			enemy.take_shove(shooter.player.global_position, shove_share)
 			var was_alive := enemy.is_alive()
 			enemy.take_sauce_hit(shooter.player.global_position)
 			if was_alive:
@@ -3536,9 +3892,18 @@ func _request_refill() -> void:
 ## against the body the server is simulating.
 func refill_for(peer_id: int) -> bool:
 	var shooter: Shooter = _shooters.get(peer_id)
-	if shooter == null or station_in_reach(shooter.player) < 0:
+	if shooter == null:
+		return false
+	var station := station_in_reach(shooter.player)
+	if station < 0:
 		return false
 	apply_refill(peer_id)
+	# The tutorial counts this one. Read off the top-up the game already did
+	# rather than from a request a client made, so a client cannot declare itself
+	# supplied -- and a full bottle still counts, because standing at the machine
+	# is what this function succeeds on.
+	if _tutorial != null:
+		_tutorial.note_refill(peer_id, station)
 	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
 		_net.broadcast_refill(peer_id)
 	return true

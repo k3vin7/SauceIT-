@@ -4,6 +4,11 @@ var failures := 0
 
 
 func _init() -> void:
+	# These scenes embed main.tscn to get a real player and a real street, so the
+	# opening sequence runs inside them too -- and its rushers charge the player,
+	# which moves the very body this file measures the spawn of. This is about map
+	# scale, so the sequence is switched off before anything is instantiated.
+	MayoTutorial.disabled = true
 	call_deferred("_run")
 
 

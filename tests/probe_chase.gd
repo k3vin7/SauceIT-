@@ -16,6 +16,11 @@ var failures: Array[String] = []
 
 
 func _initialize() -> void:
+	# The opening sequence is not what this file is about, and it would change the
+	# street under it: it places its own bodies and keeps the standing roster off
+	# the map. Switched off here, before the world is built -- the world builds
+	# itself in `_ready()`, so there is no later chance to ask for this.
+	MayoTutorial.disabled = true
 	call_deferred("_run")
 
 
@@ -88,6 +93,22 @@ func _run() -> void:
 	var corner_b := StreetMap.cell_middle(Vector2i(17, 63)) + Vector3(0.0, stand, 0.0)
 	enemy.global_position = corner_a
 	player.global_position = corner_b
+	# This corner pair is the one bit of map geometry that puts two buildings
+	# between them, and it is much further apart than a body notices a player
+	# from. What is under test here is the *routing* -- does it walk the corner
+	# or lean on the wall -- so this throwaway enemy is told it has already seen
+	# them, by widening its own two ranges to cover the layout the test needs.
+	#
+	# Deliberately only this instance: it is built by this file with `new()` and
+	# belongs to nobody else, so the ranges the shipped bodies chase at are
+	# untouched. Moving the corners together instead would give up the two
+	# buildings, which are the whole point of the case; raising the real range
+	# would make every other body chase from across the map to satisfy a test.
+	var opening_gap := enemy.global_position.distance_to(player.global_position)
+	enemy.sight_range = maxf(enemy.sight_range, opening_gap + 5.0)
+	enemy.give_up_range = maxf(enemy.give_up_range, enemy.sight_range * 2.0)
+	print("test enemy told to notice from %.0f m, for a %.0f m corner" % [
+		enemy.sight_range, opening_gap])
 	await physics_frame
 	_check(not enemy._can_walk_straight_to(player.global_position),
 		"the two can walk straight at each other, so this case tests nothing")

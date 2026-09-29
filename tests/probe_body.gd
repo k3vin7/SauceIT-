@@ -21,6 +21,11 @@ var failures: Array[String] = []
 
 
 func _initialize() -> void:
+	# The opening sequence is not what this file is about, and it would change the
+	# street under it: it places its own bodies and keeps the standing roster off
+	# the map. Switched off here, before the world is built -- the world builds
+	# itself in `_ready()`, so there is no later chance to ask for this.
+	MayoTutorial.disabled = true
 	call_deferred("_run")
 
 
@@ -237,9 +242,10 @@ func _run() -> void:
 		"spraying a body painted the floor as well")
 
 	# --- your own sauce can come back on you ---
-	# Fired up it drifts about a metre before it lands, so the case that really
-	# happens is walking into your own falling stream. Either way it must never
-	# hit you on the way out: the muzzle sits inside your own capsule.
+	# Fired straight up it goes a long way up -- about eighteen metres at this
+	# reach -- so the case that really happens is walking back under your own
+	# falling stream. Either way it must never hit you on the way out: the muzzle
+	# sits inside your own capsule.
 	var self_visor = scene._local.player.visor
 	var self_body = scene._local.player.contamination
 	self_visor.clear()
@@ -253,7 +259,18 @@ func _run() -> void:
 		await physics_frame
 	var on_the_way_out: int = self_body.painted_cell_count()
 	# Now walk under it while it comes down.
-	for _f in 180:
+	#
+	# **Waited for, not counted out.** This was a flat 180 frames, which used to
+	# be enough and silently stopped being enough: the sauce leaves the muzzle at
+	# about 14 m/s and falls back under a 9.8 m/s^2 droplet gravity, so the round
+	# trip is nearer four seconds than three, and the loop was ending with the
+	# stream still thirteen metres overhead. That read as "my own sauce does not
+	# mark me" when what it actually measured was the test giving up early --
+	# nothing was wrong with the spray at all. Waiting on the sauce being down
+	# makes it independent of the stream's reach, which is what moved.
+	var frames_waited := 0
+	var came_down := false
+	for _f in 1200:
 		scene._simulate_points(1.0 / 60.0)
 		var centre := Vector3.ZERO
 		var airborne := 0
@@ -261,15 +278,23 @@ func _run() -> void:
 			if point.phase == 0:
 				centre += point.position
 				airborne += 1
-		if airborne > 0:
-			centre /= float(airborne)
-			scene._local.player.global_position = Vector3(
-				centre.x, scene._local.player.global_position.y, centre.z)
+		if airborne == 0:
+			came_down = true
+			break
+		centre /= float(airborne)
+		# Stood under whatever is still in the air, so it lands on the head.
+		scene._local.player.global_position = Vector3(
+			centre.x, scene._local.player.global_position.y, centre.z)
+		frames_waited += 1
 		await physics_frame
-	print("own sauce: %d cells on self while leaving the muzzle, %d after walking under it, %.0f%% blind" % [
-		on_the_way_out, self_body.painted_cell_count(), self_visor.coverage() * 100.0])
+	print("own sauce: %d cells on self while leaving the muzzle, %d after walking under it (%d frames, all down=%s), %.0f%% blind" % [
+		on_the_way_out, self_body.painted_cell_count(), frames_waited,
+		str(came_down), self_visor.coverage() * 100.0])
 	_check(on_the_way_out == 0,
 		"%d cells were marked on the shooter as the strand left the muzzle" % on_the_way_out)
+	# Kept as its own check so a stream that simply never lands fails here, on
+	# the reason, rather than further down on a mask that was never painted.
+	_check(came_down, "the sauce fired straight up never came back down at all")
 	_check(self_body.painted_cell_count() > 0,
 		"walking into your own falling sauce did not mark you")
 	_check(self_visor.painted_cell_count() > 0,

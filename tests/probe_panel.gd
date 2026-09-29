@@ -19,6 +19,11 @@ var failures: Array[String] = []
 
 
 func _initialize() -> void:
+	# The opening sequence is not what this file is about, and it would change the
+	# street under it: it places its own bodies and keeps the standing roster off
+	# the map. Switched off here, before the world is built -- the world builds
+	# itself in `_ready()`, so there is no later chance to ask for this.
+	MayoTutorial.disabled = true
 	call_deferred("_run")
 
 

@@ -32,6 +32,11 @@ var client_world
 
 
 func _initialize() -> void:
+	# The opening sequence is not what this file is about, and it would change the
+	# street under it: it places its own bodies and keeps the standing roster off
+	# the map. Switched off here, before the world is built -- the world builds
+	# itself in `_ready()`, so there is no later chance to ask for this.
+	MayoTutorial.disabled = true
 	call_deferred("_run")
 
 
@@ -340,6 +345,22 @@ func _run() -> void:
 	# B turns to face A. Sprayed in the back their glasses would stay clean,
 	# which is right but tests nothing about them.
 	client_world.debug_set_aim(180.0, 0.0)
+	# The spatter thrown off an impact is turned off for this stretch, and it is
+	# what the "A stayed clean" check below is about.
+	#
+	# These two are a metre and a half apart, which is point blank: the lumps
+	# thrown off B's chest land back on A, mark A's body, and are projected onto
+	# A's glasses from there. That is the impact spray working -- the ring of
+	# spatter round a fight is the whole point of it, and it is real sauce that
+	# really reached A, so it is allowed. It is simply not what this section is
+	# testing. What it is testing is the *stream*: that spraying somebody else
+	# does not put sauce on the shooter, and that a hit on B is applied to B and
+	# not to whoever fired it. With the spatter off, any cell that turns up on A
+	# can only have come from one of those two going wrong.
+	#
+	# The spatter is switched back on and measured on its own further down.
+	server_world.impact_paints = false
+	client_world.impact_paints = false
 	await _wait(10)
 	# At eye height, so it lands on the face and not only on the chest.
 	server_world.debug_aim_at(b_on_host.global_position + Vector3.UP * server_world.eye_height)
@@ -359,7 +380,12 @@ func _run() -> void:
 	_check(b_visor_host.cells_md5() == b_visor_client.cells_md5(),
 		"the two screens disagree about B's glasses")
 	_check(a_visor_host.painted_cell_count() == 0,
-		"A got sauce on their own glasses for spraying someone else")
+		"A's own stream put sauce on A's glasses for spraying someone else")
+	# The same rule on the body, which is the half that catches a hit on B being
+	# credited to the wrong player: B's splats are addressed by peer id, and one
+	# addressed to A would land here.
+	_check(server_world.shooter_for(1).player.contamination.painted_cell_count() == 0,
+		"A's own stream marked A's body for spraying someone else")
 
 	var host_body: String = server_world.body_md5(client_id)
 	var client_body: String = client_world.body_md5(client_id)
@@ -375,6 +401,43 @@ func _run() -> void:
 	_check(host_body == client_body,
 		"the two screens disagree about B's body (%d vs %d cells)" % [
 			host_body_cells, client_body_cells])
+
+	# --- the spatter, switched back on and measured on its own ---
+	# The reason the stretch above ran with it off. At a metre and a half the
+	# lumps thrown off B come back onto A, and that is allowed: it is sauce that
+	# genuinely reached A. What must still hold is that it reached A on every
+	# screen the same way -- spray is marked by the host and broadcast down the
+	# same splat batch as the stream, so a mask that differs between the peers
+	# means the spatter is being decided locally.
+	#
+	# Checked rather than assumed, so the switch above cannot quietly become a
+	# way of skipping the case: if the spatter stopped reaching A altogether,
+	# turning it off would no longer be proving anything.
+	server_world.impact_paints = true
+	client_world.impact_paints = true
+	var a_body_before: int = server_world.shooter_for(1).player.contamination.painted_cell_count()
+	server_world.debug_aim_at(b_on_host.global_position + Vector3.UP * server_world.eye_height)
+	server_world.debug_set_input(Vector2.ZERO, false, true)
+	await _wait(90)
+	server_world.debug_set_input(Vector2.ZERO, false, false)
+	await _wait(60)
+	var a_body_host: int = server_world.shooter_for(1).player.contamination.painted_cell_count()
+	print("with the spatter on, A picked up %d cells of their own spray (was %d)" % [
+		a_body_host, a_body_before])
+	_check(a_body_host > a_body_before,
+		"the spatter reached A with impact_paints off and on alike, so switching it off proves nothing")
+	# Waited for rather than counted out: the splat batch is a reliable RPC
+	# delivered one poll per rendered frame.
+	await _until(func() -> bool:
+		return client_world.body_md5(1) == server_world.body_md5(1))
+	print("A's spattered body: host %s, B's screen %s" % [
+		server_world.body_md5(1).substr(0, 8), client_world.body_md5(1).substr(0, 8)])
+	_check(server_world.body_md5(1) == client_world.body_md5(1),
+		"the two screens disagree about the spatter on A's body")
+	await _until(func() -> bool:
+		return client_world.body_md5(client_id) == server_world.body_md5(client_id))
+	_check(server_world.body_md5(client_id) == client_world.body_md5(client_id),
+		"the two screens disagree about B's body once the spatter is on")
 
 	# --- B wipes, A watches it happen ---
 	# The request goes from the client to the server, and everything after it is

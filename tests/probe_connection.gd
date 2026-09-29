@@ -9,6 +9,11 @@ var failures: Array[String] = []
 
 
 func _initialize() -> void:
+	# The opening sequence is not what this file is about, and it would change the
+	# street under it: it places its own bodies and keeps the standing roster off
+	# the map. Switched off here, before the world is built -- the world builds
+	# itself in `_ready()`, so there is no later chance to ask for this.
+	MayoTutorial.disabled = true
 	call_deferred("_run")
 
 
@@ -72,10 +77,19 @@ func _run() -> void:
 		scene.debug_aim_at(enemy.global_position)
 		pushed_to = maxf(pushed_to,
 			(enemy.global_position - player.global_position).length())
-	print("at contact: settled at %.2f m, hosed out to %.2f m (+%.2f)" % [
-		settled, pushed_to, pushed_to - settled])
-	_check(pushed_to > settled + 0.15,
-		"the stream did not push it off the player at contact range")
+	print("at contact: settled at %.2f m, hosed out to %.2f m (+%.2f) -- one player on a %s" % [
+		settled, pushed_to, pushed_to - settled,
+		"heavy" if enemy.grade == MayoEnemy.Grade.HEAVY else "minion"])
+	if enemy.grade == MayoEnemy.Grade.HEAVY:
+		# **One bottle must not hold a heavy off.** It gets a quarter of the
+		# shove, which is 1.2 m/s against a 3.6 m/s walk, so it keeps coming --
+		# that is the whole reason the shove is shared out. The party version is
+		# measured further down.
+		_check(pushed_to < settled + 0.5,
+			"one player pushed a heavy off on their own, so ganging up buys nothing")
+	else:
+		_check(pushed_to > settled + 0.15,
+			"the stream did not push a minion off the player at contact range")
 
 	# --- and it comes off the moment the stream does ------------------------
 	scene.debug_clear_input_override()
@@ -150,6 +164,48 @@ func _run() -> void:
 		"the bottle never stops, so the push can be held indefinitely")
 	_check(scene.stream_range > 0.0 and scene.stream_range < 100.0,
 		"the stream has no finite reach at all")
+
+	# --- a heavy is a group problem ----------------------------------------
+	# The shove is shared out between however many players are hosing it, so one
+	# bottle cannot hold one off and the party together can. This is the co-op
+	# the fight has: there are no roles, so what a team does that one player
+	# cannot is arrive together.
+	var heavy: MayoEnemy = null
+	var minion: MayoEnemy = null
+	for index in scene.enemy_count():
+		var body: MayoEnemy = scene.enemy_at(index)
+		if body.grade == MayoEnemy.Grade.HEAVY and heavy == null:
+			heavy = body
+		elif body.grade == MayoEnemy.Grade.MINION and minion == null:
+			minion = body
+	_check(heavy != null and minion != null, "one of the two grades is missing")
+	_check(heavy.shove_needs_party, "a heavy is shoved at full strength by one player")
+	_check(not minion.shove_needs_party, "a minion was made a group problem too")
+
+	var walk: float = heavy.move_speed
+	print("heavy walks %.2f m/s, full shove %.2f m/s, full party %d" % [
+		walk, heavy.shove_speed, scene.shove_full_party])
+	for hosing in [1, 2, 3, 4]:
+		heavy._shove = Vector3.ZERO
+		var share := float(hosing) / float(scene.shove_full_party)
+		heavy.take_shove(heavy.global_position + Vector3(0.0, 0.0, 5.0), share)
+		var pushed: float = heavy._shove.length()
+		print("  %d hosing: shove %.2f m/s -> net %+.2f m/s %s" % [
+			hosing, pushed, walk - pushed,
+			"(it comes on)" if walk - pushed > 0.0 else "(it goes back)"])
+		_check(absf(pushed - heavy.shove_speed * share) < 0.01,
+			"%d players did not get %d/%d of the shove" % [
+				hosing, hosing, scene.shove_full_party])
+	# The whole point: one cannot, four can.
+	heavy._shove = Vector3.ZERO
+	heavy.take_shove(heavy.global_position + Vector3(0.0, 0.0, 5.0),
+		1.0 / float(scene.shove_full_party))
+	_check(heavy._shove.length() < walk,
+		"one player alone still holds a heavy off, so ganging up buys nothing")
+	heavy._shove = Vector3.ZERO
+	heavy.take_shove(heavy.global_position + Vector3(0.0, 0.0, 5.0), 1.0)
+	_check(heavy._shove.length() > walk,
+		"the whole party still cannot push a heavy back")
 
 	if failures.is_empty():
 		print("MAYO_CONNECTION_OK")

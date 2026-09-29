@@ -28,6 +28,7 @@ shadow_enabled = true
 [node name="CorridorGraybox" parent="ScaledMap" instance=ExtResource("2_map")]
 
 [node name="Game" parent="." instance=ExtResource("3_game")]
+tutorial_enabled = false
 
 [node name="EnemyDummies" type="Node3D" parent="."]
 

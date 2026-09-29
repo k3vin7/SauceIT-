@@ -62,6 +62,15 @@ var peer_id := 1
 ## The server plays a remote player's keys back through these. Offline and for
 ## the host's own body this stays false and the real keyboard is read.
 var use_injected_input := false
+## Held still while the doctor is talking, and only ever for a beat.
+##
+## Read at the bottom of the input path rather than anywhere higher up: every
+## source of movement -- the real keyboard, the injected keys the server plays a
+## remote player back through, the checks' own overrides -- comes through the
+## three accessors below, so one flag covers all of them and cannot be routed
+## around. The body is not made invulnerable, immovable or unaimable by it: it is
+## the *keys* that stop, so a shove still moves it and the fall still plays.
+var frozen := false
 var input_move := Vector2.ZERO
 var input_run := false
 var input_jump := false
@@ -112,6 +121,37 @@ func heal_to_full() -> void:
 	health = max_health
 
 
+## Back on their feet and out of whatever they were in the middle of.
+##
+## Health, sauce and the spawn point are the world's business, and the two
+## contamination grids are nobody's: the sauce on a respawned player stays on
+## them, and the glasses come clean only when the player wipes them. This is
+## only the state machine, which the respawn used not to touch at all -- a player
+## killed while flat on their back was put at the spawn point still on their
+## back, and finished the fall they died in from there.
+##
+## Every field here is one that would otherwise be carried into the new life: the
+## fall and its timer, the lean it is drawn with, the recovery window that makes
+## the *next* slip pitch forward, a wipe still running, and the shove from
+## whatever killed them, which is applied on the next physics step -- which is
+## after this.
+##
+## Cancelling the wipe does *not* clean the lenses: it stops the action, and the
+## mask is left exactly as it was for the player to wipe off again. The world has
+## to drop its own mid-wipe note to match -- see `_damage_player`.
+##
+## `_jump_was_held` is deliberately left alone: holding the jump key across a
+## respawn should behave like holding it, and clearing it would hand the new body
+## a free jump off a key that was never pressed.
+func reset_state() -> void:
+	state = State.NORMAL
+	_state_timer = 0.0
+	fall_direction = 1.0
+	_recovery_timer = 0.0
+	wipe_timer = 0.0
+	_pending_enemy_impact = Vector3.ZERO
+
+
 func health_fraction() -> float:
 	return clampf(health / maxf(max_health, 0.001), 0.0, 1.0)
 
@@ -141,6 +181,7 @@ func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
 func paint_mayo_cell(cell: Vector2i) -> void:
 	if contamination != null:
 		contamination.paint_mayo_cell(cell)
+
 
 
 func _physics_process(delta: float) -> void:
@@ -203,18 +244,24 @@ func is_running() -> bool:
 ## The movement keys this body is being driven by: the real keyboard for the
 ## local player, the last packet for a player the server is simulating.
 func movement_input() -> Vector2:
+	if frozen:
+		return Vector2.ZERO
 	if use_injected_input:
 		return input_move
 	return Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
 
 
 func run_held() -> bool:
+	if frozen:
+		return false
 	if use_injected_input:
 		return input_run
 	return Input.is_action_pressed("run")
 
 
 func jump_wanted() -> bool:
+	if frozen:
+		return false
 	if use_injected_input:
 		return input_jump
 	return Input.is_action_pressed("jump")

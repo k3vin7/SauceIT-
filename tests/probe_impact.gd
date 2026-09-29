@@ -9,6 +9,11 @@ var failures: Array[String] = []
 
 
 func _initialize() -> void:
+	# The opening sequence is not what this file is about, and it would change the
+	# street under it: it places its own bodies and keeps the standing roster off
+	# the map. Switched off here, before the world is built -- the world builds
+	# itself in `_ready()`, so there is no later chance to ask for this.
+	MayoTutorial.disabled = true
 	call_deferred("_run")
 
 
@@ -79,7 +84,14 @@ func _run() -> void:
 	frames.resize(4410)
 	frames.fill(128)
 	stand_in.data = frames
-	scene.splat_sounds = [stand_in]
+	# Typed on the way in. `splat_sounds` is an `Array[AudioStream]`, and a bare
+	# `[stand_in]` literal is an untyped `Array`: assigning one aborted `_run`
+	# outright, which in a SceneTree script is not a failure but a hang -- the
+	# tree keeps running with nothing left to call `quit()`. The product code's
+	# type is right and stays as it is; this is the test handing it the wrong
+	# shape.
+	var clips: Array[AudioStream] = [stand_in]
+	scene.splat_sounds = clips
 
 	var enemy = scene.enemy_at(0)
 	_check(enemy != null, "there is no enemy to hit")
@@ -129,7 +141,7 @@ func _run() -> void:
 	for _i in 30:
 		await physics_frame
 	scene._floor._rebuild_grid()
-	var painted_before: int = scene._floor.painted_cell_count()
+	var painted_before: int = scene._floor.grid.painted_cell_count()
 	# Fired at the street at a glance, so the strand lands in one place and the
 	# spray is thrown clear of it -- otherwise the stream's own splats and the
 	# spatter's cannot be told apart.
@@ -141,14 +153,14 @@ func _run() -> void:
 	var landed := 0
 	for _i in 90:
 		await physics_frame
-		landed = scene._floor.painted_cell_count()
+		landed = scene._floor.grid.painted_cell_count()
 	print("floor cells painted: %d -> %d" % [painted_before, landed])
 	_check(landed > painted_before, "nothing marked the street at all")
 
 	# And with the marking turned off, the lumps still fly but leave nothing.
 	scene.impact_paints = false
 	scene._floor._rebuild_grid()
-	var quiet_before: int = scene._floor.painted_cell_count()
+	var quiet_before: int = scene._floor.grid.painted_cell_count()
 	for speck in scene._specks:
 		speck.active = false
 	scene._active_speck_indices.resize(0)
@@ -159,9 +171,9 @@ func _run() -> void:
 	for _i in 60:
 		await physics_frame
 	print("with marking off: %d lumps thrown, floor %d -> %d" % [
-		flying, quiet_before, scene._floor.painted_cell_count()])
+		flying, quiet_before, scene._floor.grid.painted_cell_count()])
 	_check(flying > 0, "turning marking off stopped the spray being thrown")
-	_check(scene._floor.painted_cell_count() == quiet_before,
+	_check(scene._floor.grid.painted_cell_count() == quiet_before,
 		"impact_paints was off and the spray marked the street anyway")
 	scene.impact_paints = true
 

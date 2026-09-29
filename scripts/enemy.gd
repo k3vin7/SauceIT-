@@ -171,6 +171,14 @@ var kind := EnemyKind.BRUISER
 ## `stream_range` moves -- it was doubled once already, and a longer reach means
 ## more of the push happens before the body is out of it.
 @export_range(0.0, 20.0, 0.1, "suffix:m/s") var shove_speed := 4.8
+## Whether the shove is shared out between however many players are hosing it.
+##
+## **On for a heavy, off for a minion.** A heavy hosed by one player is barely
+## slowed and walks through it; hosed by the whole party it is held off. That is
+## the co-op the fight has -- there are no roles here, everyone carries the same
+## bottle, so what a team does that one player cannot is *arrive together*.
+## A minion dies to one squirt and never needed the rule.
+@export var shove_needs_party := true
 ## How quickly the shove dies once the stream comes off. Short: the tell is that
 ## it starts walking again, and a long tail blurs the moment it does.
 @export_range(0.02, 2.0, 0.01, "suffix:s") var shove_decay_seconds := 0.16
@@ -213,6 +221,16 @@ var fall_angle := 0.0
 ## Set by the world once the street exists. Without it the enemy walks the
 ## straight line, which is what it did before there was any routing at all.
 var nav: StreetNav
+
+## Something that is not a player and that this body would rather go for.
+##
+## Set while the doctor's drone is pulling it off the party, and cleared when the
+## drone is gone. A baited body walks, routes, turns and animates through exactly
+## the same code it always did -- the only two differences are what it is walking
+## *at* and that it cannot land a contact hit on a player while it is doing so.
+## It is emphatically not a pause: an enemy that simply stopped would read as the
+## AI switching off, which is the thing this is meant to avoid.
+var bait: Node3D = null
 
 var _contact_cooldown := 0.0
 var _route := PackedVector3Array()
@@ -425,8 +443,11 @@ func build_moldy_toast_rusher(cell_size: float, brush_radius: float,
 	give_up_range = 55.0
 	impact_push_speed = 7.5
 	impact_lift_speed = 2.0
-	# It weighs nothing, so the hose throws it further than it throws a burger.
+	# It weighs nothing, so the hose throws it further than it throws a burger --
+	# and one player is enough to do it. Sharing the shove out is a rule for
+	# bodies a team has to gang up on.
 	shove_speed = 9.0
+	shove_needs_party = false
 
 	# The toast is a thin slab. Two compact capsules cover its body and feet
 	# without turning its collision into the much wider original humanoid.
@@ -785,14 +806,21 @@ func _note_flinch() -> bool:
 ## point density rather than on whether the stream is on the body. Refreshed
 ## while it is being hit and decaying the moment it is not is the whole effect.
 ##
+## `strength` is how much of the full shove this hit is worth, 0 to 1. The world
+## works it out from how many players are on this body at once -- see
+## `shove_needs_party`.
+##
 ## Authority only -- the position it moves is what travels.
-func take_shove(from: Vector3) -> void:
+func take_shove(from: Vector3, strength := 1.0) -> void:
 	if not authority or not is_alive():
 		return
 	var away := Vector3(global_position.x - from.x, 0.0, global_position.z - from.z)
 	if away.length_squared() < 0.000001:
 		return
-	_shove = away.normalized() * shove_speed
+	# Set from whoever landed the hit, so a body being hosed from two sides is
+	# pushed by whichever stream reached it last. At 187 landings a second that
+	# alternates fast enough to average out into the middle of them.
+	_shove = away.normalized() * shove_speed * clampf(strength, 0.0, 1.0)
 
 
 ## Whether it has noticed a player and is coming for them.
@@ -1050,12 +1078,25 @@ func restore_cells(cells: PackedByteArray) -> bool:
 ## agree about. The topple travels as its angle rather than as a "it died" flag,
 ## so a peer that joins or drops a packet mid-fall picks it up where it is
 ## instead of snapping it upright or flat.
+##
+## `max_health` travels alongside `health` because a health bar is a fraction,
+## and the ceiling is decided by the size of the party -- which the server scales
+## and a client has no reliable count of. Sending the numerator without the
+## denominator gave the two screens the same hit points and two different bars:
+## a heavy on 192 read half gone on the host and four fifths gone on the guest.
+## It rides in the packet rather than in a join message because it changes
+## whenever somebody joins or leaves, and the cost is one float per body.
 func network_state() -> Array:
-	return [global_position, facing_yaw, health, fall_angle]
+	return [global_position, facing_yaw, health, fall_angle, max_health]
 
 
 func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
-		new_fall_angle: float) -> void:
+		new_fall_angle: float, new_max_health := 0.0) -> void:
+	# Guarded rather than assigned outright: a zero would make every fraction a
+	# division by nothing, and `health_fraction` clamping it away would hide
+	# that the ceiling never arrived.
+	if new_max_health > 0.0:
+		max_health = new_max_health
 	var was_alive := is_alive()
 	var step := new_position - global_position
 	var walking := Vector2(step.x, step.z).length_squared() > 0.000001
@@ -1098,6 +1139,10 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	# of hits into a hold.
 	_advance_flinch(delta)
 
+	# Something in its face outranks the party. It still walks, routes and turns
+	# through everything below; it is simply walking at the drone instead.
+	var baited := bait != null and is_instance_valid(bait)
+
 	var target := _nearest(targets)
 	# Noticed, or given up on. Measured flat: a player on a stall roof is as
 	# close as one standing under it, and height should not decide a chase.
@@ -1115,8 +1160,13 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		target = null
 
 	var flat := Vector3.ZERO
-	if target != null:
-		flat = _step_toward(target, delta) - global_position
+	if baited:
+		# The bait is walked to the same way a player is -- same router, same
+		# waypoints -- so it rounds the same corners rather than sliding at it.
+		flat = _step_toward(bait.global_position, delta) - global_position
+		flat.y = 0.0
+	elif target != null:
+		flat = _step_toward(target.global_position, delta) - global_position
 		flat.y = 0.0
 
 	# A body that is more sauce than burger walks like it. Continuous, like the
@@ -1160,7 +1210,10 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	_set_locomotion_animation(walking)
 	_advance_gait(global_position - stood_at, walking, delta)
 
-	if target == null or _contact_cooldown > 0.0:
+	# Baited: it is swiping at the drone, not at the party. Returning null before
+	# the reach tests is what makes that true of the damage *and* of the contact
+	# knockback -- neither can happen through a body that is busy elsewhere.
+	if baited or target == null or _contact_cooldown > 0.0:
 		return null
 	# Measured between the capsule axes, flat: both bodies are capsules, so the
 	# gap between their surfaces is the axis distance less the two radii.
@@ -1168,6 +1221,18 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	var gap := Vector3(target.global_position.x - global_position.x, 0.0,
 		target.global_position.z - global_position.z)
 	if gap.length() > reach:
+		return null
+	# And it has to be able to reach that high. The chase above is deliberately
+	# flat -- a player on a stall roof is still worth walking towards -- but the
+	# hit is not the chase, and a body cannot touch what is over its head.
+	#
+	# What decides it is whether the two bodies' vertical spans meet, not how
+	# far apart their two origins are: a burger is 4.1 m of body and a toast
+	# slab is 1.1 m, so the same y difference is well inside one's reach and far
+	# outside the other's, and any single constant would be wrong for one of
+	# them. `contact_reach` stands in for the unmodelled arms here exactly as it
+	# does flat.
+	if not _reaches_height(target):
 		return null
 	_contact_cooldown = contact_interval
 	_play_attack_animation()
@@ -1188,8 +1253,10 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 ## Falling back to the straight line when there is no router at all is
 ## deliberate: an enemy that stops chasing because nobody handed it a map is a
 ## worse failure than one that leans on a wall.
-func _step_toward(target: MayoPlayer, delta: float) -> Vector3:
-	var goal := target.global_position
+##
+## Takes the `goal` rather than the player standing on it: the only thing this
+## ever read off a target was its position, and the drone is not a player.
+func _step_toward(goal: Vector3, delta: float) -> Vector3:
 	if nav == null:
 		return goal
 	if nav.line_is_walkable(global_position, goal):
@@ -1246,3 +1313,31 @@ func _target_radius(player: MayoPlayer) -> float:
 	if player.contamination != null:
 		return player.contamination.radius
 	return 0.64
+
+
+## How tall the player's body is, from the same place the width comes from: the
+## grid is unwrapped around the capsule, so it carries the capsule's figures.
+## The fallback is the capsule the world actually builds.
+func _target_height(player: MayoPlayer) -> float:
+	if player.contamination != null:
+		return player.contamination.height
+	return 2.56
+
+
+## Whether this body and the player overlap vertically closely enough to touch.
+##
+## Both are treated as their own full height centred on their origin, which is
+## what the contamination unwrap already assumes and what puts a standing
+## burger's span at roughly floor to 4.1 m and a toast slab's at floor to 1.1 m.
+## The span is widened by `contact_reach` at both ends for the same reason it is
+## added flat -- the arms are not modelled -- so a burger still swats somebody on
+## a low kerb and a rusher still rams somebody stepping off one.
+##
+## Deliberately *not* "off the ground means safe": half of an ordinary jump is
+## still inside both bodies' spans. Only genuinely out of reach is out of reach.
+func _reaches_height(player: MayoPlayer) -> bool:
+	var low := global_position.y - height * 0.5 - contact_reach
+	var high := global_position.y + height * 0.5 + contact_reach
+	var player_half := _target_height(player) * 0.5
+	return player.global_position.y - player_half <= high \
+		and player.global_position.y + player_half >= low

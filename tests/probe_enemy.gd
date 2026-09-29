@@ -16,6 +16,11 @@ var failures: Array[String] = []
 
 
 func _initialize() -> void:
+	# The opening sequence is not what this file is about, and it would change the
+	# street under it: it places its own bodies and keeps the standing roster off
+	# the map. Switched off here, before the world is built -- the world builds
+	# itself in `_ready()`, so there is no later chance to ask for this.
+	MayoTutorial.disabled = true
 	call_deferred("_run")
 
 
@@ -187,8 +192,18 @@ func _run() -> void:
 	# open space on the map, which is what `arena_centre` is for.
 	var square: Vector3 = StreetMap.arena_centre()
 	var stand_y: float = scene.spawn_position_for(0).y
-	enemy.global_position = square + Vector3(0.0, enemy.stand_height(), -16.0)
-	player.global_position = square + Vector3(0.0, stand_y, 16.0)
+	# Inside the distance this body notices a player at, rather than at a fixed
+	# sixteen metres. An enemy only chases what it has seen, so a gap wider than
+	# `sight_range` is a test of the noticing rule and not of the walk -- which
+	# is what a fixed offset quietly turned this into once the bodies were given
+	# a range they notice you at. `probe_sight` is where the range itself is
+	# checked; here it only has to be satisfied. Still capped at sixteen so both
+	# bodies stay inside the square with room to dodge.
+	var notice: float = minf(16.0, enemy.sight_range * 0.45)
+	print("placed %.1f m either side of the square, inside its %.0f m notice range" % [
+		notice, enemy.sight_range])
+	enemy.global_position = square + Vector3(0.0, enemy.stand_height(), -notice)
+	player.global_position = square + Vector3(0.0, stand_y, notice)
 	await physics_frame
 	var opening := enemy.global_position.distance_to(player.global_position)
 	var travelled := enemy.global_position
@@ -239,8 +254,10 @@ func _run() -> void:
 	# to them its heading flips about as it shoves into them, and a body that
 	# turns at a rate cannot follow that -- which says nothing about whether its
 	# front is on the right end.
-	player.global_position = square + Vector3(0.0, stand_y, 20.0)
-	enemy.global_position = square + Vector3(0.0, enemy.stand_height(), -20.0)
+	# Inside its notice range again, and for the same reason: a body that never
+	# spots the player stands still, and a still body's facing tests nothing.
+	player.global_position = square + Vector3(0.0, stand_y, notice)
+	enemy.global_position = square + Vector3(0.0, enemy.stand_height(), -notice)
 	for _f in 60:
 		await physics_frame
 	var worst_off := 0.0
@@ -485,17 +502,31 @@ func _run() -> void:
 	# --- an emptied bar sends the player back to the start ---
 	player.contamination.paint_mayo(player.global_position + Vector3(0.0, 0.2, 0.6), Vector3.BACK)
 	_check(player.contamination.painted_cell_count() > 0, "the player could not be dirtied")
+	var dirty_before := player.contamination.cells_md5()
+	var cells_before: int = player.contamination.painted_cell_count()
 	scene._damage_player(player, player.max_health)
 	var spawn: Vector3 = scene.spawn_position_for(0)
-	print("emptied: back at %.1v (spawn %.1v), health %.0f, %d cells of sauce left" % [
+	print("emptied: back at %.1v (spawn %.1v), health %.0f, %d cells of sauce left (was %d)" % [
 		player.global_position, spawn, player.health,
-		player.contamination.painted_cell_count()])
+		player.contamination.painted_cell_count(), cells_before])
 	_check(player.global_position.distance_to(spawn) < 0.01,
 		"an emptied bar left the player at %.1v rather than the spawn" % player.global_position)
 	_check(is_equal_approx(player.health, player.max_health),
 		"the player came back with %.0f health" % player.health)
-	_check(player.contamination.painted_cell_count() == 0,
-		"the player came back still covered in sauce")
+	# **And still dirty.** Losing your ground does not wash you: the sauce stays
+	# exactly where it was, and the glasses come clean only when the player wipes
+	# them. This check used to read the other way round -- it was written when
+	# respawning was meant to clean you up, which is not the rule any more. The
+	# mask is compared by hash rather than by count, because the claim is that
+	# nothing moved, not that the same number of cells is painted.
+	_check(player.contamination.cells_md5() == dirty_before,
+		"respawning changed the sauce on the player: %d cells became %d" % [
+			cells_before, player.contamination.painted_cell_count()])
+	_check(player.contamination.painted_cell_count() > 0,
+		"the player came back washed clean: respawning is not a wipe")
+	# The state machine is the part the respawn does reset -- see probe_revive.
+	_check(player.state == MayoPlayer.State.NORMAL,
+		"the player came back in state %d rather than upright" % player.state)
 
 	# --- its health bar actually lands on screen ---
 	# The bar is drawn in the window's pixels and was briefly being scaled by a

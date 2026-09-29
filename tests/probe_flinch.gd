@@ -9,6 +9,11 @@ var failures: Array[String] = []
 
 
 func _initialize() -> void:
+	# The opening sequence is not what this file is about, and it would change the
+	# street under it: it places its own bodies and keeps the standing roster off
+	# the map. Switched off here, before the world is built -- the world builds
+	# itself in `_ready()`, so there is no later chance to ask for this.
+	MayoTutorial.disabled = true
 	call_deferred("_run")
 
 
@@ -128,11 +133,15 @@ func _run() -> void:
 	_check(is_equal_approx(angles[angles.size() - 1], MayoEnemy.FLAT),
 		"it did not come to rest flat after the bounce")
 
-	# --- nothing was added to the packet -----------------------------------
-	_check(scene.ENEMY_STATE_STRIDE == 6,
+	# --- the flinch added nothing to the packet ----------------------------
+	# Seven fields, not six: `max_health` was added later so a health bar reads
+	# the same on every screen. The flinch itself still rides on `fall_angle`,
+	# which is what these two check -- it is a fourth field it shares, not a
+	# field of its own.
+	_check(scene.ENEMY_STATE_STRIDE == 7,
 		"the enemy state packet grew: the flinch was meant to ride on fall_angle")
 	var state: Array = victim.network_state()
-	_check(state.size() == 4 and state[3] is float,
+	_check(state.size() == 5 and state[3] is float,
 		"fall_angle is no longer the fourth field of the enemy state")
 
 	# --- the shake goes to whoever was hitting it --------------------------
