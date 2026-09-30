@@ -57,7 +57,6 @@ func update_ribbon(
 		camera_position: Vector3,
 		camera_forward: Vector3,
 		base_width: float,
-		_tint: Color,
 		y_offset: float = 0.0
 	) -> void:
 	_used_vertices = 0

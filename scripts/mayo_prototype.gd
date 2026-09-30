@@ -184,6 +184,10 @@ class Shooter:
 	## And which sauce that is. A bottle holds one at a time; the stall that
 	## fills it decides which, so this changes at a refill and nowhere else.
 	var sauce_kind := ContaminationGrid.KIND_MAYO
+	## This shooter's own copies of the ribbon materials, so its stream can be a
+	## different sauce from everyone else's.
+	var air_material: StandardMaterial3D
+	var landing_material: StandardMaterial3D
 	## How long the squirt under way has been running.
 	var burst_time := 0.0
 	## And how long sauce has actually been *coming out* of it.
@@ -902,6 +906,8 @@ var _letterbox: Array[ColorRect] = []
 var _view_layout := Rect2()
 var _hud_layer: CanvasLayer
 var _mayo_material: Material
+## White plus `vertex_color_use_as_albedo`, for the two shared pools only.
+var _pool_material: Material
 var _landing_material: Material
 var _shadow_material: Material
 var _camera: Camera3D
@@ -1948,11 +1954,15 @@ func _build_world() -> void:
 	_camera.near = 0.05
 	add_child(_camera)
 
+	# **Two ways of colouring one sauce, because the two things drawn differ.**
+	# The droplet and impact pools are one pool each for the whole world, so their
+	# sauce cannot be in the material: it goes in the instance colour, and the
+	# material is white with `vertex_color_use_as_albedo` to let it through. The
+	# ribbons are one per shooter, and their mesh carries vertices and nothing
+	# else -- no colour array to put a tint in -- so each shooter gets its own
+	# copy of the material and the sauce is that copy's albedo.
 	var mayo_material := StandardMaterial3D.new()
-	# White, with the sauce coming from the instance colour. Left at the mayo
-	# swatch it would multiply every sauce by cream and mustard would arrive pale.
-	mayo_material.albedo_color = Color.WHITE
-	mayo_material.vertex_color_use_as_albedo = true
+	mayo_material.albedo_color = Color("fff0a8")
 	mayo_material.roughness = 0.28
 	mayo_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mayo_material.cull_mode = BaseMaterial3D.CULL_DISABLED
@@ -1969,12 +1979,17 @@ func _build_world() -> void:
 	shadow_material.no_depth_test = false
 	shadow_material.render_priority = -1
 
+	var pool_material := mayo_material.duplicate() as StandardMaterial3D
+	pool_material.albedo_color = Color.WHITE
+	pool_material.vertex_color_use_as_albedo = true
+
 	_mayo_material = mayo_material
 	_landing_material = landing_material
+	_pool_material = pool_material
 	_shadow_material = shadow_material
 	_build_shooter_visuals(_local)
-	_build_droplet_pool(mayo_material)
-	_build_impact_pool(mayo_material)
+	_build_droplet_pool(pool_material)
+	_build_impact_pool(pool_material)
 	_build_crosshair()
 	_build_network_panel()
 	# Before the enemies: whether the tutorial is running decides whether the
@@ -2246,8 +2261,13 @@ func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
 
 func _build_shooter_visuals(shooter: Shooter) -> void:
 	var suffix := str(shooter.peer_id)
-	shooter.air_visual = _make_stream_visual("AirRibbon" + suffix, _mayo_material)
-	shooter.landing_visual = _make_stream_visual("LandingRibbon" + suffix, _landing_material)
+	# Duplicated, not shared: the sauce lives in this material's albedo, so two
+	# players carrying different bottles need two materials or one of them is
+	# drawn in the other's sauce.
+	shooter.air_material = _mayo_material.duplicate() as StandardMaterial3D
+	shooter.landing_material = _landing_material.duplicate() as StandardMaterial3D
+	shooter.air_visual = _make_stream_visual("AirRibbon" + suffix, shooter.air_material)
+	shooter.landing_visual = _make_stream_visual("LandingRibbon" + suffix, shooter.landing_material)
 	shooter.shadow_visual = _make_stream_visual("ProjectedShadow" + suffix, _shadow_material)
 
 
@@ -3990,6 +4010,23 @@ func apply_splats(data: PackedInt32Array) -> void:
 			_walls[wall_index].paint_mayo_cell(face, cell, sauce)
 
 
+## **Everything about this shooter that is the colour of its sauce.** The bottle's
+## contents, and its two ribbon materials.
+##
+## Called where the sauce changes rather than every frame: it is a refill and
+## nothing else, and setting an albedo on two materials per shooter per frame is
+## work for a value that changes once a minute.
+func _apply_sauce_look(shooter: Shooter) -> void:
+	_update_bottle_gauge(shooter)
+	var tint: Color = SAUCE_TINTS[shooter.sauce_kind]
+	if shooter.air_material != null:
+		shooter.air_material.albedo_color = tint
+	if shooter.landing_material != null:
+		# The landing ribbon keeps the alpha its own material was built with.
+		shooter.landing_material.albedo_color = Color(tint.r, tint.g, tint.b,
+			shooter.landing_material.albedo_color.a)
+
+
 ## The surface and the sauce in one int, the way `apply_splats` reads them back.
 func _splat_code(surface: int, sauce: int) -> int:
 	return surface | (sauce << SPLAT_SAUCE_SHIFT)
@@ -4093,7 +4130,7 @@ func apply_refill(peer_id: int, sauce := -1) -> void:
 	# decision, and the peer that made it is the only one that knows it.
 	if sauce >= 0 and sauce < STATION_SAUCES.size():
 		shooter.sauce_kind = STATION_SAUCES[sauce]
-	_update_bottle_gauge(shooter)
+	_apply_sauce_look(shooter)
 
 
 ## True when the local player is standing at a station, for the HUD prompt.
@@ -4274,14 +4311,10 @@ func _update_visuals(shooter: Shooter = null) -> void:
 	var air_segments := _segments_for_phase(PointPhase.AIR, camera_position, shooter)
 	var landing_segments := _segments_for_phase(PointPhase.LANDING, camera_position, shooter)
 	var shadow_segments := _shadow_segments(camera_position, shooter)
-	# The stream is the colour of what is in the bottle. Taken from the same table
-	# the bottle's own contents are drawn from, so a player who has just switched
-	# sees it on the weapon and in the air rather than only where it lands.
-	var sauce_tint: Color = SAUCE_TINTS[shooter.sauce_kind]
-	shooter.air_visual.update_ribbon(air_segments, camera_position, camera_forward, strand_thickness, sauce_tint)
-	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, strand_thickness, sauce_tint, 0.004)
-	shooter.shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward, strand_thickness * 0.72,
-		Color(0.08, 0.07, 0.055, 0.18), 0.012)
+	shooter.air_visual.update_ribbon(air_segments, camera_position, camera_forward, strand_thickness)
+	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, strand_thickness, 0.004)
+	shooter.shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward,
+		strand_thickness * 0.72, 0.012)
 
 
 ## True for points sitting on top of the camera, which in first person would
@@ -4426,7 +4459,10 @@ func _build_droplet_pool(mayo_material: Material) -> void:
 ## at most 33 impacts a second per world, or about 200 live pieces at the
 ## default counts and lifetime. The pool is nearly twice that so a burst of
 ## simultaneous hits still has somewhere to go.
-func _build_impact_pool(mayo_material: Material) -> void:
+## Builds its own material rather than taking the pool one: this spray is lit
+## where the rest of the sauce is unshaded, which is the whole point of the
+## function, so the argument is here for symmetry with the droplet pool only.
+func _build_impact_pool(_unused_material: Material) -> void:
 	# **Lit, unlike everything else made of sauce here.**
 	#
 	# The strand and the landing droplets are unshaded, which is right for them:
@@ -4437,7 +4473,12 @@ func _build_impact_pool(mayo_material: Material) -> void:
 	# highlight and a shaded side, and that alone is most of the difference
 	# between paint and something thick.
 	var spray_material := StandardMaterial3D.new()
-	spray_material.albedo_color = Color("f7e7a2")
+	# White, with the sauce arriving as the instance's own colour: this pool is
+	# shared by everyone firing, so the material cannot know which sauce it is
+	# drawing. Left at the cream swatch it multiplied every sauce by cream and
+	# mustard came out of a hit pale.
+	spray_material.albedo_color = Color.WHITE
+	spray_material.vertex_color_use_as_albedo = true
 	# Not shiny -- mayonnaise is a soft matte gloss, not a wet plastic bead --
 	# but far from flat, so the highlight rolls across a lump as it tumbles.
 	spray_material.roughness = 0.42
@@ -4446,7 +4487,9 @@ func _build_impact_pool(mayo_material: Material) -> void:
 	# A little of its own light so a lump in shadow still reads as sauce rather
 	# than as a dark speck, without going back to flat.
 	spray_material.emission_enabled = true
-	spray_material.emission = Color("fff0c0")
+	# Neutral rather than cream, for the same reason the albedo is: a warm glow
+	# added to every sauce is cream leaking back in through the other channel.
+	spray_material.emission = Color.WHITE
 	spray_material.emission_energy_multiplier = 0.18
 	var speck_mesh := _build_lump_mesh(spray_material)
 
