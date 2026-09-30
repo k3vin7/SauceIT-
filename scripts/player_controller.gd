@@ -23,6 +23,18 @@ enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 ## body's own, not the sauce's -- a player that floated like a droplet would be
 ## unplayable.
 @export_range(0.0, 20.0, 0.1, "suffix:m/s") var jump_speed := 8.0
+
+@export_group("Mustard")
+## What mustard does to a walk and a run, as a fraction of each.
+##
+## One scale for both rather than a flat subtraction: taking a fixed 3 m/s off
+## leaves a walk crawling and barely touches a run, so the sauce meant to stop
+## somebody closing on you would be worth least against the thing sprinting at
+## you.
+@export_range(0.05, 1.0, 0.01) var mustard_slow_scale := 0.55
+## How long a hit keeps dragging. Long enough to matter after the shooter has
+## moved on, short enough that a single splash is not a sentence.
+@export_range(0.0, 10.0, 0.1, "suffix:s") var mustard_slow_seconds := 2.5
 @export_range(1.0, 60.0, 0.5, "suffix:m/s²") var fall_gravity := 20.0
 
 @export_group("Health")
@@ -73,6 +85,13 @@ var use_injected_input := false
 var frozen := false
 var input_move := Vector2.ZERO
 var input_run := false
+## Counts down while a mustard hit is still dragging.
+var mustard_slow := 0.0
+## True while standing in mustard thick enough to drag, set from the floor by
+## whoever is already asking the floor about this player. Kept as a flag rather
+## than read here, because a body has no business knowing where the floor node
+## is -- the slip test is arranged the same way.
+var in_mustard := false
 var input_jump := false
 var state := State.NORMAL
 ## +1 goes over backwards, -1 pitches forward. Set when the slip starts and
@@ -164,6 +183,25 @@ func health_fraction() -> float:
 ##
 ## Authority only in practice: it is called from the enemy's contact step, which
 ## a client never runs, and the resulting position travels in the state packet.
+## **Mustard drags, and being hit and standing in it are the same drag.**
+##
+## Deliberately not multiplied together. Both are mustard, and at the default
+## scale two of them is 0.30 -- a player shot while crossing a puddle would be
+## slower than a walk on a floor they cannot see the difference in, for a reason
+## they have no way to read off the screen. The worse of the two wins instead,
+## which is what a player can actually follow: mustard is on you, or it is not.
+func mustard_factor() -> float:
+	if mustard_slow > 0.0 or in_mustard:
+		return mustard_slow_scale
+	return 1.0
+
+
+## A mustard hit landed. Authority only: the drag changes this body's velocity,
+## and the position that comes out of it is what travels.
+func splash_mustard() -> void:
+	mustard_slow = mustard_slow_seconds
+
+
 func apply_enemy_impact(flat_direction: Vector3, push_speed: float,
 		lift_speed: float) -> void:
 	var direction := Vector3(flat_direction.x, 0.0, flat_direction.z)
@@ -172,15 +210,16 @@ func apply_enemy_impact(flat_direction: Vector3, push_speed: float,
 	_pending_enemy_impact += direction.normalized() * push_speed + Vector3.UP * lift_speed
 
 
-func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
+func paint_mayo(world_position: Vector3, world_normal: Vector3,
+		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
 	if contamination == null:
 		return Vector2i(-1, -1)
-	return contamination.paint_mayo(world_position, world_normal)
+	return contamination.paint_mayo(world_position, world_normal, kind)
 
 
-func paint_mayo_cell(cell: Vector2i) -> void:
+func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
 	if contamination != null:
-		contamination.paint_mayo_cell(cell)
+		contamination.paint_mayo_cell(cell, kind)
 
 
 
@@ -195,6 +234,7 @@ func _physics_process(delta: float) -> void:
 		_advance_fall(delta)
 	else:
 		_recovery_timer = maxf(_recovery_timer - delta, 0.0)
+	mustard_slow = maxf(mustard_slow - delta, 0.0)
 	_advance_wipe(delta)
 
 	var desired := Vector3.ZERO
@@ -205,6 +245,7 @@ func _physics_process(delta: float) -> void:
 		desired = global_basis * Vector3(input_vector.x, 0.0, input_vector.y)
 		desired.y = 0.0
 		desired *= run_speed if run_held() else walk_speed
+		desired *= mustard_factor()
 
 	# Going down keeps whatever speed the player slipped at and scrubs it off,
 	# so they skid forward instead of stopping dead where they tripped.

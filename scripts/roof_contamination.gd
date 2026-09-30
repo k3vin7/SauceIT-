@@ -58,12 +58,13 @@ func _process(_delta: float) -> void:
 	grid.upload_if_dirty()
 
 
-func paint_mayo(world_position: Vector3, _world_normal: Vector3) -> Vector2i:
-	return grid.paint(_to_grid(world_position), brush_radius)
+func paint_mayo(world_position: Vector3, _world_normal: Vector3,
+		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
+	return grid.paint(_to_grid(world_position), brush_radius, 1, -1, kind)
 
 
-func paint_mayo_cell(cell: Vector2i) -> void:
-	grid.paint_cell(cell, brush_radius)
+func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
+	grid.paint_cell(cell, brush_radius, 1, -1, kind)
 
 
 func painted_cell_count() -> int:

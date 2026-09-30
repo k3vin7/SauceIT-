@@ -73,6 +73,29 @@ signal sauce_stage_changed(peer_id: int, stage: int)
 const ENEMY_STATE_STRIDE := 7
 ## Ints per entry in a splat batch: kind, target, cell x, cell y.
 const SPLAT_STRIDE := 4
+## The sauce rides in the splat code's high bits rather than in a fifth int.
+##
+## A splat is four ints, and that number is the point of the whole scheme: the
+## centre cell and the surface are enough for every peer to reproduce the
+## server's grid exactly, so the cell list never goes over the wire. A fifth int
+## for the sauce would be a quarter more traffic on the busiest message the game
+## sends, to carry two bits. The surface codes above are single digits and the
+## sauces are four, so both fit in one int with room to spare.
+## The sauces the stations hand out, in the order they cycle through.
+const STATION_SAUCES: Array[int] = [
+	ContaminationGrid.KIND_MAYO,
+	ContaminationGrid.KIND_MUSTARD,
+	ContaminationGrid.KIND_KETCHUP,
+]
+## What a full bottle of each sauce looks like, indexed by the sauce.
+const SAUCE_TINTS: Array[Color] = [
+	Color("fff0a8"),  # mayo
+	Color("e8c53a"),  # mustard
+	Color("c8342a"),  # ketchup
+	Color("fff0a8"),  # the fourth kind is unused and reads as mayo
+]
+const SPLAT_SAUCE_SHIFT := 8
+const SPLAT_SURFACE_MASK := 0xFF
 const FACES_PER_WALL := 6
 
 enum PointPhase { AIR, LANDING }
@@ -143,6 +166,9 @@ class Shooter:
 	var trigger_released := true
 	## How much is left in the tank, 1 at full and 0 dry.
 	var sauce := 1.0
+	## And which sauce that is. A bottle holds one at a time; the stall that
+	## fills it decides which, so this changes at a refill and nowhere else.
+	var sauce_kind := ContaminationGrid.KIND_MAYO
 	## How long the squirt under way has been running.
 	var burst_time := 0.0
 	## And how long sauce has actually been *coming out* of it.
@@ -392,6 +418,18 @@ class MayoSpeck:
 ## the front of its counter. The player is 1.28 m across, so this is a step or
 ## two back from the counter rather than a room-sized trigger.
 @export_range(0.5, 8.0, 0.1, "suffix:m") var refill_reach := 2.6
+
+@export_group("Mustard")
+## **Mustard as a set of scales on the mayo numbers, not a second set of them.**
+##
+## Everything mayo does is tuned against everything else it does -- the squirt
+## length against the drain rate, the pause against the minimum every press is
+## owed -- and a parallel copy of those numbers is a second thing to keep in
+## step with the first. Three scales say what mustard *is* instead: slower out
+## of the nozzle, a shorter squirt, and longer between them.
+@export_range(0.2, 1.0, 0.01) var mustard_speed_scale := 0.68
+@export_range(0.2, 1.0, 0.01) var mustard_burst_scale := 0.75
+@export_range(1.0, 4.0, 0.05) var mustard_pause_scale := 1.8
 
 @export_group("Sauce Reliability")
 ## Above this the bottle is dependable: the stream starts the instant the
@@ -1013,6 +1051,9 @@ func _physics_process(delta: float) -> void:
 	if _is_authority():
 		for shooter in _shooters.values():
 			_update_slip(shooter)
+		# Before the enemies step, so a body wading into mustard is slowed on the
+		# frame it arrives rather than a frame after it.
+		_update_mustard_field()
 		# After the slip test and before the strand: an enemy that shoved a
 		# player this frame should be where the strand is aimed from.
 		_advance_enemies(delta)
@@ -1093,7 +1134,8 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 			# the player ended themselves costs the short one. Either way the
 			# trigger comes back by itself when the pause is over, so holding
 			# the button through it starts the next squirt.
-			shooter.fire_cooldown = spent_burst_cooldown if spent else fire_cooldown_time
+			shooter.fire_cooldown = spent_burst_cooldown * sauce_pause_scale(shooter) \
+				if spent else fire_cooldown_time
 	elif shooter.firing and shooter.sauce > 0.0:
 		# An empty bottle puts out nothing at all. The minimum squirt below is
 		# what every press is *owed*, not what it is owed out of an empty
@@ -1102,7 +1144,7 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		shooter.fire_hold = minimum_fire_time
 		shooter.trigger_released = false
 		shooter.burst_time = 0.0
-		shooter.burst_allowance = burst_seconds_at(shooter.sauce)
+		shooter.burst_allowance = burst_seconds_at(shooter.sauce) * sauce_burst_scale(shooter)
 		firing = true
 
 	# What the trigger is asking for is now separate from what the nozzle does
@@ -1128,7 +1170,8 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		# The nozzle feeds the strand at the speed it is actually delivering, so
 		# a squeeze running out of pressure lays its points down more slowly
 		# instead of packing them closer together.
-		shooter.emit_distance += extend_speed * squeeze_pressure(shooter) * delta
+		shooter.emit_distance += extend_speed * squeeze_pressure(shooter) \
+			* sauce_speed_scale(shooter) * delta
 		shooter.burst_elapsed += delta
 		while shooter.emit_distance >= point_spacing:
 			shooter.emit_distance -= point_spacing
@@ -1440,6 +1483,21 @@ func burst_seconds_at(sauce_fraction: float) -> float:
 	if level >= middle:
 		return lerpf(half_burst_seconds, full_burst_seconds, (level - middle) / (1.0 - middle))
 	return lerpf(empty_burst_seconds, half_burst_seconds, level / middle)
+
+
+## The scales for whatever is in this bottle. Mayo is the baseline and ketchup
+## is deliberately mayo for now -- its own character is the stacking, not the
+## trigger -- so this is one `if` rather than a table with two identical rows.
+func sauce_speed_scale(shooter: Shooter) -> float:
+	return mustard_speed_scale if shooter.sauce_kind == ContaminationGrid.KIND_MUSTARD else 1.0
+
+
+func sauce_burst_scale(shooter: Shooter) -> float:
+	return mustard_burst_scale if shooter.sauce_kind == ContaminationGrid.KIND_MUSTARD else 1.0
+
+
+func sauce_pause_scale(shooter: Shooter) -> float:
+	return mustard_pause_scale if shooter.sauce_kind == ContaminationGrid.KIND_MUSTARD else 1.0
 
 
 ## True once this squirt has had everything it is getting: its allowance is up,
@@ -2406,7 +2464,12 @@ func _update_bottle_gauge(shooter: Shooter) -> void:
 
 	var stage := sauce_stage_of(level)
 	# PLACEHOLDER colours. The three bands are what matters, not the swatches.
-	var tint := Color("fff0a8")
+	# The steady swatch is the sauce's own, because at a glance the bottle is the
+	# only thing on screen that says what is loaded; the two unreliable bands
+	# stay as they were, since what they are reporting is the nozzle rather than
+	# the contents and reading them as a fourth sauce would be worse than
+	# losing the colour for a second.
+	var tint: Color = SAUCE_TINTS[shooter.sauce_kind]
 	if stage == SauceStage.SPLUTTERING:
 		tint = Color("e8a33c")
 	elif stage == SauceStage.EMPTY:
@@ -2784,9 +2847,15 @@ func _add_refill_station(box: Dictionary) -> void:
 	var size: Vector3 = box["size"]
 	var facing: Vector3 = box["facing"]
 	var depth: float = size.x if absf(facing.x) > 0.5 else size.z
+	# **Which sauce a station serves, by the order they are built in.** The list
+	# is built identically on every peer -- it comes off the map, not off play --
+	# so the cycle needs nothing on the wire to agree. Cycling rather than
+	# randomising also means the street always has all three within a walk of
+	# each other, instead of a stretch that can only refill one thing.
 	_refill_stations.push_back({
 		"position": box["position"] + facing * (depth * 0.5),
 		"facing": facing,
+		"sauce": _refill_stations.size() % STATION_SAUCES.size(),
 	})
 
 
@@ -3397,6 +3466,26 @@ func _update_slip(shooter: Shooter) -> void:
 			_tutorial.note_slip(shooter.peer_id)
 
 
+## **Who is standing in mustard, asked once a frame for every body there is.**
+##
+## Pushed onto the bodies rather than pulled by them: a player and a monster have
+## no handle on the floor node, and the slip test is arranged the same way round
+## for the same reason. One `is_slowing_at` per body per frame is a single cell
+## lookup each -- the same cost the slip test already pays.
+##
+## Unlike the slip test this does not care whether anyone is running. Mayo trips
+## you at a run and is harmless at a walk; mustard drags whatever is in it, which
+## is the whole of what it is for.
+func _update_mustard_field() -> void:
+	for shooter in _shooters.values():
+		var player: MayoPlayer = shooter.player
+		if is_instance_valid(player):
+			player.in_mustard = _floor.is_slowing_at(player.global_position)
+	for enemy in _enemies:
+		if is_instance_valid(enemy):
+			enemy.in_mustard = _floor.is_slowing_at(enemy.global_position)
+
+
 ## Orientation of the aim, shared by the camera and the strand direction.
 func _aim_basis(shooter: Shooter = null) -> Basis:
 	if shooter == null:
@@ -3505,7 +3594,7 @@ func _emit_point(shooter: Shooter = null) -> void:
 	# shortens the throw as the hand closes. Applied here rather than to the
 	# points already out: those have left the nozzle and keep whatever they were
 	# given.
-	var speed := extend_speed * squeeze_pressure(shooter) \
+	var speed := extend_speed * squeeze_pressure(shooter) * sauce_speed_scale(shooter) \
 		* (1.0 + shooter.rng.randf_range(-speed_magnitude_jitter, speed_magnitude_jitter))
 	var player_velocity := shooter.player.velocity
 	point.velocity = direction * speed + Vector3(player_velocity.x, 0.0, player_velocity.z) * inherited_player_velocity
@@ -3727,10 +3816,11 @@ func _record_floor_splat(shooter: Shooter, burst_index: int,
 		shooter.coat_frame = frame
 		_next_coat += 1
 		shooter.coat_id = _next_coat
-	var cell := _floor.paint_mayo(hit_position, shooter.coat_id)
+	var cell := _floor.paint_mayo(hit_position, shooter.coat_id, shooter.sauce_kind)
 	if cell.x >= 0:
 		_pending_splats.append_array(PackedInt32Array([
-			SPLAT_FLOOR, shooter.coat_id, cell.x, cell.y]))
+			_splat_code(SPLAT_FLOOR, shooter.sauce_kind), shooter.coat_id,
+			cell.x, cell.y]))
 
 
 ## The server paints whatever was hit and queues the same splat for the peers.
@@ -3746,32 +3836,41 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 		shooter: Shooter, damaging := true) -> void:
 	if surface is ContaminableObject:
 		var wall := surface as ContaminableObject
-		var splat := wall.paint_mayo(hit_position, hit_normal)
+		var splat := wall.paint_mayo(hit_position, hit_normal, shooter.sauce_kind)
 		var index := _walls.find(wall)
 		if splat.x < 0 or index < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
-			SPLAT_WALL, index * FACES_PER_WALL + splat.x, splat.y, splat.z]))
+			_splat_code(SPLAT_WALL, shooter.sauce_kind),
+			index * FACES_PER_WALL + splat.x, splat.y, splat.z]))
 		return
 	if surface is MayoPlayer:
 		var player := surface as MayoPlayer
-		var cell := player.paint_mayo(hit_position, hit_normal)
+		# **Mustard slows whoever it lands on, and that includes the party.**
+		# The sauce is a tool rather than a side, so friendly fire drags a
+		# teammate exactly as it drags a monster -- the alternative is a stream
+		# that stops at a body it plainly hit.
+		if damaging and shooter.sauce_kind == ContaminationGrid.KIND_MUSTARD:
+			player.splash_mustard()
+		var cell := player.paint_mayo(hit_position, hit_normal, shooter.sauce_kind)
 		if cell.x < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
-			SPLAT_BODY, player.peer_id, cell.x, cell.y]))
-		_record_visor_splat(player, hit_position)
+			_splat_code(SPLAT_BODY, shooter.sauce_kind), player.peer_id,
+			cell.x, cell.y]))
+		_record_visor_splat(player, hit_position, shooter.sauce_kind)
 		return
 	if surface is StallRoof:
 		var roof := surface as StallRoof
 		var roof_index := _roofs.find(roof)
 		if roof_index < 0:
 			return
-		var roof_cell := roof.paint_mayo(hit_position, hit_normal)
+		var roof_cell := roof.paint_mayo(hit_position, hit_normal, shooter.sauce_kind)
 		if roof_cell.x < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
-			SPLAT_ROOF, roof_index, roof_cell.x, roof_cell.y]))
+			_splat_code(SPLAT_ROOF, shooter.sauce_kind), roof_index,
+			roof_cell.x, roof_cell.y]))
 		return
 	if surface is MayoEnemy:
 		var enemy := surface as MayoEnemy
@@ -3805,11 +3904,14 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds)
 				elif enemy.is_flinching():
 					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds)
-		var enemy_cell := enemy.paint_mayo(hit_position, hit_normal)
+		if damaging and shooter.sauce_kind == ContaminationGrid.KIND_MUSTARD:
+			enemy.splash_mustard()
+		var enemy_cell := enemy.paint_mayo(hit_position, hit_normal, shooter.sauce_kind)
 		if enemy_cell.x < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
-			SPLAT_ENEMY, index, enemy_cell.x, enemy_cell.y]))
+			_splat_code(SPLAT_ENEMY, shooter.sauce_kind), index,
+			enemy_cell.x, enemy_cell.y]))
 
 
 ## Replays a batch of splat centre cells from the server. `paint_cell` depends
@@ -3818,25 +3920,27 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 func apply_splats(data: PackedInt32Array) -> void:
 	var index := 0
 	while index + 3 < data.size():
-		var kind := data[index]
+		var code := data[index]
+		var kind := code & SPLAT_SURFACE_MASK
+		var sauce := code >> SPLAT_SAUCE_SHIFT
 		var target := data[index + 1]
 		var cell := Vector2i(data[index + 2], data[index + 3])
 		index += 4
 		if kind == SPLAT_FLOOR:
-			_floor.paint_mayo_cell(cell, target)
+			_floor.paint_mayo_cell(cell, target, sauce)
 			continue
 		if kind == SPLAT_BODY:
 			var body_shooter: Shooter = _shooters.get(target)
 			if body_shooter != null:
-				body_shooter.player.paint_mayo_cell(cell)
+				body_shooter.player.paint_mayo_cell(cell, sauce)
 			continue
 		if kind == SPLAT_ROOF:
 			if target >= 0 and target < _roofs.size():
-				_roofs[target].paint_mayo_cell(cell)
+				_roofs[target].paint_mayo_cell(cell, sauce)
 			continue
 		if kind == SPLAT_ENEMY:
 			if target >= 0 and target < _enemies.size():
-				_enemies[target].paint_mayo_cell(cell)
+				_enemies[target].paint_mayo_cell(cell, sauce)
 			continue
 		if kind == SPLAT_VISOR or kind == SPLAT_VISOR_CLEAR:
 			var visor_shooter: Shooter = _shooters.get(target)
@@ -3844,12 +3948,17 @@ func apply_splats(data: PackedInt32Array) -> void:
 				if kind == SPLAT_VISOR_CLEAR:
 					visor_shooter.player.visor.clear()
 				else:
-					visor_shooter.player.visor.paint_cell(cell)
+					visor_shooter.player.visor.paint_cell(cell, sauce)
 			continue
 		var wall_index := target / FACES_PER_WALL
 		var face := target % FACES_PER_WALL
 		if wall_index >= 0 and wall_index < _walls.size():
-			_walls[wall_index].paint_mayo_cell(face, cell)
+			_walls[wall_index].paint_mayo_cell(face, cell, sauce)
+
+
+## The surface and the sauce in one int, the way `apply_splats` reads them back.
+func _splat_code(surface: int, sauce: int) -> int:
+	return surface | (sauce << SPLAT_SAUCE_SHIFT)
 
 
 ## A hit that lands in front of a player's eyes goes on their glasses as well
@@ -3864,15 +3973,16 @@ func apply_splats(data: PackedInt32Array) -> void:
 ## which is a bigger change than the doubling is worth. What keeps it honest is
 ## the filtering below: anything level with the lenses or behind them, and
 ## anything projecting outside the physical lens, marks nothing.
-func _record_visor_splat(player: MayoPlayer, hit_position: Vector3) -> void:
+func _record_visor_splat(player: MayoPlayer, hit_position: Vector3,
+		sauce := ContaminationGrid.KIND_MAYO) -> void:
 	if player.visor == null:
 		return
 	var direction := player.visor.to_local(hit_position)
-	var cell := player.visor.paint_from_hit(direction)
+	var cell := player.visor.paint_from_hit(direction, sauce)
 	if cell.x < 0:
 		return
 	_pending_splats.append_array(PackedInt32Array([
-		SPLAT_VISOR, player.peer_id, cell.x, cell.y]))
+		_splat_code(SPLAT_VISOR, sauce), player.peer_id, cell.x, cell.y]))
 
 
 ## Which stall this player could be served at, or -1 for none. Flat distance,
@@ -3941,6 +4051,18 @@ func apply_refill(peer_id: int) -> void:
 	if shooter == null:
 		return
 	shooter.sauce = 1.0
+	# **A bottle holds what the machine it was filled at serves.** Worked out
+	# from the station rather than sent with the refill, because it is not a
+	# decision: the stations are built off the map and the player is standing at
+	# one. On a client this is the bottle's own look and nothing else -- every
+	# splat carries its sauce, so what actually lands is the server's answer
+	# either way, and a client that picked the wrong station mis-colours a
+	# bottle rather than painting the wrong sauce.
+	var station := station_in_reach(shooter.player)
+	if station >= 0:
+		var serves: Dictionary = _refill_stations[station]
+		shooter.sauce_kind = int(serves.get("sauce", ContaminationGrid.KIND_MAYO))
+		_update_bottle_gauge(shooter)
 
 
 ## True when the local player is standing at a station, for the HUD prompt.

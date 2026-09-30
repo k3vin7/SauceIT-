@@ -134,12 +134,13 @@ func add_visual_overlay(visual_root: Node) -> void:
 ## body. **The normal picks the chart**: it is what says whether the sauce
 ## landed on a wall of the body or on its top. With no caps there is only one
 ## chart and it is ignored, which is what it was for a long time.
-func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
-	return grid.paint(_to_grid(world_position, world_normal), brush_radius)
+func paint_mayo(world_position: Vector3, world_normal: Vector3,
+		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
+	return grid.paint(_to_grid(world_position, world_normal), brush_radius, 1, -1, kind)
 
 
-func paint_mayo_cell(cell: Vector2i) -> void:
-	grid.paint_cell(cell, brush_radius)
+func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
+	grid.paint_cell(cell, brush_radius, 1, -1, kind)
 
 
 ## Clean again, for a body that is being handed to a different player.

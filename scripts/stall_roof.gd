@@ -90,15 +90,16 @@ func build(base_radius: float, roof_height: float, cell_size: float,
 	contamination.configure(self, mesh_instance, base_radius, roof_height, color)
 
 
-func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
+func paint_mayo(world_position: Vector3, world_normal: Vector3,
+		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
 	if contamination == null:
 		return Vector2i(-1, -1)
-	return contamination.paint_mayo(world_position, world_normal)
+	return contamination.paint_mayo(world_position, world_normal, kind)
 
 
-func paint_mayo_cell(cell: Vector2i) -> void:
+func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
 	if contamination != null:
-		contamination.paint_mayo_cell(cell)
+		contamination.paint_mayo_cell(cell, kind)
 
 
 func cells_md5() -> String:

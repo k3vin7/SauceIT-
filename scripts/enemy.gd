@@ -186,6 +186,15 @@ var kind := EnemyKind.BRUISER
 ## body moves at 40% of its speed -- so the fight visibly winds down rather than
 ## ending at a threshold.
 @export_range(0.0, 1.0, 0.05) var soiled_slowdown := 0.55
+## And what mustard does to it, as a fraction of the pace it would have had.
+##
+## Multiplied into the pace rather than added to `soiled_slowdown`, which is a
+## share of how beaten the body is: a fresh monster has no soiling for mustard to
+## add to, so adding would have made the sauce do nothing to the one body the
+## player most wants slowed. The same two numbers a player gets, so a monster
+## wading through a puddle is slowed by what slowed them.
+@export_range(0.05, 1.0, 0.01) var mustard_slow_scale := 0.55
+@export_range(0.0, 10.0, 0.1, "suffix:s") var mustard_slow_seconds := 2.5
 
 @export_group("Flinching")
 ## How far it rocks back when a threshold is crossed.
@@ -242,6 +251,11 @@ func set_tutorial_trapped(value: bool, at: Vector3) -> void:
 	_trap_position = at
 
 
+## Counts down while a mustard hit is still dragging this body.
+var mustard_slow := 0.0
+## True while it is standing in mustard thick enough to drag. Set from outside,
+## by whoever is already asking the floor about this body.
+var in_mustard := false
 var _contact_cooldown := 0.0
 var _route := PackedVector3Array()
 var _route_step := 0
@@ -1059,15 +1073,29 @@ func _settle_onto_ground() -> void:
 	_fall_pivot += Vector3.UP * lift
 
 
-func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:
+## **Mustard drags a monster the way it drags a player**, and for the same
+## reason it is one drag rather than two: hit and standing in it do not multiply.
+func mustard_factor() -> float:
+	if mustard_slow > 0.0 or in_mustard:
+		return mustard_slow_scale
+	return 1.0
+
+
+## A mustard hit landed on this body.
+func splash_mustard() -> void:
+	mustard_slow = mustard_slow_seconds
+
+
+func paint_mayo(world_position: Vector3, world_normal: Vector3,
+		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
 	if contamination == null:
 		return Vector2i(-1, -1)
-	return contamination.paint_mayo(world_position, world_normal)
+	return contamination.paint_mayo(world_position, world_normal, kind)
 
 
-func paint_mayo_cell(cell: Vector2i) -> void:
+func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
 	if contamination != null:
-		contamination.paint_mayo_cell(cell)
+		contamination.paint_mayo_cell(cell, kind)
 
 
 func cells_md5() -> String:
@@ -1154,6 +1182,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		_advance_gait(Vector3.ZERO, true, delta)
 		return null
 	_contact_cooldown = maxf(_contact_cooldown - delta, 0.0)
+	mustard_slow = maxf(mustard_slow - delta, 0.0)
 	# Rocking back from a threshold. It keeps walking through it: the flinch is
 	# a stagger, not a stun, and stopping the chase would make a steady stream
 	# of hits into a hold.
@@ -1193,7 +1222,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	# shove: what it reads as is the fight winding down rather than a state
 	# change at a percentage.
 	var soiled := 1.0 - health_fraction()
-	var pace := move_speed * (1.0 - soiled_slowdown * soiled)
+	var pace := move_speed * (1.0 - soiled_slowdown * soiled) * mustard_factor()
 	if flat.length_squared() > 0.000001:
 		var direction := flat.normalized()
 		velocity.x = direction.x * pace

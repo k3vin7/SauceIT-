@@ -81,7 +81,8 @@ func set_view(fov_degrees: float, aspect: float) -> void:
 ## it looked on screen and anything past two thirds of the way out was thrown
 ## away entirely. The mask is the screen, so the screen's own frustum is what it
 ## has to be divided by.
-func paint_from_hit(direction: Vector3) -> Vector2i:
+func paint_from_hit(direction: Vector3,
+		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
 	var depth := -direction.z
 	if depth <= 0.001:
 		return Vector2i(-1, -1)
@@ -91,11 +92,11 @@ func paint_from_hit(direction: Vector3) -> Vector2i:
 	var screen := Vector2(
 		direction.x / (depth * tan_across),
 		direction.y / (depth * tan_up))
-	return grid.paint(screen * LENS_SIZE * 0.5, brush_radius)
+	return grid.paint(screen * LENS_SIZE * 0.5, brush_radius, 1, -1, kind)
 
 
-func paint_cell(cell: Vector2i) -> void:
-	grid.paint_cell(cell, brush_radius)
+func paint_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
+	grid.paint_cell(cell, brush_radius, 1, -1, kind)
 
 
 func clear() -> void:

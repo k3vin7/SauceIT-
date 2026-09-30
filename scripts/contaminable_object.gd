@@ -55,7 +55,8 @@ func configure(new_cell_size: float, new_brush_radius: float) -> void:
 ## Returns (face, cell_x, cell_y) for the splat, or (-1, -1, -1) if it missed.
 ## The floor's note on why the centre cell alone goes over the wire applies here
 ## too; `paint_mayo_cell` is the replay side.
-func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector3i:
+func paint_mayo(world_position: Vector3, world_normal: Vector3,
+		kind := ContaminationGrid.KIND_MAYO) -> Vector3i:
 	if grids.is_empty():
 		return Vector3i(-1, -1, -1)
 	var local_normal := (global_transform.basis.inverse() * world_normal).normalized()
@@ -67,16 +68,17 @@ func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector3i:
 	var v_axis: Vector3 = FACE_BASIS[face][2]
 	# The brush clips at the face border instead of wrapping around the box
 	# edge; a strand hitting a corner marks only the face it hit.
-	var cell := grids[face].paint(Vector2(local.dot(u_axis), local.dot(v_axis)), brush_radius)
+	var cell := grids[face].paint(Vector2(local.dot(u_axis), local.dot(v_axis)),
+		brush_radius, 1, -1, kind)
 	if cell.x < 0:
 		return Vector3i(-1, -1, -1)
 	return Vector3i(face, cell.x, cell.y)
 
 
-func paint_mayo_cell(face: int, cell: Vector2i) -> void:
+func paint_mayo_cell(face: int, cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
 	if face < 0 or face >= grids.size():
 		return
-	grids[face].paint_cell(cell, brush_radius)
+	grids[face].paint_cell(cell, brush_radius, 1, -1, kind)
 
 
 func cells_md5() -> String:
