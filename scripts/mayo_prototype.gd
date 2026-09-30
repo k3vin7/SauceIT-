@@ -458,8 +458,9 @@ class MayoSpeck:
 @export_range(1.0, 4.0, 0.05) var mustard_pause_scale := 1.8
 
 @export_group("Ketchup")
-## How far the blast reaches. Damage and sauce both stop here.
-@export_range(0.5, 12.0, 0.1, "suffix:m") var ketchup_burst_radius := 4.0
+## How far the blast reaches. Damage and sauce both stop here, and every body
+## inside it takes the same hit -- see the note in `_burst_ketchup`.
+@export_range(0.5, 16.0, 0.1, "suffix:m") var ketchup_burst_radius := 6.5
 ## What it takes off a body inside that, at full strength at the centre and
 ## nothing at the rim. Six stacks is two bottles or two players, so this is worth
 ## more than the squirting that built it -- otherwise the sauce is a worse way of
@@ -469,8 +470,15 @@ class MayoSpeck:
 ## marks is decided by the blast, not by where a fragment happens to land.
 @export_range(0, 64, 1) var ketchup_fragments := 28
 @export_range(0.5, 30.0, 0.5, "suffix:m/s") var ketchup_fragment_speed := 7.0
-## How many splats the blast leaves on the ground, out to the radius.
-@export_range(0, 80, 1) var ketchup_ground_splats := 26
+## How big a piece is, drawn between these two. Fatter than the spray a strand
+## throws: this is a body coming apart, and pieces the size of stream spatter read
+## as the stream rather than as the thing that just happened.
+@export_range(0.01, 0.4, 0.005, "suffix:m") var ketchup_fragment_radius_min := 0.05
+@export_range(0.01, 0.4, 0.005, "suffix:m") var ketchup_fragment_radius_max := 0.11
+## How many splats the blast leaves on the ground, out to the radius. Scaled with
+## the radius rather than kept: the disc at 6.5 m is two and a half times the area
+## it was at 4 m, and the same count over it is a scatter rather than a mess.
+@export_range(0, 160, 1) var ketchup_ground_splats := 68
 
 @export_group("Sauce Reliability")
 ## Above this the bottle is dependable: the stream starts the instant the
@@ -570,6 +578,11 @@ class MayoSpeck:
 ## seven, two players firing filled all 512 slots and began overwriting droplets
 ## that were still alive.
 @export_range(1, 16, 1) var droplets_per_landing := 4
+## How big a settled droplet is, drawn between these two. Exported because they
+## were two literals in the spawn loop, which is the last place anyone tuning the
+## look of the sauce would think to look.
+@export_range(0.005, 0.2, 0.001, "suffix:m") var droplet_radius_min := 0.024
+@export_range(0.005, 0.2, 0.001, "suffix:m") var droplet_radius_max := 0.052
 ## Droplets are static beads placed where a point settles, with no gravity and
 ## no fall: on a floor they read as spatter, on a wall or a player they would
 ## hang in the air. Now that walls and bodies land like the floor does, which
@@ -4065,16 +4078,24 @@ func _burst_ketchup(enemy: MayoEnemy, shooter: Shooter) -> void:
 	var centre := enemy.global_position
 	enemy.clear_ketchup()
 
-	# **Bodies in the blast, the one that carried it included.** Falling off to
-	# nothing at the rim, so standing at the edge of it is worth something.
+	# **Bodies in the blast, the one that carried it included.** Everything inside
+	# the radius takes the same hit, and the rim is a hard edge.
+	#
+	# BALANCE, to come back to) **damage falling off towards the rim.** The obvious
+	# alternative: `damage * (1 - gap / radius)`, full at the centre and nothing at
+	# the edge, so a blast is worth more the closer the bodies are packed and
+	# setting one off in the middle of a crowd beats setting it off at the side of
+	# one. It was written that way first and flattened deliberately -- a uniform
+	# blast is the one a player can predict from the ring on the floor, and
+	# predictable is what a six-stack setup wants to be paid in. Worth trying again
+	# once there is a fight big enough to tell the two apart.
 	for other in _enemies:
 		if not is_instance_valid(other) or not other.is_alive():
 			continue
 		var gap := other.global_position.distance_to(centre)
 		if gap > ketchup_burst_radius:
 			continue
-		var share := 1.0 - gap / maxf(ketchup_burst_radius, 0.001)
-		var damage := ketchup_burst_damage * share
+		var damage := ketchup_burst_damage
 		# Dealt through the same door a strand hit uses, one notional hit at a
 		# time, so a body killed by a blast dies the way a body killed by a stream
 		# does -- the flinch, the turn and the topple are all in there.
@@ -4144,7 +4165,7 @@ func _ketchup_fragments(centre: Vector3, shooter: Shooter) -> void:
 		var thrown := (out + Vector3.UP * lift).normalized()
 		_take_speck(now, centre + thrown * 0.3,
 			thrown * ketchup_fragment_speed * _rng.randf_range(0.7, 1.3),
-			_rng.randf_range(0.02, 0.05),
+			_rng.randf_range(ketchup_fragment_radius_min, ketchup_fragment_radius_max),
 			shooter.peer_id if shooter != null else 1,
 			ContaminationGrid.KIND_KETCHUP)
 	_speck_buffer_dirty = true
@@ -5210,7 +5231,7 @@ func _spawn_landing_droplets(position: Vector3,
 		droplet.active = true
 		droplet.sauce = sauce
 		droplet.expires_at = expires_at
-		droplet.radius = _rng.randf_range(0.014, 0.03)
+		droplet.radius = _rng.randf_range(droplet_radius_min, droplet_radius_max)
 		droplet.position = position + Vector3(cos(angle) * spread_radius, droplet.radius, sin(angle) * spread_radius)
 		_write_droplet_buffer((_droplet_cursor - 1 + _droplets.size()) % _droplets.size(),
 			droplet.position, droplet.radius * 2.0, SAUCE_TINTS[droplet.sauce])
