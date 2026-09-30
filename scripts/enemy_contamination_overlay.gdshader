@@ -24,7 +24,11 @@ uniform mat4 rest_to_body;
 // thickness now, 0 to 255, rather than a painted flag that was either 0 or 255
 // -- so a cut at 0.5 means a cell has to be hit about 128 times before any of
 // it is drawn, which reads as sauce not sticking at all.
-uniform float paint_threshold = 0.00196;
+// Scaled by the sauce bits: a thickness of `t` is stored as `t << 2`, so the
+// cut-off moves with it. Left at a thickness of 1's worth of byte, the linear
+// blend at a stain's edge would cross it an eighth of a cell in rather than
+// half of one, and every boundary on this surface would creep outwards.
+uniform float paint_threshold = 0.00784;
 
 // The axis the unwrap turns about, in body space. Not always the origin: the
 // burger monster's body sits a third of a metre back of its own node, so

@@ -44,14 +44,23 @@ uniform float mayo_roughness = 0.34;
 uniform float deep_roughness = 0.06;
 // Half a single splat's worth, normalised. Not 0.5 any more: a cell with one
 // deposit on it is nowhere near the top of the byte.
-uniform float paint_threshold = 0.00196;
+// Scaled by the sauce bits: a thickness of `t` is stored as `t << 2`, so the
+// cut-off moves with it. Left at a thickness of 1's worth of byte, the linear
+// blend at a stain's edge would cross it an eighth of a cell in rather than
+// half of one, and every boundary on this surface would creep outwards.
+uniform float paint_threshold = 0.00784;
 // The two middle steps default to the deep threshold, which collapses them onto
 // it and leaves the band pattern exactly as it was. Surfaces that want the
 // steps -- the floor -- push their own values; a wall or a visor, which nothing
 // walks on, is left alone.
-uniform float mid_threshold = 0.01176;
-uniform float thick_threshold = 0.01176;
-uniform float slip_threshold = 0.01176;
+uniform float mid_threshold = 0.04706;
+uniform float thick_threshold = 0.04706;
+uniform float slip_threshold = 0.04706;
+// What the mayo ramp is multiplied by where the cell holds another sauce. At
+// vec3(1.0) a sauce is drawn exactly as mayo is, which is what the fourth,
+// unused kind gets.
+uniform vec4 mustard_tint : source_color = vec4(1.00, 0.86, 0.26, 1.0);
+uniform vec4 ketchup_tint : source_color = vec4(1.00, 0.34, 0.24, 1.0);
 
 void fragment() {
 	float coverage = texture(mask_texture, UV).r;
@@ -60,16 +69,31 @@ void fragment() {
 	ivec2 mask_size = textureSize(mask_texture, 0);
 	ivec2 texel = clamp(ivec2(UV * vec2(mask_size)), ivec2(0), mask_size - ivec2(1));
 	float thickness = texelFetch(mask_texture, texel, 0).r;
+
+	// WHICH SAUCE, out of the byte's bottom two bits. Read from the same
+	// `texelFetch` the bands use and never from the filtered sample: a blend of
+	// two kinds is not a kind, and rounding one would draw a stripe of a third
+	// sauce along every seam. The rounding before `mod` is for the byte's own
+	// trip through a normalised float, which lands a hair under the integer.
+	float packed = floor(thickness * 255.0 + 0.5);
+	float kind = mod(packed, 4.0);
+	// A tint the mayo ramp is multiplied by, rather than a palette per sauce.
+	// The bands are what says how deep a patch is, and they are the same four
+	// steps whatever is in it; the hue only says which sauce. Three full
+	// palettes would let the two drift apart, and there is no reading of this
+	// floor where mustard should band differently from mayo.
+	vec3 tint = mix(vec3(1.0), mustard_tint.rgb, step(0.5, kind) * step(kind, 1.5));
+	tint = mix(tint, ketchup_tint.rgb, step(1.5, kind) * step(kind, 2.5));
 	// Only where there is mayo at all: a clean cell is not deep, whatever
 	// rounding does at the very bottom of the byte.
 	float mid = painted * step(mid_threshold, thickness);
 	float thick = painted * step(thick_threshold, thickness);
 	float deep = painted * step(slip_threshold, thickness);
 
-	vec3 stained = mix(clean_color.rgb, mayo_color.rgb, painted);
-	stained = mix(stained, mayo_color_mid.rgb, mid);
-	stained = mix(stained, mayo_color_thick.rgb, thick);
-	ALBEDO = mix(stained, deep_color.rgb, deep);
+	vec3 stained = mix(clean_color.rgb, mayo_color.rgb * tint, painted);
+	stained = mix(stained, mayo_color_mid.rgb * tint, mid);
+	stained = mix(stained, mayo_color_thick.rgb * tint, thick);
+	ALBEDO = mix(stained, deep_color.rgb * tint, deep);
 
 	float rough = mix(clean_roughness, mayo_roughness, painted);
 	rough = mix(rough, mix(mayo_roughness, deep_roughness, 0.3), mid);

@@ -15,7 +15,7 @@ extends StaticBody3D
 ## per splat that lands on it. A burst lays one layer down over everything it
 ## reaches; see `ContaminationGrid._coats` for why. The threshold below is set
 ## against this, so the pair is what decides how many passes it takes.
-@export_range(1, 64, 1) var thickness_per_pass := 1
+@export_range(1, 63, 1) var thickness_per_pass := 1
 ## At or over this, the floor is slippery. Under it, it is a stain.
 ##
 ## **Three passes, and it is exactly three** -- no longer a measured compromise.
@@ -37,7 +37,12 @@ extends StaticBody3D
 ## What it no longer does is get there a hundred times faster than the same
 ## stream sweeping, which is what made the head of a trail slippery while its
 ## tail stayed clean.
-@export_range(1, 255, 1) var slip_thickness := 3
+@export_range(1, 63, 1) var slip_thickness := 3
+## How many layers of mustard it takes before the floor drags. Lower than the
+## slip threshold on purpose: mustard is meant to be laid down and used, so a
+## single pass across a doorway should already be worth something, where mayo
+## needs the three passes that make a puddle the player can see coming.
+@export_range(1, 63, 1) var slow_thickness := 2
 ## The floor is uploaded as tiles and only the changed ones are sent, so this is
 ## what a frame with sauce landing on it actually costs. Bigger tiles mean fewer
 ## draw calls and a larger upload when one is touched; smaller means the reverse.
@@ -75,10 +80,10 @@ extends StaticBody3D
 ## shine on top of that.
 @export var mayo_color_thick := Color("e6cd80")
 ## Where white becomes light cream.
-@export_range(1, 255, 1) var stain_mid_thickness := 2
+@export_range(1, 63, 1) var stain_mid_thickness := 2
 ## Where light cream becomes heavy cream. Clamped below `slip_thickness`, since
 ## a step at or past it would simply never be drawn.
-@export_range(1, 255, 1) var stain_thick_thickness := 2
+@export_range(1, 63, 1) var stain_thick_thickness := 2
 @export_range(0.0, 1.0, 0.01) var mayo_roughness := 0.34
 @export_range(0.0, 1.0, 0.01) var deep_roughness := 0.06
 
@@ -107,12 +112,17 @@ func configure(new_cell_size: float, new_brush_radius: float) -> void:
 ## The server broadcasts that cell and every peer replays it through
 ## `paint_mayo_cell`, so the wire carries two ints per splat rather than the
 ## cell list, and every grid stays byte-identical.
-func paint_mayo(world_position: Vector3, coat := -1) -> Vector2i:
-	return grid.paint(_to_grid(world_position), brush_radius, thickness_per_pass, coat)
+## `kind` is which sauce is landing, and it defaults to mayo so that every
+## caller written when there was only one sauce still means what it said.
+func paint_mayo(world_position: Vector3, coat := -1,
+		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
+	return grid.paint(_to_grid(world_position), brush_radius, thickness_per_pass,
+		coat, kind)
 
 
-func paint_mayo_cell(cell: Vector2i, coat := -1) -> void:
-	grid.paint_cell(cell, brush_radius, thickness_per_pass, coat)
+func paint_mayo_cell(cell: Vector2i, coat := -1,
+		kind := ContaminationGrid.KIND_MAYO) -> void:
+	grid.paint_cell(cell, brush_radius, thickness_per_pass, coat, kind)
 
 
 ## Cell-exact: true when there is any mayo at all under this position.
@@ -126,11 +136,30 @@ func is_mayo_at(world_position: Vector3) -> bool:
 ## of the thing standing on it. Nothing player-shaped is in here: an enemy that
 ## should slip later calls exactly this, and gets exactly the same answer from
 ## exactly the same data the shader draws.
+## **Mayo only.** A cell holds one sauce, so asking whether the floor is
+## slippery is asking whether the sauce on it is the slippery one. Left as a
+## thickness test alone, a mustard puddle laid down to slow a monster would put
+## the party on the ground as well -- the two effects would be the same patch,
+## and the one the player aimed for would be indistinguishable from the one they
+## were punished by.
 func is_slippery_at(world_position: Vector3) -> bool:
-	return grid.thickness_at(_to_grid(world_position)) >= slip_thickness
+	var local := _to_grid(world_position)
+	return grid.kind_at(local) == ContaminationGrid.KIND_MAYO \
+		and grid.thickness_at(local) >= slip_thickness
 
 
-## How thick the mayo is here, 0 to 255.
+## **Mustard only: true where the floor drags on whatever is standing in it.**
+##
+## The mirror of `is_slippery_at`, and deliberately the same shape: asked of the
+## floor, answered off the same bytes the shader draws, and player-shaped in no
+## way at all, so an enemy wading through mustard is slowed by the same call.
+func is_slowing_at(world_position: Vector3) -> bool:
+	var local := _to_grid(world_position)
+	return grid.kind_at(local) == ContaminationGrid.KIND_MUSTARD \
+		and grid.thickness_at(local) >= slow_thickness
+
+
+## How thick the sauce here is, 0 to `ContaminationGrid.MAX_THICKNESS`.
 func thickness_at(world_position: Vector3) -> int:
 	return grid.thickness_at(_to_grid(world_position))
 
@@ -258,13 +287,17 @@ func _push_shader_values() -> void:
 		tile.set_shader_parameter("mayo_color_thick", mayo_color_thick)
 		tile.set_shader_parameter("mayo_roughness", mayo_roughness)
 		tile.set_shader_parameter("deep_roughness", deep_roughness)
-		# Normalised, because the texture reads back 0..1.
+		# Normalised, because the texture reads back 0..1 -- and shifted up by
+		# the sauce bits first, because a thickness of `t` is stored as
+		# `t << KIND_BITS`. Every cut-off below is a thickness, so they all move
+		# by the same factor and the bands land exactly where they did.
+		var pack := float(1 << ContaminationGrid.KIND_BITS)
 		tile.set_shader_parameter("paint_threshold",
-			maxf(float(thickness_per_pass) * 0.5, 0.5) / 255.0)
+			maxf(float(thickness_per_pass) * 0.5, 0.5) * pack / 255.0)
 		var bounds := step_bounds()
-		tile.set_shader_parameter("mid_threshold", float(bounds.x) / 255.0)
-		tile.set_shader_parameter("thick_threshold", float(bounds.y) / 255.0)
-		tile.set_shader_parameter("slip_threshold", float(slip_thickness) / 255.0)
+		tile.set_shader_parameter("mid_threshold", float(bounds.x) * pack / 255.0)
+		tile.set_shader_parameter("thick_threshold", float(bounds.y) * pack / 255.0)
+		tile.set_shader_parameter("slip_threshold", float(slip_thickness) * pack / 255.0)
 
 
 func _rebuild_grid() -> void:

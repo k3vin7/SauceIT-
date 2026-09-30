@@ -59,9 +59,11 @@ func _run() -> void:
 	# And it stops at the top of the byte rather than wrapping round to nothing.
 	for _splat in 300:
 		floor_node.paint_mayo(spot)
-	print("after 306 splats: thickness %d (a byte tops out at 255)" % floor_node.thickness_at(spot))
-	_check(floor_node.thickness_at(spot) == 255,
-		"thickness saturated at %d rather than 255" % floor_node.thickness_at(spot))
+	print("after 306 splats: thickness %d (the field tops out at %d)" % [
+		floor_node.thickness_at(spot), ContaminationGrid.MAX_THICKNESS])
+	_check(floor_node.thickness_at(spot) == ContaminationGrid.MAX_THICKNESS,
+		"thickness saturated at %d rather than %d" % [
+			floor_node.thickness_at(spot), ContaminationGrid.MAX_THICKNESS])
 
 	# --- a pass lays down one layer, however long the trigger is held ---
 	# The reported symptom, at its root. The stream dumps a hundred splats on
@@ -135,7 +137,7 @@ func _run() -> void:
 	var deepest := 0
 	for row in range(landing.y - 8, landing.y + 9):
 		for column in range(landing.x - 8, landing.x + 9):
-			var value: int = grid.cells[row * grid.width + column]
+			var value: int = grid.thickness_of(row * grid.width + column)
 			deepest = maxi(deepest, value)
 			if value >= floor_node.thickness_per_pass * offsets.size():
 				stacked += 1
@@ -322,7 +324,7 @@ func _run() -> void:
 			continue
 		for cell_y in [cell.y]:
 			for cell_x in [cell.x]:
-				var thickness: int = grid.cells[cell_y * grid.width + cell_x]
+				var thickness: int = grid.thickness_of(cell_y * grid.width + cell_x)
 				if thickness == 0:
 					continue
 				sampled += 1
@@ -343,7 +345,7 @@ func _run() -> void:
 	for cell_y in grid.height:
 		var found := false
 		for cell_x in grid.width:
-			if grid.cells[cell_y * grid.width + cell_x] >= floor_node.slip_thickness:
+			if grid.thickness_of(cell_y * grid.width + cell_x) >= floor_node.slip_thickness:
 				deep_spot = floor_node.to_global(Vector3(
 					(float(cell_x) + 0.5) * grid.cell_size - grid.extent.x * 0.5, 0.0,
 					(float(cell_y) + 0.5) * grid.cell_size - grid.extent.y * 0.5))

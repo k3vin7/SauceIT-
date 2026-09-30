@@ -29,15 +29,44 @@ var extent := Vector2(1.0, 1.0)
 var wrap_x := false
 var width := 1
 var height := 1
-## One byte per cell, and that byte is now **how thick the mayo is**, 0 to 255,
-## rather than whether there is any. Sauce lands in amounts and piles up, and
-## the slip test reads a threshold on it rather than a flag.
+## One byte per cell, holding **which sauce is on it and how thick that sauce
+## is**: the thickness in the top six bits, the sauce in the bottom two.
 ##
 ## It doubles as the texture's own bytes. It used to be a 0/1 mask with a
 ## parallel array of 0/255 kept beside it purely so the R8 texture had something
 ## to read; a thickness is already exactly what the texture wants, so the second
 ## array is gone -- on the floor that is 13.9 MB of it.
+##
+## **Why the sauce goes in the *bottom* bits.** A second array of kinds beside
+## this one is another 13.9 MB on this floor, so the kind shares the byte. Which
+## end it shares matters, because `contamination.gdshader` samples this texture
+## twice: `texelFetch` for the thickness bands, which reads a cell's own byte and
+## does not care how it is laid out, and a `filter_linear` `texture()` for the
+## boundary, which blends neighbouring bytes and very much does. With the kind in
+## the top bits, mayo one layer deep beside mustard one layer deep is byte 1
+## against byte 65, and the blend between them passes through 33 -- a boundary
+## drawn as if there were a thick pile of mayo along every seam between two
+## sauces. In the bottom bits the same pair is 4 against 5: a kind is worth less
+## than one layer, so the blend stays a blend of thicknesses and the seam is
+## drawn where it actually is.
+##
+## Thresholds move with it. A thickness of `t` is stored as `t << KIND_BITS`, so
+## whoever sets the shader's cut-offs scales them the same way -- which is the
+## whole of what the five shaders reading this needed to keep working.
 var cells := PackedByteArray()
+## How many of the low bits name the sauce, and the mask that reads them.
+const KIND_BITS := 2
+const KIND_MASK := 0b11
+## The sauces a cell can hold. Mayo is 0 so an untouched byte and a cell of
+## nothing are the same thing, and so is the value every caller that predates
+## more than one sauce passes without knowing it.
+const KIND_MAYO := 0
+const KIND_MUSTARD := 1
+const KIND_KETCHUP := 2
+## Six bits of thickness rather than eight. The bands the floor draws run to
+## twenty-odd layers, so 63 is still an order of magnitude of headroom over what
+## anything reads -- and the alternative was a second array the size of this one.
+const MAX_THICKNESS := 63
 ## How big a cell is in metres. Every contamination surface uses metre units.
 var metres_per_cell := 0.1
 ## The grid is uploaded as tiles, and only the tiles that changed are sent.
@@ -210,15 +239,16 @@ func is_painted(local: Vector2) -> bool:
 	var cell := cell_of(local)
 	if not has_cell(cell):
 		return false
-	return cells[cell.y * width + wrapped_x(cell.x)] > 0
+	return cells[cell.y * width + wrapped_x(cell.x)] >> KIND_BITS > 0
 
 
 ## Marks a disc of `radius_meters` around a local position, and returns the
 ## centre cell it painted around, or (-1, -1) if the position was off the grid.
 ## The radius is given in metres and converted here, so changing cell_size does
 ## not change how big a splat is.
-func paint(local: Vector2, radius_meters: float, deposit := 1, coat := -1) -> Vector2i:
-	return paint_cell(cell_of(local), radius_meters, deposit, coat)
+func paint(local: Vector2, radius_meters: float, deposit := 1, coat := -1,
+		kind := KIND_MAYO) -> Vector2i:
+	return paint_cell(cell_of(local), radius_meters, deposit, coat, kind)
 
 
 ## The splat itself, addressed by cell rather than by position. Everything below
@@ -230,8 +260,11 @@ func paint(local: Vector2, radius_meters: float, deposit := 1, coat := -1) -> Ve
 ## once for a given coat, so a burst lays down one layer rather than one per
 ## splat. -1 means no coat: every splat counts, which is what the surfaces
 ## nobody walks on still do.
+## `kind` is which sauce is landing. A cell holds one: painting a sauce onto a
+## cell that holds a different one takes it over at one layer rather than adding
+## to the pile that is there.
 func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
-		coat := -1) -> Vector2i:
+		coat := -1, kind := KIND_MAYO) -> Vector2i:
 	paint_calls += 1
 	if not has_cell(centre):
 		return Vector2i(-1, -1)
@@ -296,8 +329,11 @@ func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
 				continue
 			var index := row_base + column
 			# Saturated cells are done: nothing more can land on them, and
-			# skipping them keeps the noise work off the hottest cells.
-			if cells[index] >= 255:
+			# skipping them keeps the noise work off the hottest cells. Only
+			# saturated against the *same* sauce, though -- a full pile of mayo
+			# is still a cell mustard can take over.
+			var here := int(cells[index])
+			if here >> KIND_BITS >= MAX_THICKNESS and (here & KIND_MASK) == kind:
 				continue
 			var cell := Vector2i(column, row)
 			var distance_squared := float(offset_x * offset_x + offset_y * offset_y)
@@ -328,13 +364,25 @@ func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
 				# Added, not set. What makes a patch dangerous is how many
 				# passes have gone over it, and each one adds its layer to
 				# whatever the last one left.
-				var was := int(cells[index])
-				var now := mini(was + deposit, 255)
-				cells[index] = now
+				var packed := int(cells[index])
+				var was := packed >> KIND_BITS
+				# One sauce per cell, and the newest one owns it. Adding to
+				# whatever was there instead would let a stretch of mustard be
+				# finished off by a single pass of mayo: the cell would read as
+				# mayo at a mustard puddle's thickness, which is a slip the
+				# player was given no chance to see coming.
+				var stacked := was if (packed & KIND_MASK) == kind else 0
+				var now := mini(stacked + deposit, MAX_THICKNESS)
+				cells[index] = (now << KIND_BITS) | kind
 				if was == 0:
 					painted_count += 1
+				# Taking a cell over can make it *thinner*, so this counts both
+				# ways. One-way counting is how a running total quietly drifts
+				# from the scan it stands in for.
 				if was < deep_threshold and now >= deep_threshold:
 					deep_count += 1
+				elif was >= deep_threshold and now < deep_threshold:
+					deep_count -= 1
 				_touch_tile(column, row)
 				changed = true
 	if changed:
@@ -427,9 +475,10 @@ func _recount() -> void:
 	painted_count = 0
 	deep_count = 0
 	for cell in cells:
-		if cell > 0:
+		var thickness := cell >> KIND_BITS
+		if thickness > 0:
 			painted_count += 1
-			if cell >= deep_threshold:
+			if thickness >= deep_threshold:
 				deep_count += 1
 
 
@@ -438,21 +487,57 @@ func _recount() -> void:
 func cells_at_least(thickness: int) -> int:
 	var total := 0
 	for cell in cells:
-		if cell >= thickness:
+		if cell >> KIND_BITS >= thickness:
 			total += 1
 	return total
 
 
-## Thickness under a local position, 0 to 255, or 0 off the grid.
+## Thickness under a local position, 0 to `MAX_THICKNESS`, or 0 off the grid.
 func thickness_at(local: Vector2) -> int:
 	var cell := cell_of(local)
 	if not has_cell(cell):
 		return 0
-	return cells[cell.y * width + wrapped_x(cell.x)]
+	return cells[cell.y * width + wrapped_x(cell.x)] >> KIND_BITS
 
 
-## The value the shader samples, evaluated on the CPU. Used by the checks to
-## confirm the rendered boundary and the slip test agree.
+## Thickness and sauce of a cell by its index into `cells`. For the checks and
+## the debug readouts, which walk the array rather than asking by position, and
+## which have no business knowing how the byte is laid out.
+func thickness_of(index: int) -> int:
+	return cells[index] >> KIND_BITS
+
+
+func kind_of(index: int) -> int:
+	return cells[index] & KIND_MASK
+
+
+## Which sauce is under a local position. A cell with nothing on it reads as
+## `KIND_MAYO`, so ask `thickness_at` first: "which sauce" is only a question
+## about a cell that has one.
+func kind_at(local: Vector2) -> int:
+	var cell := cell_of(local)
+	if not has_cell(cell):
+		return KIND_MAYO
+	return cells[cell.y * width + wrapped_x(cell.x)] & KIND_MASK
+
+
+## Thickness and sauce together, for the callers that want both and would
+## otherwise walk the same cell twice.
+func sauce_at(local: Vector2) -> Vector2i:
+	var cell := cell_of(local)
+	if not has_cell(cell):
+		return Vector2i(0, KIND_MAYO)
+	var packed := int(cells[cell.y * width + wrapped_x(cell.x)])
+	return Vector2i(packed >> KIND_BITS, packed & KIND_MASK)
+
+
+## The value the shader samples, evaluated on the CPU and returned in thickness
+## units. Used by the checks to confirm the rendered boundary and the slip test
+## agree.
+##
+## The bytes are blended first and unpacked after, because that is the order the
+## sampler works in: dividing each corner down before the blend would answer a
+## question the shader never asks.
 func sample_bilinear(local: Vector2) -> float:
 	var texel := Vector2(
 		(local.x + extent.x * 0.5) / cell_size - 0.5,
@@ -470,7 +555,7 @@ func sample_bilinear(local: Vector2) -> float:
 		var weight_x: float = frac.x if corner.x == 1 else 1.0 - frac.x
 		var weight_y: float = frac.y if corner.y == 1 else 1.0 - frac.y
 		total += value * weight_x * weight_y
-	return total
+	return total / float(1 << KIND_BITS)
 
 
 ## Value noise on a lattice `feature` cells wide: the four lattice points around
