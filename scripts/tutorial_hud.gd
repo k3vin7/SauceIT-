@@ -26,7 +26,6 @@ const SUBTITLE_BACKING := Color(0.03, 0.04, 0.05, 0.62)
 const SUBTITLE_PAD := Vector2(16.0, 9.0)
 ## The doctor's name tag, so a caption reads as somebody talking rather than as
 ## system text.
-const SPEAKER := "닥터"
 const SPEAKER_SIZE := 14
 const SPEAKER_COLOR := Color("8fd0ff")
 ## How long a line spends fading out once its time is up.
@@ -147,7 +146,7 @@ func _draw_subtitle() -> void:
 
 	var speaker_at := Vector2(backing.position.x + SUBTITLE_PAD.x,
 		backing.position.y + SUBTITLE_PAD.y + float(SPEAKER_SIZE) - 2.0)
-	draw_string(font, speaker_at, SPEAKER, HORIZONTAL_ALIGNMENT_LEFT, -1.0,
+	draw_string(font, speaker_at, tutorial.current_speaker(), HORIZONTAL_ALIGNMENT_LEFT, -1.0,
 		SPEAKER_SIZE, Color(SPEAKER_COLOR.r, SPEAKER_COLOR.g, SPEAKER_COLOR.b, alpha))
 
 	var y: float = top + font.get_ascent(SUBTITLE_SIZE)
@@ -278,15 +277,27 @@ func _draw_marker() -> void:
 	var camera := world.get("_camera") as Camera3D
 	if camera == null or not is_instance_valid(camera):
 		return
-	if camera.is_position_behind(at):
-		return
 	var distance: float = camera.global_position.distance_to(at)
 	if distance > MARKER_RANGE:
 		return
 
-	var screen: Vector2 = camera.unproject_position(at)
-	if not frame.has_point(screen):
-		return
+	var local: Vector3 = camera.global_transform.affine_inverse() * at
+	var behind := local.z >= -0.001
+	var screen := frame.get_center() if behind else camera.unproject_position(at)
+	var margin := minf(95.0, minf(frame.size.x, frame.size.y) * 0.2)
+	var outside := behind or not frame.grow(-margin).has_point(screen)
+	if outside:
+		# Keep an objective discoverable when the player is looking away from
+		# the counter. This points without taking control of their camera.
+		var direction := Vector2(local.x, -local.y)
+		if behind:
+			direction = Vector2(1.0 if local.x >= 0 else -1.0, 0.0)
+		if direction.length_squared() < 0.01:
+			direction = Vector2.RIGHT
+		var half := (frame.size * 0.5 - Vector2(110.0, 115.0)).max(frame.size * 0.2)
+		var reach := minf(half.x / maxf(absf(direction.x), 0.001),
+			half.y / maxf(absf(direction.y), 0.001))
+		screen = frame.get_center() + direction * reach
 	var tint: Color = tutorial.marker_color()
 	var bob: float = sin(_clock * TAU * MARKER_BOB_HZ) * MARKER_BOB
 	var centre := screen - Vector2(0.0, MARKER_LIFT + bob)
@@ -301,6 +312,8 @@ func _draw_marker() -> void:
 		diamond[3], diamond[0]]), MARKER_EDGE, 2.0)
 
 	var label: String = tutorial.marker_label()
+	if outside:
+		label += " →" if screen.x > frame.get_center().x else " ←"
 	if label.is_empty():
 		return
 	var font := ThemeDB.fallback_font

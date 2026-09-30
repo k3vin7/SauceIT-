@@ -95,6 +95,8 @@ func _run() -> void:
 			"%s still has a Tutorial node" % path)
 		_check(game.get_node_or_null("TutorialDrone") == null,
 			"%s has a drone flying in it" % path)
+		_check(game.get_node_or_null("TutorialWreck") == null,
+			"%s has tutorial wreckage blocking its measurements" % path)
 		# And nothing painted the road behind the measurement's back. The scale
 		# scenes never fire, so any thickness at all here came from the spill.
 		var painted: int = game._floor.grid.painted_cell_count()
@@ -138,27 +140,12 @@ func _run() -> void:
 	_check(world.tutorial_enabled, "main.tscn has the sequence switched off")
 	_check(tutorial != null, "main.tscn built no tutorial")
 	if tutorial != null:
-		# Started, not finished: the opening now waits for somebody to walk onto
-		# the light, and nobody is driving this world. What is under test here is
-		# that a plain run runs the sequence at all -- `probe_tutorial` is where
-		# the whole of it is played through.
-		var started := false
-		for _f in 1800:
-			# The light, not just the stage: it comes up with its own caption a
-			# few seconds in, and it is the thing worth confirming reached the
-			# world.
-			if tutorial.move_target() != Vector3.INF:
-				started = true
-				break
-			await physics_frame
-		print("main.tscn: tutorial=%s, started=%s, light at %.1v, objective '%s'" % [
-			str(tutorial != null), str(started), tutorial.move_target(),
-			tutorial.objective_text()])
-		_check(started, "main.tscn did not start the sequence")
-		_check(tutorial.move_target() != Vector3.INF,
-			"main.tscn started the sequence but lit no spot to walk to")
-		_check(world.get_node_or_null("TutorialMoveLight") != null,
-			"main.tscn lit no blue light in the world")
+		await _wait(180)
+		_check(tutorial.stage == MayoTutorial.Stage.GET_SAUCE, "main did not ask for sauce")
+		_check(tutorial.marker_position() != Vector3.INF, "starting stall has no marker")
+		_check(world.has_node("TutorialSauceStall"), "main has no starting stall")
+		_check(world.enemy_count() == 0, "enemies appeared before sauce pickup")
+		_check(not tutorial.has_bottle(1), "main started with a bottle")
 	world.free()
 	await process_frame
 

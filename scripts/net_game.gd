@@ -685,7 +685,7 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 func request_wipe() -> void:
 	if not _online or multiplayer.is_server():
 		return
-	if _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+	if not _joined or _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
 	_request_wipe.rpc_id(1)
 
@@ -712,7 +712,7 @@ func _request_wipe() -> void:
 func request_refill() -> void:
 	if not _online or multiplayer.is_server():
 		return
-	if _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+	if not _joined or _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
 	_request_refill.rpc_id(1)
 
@@ -757,7 +757,7 @@ func report_view(fov_degrees: float, aspect: float, delta: float) -> void:
 			world.set_view_for(id, mine.x, mine.y)
 			world.apply_view(mine.x, mine.y)
 		return
-	if _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+	if not _joined or _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
 	_view_pending = Vector2(fov_degrees, aspect)
 	var unchanged := _view_pending.is_equal_approx(_view_sent)
@@ -830,7 +830,7 @@ func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
 		return
 	# The handshake takes a few frames, and the keys sent during it have nowhere
 	# to go yet.
-	if _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+	if not _joined or _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
 	_submit_input.rpc_id(1, move, run, jump, firing, yaw, pitch)
 
@@ -1009,6 +1009,18 @@ func _add_tutorial_enemy(kind: int, at: Vector3) -> void:
 		rejected_packets += 1
 		return
 	world.tutorial_add_enemy(kind, at)
+
+
+func broadcast_tutorial_effect(kind: int, at: Vector3) -> void:
+	if _online and multiplayer.is_server() and not multiplayer.get_peers().is_empty():
+		_apply_tutorial_effect.rpc(kind, at)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _apply_tutorial_effect(kind: int, at: Vector3) -> void:
+	if kind not in [0, 1] or not all_finite([at.x, at.y, at.z]):
+		return
+	world.apply_tutorial_effect(kind, at)
 
 
 ## One caption. The index of the line, not the line: both ends hold the same

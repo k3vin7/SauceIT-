@@ -231,6 +231,16 @@ var nav: StreetNav
 ## It is emphatically not a pause: an enemy that simply stopped would read as the
 ## AI switching off, which is the thing this is meant to avoid.
 var bait: Node3D = null
+## Tutorial heavy pinned between the wrecks. The tutorial snapshot replicates
+## this latch; the ordinary enemy packet continues to carry its struggling pose.
+var tutorial_trapped := false
+var _trap_position := Vector3.ZERO
+var _trap_clock := 0.0
+
+func set_tutorial_trapped(value: bool, at: Vector3) -> void:
+	tutorial_trapped = value
+	_trap_position = at
+
 
 var _contact_cooldown := 0.0
 var _route := PackedVector3Array()
@@ -1132,6 +1142,16 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	if not is_alive():
 		# Dead ones are not skipped -- they are still going over.
 		_advance_fall(delta)
+		return null
+	if tutorial_trapped:
+		_trap_clock += delta
+		global_position = _trap_position
+		velocity = Vector3.ZERO
+		_shove = Vector3.ZERO
+		facing_yaw = 0.0
+		fall_angle = sin(_trap_clock * 7.0) * 0.045
+		_apply_pose()
+		_advance_gait(Vector3.ZERO, true, delta)
 		return null
 	_contact_cooldown = maxf(_contact_cooldown - delta, 0.0)
 	# Rocking back from a threshold. It keeps walking through it: the flinch is

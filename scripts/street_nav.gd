@@ -19,6 +19,9 @@ extends RefCounted
 
 var grid := AStarGrid2D.new()
 var _region := Rect2i()
+## Optional physical passage narrower than a lattice cell. Tutorial-only,
+## configured per world; normal maps retain their existing routing.
+var passage := Rect2()
 
 
 func build() -> void:
@@ -71,6 +74,13 @@ func nearest_walkable(cell: Vector2i) -> Vector2i:
 ##
 ## Sampled at a third of a cell, so no cell the line crosses is stepped over.
 func line_is_walkable(from: Vector3, to: Vector3) -> bool:
+	if passage.has_area() and absf(to.z - from.z) > 0.001:
+		for z in [passage.position.y, passage.end.y]:
+			var fraction: float = (z - from.z) / (to.z - from.z)
+			if fraction >= 0.0 and fraction <= 1.0:
+				var x := lerpf(from.x, to.x, fraction)
+				if x < passage.position.x + 0.7 or x > passage.end.x - 0.7:
+					return false
 	var span := Vector3(to.x - from.x, 0.0, to.z - from.z)
 	var distance := span.length()
 	if distance < 0.001:
@@ -93,5 +103,10 @@ func route(from: Vector3, to: Vector3) -> PackedVector3Array:
 	if not is_walkable(start) or not is_walkable(goal):
 		return points
 	for cell in grid.get_id_path(start, goal):
-		points.push_back(StreetMap.cell_middle(cell))
+		var point := StreetMap.cell_middle(cell)
+		if passage.has_area() and point.z >= passage.position.y - StreetMap.CELL \
+				and point.z <= passage.end.y + StreetMap.CELL \
+				and absf(point.x - passage.get_center().x) <= StreetMap.CELL:
+			point.x = passage.get_center().x
+		points.push_back(point)
 	return points

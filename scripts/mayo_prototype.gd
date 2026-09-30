@@ -14,6 +14,7 @@ const MinimapScript := preload("res://scripts/minimap.gd")
 const KeyLegendScript := preload("res://scripts/key_legend.gd")
 const StallRoofScript := preload("res://scripts/stall_roof.gd")
 const TutorialScript := preload("res://scripts/tutorial.gd")
+const TutorialWreckScript := preload("res://scripts/tutorial_wreck.gd")
 const TutorialHudScript := preload("res://scripts/tutorial_hud.gd")
 const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 	preload("res://assets/food_booths/food_booth_s1.glb"),
@@ -854,6 +855,8 @@ var _refill_stations: Array[Dictionary] = []
 ## The opening sequence, or null when it is switched off. It owns the order of
 ## events and nothing else -- every beat it runs is a system that was already
 ## here. See `scripts/tutorial.gd`.
+var _tutorial_start_station := -1
+var _tutorial_wreck: TutorialWreck
 var _tutorial: MayoTutorial
 var _tutorial_hud: MayoTutorialHud
 ## Every enemy the tutorial has asked for, in the order it asked, as
@@ -873,7 +876,7 @@ var _spray_loop_audio: AudioStreamPlayer
 var _spray_edge_audio: AudioStreamPlayer
 ## The tutorial's heavy footsteps. Placeholder, on the same generated tones as
 ## the rest of the sound here.
-var _footstep_voice: AudioStreamPlayer
+var _footstep_voice: AudioStreamPlayer3D
 
 # The single-player fields the checks and the rest of this file grew up with,
 # now views onto the local player's Shooter. Nothing assigns through them.
@@ -1002,12 +1005,11 @@ func _physics_process(delta: float) -> void:
 		_update_aim(shooter)
 	if _tutorial != null:
 		_tutorial.advance(delta)
-		# Every body, not just the local one: the server simulates all of them,
-		# so this is what makes the hold true for a guest as well. Read from the
-		# stage, which every peer has, so nothing extra travels.
-		var walking_allowed := _tutorial.allows_movement()
 		for shooter in _shooters.values():
-			shooter.player.frozen = not walking_allowed
+			if is_instance_valid(shooter.weapon):
+				shooter.weapon.visible = (not shooter.is_local or _first_person) and _tutorial.has_bottle(shooter.peer_id)
+			if not _tutorial.allows_firing(shooter.peer_id):
+				shooter.firing = false
 	if _is_authority():
 		for shooter in _shooters.values():
 			_update_slip(shooter)
@@ -1452,8 +1454,7 @@ func _burst_spent(shooter: Shooter) -> bool:
 func _read_local_input() -> void:
 	if _local == null:
 		return
-	# The sequence holds the trigger through its two spoken beats, and holds it
-	# from the start until there is something to shoot at.
+	# The bottle is acquired at the starting stall. Dialogue never locks input.
 	var allowed := _tutorial == null or _tutorial.allows_firing()
 	var live := _input_enabled and allowed and not _local.player.is_incapacitated() \
 		and not _local.player.is_wiping()
@@ -1563,9 +1564,11 @@ func _build_sauce_audio() -> void:
 	_spray_loop_audio.name = "SprayLoopAudio"
 	_spray_loop_audio.bus = "Master"
 	add_child(_spray_loop_audio)
-	_footstep_voice = AudioStreamPlayer.new()
+	_footstep_voice = AudioStreamPlayer3D.new()
 	_footstep_voice.name = "TutorialFootsteps"
 	_footstep_voice.bus = "Master"
+	_footstep_voice.unit_size = 16.0
+	_footstep_voice.max_distance = 100.0
 	add_child(_footstep_voice)
 	_spray_edge_audio = AudioStreamPlayer.new()
 	_spray_edge_audio.name = "SprayEdgeAudio"
@@ -1739,7 +1742,7 @@ func set_first_person(enabled: bool) -> void:
 	# now carries how much sauce they have left, and a team that can read each
 	# other's bottles across the street can cover a reload without being told.
 	if _local != null and is_instance_valid(_local.weapon):
-		_local.weapon.visible = enabled
+		_local.weapon.visible = enabled and (_tutorial == null or _tutorial.has_bottle(_local.peer_id))
 	_update_camera()
 
 
@@ -1955,9 +1958,14 @@ func reset_for_join() -> void:
 		_free_shooter(_shooters[peer_id])
 	_shooters.clear()
 	_local = null
-	# The enemies stay -- every peer built the same ones in the same order, and
-	# that order is how a splat addresses them -- but this peer no longer
-	# decides where they are.
+	# A tutorial roster is appended by the host. Discard offline spawns before
+	# receiving that roster, otherwise late joining duplicates enemy indices.
+	if _tutorial != null:
+		for enemy in _enemies:
+			enemy.free()
+		_enemies.clear()
+		_tutorial_spawned.clear()
+		_tutorial.reset_session()
 	_refresh_enemy_authority()
 
 
@@ -1968,6 +1976,8 @@ func reset_to_offline() -> void:
 	var shooter := _create_shooter(1, true)
 	_build_shooter_visuals(shooter)
 	_adopt_local(shooter)
+	if _tutorial != null:
+		shooter.sauce = 0.0
 	_refresh_enemy_authority()
 
 
@@ -2505,6 +2515,10 @@ func _build_street() -> void:
 			booth_variants.push_back(cycle_variant)
 	for box in stall_boxes:
 		var variant := booth_variants[index]
+		if tutorial_enabled and not MayoTutorial.disabled \
+				and TutorialWreck.replaces_stall(box):
+			index += 1
+			continue
 		_create_stall("Stall%02d" % index, box, variant, truck_stalls.has(index))
 		_add_refill_station(box)
 		index += 1
@@ -2514,6 +2528,13 @@ func _build_street() -> void:
 		_create_vending_machine("VendingMachine%02d" % index, box)
 		index += 1
 
+	if tutorial_enabled and not MayoTutorial.disabled:
+		var bay := StreetMap.stall_metre(StreetMap.STALL_FOOTPRINT_M)
+		var opening := {"position": Vector3(8.0, 2.8, -6.0),
+			"size": Vector3(bay, 5.6, bay), "facing": Vector3.BACK, "bays": 1}
+		_create_stall("TutorialSauceStall", opening, 1, false)
+		_tutorial_start_station = _refill_stations.size()
+		_add_refill_station(opening)
 	_build_stage()
 	_build_tower()
 	_build_start_marker()
@@ -2864,6 +2885,8 @@ func _build_enemies() -> void:
 	# standing on the street as well as the street itself.
 	_nav = StreetNav.new()
 	_nav.build()
+	if _tutorial_wreck != null:
+		_tutorial_wreck.block_navigation(_nav)
 	var toast_scene := load(MOLDY_TOAST_RUSHER_SCENE_PATH) as PackedScene
 	assert(toast_scene != null, "Moldy toast rusher scene was not imported")
 	# The tutorial places its own bodies and needs the street to itself: a
@@ -2930,10 +2953,15 @@ func _build_enemies() -> void:
 func _build_tutorial() -> void:
 	if not tutorial_enabled or MayoTutorial.disabled:
 		return
+	show_key_legend = false
+	_tutorial_wreck = TutorialWreckScript.new() as TutorialWreck
+	add_child(_tutorial_wreck)
+	_tutorial_wreck.seed_floor(_floor)
 	_tutorial = TutorialScript.new() as MayoTutorial
 	_tutorial.world = self
 	add_child(_tutorial)
 	_tutorial.choose_station(_refill_stations)
+	_local.sauce = 0.0
 	_tutorial_hud = TutorialHudScript.new() as MayoTutorialHud
 	_tutorial_hud.world = self
 	_tutorial_hud.tutorial = _tutorial
@@ -2973,6 +3001,8 @@ func tutorial_add_enemy(kind: int, at: Vector3) -> int:
 		enemy.build(body_cell_size, contamination_brush_radius, Color("4d3f6b"))
 		if _local != null:
 			enemy.match_player_speed(_local.player.walk_speed, enemy_speed_fraction)
+		enemy.sight_range = 90.0
+		enemy.give_up_range = 120.0
 	else:
 		var toast_scene := load(MOLDY_TOAST_RUSHER_SCENE_PATH) as PackedScene
 		if toast_scene == null:
@@ -2982,8 +3012,9 @@ func tutorial_add_enemy(kind: int, at: Vector3) -> int:
 		enemy.build_moldy_toast_rusher(body_cell_size, contamination_brush_radius,
 			toast_scene)
 		if _local != null:
-			enemy.match_player_speed(_local.player.walk_speed,
-				toast_rusher_speed_fraction)
+			enemy.match_player_speed(_local.player.walk_speed, 0.65)
+		enemy.sight_range = 90.0
+		enemy.give_up_range = 120.0
 	enemy.nav = _nav
 	enemy.position = Vector3(at.x, enemy.stand_height(), at.z)
 	_enemies.push_back(enemy)
@@ -2997,30 +3028,6 @@ func tutorial_add_enemy(kind: int, at: Vector3) -> int:
 ## Everything the tutorial has spawned, for a peer that joined late.
 func tutorial_spawned() -> Array:
 	return _tutorial_spawned
-
-
-## A puddle on the real floor grid, at the spot a body burst.
-##
-## This is the ordinary floor paint -- the same cells the stream marks and the
-## same thickness the slip test reads -- broadcast down the same splat batch, so
-## the mess a client walks on is byte-identical to the mess the server tripped
-## them on. `coat` is -1 so every layer counts: a coat id exists to stop one
-## trigger pull stacking, and this is not a trigger pull.
-func tutorial_spill_sauce(at: Vector3, offsets: Array, layers: int) -> void:
-	if not _is_authority() or _floor == null:
-		return
-	# Never thinner than the floor's own threshold, whatever was asked for: the
-	# spill exists to be slipped on, and a puddle that is visible but safe would be
-	# worse than no puddle at all. Read off the floor so the two cannot drift.
-	var passes := maxi(layers, _floor.slip_thickness)
-	for offset in offsets:
-		var spot := Vector3(at.x + offset.x, 0.0, at.z + offset.y)
-		for _layer in passes:
-			var cell := _floor.paint_mayo(spot, -1)
-			if cell.x < 0:
-				continue
-			_pending_splats.append_array(PackedInt32Array([
-				SPLAT_FLOOR, -1, cell.x, cell.y]))
 
 
 ## The stalls that hand out sauce, as position and facing. The tutorial picks the
@@ -3078,11 +3085,27 @@ func floor_is_slippery_at(at: Vector3) -> bool:
 ## The heavy footsteps behind you. **Placeholder**: it reuses the tone generator
 ## the sauce sounds already stand on, so there is one thing to replace when there
 ## is a real clip -- and nothing new to wire up.
-func tutorial_stomp() -> void:
-	if _footstep_voice == null or not is_instance_valid(_footstep_voice):
-		return
-	_footstep_voice.stream = _placeholder_tone(46.0, 0.22, true)
-	_footstep_voice.play()
+func tutorial_effect(kind: int, at: Vector3) -> void:
+	apply_tutorial_effect(kind, at)
+	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
+		_net.broadcast_tutorial_effect(kind, at)
+
+
+func apply_tutorial_effect(kind: int, at: Vector3) -> void:
+	if _tutorial != null:
+		_tutorial.apply_effect(kind)
+	if is_instance_valid(_footstep_voice):
+		_footstep_voice.global_position = at
+		_footstep_voice.stream = _placeholder_tone(46.0 if kind == 0 else 68.0,
+			0.3 if kind == 0 else 0.55, true)
+		_footstep_voice.play()
+	if _local != null:
+		_local.shake_span = 0.35 if kind == 0 else 0.65
+		_local.shake_left = _local.shake_span
+		_local.shake_degrees = 0.85 if kind == 0 else 1.8
+		_local.shake_direction = (at - _local.player.global_position).normalized()
+	if kind == 1 and _tutorial_wreck != null:
+		_tutorial_wreck.play_impact()
 
 
 ## One caption, to everybody. Only the line's index travels: the text itself is a
