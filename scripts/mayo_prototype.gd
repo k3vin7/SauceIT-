@@ -102,6 +102,13 @@ const SAUCE_TINTS: Array[Color] = [
 	Color("c8342a"),  # ketchup
 	Color("fff0a8"),  # the fourth kind is unused and reads as mayo
 ]
+## A MultiMesh instance with `use_colors` on is twelve floats of transform and
+## then four of colour, so every slot is sixteen wide and the colour sits at the
+## end of it. Named rather than spelled 16 at five call sites, because the number
+## that used to be there was 12 and a missed one writes a droplet's colour over
+## the next droplet's basis.
+const MULTIMESH_STRIDE := 16
+const MULTIMESH_COLOR_OFFSET := 12
 const SPLAT_SAUCE_SHIFT := 8
 const SPLAT_SURFACE_MASK := 0xFF
 const FACES_PER_WALL := 6
@@ -270,6 +277,11 @@ class Shooter:
 
 
 class MayoDroplet:
+	## Which sauce this one is, so the pool -- one pool for the whole world,
+	## shared by everyone firing into it -- can hold four players' worth of
+	## different sauce at once. Written into the instance's own colour, because
+	## the alternative is a pool per sauce and three times the instances.
+	var sauce := ContaminationGrid.KIND_MAYO
 	var active := false
 	var position := Vector3.ZERO
 	var radius := 0.014
@@ -280,6 +292,8 @@ class MayoDroplet:
 ## the small specks around it. Unlike `MayoDroplet`, which is settled sauce
 ## sitting where it landed, these fly -- so they carry a velocity and fall.
 class MayoSpeck:
+	## As `MayoDroplet.sauce`, and for the same reason.
+	var sauce := ContaminationGrid.KIND_MAYO
 	var active := false
 	var position := Vector3.ZERO
 	var velocity := Vector3.ZERO
@@ -1935,7 +1949,10 @@ func _build_world() -> void:
 	add_child(_camera)
 
 	var mayo_material := StandardMaterial3D.new()
-	mayo_material.albedo_color = Color("fff0a8")
+	# White, with the sauce coming from the instance colour. Left at the mayo
+	# swatch it would multiply every sauce by cream and mustard would arrive pale.
+	mayo_material.albedo_color = Color.WHITE
+	mayo_material.vertex_color_use_as_albedo = true
 	mayo_material.roughness = 0.28
 	mayo_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mayo_material.cull_mode = BaseMaterial3D.CULL_DISABLED
@@ -3796,7 +3813,8 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 		var point := points[i]
 		if point.phase == PointPhase.LANDING and point.landing_age >= landing_transition_time:
 			if droplets_on_floor if point.landed_on_floor else droplets_on_surfaces:
-				_spawn_landing_droplets(point.position)
+				_spawn_landing_droplets(point.position,
+					shooter.sauce_kind if shooter != null else ContaminationGrid.KIND_MAYO)
 			points.remove_at(i)
 		elif point.position.y < -1.0:
 			points.remove_at(i)
@@ -4370,9 +4388,12 @@ func _build_droplet_pool(mayo_material: Material) -> void:
 
 	_droplet_multimesh = MultiMesh.new()
 	_droplet_multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	# Per-instance colour, because the pool is one pool for the whole world and a
+	# party can have three sauces in the air at once.
+	_droplet_multimesh.use_colors = true
 	_droplet_multimesh.mesh = droplet_mesh
 	_droplet_multimesh.instance_count = POOL_SIZE
-	_droplet_buffer.resize(POOL_SIZE * 12)
+	_droplet_buffer.resize(POOL_SIZE * MULTIMESH_STRIDE)
 	_droplet_buffer.fill(0.0)
 	_droplet_multimesh.buffer = _droplet_buffer
 	var instance := MultiMeshInstance3D.new()
@@ -4432,8 +4453,9 @@ func _build_impact_pool(mayo_material: Material) -> void:
 	_speck_multimesh = MultiMesh.new()
 	_speck_multimesh.transform_format = MultiMesh.TRANSFORM_3D
 	_speck_multimesh.mesh = speck_mesh
+	_speck_multimesh.use_colors = true
 	_speck_multimesh.instance_count = impact_pool_size
-	_speck_buffer.resize(impact_pool_size * 12)
+	_speck_buffer.resize(impact_pool_size * MULTIMESH_STRIDE)
 	_speck_buffer.fill(0.0)
 	_speck_multimesh.buffer = _speck_buffer
 	var instance := MultiMeshInstance3D.new()
@@ -4566,7 +4588,8 @@ func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
 		thrown = thrown.normalized()
 		_take_speck(now, at + normal * 0.02, thrown * speed * _feel_rng.randf_range(0.7, 1.3),
 			radius * _feel_rng.randf_range(0.75, 1.3),
-			shooter.peer_id if shooter != null else 1)
+			shooter.peer_id if shooter != null else 1,
+			shooter.sauce_kind if shooter != null else ContaminationGrid.KIND_MAYO)
 	_speck_buffer_dirty = true
 
 
@@ -4574,7 +4597,7 @@ func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
 ## walks in order and every speck is given the same lifetime, so the slot it
 ## arrives at holds the one taken longest ago.
 func _take_speck(now: float, at: Vector3, velocity: Vector3, radius: float,
-		peer_id := 1) -> void:
+		peer_id := 1, sauce := ContaminationGrid.KIND_MAYO) -> void:
 	var slot := _speck_cursor
 	var speck: MayoSpeck = _specks[slot]
 	if not speck.active:
@@ -4595,6 +4618,7 @@ func _take_speck(now: float, at: Vector3, velocity: Vector3, radius: float,
 	_settle_speck_axes(speck, _feel_rng.randf_range(0.0, TAU))
 	speck.last_tested = at
 	speck.peer_id = peer_id
+	speck.sauce = sauce
 	speck.cast_slot = _speck_cursor % maxi(impact_raycast_stride, 1)
 	speck.expires_at = now + impact_lifetime
 	_write_speck_transform(slot, speck, 0.0, impact_lifetime)
@@ -4648,8 +4672,8 @@ func _land_speck(speck: MayoSpeck, space_state: PhysicsDirectSpaceState3D,
 
 ## Blanks a slot so it draws nothing.
 func _blank_speck(index: int) -> void:
-	var at := index * 12
-	for offset in 12:
+	var at := index * MULTIMESH_STRIDE
+	for offset in MULTIMESH_STRIDE:
 		_speck_buffer[at + offset] = 0.0
 
 
@@ -4765,7 +4789,7 @@ func _write_speck_transform(index: int, speck: MayoSpeck,
 	var x_axis := speck.axis_x * pinch
 	var y_axis := speck.axis_y * pinch
 	var z_axis := speck.axis_z * (size * stretched)
-	var at := index * 12
+	var at := index * MULTIMESH_STRIDE
 	var position := speck.position
 	_speck_buffer[at] = x_axis.x
 	_speck_buffer[at + 1] = y_axis.x
@@ -4779,6 +4803,12 @@ func _write_speck_transform(index: int, speck: MayoSpeck,
 	_speck_buffer[at + 9] = y_axis.z
 	_speck_buffer[at + 10] = z_axis.z
 	_speck_buffer[at + 11] = position.z
+	var tint: Color = SAUCE_TINTS[speck.sauce]
+	var colour := at + MULTIMESH_COLOR_OFFSET
+	_speck_buffer[colour] = tint.r
+	_speck_buffer[colour + 1] = tint.g
+	_speck_buffer[colour + 2] = tint.b
+	_speck_buffer[colour + 3] = tint.a
 
 
 ## One enemy being hit, heard at most every `splat_interval_min`..`_max`.
@@ -4974,7 +5004,8 @@ func _advance_impact_clocks(delta: float) -> void:
 		_enemy_splat_clock[key] = maxf(left, 0.0)
 
 
-func _spawn_landing_droplets(position: Vector3) -> void:
+func _spawn_landing_droplets(position: Vector3,
+		sauce := ContaminationGrid.KIND_MAYO) -> void:
 	if _droplet_multimesh == null:
 		return
 	debug_droplet_spawns += 1
@@ -4995,11 +5026,12 @@ func _spawn_landing_droplets(position: Vector3) -> void:
 		var angle := _rng.randf_range(0.0, TAU)
 		var spread_radius := sqrt(_rng.randf()) * 0.12
 		droplet.active = true
+		droplet.sauce = sauce
 		droplet.expires_at = expires_at
 		droplet.radius = _rng.randf_range(0.014, 0.03)
 		droplet.position = position + Vector3(cos(angle) * spread_radius, droplet.radius, sin(angle) * spread_radius)
 		_write_droplet_buffer((_droplet_cursor - 1 + _droplets.size()) % _droplets.size(),
-			droplet.position, droplet.radius * 2.0)
+			droplet.position, droplet.radius * 2.0, SAUCE_TINTS[droplet.sauce])
 	_droplet_buffer_dirty = true
 
 
@@ -5041,8 +5073,9 @@ func _update_droplet_bounds() -> void:
 	_droplet_pool.custom_aabb = AABB(low, high - low)
 
 
-func _write_droplet_buffer(index: int, position: Vector3, uniform_scale: float) -> void:
-	var offset := index * 12
+func _write_droplet_buffer(index: int, position: Vector3, uniform_scale: float,
+		tint := Color.WHITE) -> void:
+	var offset := index * MULTIMESH_STRIDE
 	# MultiMesh 3D transform buffer: three rows of (basis xyz, origin).
 	_droplet_buffer[offset] = uniform_scale
 	_droplet_buffer[offset + 1] = 0.0
@@ -5056,6 +5089,11 @@ func _write_droplet_buffer(index: int, position: Vector3, uniform_scale: float) 
 	_droplet_buffer[offset + 9] = 0.0
 	_droplet_buffer[offset + 10] = uniform_scale
 	_droplet_buffer[offset + 11] = position.z
+	var colour := offset + MULTIMESH_COLOR_OFFSET
+	_droplet_buffer[colour] = tint.r
+	_droplet_buffer[colour + 1] = tint.g
+	_droplet_buffer[colour + 2] = tint.b
+	_droplet_buffer[colour + 3] = tint.a
 
 
 func debug_reset_profile() -> void:
