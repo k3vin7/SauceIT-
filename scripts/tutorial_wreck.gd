@@ -8,9 +8,25 @@ const CENTRE_Z := -7.5 * CELL
 const HALF_GAP := 1.1
 const DEPTH := CELL
 const HEIGHT := 3.6
-const SPILL_FRONT := CENTRE_Z - DEPTH * 0.5 + 0.4
-const SPILL_BACK := SPILL_FRONT - 8.0
+## **The slick starts at the wreck's near face, not past its far one.** It used
+## to begin 0.4 m beyond the gap and go deep a metre after that, which left the
+## whole 4.6 m of the passage dry: a player sprinting the escape got through the
+## obstacle on their feet every time and only went over once they were clear of
+## it, so the fall read as something that happened *after* the dangerous part
+## rather than as the cost of running through it.
+const SPILL_FRONT := CENTRE_Z + DEPTH * 0.5
+## Where it stops, written against the wreck rather than against the front, so
+## moving the front does not drag the exit and the refill station with it.
+const SPILL_BACK := CENTRE_Z - DEPTH * 0.5 + 0.4 - 8.0
 const SPILL_CENTRE := (SPILL_FRONT + SPILL_BACK) * 0.5
+## Half the slick's length, which the spread below measures against. Derived, so
+## the pool keeps its shape when either end moves.
+const SPILL_REACH := (SPILL_FRONT - SPILL_BACK) * 0.5
+## **From here back, running trips you: the middle of the passage.** A player who
+## commits to a run at the halfway mark is already on the deep stuff, which is the
+## beat this stage is for -- the mess is the reason to slow down, and a mess you
+## can outrun is not one.
+const DEEP_FRONT := CENTRE_Z
 const EXIT := Vector3(0.0, 0.0, SPILL_BACK - 4.0)
 const TANK := Vector3(-HALF_GAP - 0.45, 2.55, CENTRE_Z)
 var _impact_age := 10.0
@@ -128,18 +144,19 @@ func seed_floor(floor_body: FloorContamination) -> void:
 		var edge := 0.25 * sin(float(row) * 0.19)
 		for column in int(ceil((HALF_GAP * 2.0 + 0.8) / step)) + 1:
 			var x := -HALF_GAP - 0.4 + float(column) * step
-			var spread := Vector2((x + 0.1) / 2.5, (z - SPILL_CENTRE) / 4.0).length()
+			var spread := Vector2((x + 0.1) / 2.5, (z - SPILL_CENTRE) / SPILL_REACH).length()
 			if spread > 1.0:
 				continue
 			var at := Vector3(x, 0, z + edge)
 			# A broad central slick joins the source to both sides of the passage;
 			# thinner cream at the ends shows the spill spreading outwards.
-			var layers := floor_body.slip_thickness if spread < 0.93 and z < SPILL_FRONT - 1.0 else 1
+			var layers := floor_body.slip_thickness if spread < 0.93 and z < DEEP_FRONT else 1
 			for layer in layers:
 				floor_body.paint_mayo(at, 900000 + layer)
 
-	# A thin stream leads from the open tank to the deep pool on the exit
-	# side. Running does not trip the player before the burger's reach is clear.
+	# A thin stream leads from the open tank into the pool, so the mess has a
+	# source on screen rather than beginning nowhere. Thin on purpose: this bit is
+	# the tank's dribble, not the slick, and it is walked over on the way in.
 	for index in 35:
 		floor_body.paint_mayo(Vector3(-0.2, 0, CENTRE_Z - float(index) * 0.1), 900000)
 	# Release temporary paint-coat IDs so normal stream bursts own their IDs.
