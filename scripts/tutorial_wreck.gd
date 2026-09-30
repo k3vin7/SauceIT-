@@ -14,7 +14,6 @@ const HEIGHT := 3.6
 ## obstacle on their feet every time and only went over once they were clear of
 ## it, so the fall read as something that happened *after* the dangerous part
 ## rather than as the cost of running through it.
-const SPILL_FRONT := CENTRE_Z + DEPTH * 0.5
 ## Where it stops, written against the wreck rather than against the front, so
 ## moving the front does not drag the exit and the refill station with it.
 const SPILL_BACK := CENTRE_Z - DEPTH * 0.5 + 0.4 - 8.0
@@ -22,11 +21,17 @@ const SPILL_CENTRE := (SPILL_FRONT + SPILL_BACK) * 0.5
 ## Half the slick's length, which the spread below measures against. Derived, so
 ## the pool keeps its shape when either end moves.
 const SPILL_REACH := (SPILL_FRONT - SPILL_BACK) * 0.5
-## **From here back, running trips you: the middle of the passage.** A player who
-## commits to a run at the halfway mark is already on the deep stuff, which is the
-## beat this stage is for -- the mess is the reason to slow down, and a mess you
-## can outrun is not one.
-const DEEP_FRONT := CENTRE_Z
+## **From here back, running trips you: the mouth of the passage.** Stepping into
+## the gap at a run is already stepping onto the deep stuff.
+##
+## Going over here is safe in a way it would not be later: a slip carries the
+## player forward along the lane, so they land past the obstacle instead of under
+## it, out of reach of whatever was chasing them. The fall costs them the seconds
+## it takes to get up, which is the point, not a mauling.
+const DEEP_FRONT := CENTRE_Z + DEPTH * 0.5
+## The slick itself reaches a little past that, so the mouth of the passage is
+## inside the pool rather than on the edge of it where it tapers away.
+const SPILL_FRONT := DEEP_FRONT + 0.8
 const EXIT := Vector3(0.0, 0.0, SPILL_BACK - 4.0)
 const TANK := Vector3(-HALF_GAP - 0.45, 2.55, CENTRE_Z)
 var _impact_age := 10.0
@@ -145,12 +150,24 @@ func seed_floor(floor_body: FloorContamination) -> void:
 		for column in int(ceil((HALF_GAP * 2.0 + 0.8) / step)) + 1:
 			var x := -HALF_GAP - 0.4 + float(column) * step
 			var spread := Vector2((x + 0.1) / 2.5, (z - SPILL_CENTRE) / SPILL_REACH).length()
-			if spread > 1.0:
+			# **The lane is painted on its own terms, not the ellipse's.** The
+			# ellipse tapers towards both ends, which is right for the spill's
+			# outline and wrong for the thing the stage is about: at the mouth of
+			# the passage its z term is already near 1, so gating the deep sauce on
+			# it left the entrance thin however far forward the pool was pushed.
+			# The gap a player runs through is deep for its full width; the ellipse
+			# only decides how far the mess spreads outside it.
+			# Across, the ellipse's own term is kept: it already reaches wider
+			# than the gap a body can walk through, and narrowing it to `HALF_GAP`
+			# left the two outermost walkable columns dry. Only the *lengthwise*
+			# taper is dropped -- that is the one that thinned the mouth.
+			var across := absf(x + 0.1) / 2.5
+			var in_lane := across < 0.93 and z <= DEEP_FRONT
+			if spread > 1.0 and not in_lane:
 				continue
 			var at := Vector3(x, 0, z + edge)
-			# A broad central slick joins the source to both sides of the passage;
-			# thinner cream at the ends shows the spill spreading outwards.
-			var layers := floor_body.slip_thickness if spread < 0.93 and z < DEEP_FRONT else 1
+			# Thinner cream outside the lane, showing the spill spreading outwards.
+			var layers := floor_body.slip_thickness if in_lane else 1
 			for layer in layers:
 				floor_body.paint_mayo(at, 900000 + layer)
 

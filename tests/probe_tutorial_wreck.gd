@@ -42,8 +42,14 @@ func _run() -> void:
 			_check(absf(point.x) < TutorialWreck.HALF_GAP, "route goes through a cart")
 	_check(crossed, "route bypasses the passage")
 	_check(world.tutorial().marker_position() != Vector3.INF, "starting stall has no marker")
-	_check(not floor_body.is_slippery_at(Vector3(0, 0, TutorialWreck.CENTRE_Z)),
-		"deep spill causes a fall before crossing the gap")
+	# The gap is deep from its mouth back, deliberately: a player who runs into it
+	# goes over inside it. That is survivable where a fall later would not be --
+	# the slide carries them forward, past the obstacle and out of reach -- and it
+	# is the whole of what this stage teaches.
+	_check(floor_body.is_slippery_at(Vector3(0, 0, TutorialWreck.CENTRE_Z)),
+		"the middle of the gap is not deep enough to trip a run")
+	_check(floor_body.is_slippery_at(Vector3(0, 0, TutorialWreck.DEEP_FRONT - 0.2)),
+		"the mouth of the gap is not deep enough to trip a run")
 	world.tutorial()._pick_refill_station()
 	_check(world.tutorial()._station_position.z < TutorialWreck.SPILL_BACK,
 		"refill objective is on the starting side of the wreck")
