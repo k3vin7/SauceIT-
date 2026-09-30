@@ -70,31 +70,36 @@ void fragment() {
 	ivec2 texel = clamp(ivec2(UV * vec2(mask_size)), ivec2(0), mask_size - ivec2(1));
 	float thickness = texelFetch(mask_texture, texel, 0).r;
 
-	// WHICH SAUCE, taken from the thickest of the four texels the linear filter
-	// blends rather than from this fragment's own.
-	//
-	// **Its own is wrong exactly where it shows.** `painted` comes from the
-	// filtered sample, so the edge of a stain is drawn over fragments whose own
-	// texel is still clean -- and a clean byte is 0, which is thickness 0 and
-	// sauce 0, and sauce 0 is mayo. Read locally, every mustard and ketchup
-	// stain got a mayo-coloured fringe one cell wide, on the one part of the
-	// stain where the eye is already looking.
-	//
-	// The thickest neighbour is the right answer and not a guess: the fringe is
-	// there *because* a painted cell bled into this one, so the sauce to draw is
-	// the sauce of whatever did the bleeding. Never filtered, always fetched --
-	// a blend of two sauces is not a sauce.
 	ivec2 lo = clamp(texel - ivec2(1), ivec2(0), mask_size - ivec2(1));
 	ivec2 hi = clamp(texel + ivec2(1), ivec2(0), mask_size - ivec2(1));
-	float best = -1.0;
-	float kind = 0.0;
-	for (int y = lo.y; y <= hi.y; y++) {
-		for (int x = lo.x; x <= hi.x; x++) {
-			float byte = floor(texelFetch(mask_texture, ivec2(x, y), 0).r * 255.0 + 0.5);
-			float depth = floor(byte / 4.0);
-			if (depth > best) {
-				best = depth;
-				kind = mod(byte, 4.0);
+	// WHICH SAUCE. **This cell's own, whenever this cell has any.**
+	//
+	// Taking the thickest neighbour's sauce unconditionally -- which is what this
+	// did -- is right for the one case it was written for and wrong everywhere
+	// else. A cell taken over by a new sauce restarts at one layer, so ketchup
+	// laid over a deep mayo slick is a thin red cell beside a twenty-layer cream
+	// one: the cream wins "thickest", and every ketchup cell touching the slick was
+	// drawn as mayo. The trail came out with a cream halo a cell wide.
+	//
+	// The borrowing is only for a fragment whose own texel is empty, which is the
+	// case it was for: the filtered sample bleeds a cell past the last painted
+	// texel, so the edge of a stain is drawn over clean cells, and a clean byte is
+	// 0, which unpacks to sauce 0, which is mayo.
+	float own = floor(texelFetch(mask_texture, texel, 0).r * 255.0 + 0.5);
+	float kind = mod(own, 4.0);
+	if (floor(own / 4.0) <= 0.0) {
+		// Only a cell with nothing on it borrows: the fragment is in the bleed
+		// past the last painted texel, and the sauce to draw there is the sauce of
+		// whatever bled into it.
+		float best = -1.0;
+		for (int y = lo.y; y <= hi.y; y++) {
+			for (int x = lo.x; x <= hi.x; x++) {
+				float byte = floor(texelFetch(mask_texture, ivec2(x, y), 0).r * 255.0 + 0.5);
+				float depth = floor(byte / 4.0);
+				if (depth > best) {
+					best = depth;
+					kind = mod(byte, 4.0);
+				}
 			}
 		}
 	}

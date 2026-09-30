@@ -43,15 +43,24 @@ vec3 sauce_tint(vec2 at) {
 	// pixel there, which is a cheaper error than a branch per fragment.
 	ivec2 lo = clamp(middle - ivec2(1), ivec2(0), size - ivec2(1));
 	ivec2 hi = clamp(middle + ivec2(1), ivec2(0), size - ivec2(1));
-	float best = -1.0;
-	float kind = 0.0;
-	for (int y = lo.y; y <= hi.y; y++) {
-		for (int x = lo.x; x <= hi.x; x++) {
-			float byte = floor(texelFetch(mask_texture, ivec2(x, y), 0).r * 255.0 + 0.5);
-			float depth = floor(byte / 4.0);
-			if (depth > best) {
-				best = depth;
-				kind = mod(byte, 4.0);
+	// This cell's own sauce whenever it has one. Borrowing the thickest
+	// neighbour's unconditionally drew every thin cell beside a thick one in the
+	// thick one's sauce -- ketchup over a deep mayo slick restarts at one layer,
+	// so the slick won "thickest" and the trail wore a cream halo.
+	float own = floor(texelFetch(mask_texture, middle, 0).r * 255.0 + 0.5);
+	float kind = mod(own, 4.0);
+	if (floor(own / 4.0) <= 0.0) {
+		// Empty: this fragment is in the bleed past the last painted texel, so it
+		// takes the sauce of whatever bled into it.
+		float best = -1.0;
+		for (int y = lo.y; y <= hi.y; y++) {
+			for (int x = lo.x; x <= hi.x; x++) {
+				float byte = floor(texelFetch(mask_texture, ivec2(x, y), 0).r * 255.0 + 0.5);
+				float depth = floor(byte / 4.0);
+				if (depth > best) {
+					best = depth;
+					kind = mod(byte, 4.0);
+				}
 			}
 		}
 	}
