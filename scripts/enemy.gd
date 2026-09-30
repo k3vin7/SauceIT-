@@ -196,6 +196,29 @@ var kind := EnemyKind.BRUISER
 @export_range(0.05, 1.0, 0.01) var mustard_slow_scale := 0.55
 @export_range(0.0, 10.0, 0.1, "suffix:s") var mustard_slow_seconds := 2.5
 
+@export_group("Ketchup")
+## How long this body has to be under a ketchup stream to take on one more stack.
+##
+## **A quarter second, because a full bottle's longest squirt is one second.** One
+## press is therefore worth four stacks at the very most, and three in practice --
+## the stream takes a moment to reach anything, and that moment is a stack. Against
+## the six it takes to go off, that means no single press ever sets a body off.
+##
+## It does not mean one player cannot. Holding the trigger starts the next squirt
+## by itself once the pause is up, so a solo player reaches six in about two and a
+## half seconds and two presses, on a tank still five-sixths full -- measured. That
+## is the intent: several shots rather than one, and a second player hosing the
+## same body halves the wait rather than being required for it.
+@export_range(0.05, 2.0, 0.01, "suffix:s") var ketchup_stack_seconds := 0.25
+## Stacks that make it go off.
+@export_range(2, 12, 1) var ketchup_burst_stacks := 6
+
+## How much ketchup is on this body, and when the last stack landed. Stacks do not
+## drain: a body that has been half-sauced stays half-sauced, so walking away and
+## coming back with a full bottle is a plan rather than a reset.
+var ketchup_stacks := 0
+var _ketchup_at := -1000.0
+
 @export_group("Flinching")
 ## How far it rocks back when a threshold is crossed.
 @export_range(0.0, 45.0, 0.5, "suffix:°") var flinch_degrees := 9.0
@@ -1071,6 +1094,30 @@ func _settle_onto_ground() -> void:
 		return
 	global_position += Vector3.UP * lift
 	_fall_pivot += Vector3.UP * lift
+
+
+## **One more layer of ketchup, if enough time has passed for one.** Returns true
+## on the stack that makes it go off; the caller owns what that means, because an
+## explosion is a thing that happens to the world rather than to this body.
+##
+## Rate-limited by time rather than counted per hit, for the reason the floor's
+## coats are: a stream lands a hundred points a second on whatever it is pointed
+## at, so per hit would set a body off in a tenth of a second and the number six
+## would mean nothing.
+func soak_ketchup(now: float) -> bool:
+	if not is_alive():
+		return false
+	if now - _ketchup_at < ketchup_stack_seconds:
+		return false
+	_ketchup_at = now
+	ketchup_stacks += 1
+	return ketchup_stacks >= ketchup_burst_stacks
+
+
+## The body went off: the sauce on it is spent.
+func clear_ketchup() -> void:
+	ketchup_stacks = 0
+	_ketchup_at = -1000.0
 
 
 ## **Mustard drags a monster the way it drags a player**, and for the same

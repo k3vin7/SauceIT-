@@ -457,6 +457,21 @@ class MayoSpeck:
 @export_range(0.2, 1.0, 0.01) var mustard_burst_scale := 0.75
 @export_range(1.0, 4.0, 0.05) var mustard_pause_scale := 1.8
 
+@export_group("Ketchup")
+## How far the blast reaches. Damage and sauce both stop here.
+@export_range(0.5, 12.0, 0.1, "suffix:m") var ketchup_burst_radius := 4.0
+## What it takes off a body inside that, at full strength at the centre and
+## nothing at the rim. Six stacks is two bottles or two players, so this is worth
+## more than the squirting that built it -- otherwise the sauce is a worse way of
+## doing what the stream already does.
+@export_range(0.0, 60.0, 0.5) var ketchup_burst_damage := 12.0
+## How many pieces fly, and how fast. Decoration and a warning: what the blast
+## marks is decided by the blast, not by where a fragment happens to land.
+@export_range(0, 64, 1) var ketchup_fragments := 28
+@export_range(0.5, 30.0, 0.5, "suffix:m/s") var ketchup_fragment_speed := 7.0
+## How many splats the blast leaves on the ground, out to the radius.
+@export_range(0, 80, 1) var ketchup_ground_splats := 26
+
 @export_group("Sauce Reliability")
 ## Above this the bottle is dependable: the stream starts the instant the
 ## trigger does and does not break.
@@ -3958,6 +3973,13 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds)
 				elif enemy.is_flinching():
 					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds)
+			# Ketchup piles up on the body rather than on the floor, and the stack
+			# that fills it sets it off. After the hit, so a body the stream has
+			# just killed goes off as the corpse it now is instead of soaking one
+			# more layer it will never use.
+			if shooter.sauce_kind == ContaminationGrid.KIND_KETCHUP \
+					and enemy.soak_ketchup(Time.get_ticks_msec() * 0.001):
+				_burst_ketchup(enemy, shooter)
 		if damaging and shooter.sauce_kind == ContaminationGrid.KIND_MUSTARD:
 			enemy.splash_mustard()
 		var enemy_cell := enemy.paint_mayo(hit_position, hit_normal, shooter.sauce_kind)
@@ -4025,6 +4047,123 @@ func _apply_sauce_look(shooter: Shooter) -> void:
 		# The landing ribbon keeps the alpha its own material was built with.
 		shooter.landing_material.albedo_color = Color(tint.r, tint.g, tint.b,
 			shooter.landing_material.albedo_color.a)
+
+
+## **Six stacks of ketchup going off on a body.**
+##
+## Authority only, and everything it does travels by a road that already exists:
+## the damage rides the state packet the enemies' health already rides, and every
+## splat it lays down goes into `_pending_splats` like any other. So there is no
+## new message for this, and a client cannot make one happen.
+##
+## **The blast marks; the fragments do not.** What a fragment hits is a matter of
+## where the pool happened to throw it, which is not the same on two machines and
+## has no business deciding where sauce lands. The stains are worked out here from
+## the blast's own centre and radius -- deterministic, and the same on every peer
+## because only the splats travel.
+func _burst_ketchup(enemy: MayoEnemy, shooter: Shooter) -> void:
+	var centre := enemy.global_position
+	enemy.clear_ketchup()
+
+	# **Bodies in the blast, the one that carried it included.** Falling off to
+	# nothing at the rim, so standing at the edge of it is worth something.
+	for other in _enemies:
+		if not is_instance_valid(other) or not other.is_alive():
+			continue
+		var gap := other.global_position.distance_to(centre)
+		if gap > ketchup_burst_radius:
+			continue
+		var share := 1.0 - gap / maxf(ketchup_burst_radius, 0.001)
+		var damage := ketchup_burst_damage * share
+		# Dealt through the same door a strand hit uses, one notional hit at a
+		# time, so a body killed by a blast dies the way a body killed by a stream
+		# does -- the flinch, the turn and the topple are all in there.
+		var hits := maxi(1, int(round(damage / maxf(other.sauce_damage_per_hit, 0.001))))
+		var killed := false
+		for _hit in hits:
+			if not other.is_alive():
+				break
+			killed = other.take_sauce_hit(centre)
+		if killed or not other.is_alive():
+			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds)
+		elif other.is_flinching():
+			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds)
+		_stain_body_with_ketchup(other, centre)
+
+	# **Players get sauce and nothing else.** A blast the party set off itself, on
+	# a body the party was standing next to, that then took their health would be a
+	# punishment for using the sauce as intended. It blinds them instead, which
+	# costs them the seconds they were about to spend aiming.
+	for other_shooter in _shooters.values():
+		var player: MayoPlayer = other_shooter.player
+		if not is_instance_valid(player):
+			continue
+		if player.global_position.distance_to(centre) > ketchup_burst_radius:
+			continue
+		var cell := player.paint_mayo(player.global_position, Vector3.UP,
+			ContaminationGrid.KIND_KETCHUP)
+		if cell.x >= 0:
+			_pending_splats.append_array(PackedInt32Array([
+				_splat_code(SPLAT_BODY, ContaminationGrid.KIND_KETCHUP),
+				player.peer_id, cell.x, cell.y]))
+		_record_visor_splat(player, centre, ContaminationGrid.KIND_KETCHUP)
+
+	_ketchup_ground(centre)
+	_ketchup_fragments(centre, shooter)
+
+
+## The mess it leaves on the ground: splats scattered out to the radius, thicker
+## in the middle because that is where it went off.
+func _ketchup_ground(centre: Vector3) -> void:
+	for index in ketchup_ground_splats:
+		var angle := _rng.randf_range(0.0, TAU)
+		# Square-rooted, so the points are spread evenly over the disc rather than
+		# bunched at the middle the way a flat random radius would put them.
+		var reach := sqrt(_rng.randf()) * ketchup_burst_radius
+		var at := centre + Vector3(cos(angle) * reach, 0.0, sin(angle) * reach)
+		var cell := _floor.paint_mayo(at, -1, ContaminationGrid.KIND_KETCHUP)
+		if cell.x >= 0:
+			_pending_splats.append_array(PackedInt32Array([
+				_splat_code(SPLAT_FLOOR, ContaminationGrid.KIND_KETCHUP), -1,
+				cell.x, cell.y]))
+
+
+## The pieces that fly. Thrown straight into the impact pool rather than through
+## `_spawn_impact_spray`, which is rate-limited so that a stream does not fill the
+## pool -- a blast is the one thing that should fill it.
+func _ketchup_fragments(centre: Vector3, shooter: Shooter) -> void:
+	if _speck_multimesh == null:
+		return
+	var now := Time.get_ticks_msec() * 0.001
+	for index in ketchup_fragments:
+		var angle := _rng.randf_range(0.0, TAU)
+		# Up and out rather than flat: flat pieces skim the floor and read as the
+		# stream, where a body going off throws sauce over everything near it.
+		var lift := _rng.randf_range(0.35, 1.0)
+		var out := Vector3(cos(angle), 0.0, sin(angle)) * _rng.randf_range(0.5, 1.0)
+		var thrown := (out + Vector3.UP * lift).normalized()
+		_take_speck(now, centre + thrown * 0.3,
+			thrown * ketchup_fragment_speed * _rng.randf_range(0.7, 1.3),
+			_rng.randf_range(0.02, 0.05),
+			shooter.peer_id if shooter != null else 1,
+			ContaminationGrid.KIND_KETCHUP)
+	_speck_buffer_dirty = true
+
+
+## A body caught in a blast wears it.
+func _stain_body_with_ketchup(enemy: MayoEnemy, from: Vector3) -> void:
+	var index := _enemies.find(enemy)
+	if index < 0:
+		return
+	var toward := enemy.global_position.direction_to(from)
+	if toward.length_squared() < 0.000001:
+		toward = Vector3.UP
+	var cell := enemy.paint_mayo(enemy.global_position + toward * enemy.radius, toward,
+		ContaminationGrid.KIND_KETCHUP)
+	if cell.x >= 0:
+		_pending_splats.append_array(PackedInt32Array([
+			_splat_code(SPLAT_ENEMY, ContaminationGrid.KIND_KETCHUP), index,
+			cell.x, cell.y]))
 
 
 ## The surface and the sauce in one int, the way `apply_splats` reads them back.
