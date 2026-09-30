@@ -310,7 +310,9 @@ func _run() -> void:
 	#
 	# So: for every material that reads one of these masks, one deposit has to
 	# clear its threshold.
-	var deposit := 1.0 / 255.0
+	# One layer as the texture reads it: shifted up past the sauce bits, the
+	# same way every threshold it is compared against is.
+	var deposit := float(1 << ContaminationGrid.KIND_BITS) / 255.0
 	var surfaces := {
 		"a body": load("res://scripts/body_contamination.gdshader"),
 		"the glasses": load("res://scripts/visor_overlay.gdshader"),

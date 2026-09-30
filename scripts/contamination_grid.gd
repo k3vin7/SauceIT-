@@ -531,13 +531,14 @@ func sauce_at(local: Vector2) -> Vector2i:
 	return Vector2i(packed >> KIND_BITS, packed & KIND_MASK)
 
 
-## The value the shader samples, evaluated on the CPU and returned in thickness
-## units. Used by the checks to confirm the rendered boundary and the slip test
-## agree.
+## The value the shader samples, evaluated on the CPU. Used by the checks to
+## confirm the rendered boundary and the slip test agree.
 ##
-## The bytes are blended first and unpacked after, because that is the order the
-## sampler works in: dividing each corner down before the blend would answer a
-## question the shader never asks.
+## **In bytes, not in layers.** This exists to stand in for the sampler, and the
+## sampler reads the packed byte -- so a caller comparing against it scales its
+## own cut-off up past the sauce bits, exactly as the shader's uniforms are
+## scaled. Returning layers here would make this agree with the slip test and
+## disagree with the thing it is named after.
 func sample_bilinear(local: Vector2) -> float:
 	var texel := Vector2(
 		(local.x + extent.x * 0.5) / cell_size - 0.5,
@@ -555,7 +556,7 @@ func sample_bilinear(local: Vector2) -> float:
 		var weight_x: float = frac.x if corner.x == 1 else 1.0 - frac.x
 		var weight_y: float = frac.y if corner.y == 1 else 1.0 - frac.y
 		total += value * weight_x * weight_y
-	return total / float(1 << KIND_BITS)
+	return total
 
 
 ## Value noise on a lattice `feature` cells wide: the four lattice points around

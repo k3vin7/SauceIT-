@@ -81,12 +81,20 @@ const SPLAT_STRIDE := 4
 ## for the sauce would be a quarter more traffic on the busiest message the game
 ## sends, to carry two bits. The surface codes above are single digits and the
 ## sauces are four, so both fit in one int with room to spare.
-## The sauces the stations hand out, in the order they cycle through.
+## The sauces a machine will serve, in the order the number keys pick them.
+##
+## **Every station serves all three, and the player chooses.** Giving each
+## machine one sauce and cycling them round the street read as a supply problem
+## rather than as a choice: which sauce you were carrying came down to which
+## machine you happened to be nearest, so the interesting decision -- what to
+## bring to what is coming -- was made by the map instead of by the player.
 const STATION_SAUCES: Array[int] = [
 	ContaminationGrid.KIND_MAYO,
 	ContaminationGrid.KIND_MUSTARD,
 	ContaminationGrid.KIND_KETCHUP,
 ]
+## What each of them is called, for the prompt at the machine.
+const SAUCE_NAMES: Array[String] = ["마요네즈", "머스타드", "케첩"]
 ## What a full bottle of each sauce looks like, indexed by the sauce.
 const SAUCE_TINTS: Array[Color] = [
 	Color("fff0a8"),  # mayo
@@ -1767,6 +1775,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("refill_sauce"):
 		_request_refill()
 		return
+	for index in STATION_SAUCES.size():
+		if event.is_action_pressed("pick_sauce_%d" % (index + 1)):
+			_request_refill(index)
+			return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		apply_look((event as InputEventMouseMotion).relative)
 
@@ -1832,6 +1844,16 @@ func _ensure_input_actions() -> void:
 		var refill := InputEventKey.new()
 		refill.physical_keycode = KEY_E
 		InputMap.action_add_event("refill_sauce", refill)
+	# 1, 2 and 3: fill the bottle with that sauce. The same request as E with the
+	# choice attached, so a number key at a machine you are not standing at is
+	# refused by exactly the reach test E is refused by.
+	for index in STATION_SAUCES.size():
+		var action := "pick_sauce_%d" % (index + 1)
+		if not InputMap.has_action(action):
+			InputMap.add_action(action)
+			var key := InputEventKey.new()
+			key.physical_keycode = KEY_1 + index
+			InputMap.action_add_event(action, key)
 	if not InputMap.has_action("toggle_key_legend"):
 		InputMap.add_action("toggle_key_legend")
 		var legend := InputEventKey.new()
@@ -2847,15 +2869,9 @@ func _add_refill_station(box: Dictionary) -> void:
 	var size: Vector3 = box["size"]
 	var facing: Vector3 = box["facing"]
 	var depth: float = size.x if absf(facing.x) > 0.5 else size.z
-	# **Which sauce a station serves, by the order they are built in.** The list
-	# is built identically on every peer -- it comes off the map, not off play --
-	# so the cycle needs nothing on the wire to agree. Cycling rather than
-	# randomising also means the street always has all three within a walk of
-	# each other, instead of a stretch that can only refill one thing.
 	_refill_stations.push_back({
 		"position": box["position"] + facing * (depth * 0.5),
 		"facing": facing,
-		"sauce": _refill_stations.size() % STATION_SAUCES.size(),
 	})
 
 
@@ -4011,26 +4027,28 @@ func station_in_reach(player: MayoPlayer) -> int:
 ## E. Like the wipe, this is a shared state change -- the tank a peer is firing
 ## out of is one every peer is simulating -- so a client asks and the server
 ## decides whether they are really standing at a machine.
-func _request_refill() -> void:
+func _request_refill(sauce := -1) -> void:
 	if _local == null:
 		return
 	if _is_authority():
-		refill_for(_local.peer_id)
+		refill_for(_local.peer_id, sauce)
 		return
-	_net.request_refill()
+	_net.request_refill(sauce)
 
 
 ## The authority's side of a refill request, wherever it came from. A client
 ## asking is not proof it is standing at a station, so the reach is tested here
 ## against the body the server is simulating.
-func refill_for(peer_id: int) -> bool:
+## `sauce` is an index into `STATION_SAUCES`, or -1 for another bottle of
+## whatever the player already has.
+func refill_for(peer_id: int, sauce := -1) -> bool:
 	var shooter: Shooter = _shooters.get(peer_id)
 	if shooter == null:
 		return false
 	var station := station_in_reach(shooter.player)
 	if station < 0:
 		return false
-	apply_refill(peer_id)
+	apply_refill(peer_id, sauce)
 	# The tutorial counts this one. Read off the top-up the game already did
 	# rather than from a request a client made, so a client cannot declare itself
 	# supplied -- and a full bottle still counts, because standing at the machine
@@ -4038,7 +4056,7 @@ func refill_for(peer_id: int) -> bool:
 	if _tutorial != null:
 		_tutorial.note_refill(peer_id, station)
 	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
-		_net.broadcast_refill(peer_id)
+		_net.broadcast_refill(peer_id, sauce)
 	return true
 
 
@@ -4046,28 +4064,31 @@ func refill_for(peer_id: int) -> bool:
 ## rather than derived, because unlike the drain -- which every peer works out
 ## from the firing flag it already has -- a refill is not something a peer can
 ## see coming.
-func apply_refill(peer_id: int) -> void:
+func apply_refill(peer_id: int, sauce := -1) -> void:
 	var shooter: Shooter = _shooters.get(peer_id)
 	if shooter == null:
 		return
 	shooter.sauce = 1.0
-	# **A bottle holds what the machine it was filled at serves.** Worked out
-	# from the station rather than sent with the refill, because it is not a
-	# decision: the stations are built off the map and the player is standing at
-	# one. On a client this is the bottle's own look and nothing else -- every
-	# splat carries its sauce, so what actually lands is the server's answer
-	# either way, and a client that picked the wrong station mis-colours a
-	# bottle rather than painting the wrong sauce.
-	var station := station_in_reach(shooter.player)
-	if station >= 0:
-		var serves: Dictionary = _refill_stations[station]
-		shooter.sauce_kind = int(serves.get("sauce", ContaminationGrid.KIND_MAYO))
-		_update_bottle_gauge(shooter)
+	# `sauce` of -1 is "the same again": E tops the bottle up with whatever is
+	# already in it, and only a number key changes what that is. Sent rather than
+	# worked out locally, because unlike the station in reach this *is* a
+	# decision, and the peer that made it is the only one that knows it.
+	if sauce >= 0 and sauce < STATION_SAUCES.size():
+		shooter.sauce_kind = STATION_SAUCES[sauce]
+	_update_bottle_gauge(shooter)
 
 
 ## True when the local player is standing at a station, for the HUD prompt.
 func local_at_station() -> bool:
 	return _local != null and station_in_reach(_local.player) >= 0
+
+
+## Which sauce the local bottle holds, as an index into `STATION_SAUCES`, for the
+## prompt to mark. -1 when there is no local player to ask about.
+func local_sauce_kind() -> int:
+	if _local == null:
+		return -1
+	return STATION_SAUCES.find(_local.sauce_kind)
 
 
 ## R. The wipe is a shared state change -- everyone watches the lenses come up
@@ -4235,9 +4256,12 @@ func _update_visuals(shooter: Shooter = null) -> void:
 	var air_segments := _segments_for_phase(PointPhase.AIR, camera_position, shooter)
 	var landing_segments := _segments_for_phase(PointPhase.LANDING, camera_position, shooter)
 	var shadow_segments := _shadow_segments(camera_position, shooter)
-	var mayo_tint := Color("fff0a8")
-	shooter.air_visual.update_ribbon(air_segments, camera_position, camera_forward, strand_thickness, mayo_tint)
-	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, strand_thickness, mayo_tint, 0.004)
+	# The stream is the colour of what is in the bottle. Taken from the same table
+	# the bottle's own contents are drawn from, so a player who has just switched
+	# sees it on the weapon and in the air rather than only where it lands.
+	var sauce_tint: Color = SAUCE_TINTS[shooter.sauce_kind]
+	shooter.air_visual.update_ribbon(air_segments, camera_position, camera_forward, strand_thickness, sauce_tint)
+	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, strand_thickness, sauce_tint, 0.004)
 	shooter.shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward, strand_thickness * 0.72,
 		Color(0.08, 0.07, 0.055, 0.18), 0.012)
 

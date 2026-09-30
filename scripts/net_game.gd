@@ -709,16 +709,16 @@ func _request_wipe() -> void:
 ## E, on a client. Carries nothing but the fact that a key went down: where the
 ## player is standing is the server's own copy of them, not something the packet
 ## gets to claim.
-func request_refill() -> void:
+func request_refill(sauce := -1) -> void:
 	if not _online or multiplayer.is_server():
 		return
 	if not _joined or _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
-	_request_refill.rpc_id(1)
+	_request_refill.rpc_id(1, sauce)
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func _request_refill() -> void:
+func _request_refill(sauce := -1) -> void:
 	if not multiplayer.is_server():
 		return
 	var sender := multiplayer.get_remote_sender_id()
@@ -726,20 +726,20 @@ func _request_refill() -> void:
 		dropped_packets += 1
 		return
 	_refill_budget[sender] = _refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND) - 1.0
-	world.refill_for(sender)
+	world.refill_for(sender, sauce)
 
 
 ## The host telling everyone a bottle was filled. An event, not a value in the
 ## state packet: refills are rare and the drain is already derived everywhere.
-func broadcast_refill(peer_id: int) -> void:
+func broadcast_refill(peer_id: int, sauce := -1) -> void:
 	if not _online or not multiplayer.is_server():
 		return
-	_apply_refill.rpc(peer_id)
+	_apply_refill.rpc(peer_id, sauce)
 
 
 @rpc("authority", "call_remote", "reliable")
-func _apply_refill(peer_id: int) -> void:
-	world.apply_refill(peer_id)
+func _apply_refill(peer_id: int, sauce := -1) -> void:
+	world.apply_refill(peer_id, sauce)
 
 
 ## Called every frame with whatever the local camera currently is. Sends only

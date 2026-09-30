@@ -1,5 +1,11 @@
 extends SceneTree
 
+## Half a layer, in the bytes `sample_bilinear` answers in. The shader's own
+## cut-off is scaled past the sauce bits the same way, so a bare 0.5 would put
+## the drawn boundary an eighth of a cell inside the real one and then call the
+## difference a disagreement.
+const RENDERED_CUT := 0.5 * float(1 << ContaminationGrid.KIND_BITS)
+
 # Confirms the rendered boundary and the slip test cannot drift apart:
 #   * the shader cuts at exactly 0.5, with linear filtering, no mipmaps, clamped
 #   * the 0.5 crossing lands exactly on a cell boundary
@@ -131,7 +137,7 @@ func _run() -> void:
 			if not grid.has_cell(grid.cell_of(local)):
 				continue
 			total += 1
-			var rendered := grid.sample_bilinear(local) >= 0.5
+			var rendered := grid.sample_bilinear(local) >= RENDERED_CUT
 			if rendered != floor_node.is_mayo_at(floor_node.to_global(probe)):
 				mismatch += 1
 				worst = maxf(worst, _distance_to_cell_edge(grid, local))
@@ -155,13 +161,13 @@ func _run() -> void:
 func _find_crossing(floor_node: FloorContamination, grid: ContaminationGrid, centre: Vector3) -> float:
 	var x := centre.x
 	while x < centre.x + 2.0:
-		if grid.sample_bilinear(Vector2(x, centre.z)) < 0.5:
+		if grid.sample_bilinear(Vector2(x, centre.z)) < RENDERED_CUT:
 			# Bisect the last step for the exact crossing.
 			var low := x - 0.0005
 			var high := x
 			for _i in 40:
 				var mid := (low + high) * 0.5
-				if grid.sample_bilinear(Vector2(mid, centre.z)) >= 0.5:
+				if grid.sample_bilinear(Vector2(mid, centre.z)) >= RENDERED_CUT:
 					low = mid
 				else:
 					high = mid

@@ -103,7 +103,9 @@ func _run() -> void:
 	floor_node.paint_mayo(here)
 	var raised := 0
 	var drawn := 0
-	var cut := maxf(float(floor_node.thickness_per_pass) * 0.5, 0.5)
+	# In bytes, because `sample_bilinear` answers in bytes.
+	var cut := maxf(float(floor_node.thickness_per_pass) * 0.5, 0.5) \
+		* float(1 << ContaminationGrid.KIND_BITS)
 	var landing := grid.cell_of(Vector2(9.0, 9.0))
 	for row in range(landing.y - 8, landing.y + 9):
 		for column in range(landing.x - 8, landing.x + 9):
@@ -244,8 +246,8 @@ func _run() -> void:
 	# if the middle two are actually drawn on a real trail rather than being a
 	# hairline between white and yellow.
 	var census := PackedInt32Array([0, 0, 0, 0, 0])
-	for cell in grid.cells:
-		census[floor_node.step_for_thickness(cell)] += 1
+	for index in grid.cells.size():
+		census[floor_node.step_for_thickness(grid.thickness_of(index))] += 1
 	var stain: int = census[1] + census[2] + census[3] + census[4]
 	print("bands over the trail: white %.0f%%, light %.0f%%, heavy %.0f%%, deep %.0f%%" % [
 		100.0 * census[1] / stain, 100.0 * census[2] / stain,
@@ -269,10 +271,11 @@ func _run() -> void:
 	# checked against the scan it replaced.
 	var scanned_painted := 0
 	var scanned_deep := 0
-	for cell in grid.cells:
-		if cell > 0:
+	for index in grid.cells.size():
+		var thickness := grid.thickness_of(index)
+		if thickness > 0:
 			scanned_painted += 1
-			if cell >= floor_node.slip_thickness:
+			if thickness >= floor_node.slip_thickness:
 				scanned_deep += 1
 	print("counts: %d painted / %d deep running, %d / %d by scanning" % [
 		grid.painted_count, grid.deep_count, scanned_painted, scanned_deep])
@@ -416,13 +419,13 @@ func _run() -> void:
 		await physics_frame
 		if held_frame == 30:
 			for cell in grid.cells:
-				tap_peak = maxi(tap_peak, cell)
+				tap_peak = maxi(tap_peak, cell >> ContaminationGrid.KIND_BITS)
 	scene.debug_set_input(Vector2.ZERO, false, false)
 	for _f in 45:
 		await physics_frame
 	var parked_peak := 0
 	for cell in grid.cells:
-		parked_peak = maxi(parked_peak, cell)
+		parked_peak = maxi(parked_peak, cell >> ContaminationGrid.KIND_BITS)
 	print("stream held on one spot: %d layers after half a second, %d after holding it" % [
 		tap_peak, parked_peak])
 	_check(parked_peak >= floor_node.slip_thickness,

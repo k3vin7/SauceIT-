@@ -39,7 +39,22 @@ const ENEMY_LOW := Color("7a2a20")
 const LOW_AT := 0.35
 
 ## What a stall says when you are close enough to be served.
+## **The three sauces, and E for another of what is already loaded.** The list is
+## the prompt now rather than one line, because a key that does nothing visible
+## until you press it is how the stalls read before they said anything at all --
+## and a player who never learns 2 exists never finds out mustard is in the game.
+## The sauce in the bottle is marked, so the prompt also answers "what am I
+## carrying", which nothing else on the HUD does.
 const PROMPT := "[E]  소스 채우기"
+const PROMPT_LINES: Array[String] = [
+	"[1]  마요네즈",
+	"[2]  머스타드",
+	"[3]  케첩",
+]
+const PROMPT_LINE_GAP := 22.0
+## What marks the line for the sauce already in the bottle.
+const PROMPT_HELD := "  ◀"
+const PROMPT_HELD_COLOR := Color("ffffff")
 const PROMPT_SIZE := 18
 const PROMPT_LIFT := 54.0
 const PROMPT_COLOR := Color("fff0a8")
@@ -167,14 +182,31 @@ func _draw_prompt() -> void:
 	if not world.local_at_station():
 		return
 	var font := ThemeDB.fallback_font
-	var width := font.get_string_size(PROMPT, HORIZONTAL_ALIGNMENT_LEFT, -1.0, PROMPT_SIZE).x
-	var at := Vector2(
-		frame.position.x + (frame.size.x - width) * 0.5,
-		frame.position.y + frame.size.y - PROMPT_LIFT)
-	# Drawn twice, offset: the street is dark but a wall behind it may not be.
-	draw_string(font, at + Vector2(1.0, 1.0), PROMPT, HORIZONTAL_ALIGNMENT_LEFT, -1.0,
-		PROMPT_SIZE, PROMPT_SHADOW)
-	draw_string(font, at, PROMPT, HORIZONTAL_ALIGNMENT_LEFT, -1.0, PROMPT_SIZE, PROMPT_COLOR)
+	var held: int = world.local_sauce_kind()
+	# Every line is laid out against the widest of them, so the block is a block
+	# rather than a ragged edge that shifts as the marker moves down it.
+	var lines := PROMPT_LINES.duplicate()
+	lines.push_back(PROMPT)
+	var widest := 0.0
+	for line in lines:
+		widest = maxf(widest,
+			font.get_string_size(line + PROMPT_HELD, HORIZONTAL_ALIGNMENT_LEFT,
+				-1.0, PROMPT_SIZE).x)
+	var top := frame.position.y + frame.size.y - PROMPT_LIFT \
+		- PROMPT_LINE_GAP * float(lines.size() - 1)
+	for index in lines.size():
+		var line: String = lines[index]
+		var colour := PROMPT_COLOR
+		if index < PROMPT_LINES.size() and index == held:
+			line += PROMPT_HELD
+			colour = PROMPT_HELD_COLOR
+		var at := Vector2(
+			frame.position.x + (frame.size.x - widest) * 0.5,
+			top + PROMPT_LINE_GAP * float(index))
+		# Drawn twice, offset: the street is dark but a wall behind it may not be.
+		draw_string(font, at + Vector2(1.0, 1.0), line, HORIZONTAL_ALIGNMENT_LEFT,
+			-1.0, PROMPT_SIZE, PROMPT_SHADOW)
+		draw_string(font, at, line, HORIZONTAL_ALIGNMENT_LEFT, -1.0, PROMPT_SIZE, colour)
 
 
 ## Where this enemy's bar goes, or a zero rect if it does not get one. Split out
