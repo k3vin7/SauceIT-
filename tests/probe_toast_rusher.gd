@@ -144,6 +144,32 @@ func _run() -> void:
 	_check(player._pending_enemy_impact.y > 0.0,
 		"the ram knocked the player along the floor rather than off it")
 
+	# --- a pack of them must not fire the player off the map ---------------
+	# The shoves accumulate, which is right -- a crowd should hit harder than
+	# one -- but six rushers at 7.5 m/s is 45 m/s, and that is not a knockback.
+	player._pending_enemy_impact = Vector3.ZERO
+	for _pile in 6:
+		player.apply_enemy_impact(Vector3.FORWARD, rusher.impact_push_speed,
+			rusher.impact_lift_speed)
+	var piled: Vector3 = player._pending_enemy_impact
+	var piled_flat := Vector2(piled.x, piled.z).length()
+	print("six rushers at once: %.1f m/s flat, %.1f m/s up (caps %.1f / %.1f)" % [
+		piled_flat, piled.y, player.max_enemy_impact, player.max_enemy_lift])
+	_check(piled_flat <= player.max_enemy_impact + 0.01,
+		"a pack of rushers threw the player at %.1f m/s" % piled_flat)
+	_check(piled.y <= player.max_enemy_lift + 0.01,
+		"a pack of rushers launched the player %.1f m/s upward" % piled.y)
+	# But a crowd still hits harder than one of them, or the cap has flattened
+	# the difference away.
+	player._pending_enemy_impact = Vector3.ZERO
+	player.apply_enemy_impact(Vector3.FORWARD, rusher.impact_push_speed,
+		rusher.impact_lift_speed)
+	var alone := Vector2(player._pending_enemy_impact.x,
+		player._pending_enemy_impact.z).length()
+	print("one of them: %.1f m/s flat" % alone)
+	_check(piled_flat > alone,
+		"the cap made six rushers hit exactly as hard as one")
+
 	# The bruiser must NOT shove: it bites, and giving it a charge would make
 	# the two bodies read the same.
 	_check(is_zero_approx(bruisers[0].impact_push_speed),

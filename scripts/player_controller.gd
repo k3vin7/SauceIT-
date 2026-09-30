@@ -40,6 +40,13 @@ enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 @export_group("Health")
 @export_range(10.0, 1000.0, 1.0) var max_health := 100.0
 
+@export_group("Being run into")
+## The most a frame's worth of charges can throw a player, flat and upward.
+## See `apply_enemy_impact`: the shoves add up, and a pack of rushers arriving
+## together was launching people across the street.
+@export_range(0.0, 40.0, 0.5, "suffix:m/s") var max_enemy_impact := 9.5
+@export_range(0.0, 20.0, 0.5, "suffix:m/s") var max_enemy_lift := 3.0
+
 @export_group("Slip and Fall")
 ## Catching your balance before you actually go over. Controls are already
 ## locked here; this is where an arm-flailing animation would go.
@@ -208,6 +215,19 @@ func apply_enemy_impact(flat_direction: Vector3, push_speed: float,
 	if direction.length_squared() < 0.000001:
 		return
 	_pending_enemy_impact += direction.normalized() * push_speed + Vector3.UP * lift_speed
+	# **Capped, because it accumulates.** Several rushers reaching a player on
+	# the same frame each add their own shove: six of them at 7.5 m/s is 45 m/s
+	# of it, which does not knock a player back, it fires them off the map. The
+	# cap keeps a crowd hitting harder than one of them without that.
+	#
+	# The two are capped apart. Flat and lift do different jobs -- one moves you,
+	# the other takes your footing -- and a single cap on the length would let a
+	# pile of lift eat the whole budget and leave the knock back with none.
+	var flat := Vector3(_pending_enemy_impact.x, 0.0, _pending_enemy_impact.z)
+	if flat.length() > max_enemy_impact:
+		flat = flat.normalized() * max_enemy_impact
+	_pending_enemy_impact = flat + Vector3.UP * minf(
+		_pending_enemy_impact.y, max_enemy_lift)
 
 
 func paint_mayo(world_position: Vector3, world_normal: Vector3,
