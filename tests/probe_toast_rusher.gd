@@ -31,7 +31,7 @@ func _run() -> void:
 		var enemy: MayoEnemy = scene.enemy_at(index)
 		if enemy.kind == MayoEnemy.EnemyKind.MOLDY_TOAST_RUSHER:
 			rushers.push_back(enemy)
-		else:
+		elif enemy.kind == MayoEnemy.EnemyKind.BRUISER:
 			bruisers.push_back(enemy)
 	print("roster: %d bruisers, %d moldy toast rushers" % [bruisers.size(), rushers.size()])
 	_check(bruisers.size() == 3, "the three existing enemies did not survive")

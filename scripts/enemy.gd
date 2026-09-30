@@ -19,6 +19,7 @@ extends CharacterBody3D
 const WIDTH_MULTIPLE := 2.0
 const HEIGHT_MULTIPLE := 2.0
 const GaitScript := preload("res://scripts/enemy_gait.gd")
+const FryStalkerVisualScript := preload("res://scripts/fry_stalker_visual.gd")
 const HAMBURGER_MONSTER := preload(
 	"res://assets/enemies/hamburger_monster/hamburger_monster.glb")
 ## Evaluated mesh bounds in the authored Blender file, in metres. Scaling by
@@ -27,6 +28,8 @@ const HAMBURGER_MONSTER := preload(
 const MODEL_SOURCE_HEIGHT := 1.7729597
 ## The height the proportions in `_bones` are written as fractions of.
 const MODEL_HEIGHT := 4.1
+const FRY_STALKER_SOURCE_HEIGHT := 4.2
+const FRY_STALKER_PLAYER_HEIGHT_MULTIPLE := 2.5
 
 @export_group("Health")
 @export_range(10.0, 2000.0, 1.0) var max_health := 240.0
@@ -110,6 +113,9 @@ var solo_health := 240.0
 ## Beyond the two capsule radii. Its arms are not modelled, so this stands in
 ## for them.
 @export_range(0.0, 3.0, 0.05, "suffix:m") var contact_reach := 0.5
+## A Fry Stalker leaves its front claws buried after a slam. During this
+## window it cannot chase or be pushed, giving the player a deliberate opening.
+@export_range(0.0, 4.0, 0.05, "suffix:s") var attack_lock_seconds := 0.0
 
 ## The two kinds a body can be. Minions die to a squirt and never stagger;
 ## heavies soak a party's worth of sauce and flinch on the way down.
@@ -120,7 +126,7 @@ enum Grade { MINION, HEAVY }
 ## health, and built by `build_moldy_toast_rusher`. They share everything else
 ## -- the chase, the contamination, the topple and the state packet -- because
 ## the difference between them is proportions and numbers, not behaviour.
-enum EnemyKind { BRUISER, MOLDY_TOAST_RUSHER }
+enum EnemyKind { BRUISER, MOLDY_TOAST_RUSHER, FRY_STALKER }
 
 @export_group("Its kind")
 ## What this one counts as. It changes nothing on its own -- what reads it is
@@ -231,6 +237,8 @@ var _idle_animation := &""
 var _walk_animation := &""
 var _attack_animation := &""
 var _attack_animation_active := false
+var _fry_visual: Node
+var _attack_lock_left := 0.0
 ## How far through the flinch it is, in seconds, counting down. The flinch is
 ## driven **through `fall_angle`** rather than through a field of its own, so it
 ## needs nothing added to the state packet: the angle already travels.
@@ -496,6 +504,85 @@ func build_moldy_toast_rusher(cell_size: float, brush_radius: float,
 	_play_animation(_idle_animation)
 
 
+## The Fry Stalker: the supplied 4.2 m carton creature, with eight articulated
+## fry legs and a front-pair ground slam. It is a heavy like the hamburger, but
+## moves between the hamburger and toast speeds and shares the hamburger's
+## sight distance and health budget.
+func build_fry_stalker(cell_size: float, brush_radius: float) -> void:
+	kind = EnemyKind.FRY_STALKER
+	grade = Grade.HEAVY
+	flinch_thresholds = [0.25, 0.5, 0.75]
+	height = MayoPlayer.CAPSULE_HEIGHT * FRY_STALKER_PLAYER_HEIGHT_MULTIPLE
+	var model_scale := height / FRY_STALKER_SOURCE_HEIGHT
+	radius = 1.0 * model_scale
+	_rest_radius = 0.55 * model_scale
+	max_health = 240.0
+	solo_health = max_health
+	health = max_health
+	sauce_damage_per_hit = 0.4
+	turn_speed = 4.2
+	contact_damage = 10.0
+	contact_interval = 1.4
+	contact_reach = 0.72 * model_scale
+	attack_lock_seconds = 1.4
+	sight_range = 26.0
+	give_up_range = 44.0
+	impact_push_speed = 0.0
+	impact_lift_speed = 0.0
+	shove_speed = 4.8
+
+	# A solid carton and four long lower-body capsules cover the authored
+	# silhouette without turning the open spaces between eight legs into a wall.
+	var carton_shape := BoxShape3D.new()
+	carton_shape.size = Vector3(1.7, 2.15, 1.15) * model_scale
+	var carton_collision := CollisionShape3D.new()
+	carton_collision.name = "Carton"
+	carton_collision.shape = carton_shape
+	carton_collision.position = Vector3(0.0, 0.58, 0.0) * model_scale
+	add_child(carton_collision)
+	for spec in [
+		[Vector3(-0.35, 0.10, -0.35), Vector3(-0.83, -1.75, -0.82)],
+		[Vector3(0.35, 0.10, -0.35), Vector3(0.83, -1.75, -0.82)],
+		[Vector3(-0.35, 0.10, 0.35), Vector3(-0.83, -1.75, 0.82)],
+		[Vector3(0.35, 0.10, 0.35), Vector3(0.83, -1.75, 0.82)],
+	]:
+		var a: Vector3 = spec[0] * model_scale
+		var b: Vector3 = spec[1] * model_scale
+		var span: Vector3 = b - a
+		var shape := CapsuleShape3D.new()
+		shape.radius = 0.12 * model_scale
+		shape.height = span.length() + shape.radius * 2.0
+		var collision := CollisionShape3D.new()
+		collision.name = "Leg"
+		collision.shape = shape
+		collision.transform = Transform3D(_aligned_basis(span), (a + b) * 0.5)
+		add_child(collision)
+
+	_body_mesh = MeshInstance3D.new()
+	_body_mesh.name = "EnemyBody"
+	var mask_box := BoxMesh.new()
+	mask_box.size = Vector3(1.7, 2.15, 1.15) * model_scale
+	_body_mesh.mesh = mask_box
+	_body_mesh.position = Vector3(0.0, 0.58, 0.0) * model_scale
+	_body_mesh.visible = false
+	add_child(_body_mesh)
+
+	_fry_visual = FryStalkerVisualScript.new()
+	_fry_visual.name = "FryStalkerVisual"
+	_fry_visual.scale = Vector3.ONE * model_scale
+	_fry_visual.position.y = -stand_height()
+	_visual_root = _fry_visual
+	add_child(_visual_root)
+
+	contamination = BodyContamination.new()
+	contamination.name = "BodyContamination"
+	contamination.cell_size = cell_size
+	contamination.brush_radius = brush_radius
+	add_child(contamination)
+	contamination.configure(self, _body_mesh, radius, height, Color("9e0b06"))
+	contamination.add_visual_overlay(_visual_root)
+
+
 ## `required` is false for the rusher, whose rig has a different set of clips:
 ## a missing one there is a fallback, not a fault.
 func _find_animation(suffix: String, required := true) -> StringName:
@@ -524,6 +611,8 @@ func _set_locomotion_animation(moving: bool) -> void:
 
 
 func _play_attack_animation() -> void:
+	if _fry_visual != null:
+		_fry_visual.play_slam(attack_lock_seconds)
 	if _animation_player == null or _attack_animation.is_empty():
 		return
 	_attack_animation_active = true
@@ -535,6 +624,7 @@ func _play_attack_animation() -> void:
 
 func _play_death_animation() -> void:
 	_attack_animation_active = false
+	_attack_lock_left = 0.0
 	# `fall_angle` turns the gameplay body, its colliders and the visual together.
 	# The imported Death clip also translates, rotates and scales the Body bone
 	# and throws both arms elsewhere. Playing both made the visible corpse fall a
@@ -882,6 +972,10 @@ func is_flinching() -> bool:
 	return _flinch_left > 0.0
 
 
+func is_attack_locked() -> bool:
+	return _attack_lock_left > 0.0
+
+
 ## Rocks back and recovers, writing `fall_angle` -- which is why nothing is
 ## added to the state packet for it. A half-sine: away from upright and back,
 ## reaching the full angle in the middle rather than at the end.
@@ -945,6 +1039,8 @@ func _advance_fall(delta: float) -> void:
 func _advance_gait(step: Vector3, walking: bool, delta: float) -> void:
 	var covered := Vector2(step.x, step.z).length()
 	_ground_covered += covered
+	if _fry_visual != null:
+		_fry_visual.set_motion(_ground_covered, walking and _attack_lock_left <= 0.0)
 	if _gait != null:
 		_gait.phase = _ground_covered / maxf(_gait.stride_in_use(), 0.01)
 		_gait.strength = move_toward(_gait.strength, 1.0 if walking else 0.0,
@@ -1093,6 +1189,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		_advance_fall(delta)
 		return null
 	_contact_cooldown = maxf(_contact_cooldown - delta, 0.0)
+	_attack_lock_left = maxf(_attack_lock_left - delta, 0.0)
 	# Rocking back from a threshold. It keeps walking through it: the flinch is
 	# a stagger, not a stun, and stopping the chase would make a steady stream
 	# of hits into a hold.
@@ -1115,7 +1212,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		target = null
 
 	var flat := Vector3.ZERO
-	if target != null:
+	if target != null and _attack_lock_left <= 0.0:
 		flat = _step_toward(target, delta) - global_position
 		flat.y = 0.0
 
@@ -1145,8 +1242,12 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	# The shove rides on top of the walk rather than replacing it, so a body
 	# being hosed head-on is pushed backwards while still trying to come at you
 	# -- which is what leaning into a hose looks like.
-	velocity.x += _shove.x
-	velocity.z += _shove.z
+	if _attack_lock_left <= 0.0:
+		velocity.x += _shove.x
+		velocity.z += _shove.z
+	else:
+		velocity.x = 0.0
+		velocity.z = 0.0
 	_shove = _shove.move_toward(Vector3.ZERO,
 		shove_speed / maxf(shove_decay_seconds, 0.01) * delta)
 
@@ -1170,6 +1271,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	if gap.length() > reach:
 		return null
 	_contact_cooldown = contact_interval
+	_attack_lock_left = attack_lock_seconds
 	_play_attack_animation()
 	# A rusher does not bite, it runs into you: the shove is what it is for, and
 	# it is what stops a swarm of them being a stationary damage tick.

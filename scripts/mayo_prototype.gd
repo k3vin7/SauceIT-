@@ -331,6 +331,9 @@ class MayoSpeck:
 ## The toast rushers can be outrun, but not merely walked away from. Their low
 ## health makes turning to spray one down the intended answer to the charge.
 @export_range(0.1, 3.0, 0.05) var toast_rusher_speed_fraction := 1.65
+## Between the 0.70 bruiser and 1.65 toast: threatening, but its planted-claw
+## recovery can still be exploited on foot.
+@export_range(0.1, 3.0, 0.05) var fry_stalker_speed_fraction := 1.10
 ## Draws every enemy's sight and give-up ranges on the ground. **`F3` toggles
 ## it.** A development aid: the ranges are invisible otherwise, so tuning them
 ## is guesswork about why a body did or did not set off.
@@ -2172,16 +2175,16 @@ func _build_player_body(shooter: Shooter) -> void:
 	# Everything measured against the body scales with these: the eye height and
 	# the spawn height below it, the lens quad, the self-hit distance, and the
 	# shoulder camera's framing. The contamination grid takes them directly.
-	capsule_shape.radius = 0.64
-	capsule_shape.height = 2.56
+	capsule_shape.radius = MayoPlayer.CAPSULE_RADIUS
+	capsule_shape.height = MayoPlayer.CAPSULE_HEIGHT
 	collision.shape = capsule_shape
 	shooter.player.add_child(collision)
 
 	var body_mesh := MeshInstance3D.new()
 	body_mesh.name = "CapsuleBody"
 	var capsule_mesh := CapsuleMesh.new()
-	capsule_mesh.radius = 0.64
-	capsule_mesh.height = 2.56
+	capsule_mesh.radius = MayoPlayer.CAPSULE_RADIUS
+	capsule_mesh.height = MayoPlayer.CAPSULE_HEIGHT
 	body_mesh.mesh = capsule_mesh
 	shooter.player.add_child(body_mesh)
 	shooter.body_mesh = body_mesh
@@ -2771,6 +2774,9 @@ const ENEMY_SPAWNS := [
 	[270, 420],   # halfway along Karja tänav
 	[370, 550],   # waiting in the festival square
 ]
+## On the same opening road, about halfway between the player start and the
+## first hamburger/toast group, so it is always the first monster encountered.
+const FRY_STALKER_SPAWN := [290, 850]
 ## A pair flanks each bruiser, this far to either side of it.
 ##
 ## **In metres, off the bruiser's own position -- not in map pixels.** The pair
@@ -2818,6 +2824,19 @@ func _build_enemies() -> void:
 				+ Vector3(TOAST_RUSHER_PAIR_OFFSETS[pair_index], 0.0, 0.0)
 			rusher.position.y = rusher.stand_height()
 			_enemies.push_back(rusher)
+	var fry_stalker := MayoEnemy.new()
+	fry_stalker.name = "Enemy_FryStalker"
+	fry_stalker.authority = _is_authority()
+	add_child(fry_stalker)
+	fry_stalker.build_fry_stalker(body_cell_size, contamination_brush_radius)
+	fry_stalker.nav = _nav
+	if _local != null:
+		fry_stalker.match_player_speed(_local.player.walk_speed,
+			fry_stalker_speed_fraction)
+	fry_stalker.position = StreetMap.from_pixels(
+		FRY_STALKER_SPAWN[0], FRY_STALKER_SPAWN[1]) \
+		+ Vector3(0.0, fry_stalker.stand_height(), 0.0)
+	_enemies.push_back(fry_stalker)
 	_apply_enemy_sight_rings()
 	# Scale them to the party that exists now. Offline that is one player and
 	# the multiplier is 1, so a solo game is untouched.
