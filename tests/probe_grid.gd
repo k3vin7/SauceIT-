@@ -114,7 +114,11 @@ func _run() -> void:
 		for offset_y in range(-6, 7):
 			var cell := block + Vector2i(offset_x, offset_y)
 			if grid.has_cell(cell):
-				grid.cells[cell.y * grid.width + cell.x] = 1
+				# One deposit, written the way `paint_cell` writes it: a thickness
+				# sits above the sauce bits, so a bare 1 is thickness 0 and the
+				# block this is building would read as clean floor.
+				grid.cells[cell.y * grid.width + cell.x] = \
+					1 << ContaminationGrid.KIND_BITS
 	grid.dirty = true
 	# Filled to one deposit and cut at half of one, which is the case the
 	# outline's marching-squares property is actually claimed for: the outermost

@@ -92,7 +92,7 @@ func _painted_cell_position(world) -> Vector3:
 	var count := 0
 	for y in grid.height:
 		for x in grid.width:
-			if grid.cells[y * grid.width + x] >= world._floor.slip_thickness:
+			if grid.thickness_of(y * grid.width + x) >= world._floor.slip_thickness:
 				total += Vector2(float(x), float(y))
 				count += 1
 	if count == 0:
@@ -102,7 +102,7 @@ func _painted_cell_position(world) -> Vector3:
 	var best_distance := INF
 	for y in grid.height:
 		for x in grid.width:
-			if grid.cells[y * grid.width + x] < world._floor.slip_thickness:
+			if grid.thickness_of(y * grid.width + x) < world._floor.slip_thickness:
 				continue
 			var distance := centroid.distance_squared_to(Vector2(float(x), float(y)))
 			if distance < best_distance:
