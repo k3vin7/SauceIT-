@@ -3726,105 +3726,31 @@ func _emit_point(shooter: Shooter = null) -> void:
 	shooter.points.push_back(point)
 
 
-## Two array-adjacent points are one continuous strand only if they came from
-## the same trigger press and have not been pulled apart into separate blobs.
 func _points_connected(front: MayoPoint, back: MayoPoint) -> bool:
-	return front.burst_index == back.burst_index and not back.severed
-
-
-## Walks each shooter's strand once a frame and latches the pairs that have come
-## apart. Evaluated here rather than wherever a break is asked about, so the
-## answer cannot change between the constraint, the ribbon and the shadow, and
-## cannot change back.
+	return StrandDynamics.points_connected(front, back)
+## Latches the pairs that have come apart, once a frame, before anything asks.
 func _update_connections(shooter: Shooter) -> void:
-	var points := shooter.points
-	for i in range(1, points.size()):
-		var back := points[i]
-		if back.severed:
-			continue
-		var front := points[i - 1]
-		if front.burst_index != back.burst_index:
-			back.severed = true
-			continue
-		if front.position.distance_squared_to(back.position) \
-				> _break_distance_squared(front, back):
-			back.severed = true
-
-
-## Which threshold a pair is held to: the taut one while either end is still
-## under pressure, the slack one once both are falling.
+	StrandDynamics.update_connections(shooter.points, strand_break_distance,
+		falling_break_distance, extend_speed, emission_speed)
 func _break_distance_squared(front: MayoPoint = null, back: MayoPoint = null) -> float:
-	var break_distance := strand_break_distance
-	if front != null and back != null and not front.powered and not back.powered:
-		break_distance = falling_break_distance
-	break_distance *= extend_speed / maxf(emission_speed, 0.001)
-	return break_distance * break_distance
-
-
-## Index range [start, end] of the burst the point at `start` belongs to.
+	return StrandDynamics.break_distance_squared(front, back,
+		strand_break_distance, falling_break_distance, extend_speed, emission_speed)
 func _burst_end(start: int, shooter: Shooter = null) -> int:
 	if shooter == null:
 		shooter = _local
-	var points := shooter.points
-	var burst: int = points[start].burst_index
-	var last := start
-	while last + 1 < points.size() and points[last + 1].burst_index == burst:
-		last += 1
-	return last
+	return StrandDynamics.burst_end(shooter.points, start)
 
 
 func _apply_inertial_follow(player_movement: Vector3, shooter: Shooter = null) -> void:
 	if shooter == null:
 		shooter = _local
-	var points := shooter.points
-	if player_movement.length_squared() <= 0.00000001 or points.is_empty():
-		return
-	# t is the point's position inside its own burst. Measuring it against the
-	# whole array skews the bend of the strand being extended whenever an
-	# earlier burst is still falling. Only the burst still attached to the
-	# muzzle follows the player; detached ones are on their own.
-	var index := 0
-	while index < points.size():
-		var last := _burst_end(index, shooter)
-		if points[index].burst_index == shooter.burst_index:
-			var denominator := maxf(float(last - index), 1.0)
-			for i in range(index, last + 1):
-				var point := points[i]
-				if point.phase != PointPhase.AIR:
-					continue
-				var t := float(i - index) / denominator
-				point.position += player_movement * lerpf(front_follow, 1.0, pow(t, follow_curve_power))
-		index = last + 1
-
-
-## Releasing the trigger drops the line pressure. The front of the strand is
-## already coasting on its own momentum and keeps its speed, while the points
-## still at the muzzle lose the most, so the trail that lands afterwards starts
-## at full range and is drawn back toward the player.
+	StrandDynamics.apply_inertial_follow(shooter.points, shooter.burst_index,
+		player_movement, PointPhase.AIR, front_follow, follow_curve_power)
 func _apply_release_pressure_loss(shooter: Shooter = null) -> void:
 	if shooter == null:
 		shooter = _local
-	var points := shooter.points
-	if release_pressure_loss <= 0.0 or points.is_empty():
-		return
-	# Only the burst that was being fired loses pressure, and t is measured
-	# inside it: an earlier burst is already coasting and must not be decayed
-	# a second time.
-	var start := 0
-	while start < points.size():
-		var last := _burst_end(start, shooter)
-		if points[start].burst_index == shooter.burst_index:
-			var denominator := maxf(float(last - start), 1.0)
-			for i in range(start, last + 1):
-				var point := points[i]
-				if point.phase != PointPhase.AIR:
-					continue
-				# The burst's index 0 is its front tip; its last index is the muzzle.
-				var t := float(i - start) / denominator
-				point.velocity *= 1.0 - release_pressure_loss * pow(t, release_pressure_curve)
-				# Nothing is being pushed any more, so gravity takes over immediately.
-				point.powered = false
-		start = last + 1
+	StrandDynamics.apply_release_pressure_loss(shooter.points, shooter.burst_index,
+		PointPhase.AIR, release_pressure_loss, release_pressure_curve)
 
 
 func _simulate_points(delta: float, shooter: Shooter = null) -> void:
@@ -4473,37 +4399,9 @@ func grid_md5() -> String:
 func _enforce_spacing_constraint(shooter: Shooter = null) -> void:
 	if shooter == null:
 		shooter = _local
-	var points := shooter.points
-	if points.size() < 2:
-		return
-	for _pass in spacing_constraint_passes:
-		for i in points.size() - 1:
-			var front := points[i]
-			var back := points[i + 1]
-			# Inlined _points_connected: this runs once per pair per pass.
-			if front.burst_index != shooter.burst_index or back.severed:
-				continue
-			var direction := (front.launch_direction + back.launch_direction).normalized()
-			if direction.length_squared() < 0.000001:
-				direction = shooter.attack_direction
-			var projected_gap := (front.position - back.position).dot(direction)
-			var travel_spacing := point_spacing * extend_speed / maxf(emission_speed, 0.001)
-			if projected_gap <= travel_spacing:
-				continue
-			var correction := direction * (projected_gap - travel_spacing)
-			var front_free := front.phase == PointPhase.AIR
-			var back_free := back.phase == PointPhase.AIR
-			if front_free and back_free:
-				front.position -= correction * 0.5
-				back.position += correction * 0.5
-			elif front_free:
-				front.position -= correction
-			elif back_free:
-				back.position += correction
-
-
-## A backstop only: emission stops at the cap, so this should have nothing to
-## do. It still drops the oldest if the cap is lowered while a strand is out.
+	StrandDynamics.enforce_spacing(shooter.points, shooter.burst_index,
+		shooter.attack_direction, PointPhase.AIR, spacing_constraint_passes,
+		point_spacing, extend_speed, emission_speed)
 func _trim_safety_cap(shooter: Shooter = null) -> void:
 	if shooter == null:
 		shooter = _local
