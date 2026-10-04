@@ -286,23 +286,11 @@ class Shooter:
 	var shadow_visual: StreamVisual
 
 
-class MayoDroplet:
-	## Which sauce this one is, so the pool -- one pool for the whole world,
-	## shared by everyone firing into it -- can hold four players' worth of
-	## different sauce at once. Written into the instance's own colour, because
-	## the alternative is a pool per sauce and three times the instances.
-	var sauce := ContaminationGrid.KIND_MAYO
-	var active := false
-	var position := Vector3.ZERO
-	var radius := 0.014
-	var expires_at := 0.0
-
-
 ## One thrown piece of an impact: the fat blob that comes off the hit, or one of
-## the small specks around it. Unlike `MayoDroplet`, which is settled sauce
+## the small specks around it. Unlike a landing droplet, which is settled sauce
 ## sitting where it landed, these fly -- so they carry a velocity and fall.
 class MayoSpeck:
-	## As `MayoDroplet.sauce`, and for the same reason.
+	## As `LandingDropletPool.Droplet.sauce`, and for the same reason.
 	var sauce := ContaminationGrid.KIND_MAYO
 	var active := false
 	var position := Vector3.ZERO
@@ -1021,13 +1009,17 @@ var _aim_yaw: float:
 	get: return _local.aim_yaw
 var _aim_pitch: float:
 	get: return _local.aim_pitch
-var _droplet_multimesh: MultiMesh
-var _droplet_pool: MultiMeshInstance3D
-var _droplets: Array[MayoDroplet] = []
-var _active_droplet_indices := PackedInt32Array()
-var _droplet_buffer := PackedFloat32Array()
-var _droplet_buffer_dirty := false
-var _droplet_cursor := 0
+## **The landing droplets live in their own object now.** Decoration only -- see
+## `LandingDropletPool` -- so nothing here reads it back except the checks.
+var _landing_droplets := LandingDropletPool.new()
+## Views onto it, kept because the checks reach for them by these names and
+## because renaming them would be a second change riding on a move.
+var _droplet_pool: MultiMeshInstance3D:
+	get: return _landing_droplets.instance
+var _droplets: Array:
+	get: return _landing_droplets.droplets
+var _active_droplet_indices: PackedInt32Array:
+	get: return _landing_droplets.active_indices
 ## The impact spray's own pool, built and stepped exactly like the landing
 ## droplets' -- see `_build_impact_pool` -- but its members move.
 var _speck_multimesh: MultiMesh
@@ -1072,11 +1064,14 @@ var debug_max_points := 0
 ## Splats queued this run, and landings that threw droplets. Both are per-hit
 ## quantities, which is what makes them worth counting against point density.
 var debug_splats := 0
-var debug_droplet_spawns := 0
+var debug_droplet_spawns: int:
+	get: return _landing_droplets.spawns
 ## Droplets replaced while still alive, and how much life they had left. A pool
 ## that is full is only a problem if this second number is not near zero.
-var debug_droplet_overwrites := 0
-var debug_droplet_overwritten_life := 0.0
+var debug_droplet_overwrites: int:
+	get: return _landing_droplets.overwrites
+var debug_droplet_overwritten_life: float:
+	get: return _landing_droplets.overwritten_life
 ## Points thrown away by the cap rather than landing. Anything but zero means
 ## sauce vanished in mid-air.
 var debug_points_trimmed := 0
@@ -4645,78 +4640,14 @@ func _shadow_segments(camera_position: Vector3, shooter: Shooter = null) -> Arra
 	return result
 
 
-func _build_droplet_pool(mayo_material: Material) -> void:
-	# One pool per world, shared by every player in it, and a landing takes its
-	# droplets whether or not there is room: a full pool replaces the droplet
-	# taken longest ago, which is fine only while that one was about to expire
-	# anyway. What it has to hold is
-	#
-	#     needed = landings per second x droplets_per_landing x droplet_lifetime
-	#
-	# A landing is one point reaching the floor, so the rate follows
-	# extend_speed / point_spacing: 187 a second per player at the current
-	# speed and density.
-	#
-	#   two players firing:    374 x 4 x 0.34 =  509, inside 512
-	#   three players firing:  561 x 4 x 0.34 =  763, over
-	#   four players firing:   748 x 4 x 0.34 = 1015, over
-	#
-	# MAX_CLIENTS now allows four, so a full session firing at the floor asks
-	# for twice what this holds and droplets are replaced with about half their
-	# life left. Holding four would want a pool of 1024, or a lifetime of
-	# 0.17 s, or two droplets a landing. debug_droplet_overwrites and
-	# debug_droplet_overwritten_life are what measure it.
+## Builds the landing droplets' pool. The sizing argument is the whole of what
+## this still decides: 512 slots, which at four droplets a landing and a third of
+## a second of life is room for twice what two players firing at once produce.
+## `LandingDropletPool.overwrites` against `overwritten_life` is what measures it.
+func _build_droplet_pool(pool_material: Material) -> void:
 	const POOL_SIZE := 512
-	var droplet_mesh := SphereMesh.new()
-	droplet_mesh.radius = 0.5
-	droplet_mesh.height = 1.0
-	droplet_mesh.radial_segments = 8
-	droplet_mesh.rings = 4
-	droplet_mesh.material = mayo_material
-
-	_droplet_multimesh = MultiMesh.new()
-	_droplet_multimesh.transform_format = MultiMesh.TRANSFORM_3D
-	# Per-instance colour, because the pool is one pool for the whole world and a
-	# party can have three sauces in the air at once.
-	_droplet_multimesh.use_colors = true
-	_droplet_multimesh.mesh = droplet_mesh
-	_droplet_multimesh.instance_count = POOL_SIZE
-	_droplet_buffer.resize(POOL_SIZE * MULTIMESH_STRIDE)
-	_droplet_buffer.fill(0.0)
-	_droplet_multimesh.buffer = _droplet_buffer
-	var instance := MultiMeshInstance3D.new()
-	instance.name = "LandingDropletPool"
-	instance.add_to_group("mayo_droplets")
-	instance.multimesh = _droplet_multimesh
-	# Like the strand ribbons, the pool's bounds are set by hand -- a MultiMesh
-	# whose buffer is written directly does not work them out -- and, like them,
-	# they used to be a fixed box around the origin from when the world was one
-	# 48 m floor. Now they follow the droplets that are actually alive.
-	_droplet_pool = instance
-	_update_droplet_bounds()
-	add_child(instance)
-
-	_droplets.resize(POOL_SIZE)
-	for i in POOL_SIZE:
-		_droplets[i] = MayoDroplet.new()
-
-
-## The impact spray's pool, built on the same terms as the landing droplets':
-## one fixed-capacity `MultiMesh`, a cursor that walks it in order, and the
-## oldest entry replaced when it is full.
-##
-## Sized against the same arithmetic. An impact is thrown from a *landing*, and
-## a strand lands about `extend_speed / point_spacing` points a second -- 187 at
-## the reference values, per player -- so four players hosing a wall would ask
-## for 748 impacts a second. At `impact_blobs + impact_specks` pieces each and
-## `impact_lifetime` seconds apiece that is thousands, which is why the rate is
-## capped at the source by `impact_min_interval` as well as here: 0.03 s gives
-## at most 33 impacts a second per world, or about 200 live pieces at the
-## default counts and lifetime. The pool is nearly twice that so a burst of
-## simultaneous hits still has somewhere to go.
-## Builds its own material rather than taking the pool one: this spray is lit
-## where the rest of the sauce is unshaded, which is the whole point of the
-## function, so the argument is here for symmetry with the droplet pool only.
+	_landing_droplets.build(self, pool_material, POOL_SIZE,
+		MULTIMESH_STRIDE, MULTIMESH_COLOR_OFFSET)
 func _build_impact_pool(_unused_material: Material) -> void:
 	# **Lit, unlike everything else made of sauce here.**
 	#
@@ -5346,96 +5277,25 @@ func _advance_impact_clocks(delta: float) -> void:
 		_enemy_splat_clock[key] = maxf(left, 0.0)
 
 
+## A landing threw sauce. Every number the burst needs is passed in rather than
+## read off this node by the pool, so a value changed in the inspector reaches the
+## next landing without the pool knowing anything changed -- and `_rng` is handed
+## over rather than copied, because the order its numbers come out in is shared
+## with the rest of the simulation.
 func _spawn_landing_droplets(position: Vector3,
 		sauce := ContaminationGrid.KIND_MAYO) -> void:
-	if _droplet_multimesh == null:
-		return
-	debug_droplet_spawns += 1
-	var now := Time.get_ticks_msec() * 0.001
-	var expires_at := now + droplet_lifetime
-	for _i in droplets_per_landing:
-		var droplet := _droplets[_droplet_cursor]
-		if not droplet.active:
-			_active_droplet_indices.push_back(_droplet_cursor)
-		else:
-			# The cursor walks the pool in order and every droplet is given the
-			# same lifetime, so the slot it arrives at is always the one taken
-			# longest ago. Recorded so that can be checked rather than assumed:
-			# if it holds, what is overwritten was about to expire anyway.
-			debug_droplet_overwrites += 1
-			debug_droplet_overwritten_life += maxf(droplet.expires_at - now, 0.0)
-		_droplet_cursor = (_droplet_cursor + 1) % _droplets.size()
-		var angle := _rng.randf_range(0.0, TAU)
-		var spread_radius := sqrt(_rng.randf()) * 0.12
-		droplet.active = true
-		droplet.sauce = sauce
-		droplet.expires_at = expires_at
-		droplet.radius = _rng.randf_range(droplet_radius_min, droplet_radius_max)
-		droplet.position = position + Vector3(cos(angle) * spread_radius, droplet.radius, sin(angle) * spread_radius)
-		_write_droplet_buffer((_droplet_cursor - 1 + _droplets.size()) % _droplets.size(),
-			droplet.position, droplet.radius * 2.0, SAUCE_TINTS[droplet.sauce])
-	_droplet_buffer_dirty = true
+	_landing_droplets.spawn(position, sauce, SAUCE_TINTS[sauce],
+		droplets_per_landing, droplet_lifetime,
+		droplet_radius_min, droplet_radius_max,
+		_rng, Time.get_ticks_msec() * 0.001)
 
 
 func _simulate_droplets(_delta: float) -> void:
-	if _droplet_multimesh == null or _active_droplet_indices.is_empty():
-		return
-	var current_time := Time.get_ticks_msec() * 0.001
-	for active_index in range(_active_droplet_indices.size() - 1, -1, -1):
-		var i := _active_droplet_indices[active_index]
-		var droplet := _droplets[i]
-		if current_time >= droplet.expires_at:
-			droplet.active = false
-			_write_droplet_buffer(i, Vector3.ZERO, 0.0)
-			_active_droplet_indices.remove_at(active_index)
-			_droplet_buffer_dirty = true
-	if _droplet_buffer_dirty:
-		_droplet_multimesh.buffer = _droplet_buffer
-		_update_droplet_bounds()
-		_droplet_buffer_dirty = false
+	_landing_droplets.advance(Time.get_ticks_msec() * 0.001)
 
 
-## Bounds over the live droplets only. Droplets land in bursts a few metres
-## across and last a third of a second, so this box is small and moves with the
-## fight rather than covering the map -- which is the point of having one.
-func _update_droplet_bounds() -> void:
-	if _droplet_pool == null:
-		return
-	if _active_droplet_indices.is_empty():
-		# An empty box draws nothing, which is what an empty pool should do.
-		_droplet_pool.custom_aabb = AABB()
-		return
-	var low := Vector3.INF
-	var high := -Vector3.INF
-	for i in _active_droplet_indices:
-		var droplet: MayoDroplet = _droplets[i]
-		var extent := Vector3.ONE * droplet.radius
-		low = low.min(droplet.position - extent)
-		high = high.max(droplet.position + extent)
-	_droplet_pool.custom_aabb = AABB(low, high - low)
 
 
-func _write_droplet_buffer(index: int, position: Vector3, uniform_scale: float,
-		tint := Color.WHITE) -> void:
-	var offset := index * MULTIMESH_STRIDE
-	# MultiMesh 3D transform buffer: three rows of (basis xyz, origin).
-	_droplet_buffer[offset] = uniform_scale
-	_droplet_buffer[offset + 1] = 0.0
-	_droplet_buffer[offset + 2] = 0.0
-	_droplet_buffer[offset + 3] = position.x
-	_droplet_buffer[offset + 4] = 0.0
-	_droplet_buffer[offset + 5] = uniform_scale
-	_droplet_buffer[offset + 6] = 0.0
-	_droplet_buffer[offset + 7] = position.y
-	_droplet_buffer[offset + 8] = 0.0
-	_droplet_buffer[offset + 9] = 0.0
-	_droplet_buffer[offset + 10] = uniform_scale
-	_droplet_buffer[offset + 11] = position.z
-	var colour := offset + MULTIMESH_COLOR_OFFSET
-	_droplet_buffer[colour] = tint.r
-	_droplet_buffer[colour + 1] = tint.g
-	_droplet_buffer[colour + 2] = tint.b
-	_droplet_buffer[colour + 3] = tint.a
 
 
 func debug_reset_profile() -> void:
@@ -5443,9 +5303,7 @@ func debug_reset_profile() -> void:
 	debug_raycast_count = 0
 	debug_max_points = 0
 	debug_splats = 0
-	debug_droplet_spawns = 0
-	debug_droplet_overwrites = 0
-	debug_droplet_overwritten_life = 0.0
+	_landing_droplets.reset_counters()
 	debug_points_trimmed = 0
 	for key in debug_timings_us:
 		debug_timings_us[key] = 0
