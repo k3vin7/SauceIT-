@@ -115,7 +115,6 @@ var _pending_enemy_impact := Vector3.ZERO
 ## The jump is taken on the press, not while the key is down, and the press is
 ## found here rather than with Input.is_action_just_pressed: a client's jump
 ## arrives as a held flag in a packet, and the server has to see the edge in it.
-var _jump_was_held := false
 ## The stain on this body. Set by the world when it builds the capsule; the
 ## strand finds it through here, because what a raycast hits is the body.
 var contamination: BodyContamination
@@ -165,10 +164,7 @@ func heal_to_full() -> void:
 ## Cancelling the wipe does *not* clean the lenses: it stops the action, and the
 ## mask is left exactly as it was for the player to wipe off again. The world has
 ## to drop its own mid-wipe note to match -- see `_damage_player`.
-##
-## `_jump_was_held` is deliberately left alone: holding the jump key across a
-## respawn should behave like holding it, and clearing it would hand the new body
-## a free jump off a key that was never pressed.
+
 func reset_state() -> void:
 	state = State.NORMAL
 	_state_timer = 0.0
@@ -264,7 +260,18 @@ func _physics_process(delta: float) -> void:
 		# drives from the aim yaw.
 		desired = global_basis * Vector3(input_vector.x, 0.0, input_vector.y)
 		desired.y = 0.0
-		desired *= run_speed if run_held() else walk_speed
+		# **Running is something the feet do.** The boost is a harder push off the
+		# ground, so there has to be ground: in the air the target drops to a walk.
+		#
+		# It drops to a walk without *braking* to one. The target keeps whatever
+		# horizontal speed the body already carries, so a jump taken at a run
+		# crosses the gap at a run and simply cannot gain any more -- scrubbing it
+		# to walking pace in mid-air would make a running jump land shorter than
+		# the run that set it up, which is the opposite of what a run is for.
+		var top := run_speed if (run_held() and is_on_floor()) else walk_speed
+		if not is_on_floor():
+			top = maxf(top, Vector2(velocity.x, velocity.z).length())
+		desired *= top
 		desired *= mustard_factor()
 
 	# Going down keeps whatever speed the player slipped at and scrubs it off,
@@ -275,16 +282,19 @@ func _physics_process(delta: float) -> void:
 	velocity.x = move_toward(velocity.x, desired.x, rate * delta)
 	velocity.z = move_toward(velocity.z, desired.z, rate * delta)
 
-	var jump_held := jump_wanted()
 	if is_on_floor():
 		velocity.y = 0.0
-		# On the press, and only while upright: going over backwards is not a
-		# jump, it is a fall.
-		if jump_held and not _jump_was_held and state == State.NORMAL:
+		# **Held, not pressed.** The key being down on a frame where the feet are
+		# on the ground is a jump, so holding it hops again the moment a landing
+		# touches down rather than waiting for the player to let go and press
+		# again -- a gap taken as a run of jumps is one held key, not a drum solo.
+		#
+		# Still only while upright: going over backwards is not a jump, it is a
+		# fall, and a held key must not cancel one.
+		if jump_wanted() and state == State.NORMAL:
 			velocity.y = jump_speed
 	else:
 		velocity.y -= fall_gravity * delta
-	_jump_was_held = jump_held
 	if _pending_enemy_impact.length_squared() > 0.0:
 		velocity += _pending_enemy_impact
 		_pending_enemy_impact = Vector3.ZERO
