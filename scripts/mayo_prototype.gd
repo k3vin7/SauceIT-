@@ -1526,13 +1526,8 @@ func _decide_nozzle(shooter: Shooter, delta: float, firing: bool) -> void:
 ## Worked out from `burst_elapsed`, which every peer advances for itself off the
 ## replicated nozzle state -- see that field for why it cannot read `burst_time`.
 func squeeze_pressure(shooter: Shooter) -> float:
-	if burst_pressure_falloff <= 0.0:
-		return 1.0
-	var through := clampf(shooter.burst_elapsed / maxf(burst_pressure_seconds, 0.001), 0.0, 1.0)
-	return 1.0 - burst_pressure_falloff * pow(through, burst_pressure_curve)
-
-
-## Which band a bottle at this level is in.
+	return SauceTank.squeeze_pressure(shooter.burst_elapsed, burst_pressure_falloff,
+		burst_pressure_seconds, burst_pressure_curve)
 func sauce_stage_of(level: float) -> int:
 	if level <= spluttering_level:
 		return SauceStage.EMPTY
@@ -1544,37 +1539,22 @@ func sauce_stage_of(level: float) -> int:
 ## Seconds of delivery left in a bottle at this level, which is the whole point
 ## of expressing the drain as a flow.
 func sauce_seconds_left(level: float) -> float:
-	return level / maxf(sauce_flow_per_second, 0.0001)
-
-
+	return SauceTank.seconds_left(level, sauce_flow_per_second)
 ## Drains the tank while sauce is leaving it -- air counts, since the last of a
 ## bottle still coughs its way out -- and trickles it back while not. Authority
 ## only: the level travels in the state packet, so nobody else has to guess.
 func _advance_sauce(shooter: Shooter, delta: float, spending: bool) -> void:
 	if spending:
 		shooter.burst_time += delta
-		shooter.sauce = maxf(shooter.sauce - sauce_flow_per_second * delta, 0.0)
+		shooter.sauce = SauceTank.after_spending(shooter.sauce, delta,
+			sauce_flow_per_second)
 		return
 	if sauce_refill_per_second > 0.0:
-		shooter.sauce = minf(shooter.sauce + sauce_refill_per_second * delta, 1.0)
-
-
-## How long a press may run at this tank level: the three pinned points above
-## with straight lines between them. Two segments rather than one because the
-## curve bends at the middle point -- the drop from full to half is steeper than
-## the drop from half to empty, which is what keeps the last of the bottle
-## usable while still making every press shorter than the one before it.
+		shooter.sauce = SauceTank.after_idle(shooter.sauce, delta,
+			sauce_refill_per_second)
 func burst_seconds_at(sauce_fraction: float) -> float:
-	var level := clampf(sauce_fraction, 0.0, 1.0)
-	var middle := clampf(burst_midpoint, 0.01, 0.99)
-	if level >= middle:
-		return lerpf(half_burst_seconds, full_burst_seconds, (level - middle) / (1.0 - middle))
-	return lerpf(empty_burst_seconds, half_burst_seconds, level / middle)
-
-
-## The scales for whatever is in this bottle. Mayo is the baseline and ketchup
-## is deliberately mayo for now -- its own character is the stacking, not the
-## trigger -- so this is one `if` rather than a table with two identical rows.
+	return SauceTank.burst_seconds_at(sauce_fraction, full_burst_seconds,
+		half_burst_seconds, empty_burst_seconds, burst_midpoint)
 func sauce_speed_scale(shooter: Shooter) -> float:
 	return mustard_speed_scale if shooter.sauce_kind == ContaminationGrid.KIND_MUSTARD else 1.0
 
@@ -1590,12 +1570,8 @@ func sauce_pause_scale(shooter: Shooter) -> float:
 ## True once this squirt has had everything it is getting: its allowance is up,
 ## or the tank is dry.
 func _burst_spent(shooter: Shooter) -> bool:
-	return shooter.sauce <= 0.0 or shooter.burst_time >= shooter.burst_allowance
-
-
-## The local player's own keyboard and mouse. Their aim is applied immediately,
-## never round-tripped, or the view would lag the mouse by the latency; the
-## server still owns where the body ends up.
+	return SauceTank.burst_spent(shooter.sauce, shooter.burst_time,
+		shooter.burst_allowance)
 func _read_local_input() -> void:
 	if _local == null:
 		return
