@@ -103,9 +103,17 @@ func _run() -> void:
 	# The strand is still in the air when the trigger comes up and goes on
 	# landing for a while, so the wait is for it to drain rather than for a
 	# count of frames -- letting go is not the same thing as nothing arriving.
+	#
+	# **And the strand is not the only thing that lands.** The spray thrown off an
+	# impact flies on after the last strand point has gone, and a speck paints
+	# where it lands exactly as a point does. This waited on the points alone --
+	# which was the whole story when it was written, before the spray existed --
+	# so it declared the floor idle with pieces still in the air, and then counted
+	# the bytes they uploaded. How many were still flying depended on how the last
+	# burst happened to land, which is why the number it reported wandered.
 	for _f in 240:
 		await physics_frame
-		if scene._points.is_empty():
+		if scene._points.is_empty() and scene._active_speck_indices.is_empty():
 			break
 	last_total = grid.bytes_uploaded_total
 	for _f in 30:
