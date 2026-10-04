@@ -32,7 +32,26 @@ var connection := 0.0:
 		queue_redraw()
 
 
+var impact_left := 0.0
+var impact_kill := false
+
+
+func confirm_impact(killed: bool) -> void:
+	impact_left = 0.24 if killed else 0.12
+	impact_kill = killed
+	set_process(true)
+	queue_redraw()
+
+
+func _process(delta: float) -> void:
+	impact_left = maxf(impact_left - delta, 0.0)
+	queue_redraw()
+	if impact_left <= 0.0:
+		set_process(false)
+
+
 func _ready() -> void:
+	set_process(false)
 	name = "Crosshair"
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -57,3 +76,10 @@ func _draw() -> void:
 		var from: Vector2 = centre + arm * gap
 		var to: Vector2 = centre + arm * (gap + arm_length)
 		draw_line(from, to, tint, width)
+
+	if impact_left > 0.0:
+		var alpha := clampf(impact_left / (0.24 if impact_kill else 0.12), 0.0, 1.0)
+		var accent := Color(1.0, 0.48, 0.22, alpha) if impact_kill else Color(1.0, 0.92, 0.7, alpha)
+		for diagonal in [Vector2(1, 1), Vector2(-1, 1), Vector2(1, -1), Vector2(-1, -1)]:
+			var direction: Vector2 = diagonal.normalized()
+			draw_line(centre + direction * 7.0, centre + direction * (14.0 if impact_kill else 11.0), accent, 2.0)

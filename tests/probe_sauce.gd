@@ -231,7 +231,7 @@ func _run() -> void:
 			% (scene.refill_reach * 0.6))
 	_check(scene.local_at_station(), "the prompt does not show at a stall")
 	shooter.sauce = 0.2
-	_check(scene.refill_for(scene._local.peer_id), "the stall refused to fill the bottle")
+	_check(scene.refill_for(scene._local.peer_id, 0), "the stall refused to fill the bottle")
 	print("at the stall: tank 0.20 -> %.2f" % shooter.sauce)
 	_check(is_equal_approx(shooter.sauce, 1.0),
 		"the stall filled the tank to %.2f rather than full" % shooter.sauce)
@@ -251,7 +251,7 @@ func _run() -> void:
 	_check(scene.station_in_reach(player) < 0,
 		"a stall served from %.1f m away" % (scene.refill_reach + 2.0))
 	shooter.sauce = 0.2
-	_check(not scene.refill_for(scene._local.peer_id),
+	_check(not scene.refill_for(scene._local.peer_id, 0),
 		"a stall filled the bottle from across the street")
 	_check(is_equal_approx(shooter.sauce, 0.2), "an out-of-reach stall changed the tank")
 

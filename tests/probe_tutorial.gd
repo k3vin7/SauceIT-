@@ -9,6 +9,7 @@ var tutorial: MayoTutorial
 var seen_lines: Array[int] = []
 var seen_stages: Array[int] = []
 var _capture := false
+var _real_sauce_first_fight := false
 
 func _initialize() -> void:
 	_capture = "--capture" in OS.get_cmdline_user_args()
@@ -83,7 +84,7 @@ func start_fight() -> bool:
 	var station: Dictionary = world.refill_stations()[tutorial.station_index()]
 	var approach: Vector3 = station.position + station.facing * 1.5
 	check(await walk(approach), "cannot walk to the starting counter")
-	check(world.refill_for(1), "E cannot collect initial sauce")
+	check(world.refill_for(1, 0), "mayo selection cannot collect initial bottle")
 	check(tutorial.has_bottle(1), "pickup did not grant a bottle")
 	if not await until(func(): return tutorial.stage == MayoTutorial.Stage.FIRST_FIGHT):
 		check(false, "no first fight after pickup")
@@ -104,6 +105,10 @@ func start_fight() -> bool:
 			if enemy.position.z > TutorialWreck.CENTRE_Z + TutorialWreck.DEPTH * 0.5:
 				crossed[index] = true
 			if enemy.global_position.distance_to(world._player.global_position) < world.stream_range:
+				if _real_sauce_first_fight:
+					world.debug_aim_at(enemy.global_position)
+					world.debug_set_input(Vector2.ZERO, false, true)
+					break
 				# Leave a visible hit frame to exercise the reaction line.
 				enemy.take_sauce_hit(world._player.global_position)
 				await step()
@@ -112,13 +117,24 @@ func start_fight() -> bool:
 		if living == 0:
 			break
 		await step()
+	world.debug_set_input(Vector2.ZERO, false, false)
 	check(crossed.size() == tutorial.fight_enemies.size(), "toasts failed to walk through narrow passage")
+	if not await until(func(): return tutorial.stage == MayoTutorial.Stage.MONSTER_ARRIVES):
+		check(false, "no monster warning after toasts")
+		return false
+	# Waiting does not pretend that the player turned around. Looking at the
+	# actual threat moves the lesson forward without waiting out the caption.
+	for frame in 300:
+		await step()
+	check(tutorial.stage == MayoTutorial.Stage.MONSTER_ARRIVES, "time alone completed look lesson")
+	world.debug_aim_at(world.enemy_at(tutorial.monster_index).global_position)
 	if not await until(func(): return tutorial.stage == MayoTutorial.Stage.RUN):
 		check(false, "no run stage after toasts")
 		return false
 	check(tutorial.stomps_heard == 2, "expected two heavy footsteps")
 	check(seen_lines.has(MayoTutorial.SAY_BEHIND_YOU), "doctor warning missing")
-	check(tutorial.current_line() == MayoTutorial.LINES[MayoTutorial.SAY_RUN], "run instruction missing")
+	check(await until(func(): return tutorial.current_line_id() == MayoTutorial.SAY_RUN),
+		"run instruction did not follow the look warning")
 	return true
 
 func scenario(run: bool) -> void:
@@ -150,15 +166,15 @@ func scenario(run: bool) -> void:
 	check(world._player.health == hp, "trapped heavy still damages player")
 	world.debug_aim_at(monster.global_position)
 	await shot("03_trapped")
-	check(await until(func(): return tutorial.refill_is_open()), "refill instruction did not open E")
-	check(tutorial.current_line() == MayoTutorial.LINES[MayoTutorial.SAY_GO_REFILL], "wrong refill dialogue")
+	check(await until(func(): return tutorial.refill_is_open()), "fresh-bottle selection did not open")
+	check(tutorial.current_line_id() != MayoTutorial.SAY_RUN, "stale run instruction after escape")
 	var station: Dictionary = world.refill_stations()[tutorial.station_index()]
 	check(station.position.z < TutorialWreck.SPILL_BACK, "refill is on wrong side")
 	var approach: Vector3 = station.position + station.facing * 1.5
 	# Stay clear of the booth row until aligned with its front.
 	check(await walk(Vector3(0, 0, approach.z)), "cannot reach refill street")
 	check(await walk(approach), "cannot reach refill counter")
-	check(world.refill_for(1), "E cannot refill at objective")
+	check(world.refill_for(1, 0), "cannot select a fresh mayo bottle at objective")
 	check(tutorial.supplied.has(1), "early refill during dialogue was ignored")
 	check(await until(func(): return tutorial.stage == MayoTutorial.Stage.COOP_FIGHT), "no final fight")
 	check(await walk(Vector3(0, 0, approach.z)), "cannot leave refill counter")

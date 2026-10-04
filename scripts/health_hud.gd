@@ -39,24 +39,23 @@ const ENEMY_LOW := Color("7a2a20")
 const LOW_AT := 0.35
 
 ## What a stall says when you are close enough to be served.
-## **The three sauces, and E for another of what is already loaded.** The list is
+## **Every stall offers the same three fresh bottles.** The list is
 ## the prompt now rather than one line, because a key that does nothing visible
 ## until you press it is how the stalls read before they said anything at all --
 ## and a player who never learns 2 exists never finds out mustard is in the game.
 ## The sauce in the bottle is marked, so the prompt also answers "what am I
 ## carrying", which nothing else on the HUD does.
-const PROMPT := "[E]  소스 채우기"
 const PROMPT_LINES: Array[String] = [
 	"[1]  마요네즈",
 	"[2]  머스타드",
-	"[3]  케첩",
+	"[3]  케찹",
 ]
 const PROMPT_LINE_GAP := 22.0
 ## What marks the line for the sauce already in the bottle.
 const PROMPT_HELD := "  ◀"
 const PROMPT_HELD_COLOR := Color("ffffff")
 const PROMPT_SIZE := 18
-const PROMPT_LIFT := 54.0
+const PROMPT_LIFT := 84.0
 const PROMPT_COLOR := Color("fff0a8")
 const PROMPT_SHADOW := Color(0.0, 0.0, 0.0, 0.7)
 
@@ -186,7 +185,6 @@ func _draw_prompt() -> void:
 	# Every line is laid out against the widest of them, so the block is a block
 	# rather than a ragged edge that shifts as the marker moves down it.
 	var lines := PROMPT_LINES.duplicate()
-	lines.push_back(PROMPT)
 	var widest := 0.0
 	for line in lines:
 		widest = maxf(widest,

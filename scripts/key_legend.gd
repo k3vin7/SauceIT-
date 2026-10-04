@@ -61,7 +61,7 @@ func _rows() -> Array:
 		["Shift", "run", ""],
 		["Space", "jump", ""],
 		["LMB", "spray", ""],
-		["E", "refill at a stall", ""],
+		["1/2/3", "pick a fresh sauce bottle at a stall", ""],
 		["R", "wipe your glasses", ""],
 	]
 	if world == null or not is_instance_valid(world):

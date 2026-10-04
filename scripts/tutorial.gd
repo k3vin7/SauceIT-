@@ -22,6 +22,10 @@ const TAG_NONE := 0
 const TAG_RUN_ORDER := 1
 const TAG_OPENING := 2
 const TAG_SHOOT := 3
+const TAG_LOOK := 4
+const TAG_WALK := 5
+const TAG_REFILL := 6
+const TAG_FINISH := 7
 const SAY_GET_SAUCE := 0
 const SAY_TOAST := 1
 const SAY_SERVICE := 2
@@ -40,7 +44,7 @@ const SAY_CROSSED := 14
 const SAY_EARLY_CLEAR := 15
 const SAY_INTRODUCE := 16
 const LINES := [
-	"먹기 전에 소스부터 챙기자.",
+	"먹기 전에 소스통부터 골라 들자.",
 	"야, 토스트다.",
 	"음식이 알아서 오네. 서비스 좋다.",
 	"잠깐, 소스부터 뿌리고.",
@@ -49,13 +53,13 @@ const LINES := [
 	"Shift를 누르고 포장마차 사이로 뛰세요! 저 덩치는 못 지나올 거예요!",
 	"걸렸다…! 괜찮아요?",
 	"마요네즈 위에서는 뛰지 말고 걸어요!",
-	"저쪽 매대에도 소스가 있어요! E를 눌러 소스통을 채우세요!",
-	"소스도 채웠겠다, 저것부터 치우자.",
+	"저쪽 매대에서 1, 2, 3으로 새 소스통을 골라 드세요!",
+	"새 소스통도 챙겼겠다, 저것부터 치우자.",
 	"다른 먹거리 구역에서도 신고가 들어왔어요. 같이 가주실 수 있나요?",
 	"아, 거긴 아직 못 먹어봤는데.",
 	"빨리 가서 저것들부터 치워요.",
 	"잘 빠져나왔어요! 저 덩치는 걸렸네요.",
-	"벌써 쓰러뜨렸네요…! 일단 소스부터 채워요.",
+	"벌써 쓰러뜨렸네요…! 일단 새 소스통부터 챙겨요.",
 	"현장 조사 나온 박사예요. 음식이 움직이는 건 저도 처음 보는데… 같이 정리해보죠.",
 ]
 const DOCTOR_LINES := [SAY_BEHIND_YOU, SAY_RUN, SAY_TRAPPED, SAY_WALK,
@@ -174,18 +178,22 @@ func advance(delta: float) -> void:
 			elif _cue_step == 2 and _stage_clock >= 2.3:
 				_enter(Stage.MONSTER_ARRIVES)
 		Stage.MONSTER_ARRIVES:
-			# Turning is encouraged, never required. The warning gets time to
-			# read even if the player already had the monster in view.
-			if _stage_clock >= 3.8:
+			# Seeing the threat or already escaping advances the lesson. A slow
+			# reader gets a reminder, not an automatic change of instructions.
+			if _monster() == null or not _monster().is_alive():
+				_enter(Stage.TRAPPED)
+			elif _party_sees_monster() or _party_is_escaping():
 				_enter(Stage.RUN)
+			elif _stage_clock >= 8.0 and _lines_done():
+				_stage_clock = 0.0
+				_say(SAY_BEHIND_YOU, TAG_LOOK)
 		Stage.RUN:
 			_watch_escape()
 		Stage.TRAPPED:
-			if _lines_done():
-				_enter(Stage.REFILL)
+			_enter(Stage.REFILL)
 		Stage.REFILL:
-			if _everyone_in(supplied) and _lines_done():
-				_enter(Stage.COOP_FIGHT)
+			if _everyone_in(supplied):
+				_enter(Stage.COOP_FIGHT if _monster() != null and _monster().is_alive() else Stage.OUTRO)
 		Stage.COOP_FIGHT:
 			if _monster() == null or not _monster().is_alive():
 				_enter(Stage.OUTRO)
@@ -205,20 +213,29 @@ func _enter(next: int) -> void:
 			_cancel(TAG_SHOOT)
 			_cue_step = 0
 		Stage.MONSTER_ARRIVES:
-			_say_now(SAY_BEHIND_YOU)
+			_say_now(SAY_BEHIND_YOU, TAG_LOOK)
 		Stage.RUN:
-			_say_now(SAY_RUN, TAG_RUN_ORDER)
+			# Looking/moving advances gameplay immediately, but these two
+			# warnings finish reading in order instead of cancelling each other.
+			_say(SAY_RUN, TAG_RUN_ORDER)
 		Stage.TRAPPED:
+			_cancel(TAG_LOOK)
 			_cancel(TAG_RUN_ORDER)
+			_cancel(TAG_WALK)
 			_pick_refill_station()
+			_refill_open = true
 			_say_now((SAY_TRAPPED if not slipped.is_empty() else SAY_CROSSED)
 				if monster_trapped else SAY_EARLY_CLEAR)
-			_say(SAY_WALK)
-			_say(SAY_GO_REFILL)
+			_say(SAY_GO_REFILL, TAG_REFILL)
 		Stage.COOP_FIGHT:
+			_cancel(TAG_REFILL)
+			_cancel(TAG_WALK)
 			_say(SAY_INTRODUCE)
-			_say(SAY_FINISH)
+			_say(SAY_FINISH, TAG_FINISH)
 		Stage.OUTRO:
+			_cancel(TAG_REFILL)
+			_cancel(TAG_WALK)
+			_cancel(TAG_FINISH)
 			_say(SAY_RECRUIT)
 			_say(SAY_NOT_EATEN)
 			_say(SAY_LETS_GO)
@@ -286,17 +303,51 @@ func _watch_escape() -> void:
 		_enter(Stage.TRAPPED)
 	elif _stage_clock >= 12.0 and _lines_done():
 		_stage_clock = 0.0
-		_say(SAY_RUN, TAG_RUN_ORDER)
+		if not slipped.is_empty():
+			_say(SAY_WALK, TAG_WALK)
+		else:
+			_say(SAY_RUN, TAG_RUN_ORDER)
+
+func _is_escaping(shooter) -> bool:
+	var player: MayoPlayer = shooter.player
+	return player.global_position.z < TutorialWreck.SPILL_BACK \
+		or (player.state == MayoPlayer.State.NORMAL and player.movement_input().length_squared() > 0.0 \
+			and player.frame_movement.z < -0.01)
+
+func _party_is_escaping() -> bool:
+	for peer_id in world.shooter_ids():
+		if _is_escaping(world.shooter_for(peer_id)):
+			return true
+	return false
+
+func _party_sees_monster() -> bool:
+	var monster := _monster()
+	if monster == null:
+		return false
+	for peer_id in world.shooter_ids():
+		var shooter = world.shooter_for(peer_id)
+		var to_monster: Vector3 = monster.global_position - shooter.aim_pivot.global_position
+		var forward := -Basis.from_euler(Vector3(shooter.aim_pitch, shooter.aim_yaw, 0.0)).z
+		if forward.dot(to_monster.normalized()) >= 0.8:
+			var ray := PhysicsRayQueryParameters3D.create(shooter.aim_pivot.global_position,
+				monster.global_position, 1, [shooter.player.get_rid()])
+			var hit: Dictionary = world.get_world_3d().direct_space_state.intersect_ray(ray)
+			if hit.is_empty() or hit.collider == monster:
+				return true
+	return false
 
 func note_slip(peer_id: int) -> void:
-	if not _is_authority() or stage not in [Stage.RUN, Stage.TRAPPED, Stage.REFILL]:
+	if not _is_authority() or stage not in [Stage.MONSTER_CUE, Stage.MONSTER_ARRIVES,
+			Stage.RUN, Stage.TRAPPED, Stage.REFILL]:
 		return
 	var shooter = world.shooter_for(peer_id)
-	if shooter != null and TutorialWreck.in_spill(shooter.player.global_position) \
-			and not slipped.has(peer_id):
+	if shooter != null and not slipped.has(peer_id):
 		slipped.push_back(peer_id)
-		if stage == Stage.RUN:
-			_say_now(SAY_WALK, TAG_RUN_ORDER)
+		_cancel(TAG_RUN_ORDER)
+		_say_now(SAY_WALK, TAG_WALK)
+		# An urgent hint must not swallow a still-needed refill instruction.
+		if refill_is_open() and not _everyone_in(supplied):
+			_say(SAY_GO_REFILL, TAG_REFILL)
 		_push_state()
 
 func targets_for(enemy: MayoEnemy, targets: Array) -> Array:
@@ -379,19 +430,25 @@ func peer_left(peer_id: int) -> void:
 
 func marker_position() -> Vector3:
 	if stage in [Stage.IDLE, Stage.GET_SAUCE]:
+		if world._local != null and acquired.has(world._local.peer_id):
+			return Vector3.INF
 		return _station_position
 	if stage in [Stage.MONSTER_ARRIVES, Stage.RUN]:
 		return TutorialWreck.EXIT + Vector3.UP * 1.2
 	if refill_is_open():
+		if world._local != null and supplied.has(world._local.peer_id):
+			return Vector3.INF
 		return _station_position
 	return Vector3.INF
 
 func marker_label() -> String:
 	if stage in [Stage.IDLE, Stage.GET_SAUCE]:
-		return "소스 챙기기 · E"
+		return "소스통 선택 · 1 / 2 / 3"
 	if stage in [Stage.MONSTER_ARRIVES, Stage.RUN]:
+		if world._local != null and slipped.has(world._local.peer_id):
+			return "포장마차 사이로 · 걷기"
 		return "포장마차 사이로 · Shift"
-	return "소스 보충 · E"
+	return "소스통 교체 · 1 / 2 / 3"
 
 func marker_color() -> Color:
 	return Color("4fc3ff") if stage in [Stage.IDLE, Stage.GET_SAUCE] else Color("8fe38f")
@@ -404,7 +461,9 @@ func threat_position() -> Vector3:
 func objective_text() -> String:
 	match stage:
 		Stage.IDLE, Stage.GET_SAUCE:
-			return "WASD로 앞 포장마차에 이동 → E로 소스 챙기기"
+			if world._local != null and acquired.has(world._local.peer_id):
+				return "소스통을 챙겼습니다 · 동료가 소스통을 고를 때까지 기다리세요"
+			return "앞 포장마차에서 1 마요네즈 · 2 머스타드 · 3 케찹 선택"
 		Stage.FIRST_FIGHT:
 			return "마우스 왼쪽 버튼을 눌러 토스트에 소스를 뿌리세요"
 		Stage.MONSTER_CUE, Stage.MONSTER_ARRIVES:
@@ -415,10 +474,12 @@ func objective_text() -> String:
 			return "Shift를 누른 채 포장마차 사이로 달리세요"
 		Stage.TRAPPED:
 			if _refill_open:
-				return "E로 소스통 채우기"
+				return "1 / 2 / 3으로 새 소스통 선택"
 			return "괴물이 끼었습니다 · 마요네즈 위에서는 걷기" if monster_trapped else "마요네즈 위에서는 걷기"
 		Stage.REFILL:
-			return "표시된 매대에서 E로 소스통 채우기 (%d/%d)" % [supplied.size(), world.party_size()]
+			if world._local != null and supplied.has(world._local.peer_id):
+				return "교체 완료 · 동료가 소스통을 고를 때까지 기다리세요 (%d/%d)" % [supplied.size(), world.party_size()]
+			return "표시된 매대에서 1 / 2 / 3으로 새 소스통 선택 (%d/%d)" % [supplied.size(), world.party_size()]
 		Stage.COOP_FIGHT:
 			return "소스를 뿌려 포장마차에 낀 괴물을 처치하세요"
 		Stage.OUTRO, Stage.COMPLETE:
@@ -439,11 +500,26 @@ func current_line() -> String:
 func current_line_alpha() -> float:
 	return clampf(_line_left / 0.35, 0.0, 1.0)
 
-func _line_began(line_id: int) -> void:
-	if line_id == SAY_GO_REFILL:
-		_refill_open = true
-		if _is_authority():
-			_push_state()
+## Captions may arrive while another line is playing. Recheck when displaying
+## them on each peer. The look/run warnings deliberately finish their duration;
+## completed pickup/refill/fire instructions can still be skipped.
+## Progression itself only uses the authority's actions, never caption timing.
+func _instruction_needed(tag: int) -> bool:
+	if world._local == null:
+		return true
+	var shooter = world._local
+	var player: MayoPlayer = shooter.player
+	match tag:
+		TAG_OPENING:
+			return not acquired.has(shooter.peer_id)
+		TAG_WALK:
+			return slipped.has(shooter.peer_id) and (player.state != MayoPlayer.State.NORMAL \
+				or world._floor.is_slippery_at(player.global_position))
+		TAG_REFILL:
+			return not supplied.has(shooter.peer_id)
+		TAG_FINISH:
+			return _monster() != null and _monster().is_alive() and not shooter.firing
+	return true
 
 func _lines_done() -> bool:
 	return _line_queue.is_empty() and _line_left <= 0.0
@@ -577,7 +653,9 @@ func _say_now(line_id: int, tag := TAG_NONE) -> void:
 	_line_left = URGENT_LINE_SECONDS
 	_line_gap = 0.0
 	lines_shown += 1
-	_line_began(line_id)
+	if not _instruction_needed(tag):
+		_line = -1
+		_line_left = 0.0
 	world.call("tutorial_broadcast_line", line_id, true, tag)
 
 
@@ -623,12 +701,15 @@ func show_line(line_id: int, urgent := false, tag := TAG_NONE) -> void:
 		_line_tag = tag
 		_line_left = URGENT_LINE_SECONDS
 		_line_gap = 0.0
-		_line_began(line_id)
 		return
 	_line_queue.push_back([line_id, tag])
 
 
 func _advance_lines(delta: float) -> void:
+	if _line >= 0 and not _instruction_needed(_line_tag):
+		_line = -1
+		_line_left = 0.0
+		_line_gap = 0.0
 	if _line_left > 0.0:
 		_line_left = maxf(_line_left - delta, 0.0)
 		if _line_left <= 0.0:
@@ -637,12 +718,13 @@ func _advance_lines(delta: float) -> void:
 	if _line_gap > 0.0:
 		_line_gap = maxf(_line_gap - delta, 0.0)
 		return
-	if _line_queue.is_empty():
-		_line = -1
-		_line_tag = TAG_NONE
+	while not _line_queue.is_empty():
+		var entry: Array = _line_queue.pop_front()
+		if not _instruction_needed(int(entry[1])):
+			continue
+		_line = int(entry[0])
+		_line_tag = int(entry[1])
+		_line_left = LINE_SECONDS
 		return
-	var entry: Array = _line_queue.pop_front()
-	_line = int(entry[0])
-	_line_tag = int(entry[1])
-	_line_left = LINE_SECONDS
-	_line_began(_line)
+	_line = -1
+	_line_tag = TAG_NONE

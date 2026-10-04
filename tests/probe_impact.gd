@@ -72,26 +72,7 @@ func _run() -> void:
 	scene.debug_clear_input_override()
 
 	# --- the splat timer belongs to the enemy, not to the strand ------------
-	# There are no clips shipped, and no clips means silence by design -- so the
-	# voice checks below would pass without proving anything. Give it one clip
-	# to play first; what is under test is the routing, not the audio.
-	_check(scene.splat_sounds.is_empty(),
-		"a splat clip is shipped now: this probe's stand-in should be removed")
-	var stand_in := AudioStreamWAV.new()
-	stand_in.format = AudioStreamWAV.FORMAT_8_BITS
-	stand_in.mix_rate = 22050
-	var frames := PackedByteArray()
-	frames.resize(4410)
-	frames.fill(128)
-	stand_in.data = frames
-	# Typed on the way in. `splat_sounds` is an `Array[AudioStream]`, and a bare
-	# `[stand_in]` literal is an untyped `Array`: assigning one aborted `_run`
-	# outright, which in a SceneTree script is not a failure but a hang -- the
-	# tree keeps running with nothing left to call `quit()`. The product code's
-	# type is right and stays as it is; this is the test handing it the wrong
-	# shape.
-	var clips: Array[AudioStream] = [stand_in]
-	scene.splat_sounds = clips
+	_check(not scene.splat_sounds.is_empty(), "the shipped impact clips are missing")
 
 	var enemy = scene.enemy_at(0)
 	_check(enemy != null, "there is no enemy to hit")

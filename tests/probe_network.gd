@@ -569,7 +569,7 @@ func _run() -> void:
 	# Out of reach first: a client saying "I pressed E" is not proof of where it
 	# is standing, and the host tests that against its own copy of the body.
 	b_on_server.player.global_position = Vector3(-8.0, stand, 8.0)
-	client_world._net.request_refill()
+	client_world._net.request_refill(0)
 	await _wait(20)
 	print("refill from across the street: host %.2f, B's screen %.2f" % [
 		b_on_server.sauce, b_on_client.sauce])
@@ -581,7 +581,7 @@ func _run() -> void:
 		+ station["facing"] * (server_world.refill_reach * 0.6)
 	b_on_server.player.global_position.y = stand
 	await _wait(4)
-	client_world._net.request_refill()
+	client_world._net.request_refill(0)
 	await _wait(20)
 	print("refill at the station: host %.2f, B's screen %.2f" % [
 		b_on_server.sauce, b_on_client.sauce])

@@ -94,7 +94,8 @@ const STATION_SAUCES: Array[int] = [
 	ContaminationGrid.KIND_KETCHUP,
 ]
 ## What each of them is called, for the prompt at the machine.
-const SAUCE_NAMES: Array[String] = ["마요네즈", "머스타드", "케첩"]
+const SAUCE_NAMES: Array[String] = ["마요네즈", "머스타드", "케찹"]
+const BOTTLE_PICKUP_SECONDS := 0.28
 ## What a full bottle of each sauce looks like, indexed by the sauce.
 const SAUCE_TINTS: Array[Color] = [
 	Color("fff0a8"),  # mayo
@@ -241,6 +242,10 @@ class Shooter:
 	var feel_rng := RandomNumberGenerator.new()
 	## Camera kick from the start of a squirt, in radians, and always a pitch:
 	## the bottle is squeezed, not fired, so it noses up and settles back.
+	var bottle_kick := 0.0
+	var bottle_kick_pending := 0.0
+	var bottle_pressure := 0.0
+	var bottle_pickup_left := 0.0
 	var recoil_pitch := 0.0
 	## The part of the kick that has not been let into the view yet. A squirt's
 	## kick is fed in over `recoil_attack_seconds` rather than applied whole on
@@ -276,6 +281,7 @@ class Shooter:
 	var shake_degrees := 0.0
 	var shake_direction := Vector3.ZERO
 	var air_visual: StreamVisual
+	var nozzle_visual: StreamVisual
 	var landing_visual: StreamVisual
 	var shadow_visual: StreamVisual
 
@@ -334,7 +340,9 @@ class MayoSpeck:
 
 @export_group("Mayo Stream — Reference Values")
 @export_range(0.2, 12.0, 0.01, "suffix:m") var stream_range := 5.88
-@export_range(0.5, 25.0, 0.1, "suffix:m/s") var extend_speed := 14.0
+@export_range(0.5, 25.0, 0.1, "suffix:m/s") var extend_speed := 20.0
+## Point delivery stays fixed when travel speed changes, preserving damage and flow.
+@export_range(0.5, 25.0, 0.1, "suffix:m/s") var emission_speed := 14.0
 ## A tap keeps firing for at least this long. Emission is a couple of points a
 ## frame, so a click held for one frame put out two of them -- not enough to be
 ## a strand, or to leave anything but a dot.
@@ -349,8 +357,8 @@ class MayoSpeck:
 @export_range(0.025, 0.25, 0.005, "suffix:m") var point_spacing := 0.075
 @export_range(0.02, 0.2, 0.001, "suffix:m") var strand_thickness := 0.093
 @export_range(0.0, 0.5, 0.01, "suffix:m") var muzzle_forward_offset := 0.15
-## Matched to stream_range at extend_speed, so neither silently cuts first:
-## 2.94 m at 14 m/s is 0.21 s.
+## Reference powered lifetime at emission_speed; travel-speed changes scale it
+## in _simulate_points so the pressure envelope retains the same reach.
 @export_range(0.02, 1.5, 0.001, "suffix:s") var point_time_lifetime := 0.42
 @export var use_time_lifetime := true
 @export var use_distance_lifetime := true
@@ -528,9 +536,8 @@ class MayoSpeck:
 @export_range(32, 1024, 1) var maximum_point_count := 640
 ## Adjacent points further apart than this are treated as separate strands: the
 ## ribbon breaks there and no spacing correction is applied. In metres, not in
-## point spacings -- as a multiple it moved with the point density, so doubling
-## the density halved how far a falling strand could stretch before it came
-## apart, and what had been a strand became a scatter of single points.
+## point spacings. These are reference distances at emission_speed; faster
+## travel scales both thresholds to preserve the strand at the same delivery rate.
 @export_range(0.05, 2.0, 0.01, "suffix:m") var strand_break_distance := 0.27
 ## The same, for points the pressure has left. A jet under pressure is taut and
 ## a sweep snaps it; sauce already falling is a thread of liquid that stretches
@@ -640,6 +647,14 @@ class MayoSpeck:
 			_key_legend.visible = value
 
 @export_group("Firing Feel")
+## Bottle-only recoil. Its fixed muzzle and camera remain independent.
+@export_range(0.0, 0.12, 0.005, "suffix:m") var bottle_recoil_distance := 0.065
+@export_range(0.0, 20.0, 0.5, "suffix:°") var bottle_recoil_degrees := 2.0
+## Pressure keeps the hand pushed back after the initial kick has settled.
+@export_range(0.0, 0.06, 0.001, "suffix:m") var bottle_pressure_distance := 0.022
+@export_range(0.02, 0.5, 0.005, "suffix:s") var bottle_recoil_attack := 0.035
+@export_range(0.02, 1.0, 0.01, "suffix:s") var bottle_recoil_settle := 0.13
+
 ## How far the view noses up at the start of a squirt. One impulse per squirt,
 ## and a squirt that runs its allowance out and restarts by itself is a new one,
 ## so holding the trigger gives a kick per burst rather than a continuous climb.
@@ -662,8 +677,8 @@ class MayoSpeck:
 ## And how long whatever is left of it takes once the trigger is let go.
 @export_range(0.02, 1.0, 0.01, "suffix:s") var recoil_release_seconds := 0.16
 ## The bottle's own wander while sauce is coming out, drawn between these two.
-@export_range(0.0, 15.0, 0.1, "suffix:°") var nozzle_sway_min_degrees := 2.0
-@export_range(0.0, 15.0, 0.1, "suffix:°") var nozzle_sway_max_degrees := 4.0
+@export_range(0.0, 15.0, 0.1, "suffix:°") var nozzle_sway_min_degrees := 0.6
+@export_range(0.0, 15.0, 0.1, "suffix:°") var nozzle_sway_max_degrees := 1.2
 ## How often a new wander target is drawn.
 @export_range(0.01, 1.0, 0.01, "suffix:s") var nozzle_sway_interval := 0.07
 ## How fast the bottle chases the target it was given.
@@ -718,10 +733,8 @@ class MayoSpeck:
 ## Everything this prototype makes a noise with goes through here: the squirt,
 ## the impact splats, the air puff. **`M` toggles it in game.**
 ##
-## It exists because the sounds are still generated placeholders, and a
-## generated placeholder is a tone or a band of noise -- which is what a bottle
-## and a splat both come out as until there are clips. Muting is the honest
-## answer to that until then, rather than tuning noise to sound less like noise.
+## The bundled clips are original procedural prototype foley. Replace the
+## exported streams with recorded foley when available; M also mutes these clips.
 @export var muted := false:
 	set(value):
 		muted = value
@@ -748,7 +761,7 @@ class MayoSpeck:
 ## Swapped in for `spray_loop_sound` while the stream is on a body, when there
 ## is one. Empty falls back to the pitch and volume above, which is enough to
 ## tell the two apart on its own.
-@export var spray_loop_on_target_sound: AudioStream
+@export var spray_loop_on_target_sound: AudioStream = preload("res://assets/audio/sauce/contact_loop.wav")
 ## The spray thrown off a body rather than off the street: more of it, thrown
 ## wider. The blob and speck sizes are shared with the world impact.
 @export_range(1.0, 6.0, 0.1) var body_impact_multiplier := 2.0
@@ -854,34 +867,36 @@ class MayoSpeck:
 @export_range(0.0, 1.0, 0.005, "suffix:s") var impact_min_interval := 0.18
 
 @export_group("Impact Sound")
-## Empty means silent: there is no generated stand-in, because a generated one
-## is a band of noise and so is every other generated stand-in here. Several
-## clips rather than one, drawn at random and pitched at random on top, because
-## the one thing a repeated impact sound must not do is sound repeated.
-@export var splat_sounds: Array[AudioStream] = []
+## Three liquid impact variations keep sustained hits from repeating one clip.
+## Clearing the array silences regular splats; accents have their own streams.
+@export var splat_sounds: Array[AudioStream] = [
+	preload("res://assets/audio/sauce/splat_1.wav"),
+	preload("res://assets/audio/sauce/splat_2.wav"),
+	preload("res://assets/audio/sauce/splat_3.wav")]
+@export var first_contact_sound: AudioStream = preload("res://assets/audio/sauce/contact.wav")
+@export var defeat_sound: AudioStream = preload("res://assets/audio/sauce/defeat.wav")
 @export_range(0.5, 1.0, 0.01) var splat_pitch_min := 0.9
 @export_range(1.0, 2.0, 0.01) var splat_pitch_max := 1.1
-@export_range(-60.0, 12.0, 0.5, "suffix:dB") var splat_volume_db := -6.0
+@export_range(-60.0, 12.0, 0.5, "suffix:dB") var splat_volume_db := -11.0
 ## How far a splat can be heard.
 @export_range(1.0, 200.0, 1.0, "suffix:m") var splat_audible_distance := 40.0
 ## **One timer per enemy, not per stream.** Four players hosing the same monster
 ## is one monster being hit, and it should sound like one -- a timer per strand
 ## gives four overlapping trains of the same noise.
-@export_range(0.01, 1.0, 0.005, "suffix:s") var splat_interval_min := 0.07
-@export_range(0.01, 1.0, 0.005, "suffix:s") var splat_interval_max := 0.10
+@export_range(0.01, 1.0, 0.005, "suffix:s") var splat_interval_min := 0.12
+@export_range(0.01, 1.0, 0.005, "suffix:s") var splat_interval_max := 0.18
 ## How many splats may sound at once. Past this the hit is silent rather than
 ## cutting one already playing: a clipped splat is more obvious than a missing
 ## one.
 @export_range(1, 32, 1) var splat_voices := 6
 
 @export_group("Firing Sound")
-## Empty means silent -- see `_begin_spray_feel`. Drop clips in and nothing else
-## here changes. `spray_loop_sound` wants a stream that loops by itself: the
-## player is started once and left running, so a clip with a hard tail will tick.
-@export var spray_start_sound: AudioStream
-@export var spray_loop_sound: AudioStream
-@export var spray_end_sound: AudioStream
-@export_range(-60.0, 12.0, 0.5, "suffix:dB") var spray_volume_db := -8.0
+## Empty means silent. Imported WAV loops are configured on per-world copies;
+## other AudioStream types should have looping enabled in their resources.
+@export var spray_start_sound: AudioStream = preload("res://assets/audio/sauce/start.wav")
+@export var spray_loop_sound: AudioStream = preload("res://assets/audio/sauce/spray_loop.wav")
+@export var spray_end_sound: AudioStream = preload("res://assets/audio/sauce/end.wav")
+@export_range(-60.0, 12.0, 0.5, "suffix:dB") var spray_volume_db := -18.0
 ## How far the loop is allowed to swing on either side of that with the
 ## pressure behind the squirt.
 @export_range(0.0, 24.0, 0.5, "suffix:dB") var spray_pressure_volume_db := 6.0
@@ -1025,6 +1040,8 @@ var _speck_cursor := 0
 ## Counts down to when an impact may next be thrown, so a held stream does not
 ## ask for one on every one of its 187 landings a second.
 var _impact_clock := 0.0
+var _enemy_contact_clock: Dictionary = {}
+var _enemy_impact_clock: Dictionary = {}
 ## enemy instance id -> seconds until it may next be heard being hit. Keyed by
 ## the enemy rather than by the strand: see `splat_interval_min`.
 var _enemy_splat_clock: Dictionary = {}
@@ -1226,7 +1243,7 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		# The nozzle feeds the strand at the speed it is actually delivering, so
 		# a squeeze running out of pressure lays its points down more slowly
 		# instead of packing them closer together.
-		shooter.emit_distance += extend_speed * squeeze_pressure(shooter) \
+		shooter.emit_distance += emission_speed * squeeze_pressure(shooter) \
 			* sauce_speed_scale(shooter) * delta
 		shooter.burst_elapsed += delta
 		while shooter.emit_distance >= point_spacing:
@@ -1294,13 +1311,11 @@ func _begin_spray_feel(shooter: Shooter) -> void:
 	# attack. Replaced rather than added to, so a burst restarting on a held
 	# trigger cannot stack two kicks into one lurch.
 	shooter.recoil_pending = deg_to_rad(recoil_kick_degrees)
+	shooter.bottle_kick_pending = 1.0
 	_draw_sway_target(shooter)
 	if not shooter.is_local:
 		return
-	# **Silent until there are clips.** A generated stand-in can only be a tone
-	# or a band of noise, and a squirt, a splat and a puff of air generated that
-	# way all come out as the same hiss -- which is worse than nothing, because
-	# it is noise you have to listen past while tuning everything else.
+	# Clearing the exported clips leaves this layer silent.
 	if spray_start_sound != null:
 		_spray_edge_audio.stream = spray_start_sound
 		_spray_edge_audio.volume_db = spray_volume_db
@@ -1345,6 +1360,7 @@ func _draw_sway_target(shooter: Shooter) -> void:
 ## when nothing is coming out is exactly the tell that would give the catch away
 ## before the player saw it.
 func _advance_spray_feel(shooter: Shooter, delta: float, delivering: bool) -> void:
+	shooter.bottle_pickup_left = maxf(shooter.bottle_pickup_left - delta, 0.0)
 	if delivering and not shooter.was_firing:
 		_begin_spray_feel(shooter)
 	elif not delivering and shooter.was_firing:
@@ -1365,6 +1381,16 @@ func _advance_spray_feel(shooter: Shooter, delta: float, delivering: bool) -> vo
 		shooter.recoil_pending -= arriving
 	var settle := recoil_settle_seconds if delivering else recoil_release_seconds
 	shooter.recoil_pitch *= exp(-delta / maxf(settle, 0.001))
+
+	var kick_arriving := minf(shooter.bottle_kick_pending,
+		delta / maxf(bottle_recoil_attack, 0.001))
+	shooter.bottle_kick = minf(shooter.bottle_kick + kick_arriving, 1.0)
+	shooter.bottle_kick_pending -= kick_arriving
+	shooter.bottle_kick *= exp(-delta / maxf(bottle_recoil_settle, 0.001))
+	var pressure_target := lerpf(0.45, 1.0, _spray_pressure(shooter)) if delivering else 0.0
+	var pressure_settle := 0.08 if delivering else recoil_release_seconds
+	shooter.bottle_pressure = lerpf(shooter.bottle_pressure, pressure_target,
+		1.0 - exp(-delta / maxf(pressure_settle, 0.001)))
 
 	if delivering:
 		shooter.sway_retarget -= delta
@@ -1407,7 +1433,17 @@ func _advance_spray_feel(shooter: Shooter, delta: float, delivering: bool) -> vo
 func _apply_nozzle_sway(shooter: Shooter) -> void:
 	if shooter.weapon_sway == null or not is_instance_valid(shooter.weapon_sway):
 		return
-	shooter.weapon_sway.rotation = Vector3(shooter.sway_pitch, shooter.sway_yaw, 0.0)
+	var kick := shooter.bottle_kick + shooter.bottle_pressure * 0.18
+	shooter.weapon_sway.position = Vector3(0.0, 0.0,
+		bottle_recoil_distance * shooter.bottle_kick + bottle_pressure_distance * shooter.bottle_pressure)
+	shooter.weapon_sway.rotation = Vector3(
+		shooter.sway_pitch + deg_to_rad(bottle_recoil_degrees) * kick,
+		shooter.sway_yaw, -deg_to_rad(bottle_recoil_degrees) * kick * 0.15)
+	# A fresh bottle comes up into the hand, including when picking the same
+	# sauce again. Only the meshes move; aiming and the physical muzzle do not.
+	var pickup := pow(shooter.bottle_pickup_left / BOTTLE_PICKUP_SECONDS, 2.0)
+	shooter.weapon_sway.position += Vector3(0.0, -0.42, 0.12) * pickup
+	shooter.weapon_sway.rotation.x += deg_to_rad(-25.0) * pickup
 
 
 ## Volume and pitch follow the pressure behind the squirt, and both are a small
@@ -1424,7 +1460,7 @@ func _update_spray_loop(shooter: Shooter) -> void:
 		if _spray_loop_audio.stream != wanted:
 			var at := _spray_loop_audio.get_playback_position()
 			_spray_loop_audio.stream = wanted
-			_spray_loop_audio.play(at)
+			_spray_loop_audio.play(fmod(at, maxf(wanted.get_length(), 0.001)))
 	_spray_loop_audio.volume_db = spray_volume_db \
 		+ spray_pressure_volume_db * (pressure - 0.5) * 2.0 \
 		+ on_target_volume_db * connected
@@ -1647,6 +1683,9 @@ func _process(_delta: float) -> void:
 	# what the strand does and where the server thinks the body is are untouched.
 	_place_viewmodel()
 	_update_camera()
+	# Only the short nozzle connection follows render-rate viewmodel motion.
+	# The full simulated ribbons keep their existing physics-rate update budget.
+	_update_nozzle_visual(_local)
 	_report_view(_delta)
 	_update_deep_readout(_delta)
 	for shooter in _shooters.values():
@@ -1669,7 +1708,20 @@ func _process(_delta: float) -> void:
 ## PLACEHOLDER: generated tones, so the three bands are *audible* now and can be
 ## told apart while tuning. Replace `_sauce_stage_stream` and `_air_puff_stream`
 ## with real clips; nothing else here has to change.
+func _looping_sauce_clip(clip: AudioStream) -> AudioStream:
+	if clip is AudioStreamWAV:
+		var loop := clip.duplicate() as AudioStreamWAV
+		loop.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		loop.loop_begin = 0
+		loop.loop_end = int(loop.get_length() * loop.mix_rate)
+		return loop
+	return clip
+
+
 func _build_sauce_audio() -> void:
+	# Duplicate imported WAVs before setting loop points; other worlds own their copies.
+	spray_loop_sound = _looping_sauce_clip(spray_loop_sound)
+	spray_loop_on_target_sound = _looping_sauce_clip(spray_loop_on_target_sound)
 	_sauce_audio = AudioStreamPlayer.new()
 	_sauce_audio.name = "SauceAudio"
 	_sauce_audio.bus = "Master"
@@ -1820,9 +1872,6 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("wipe_screen"):
 		_request_wipe()
 		return
-	if event.is_action_pressed("refill_sauce"):
-		_request_refill()
-		return
 	for index in STATION_SAUCES.size():
 		if event.is_action_pressed("pick_sauce_%d" % (index + 1)):
 			_request_refill(index)
@@ -1887,14 +1936,7 @@ func _ensure_input_actions() -> void:
 		var wipe := InputEventKey.new()
 		wipe.physical_keycode = KEY_R
 		InputMap.action_add_event("wipe_screen", wipe)
-	if not InputMap.has_action("refill_sauce"):
-		InputMap.add_action("refill_sauce")
-		var refill := InputEventKey.new()
-		refill.physical_keycode = KEY_E
-		InputMap.action_add_event("refill_sauce", refill)
-	# 1, 2 and 3: fill the bottle with that sauce. The same request as E with the
-	# choice attached, so a number key at a machine you are not standing at is
-	# refused by exactly the reach test E is refused by.
+	# Every stall offers a fresh bottle: 1 mayo, 2 mustard, 3 ketchup.
 	for index in STATION_SAUCES.size():
 		var action := "pick_sauce_%d" % (index + 1)
 		if not InputMap.has_action(action):
@@ -2246,7 +2288,7 @@ func set_avatar_authority(peer_id: int, authority: bool) -> void:
 
 func _free_shooter(shooter: Shooter) -> void:
 	for node in [shooter.player, shooter.air_visual,
-			shooter.landing_visual, shooter.shadow_visual]:
+			shooter.landing_visual, shooter.shadow_visual, shooter.nozzle_visual]:
 		if is_instance_valid(node):
 			# Detached before freeing so the node name is free again this frame:
 			# the same peer id has to be able to respawn under the same name.
@@ -2295,6 +2337,7 @@ func _build_shooter_visuals(shooter: Shooter) -> void:
 	shooter.air_material = _mayo_material.duplicate() as StandardMaterial3D
 	shooter.landing_material = _landing_material.duplicate() as StandardMaterial3D
 	shooter.air_visual = _make_stream_visual("AirRibbon" + suffix, shooter.air_material)
+	shooter.nozzle_visual = _make_stream_visual("NozzleRibbon" + suffix, shooter.air_material, 4)
 	shooter.landing_visual = _make_stream_visual("LandingRibbon" + suffix, shooter.landing_material)
 	shooter.shadow_visual = _make_stream_visual("ProjectedShadow" + suffix, _shadow_material)
 
@@ -3517,10 +3560,10 @@ func _build_start_marker() -> void:
 		(child as MeshInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 
-func _make_stream_visual(visual_name: String, material: Material) -> StreamVisual:
+func _make_stream_visual(visual_name: String, material: Material, point_capacity := -1) -> StreamVisual:
 	var visual := StreamVisualScript.new() as StreamVisual
 	visual.name = visual_name
-	visual.setup(material, maximum_point_count)
+	visual.setup(material, maximum_point_count if point_capacity < 0 else point_capacity)
 	add_child(visual)
 	return visual
 
@@ -3678,7 +3721,9 @@ func _emit_point(shooter: Shooter = null) -> void:
 	var speed := extend_speed * squeeze_pressure(shooter) * sauce_speed_scale(shooter) \
 		* (1.0 + shooter.rng.randf_range(-speed_magnitude_jitter, speed_magnitude_jitter))
 	var player_velocity := shooter.player.velocity
-	point.velocity = direction * speed + Vector3(player_velocity.x, 0.0, player_velocity.z) * inherited_player_velocity
+	var travel_scale := extend_speed / maxf(emission_speed, 0.001)
+	point.velocity = direction * speed + Vector3(player_velocity.x, 0.0, player_velocity.z) \
+		* inherited_player_velocity * travel_scale
 	point.launch_direction = direction
 	point.collision_slot = shooter.next_collision_slot
 	point.burst_index = shooter.burst_index
@@ -3717,6 +3762,7 @@ func _break_distance_squared(front: MayoPoint = null, back: MayoPoint = null) ->
 	var break_distance := strand_break_distance
 	if front != null and back != null and not front.powered and not back.powered:
 		break_distance = falling_break_distance
+	break_distance *= extend_speed / maxf(emission_speed, 0.001)
 	return break_distance * break_distance
 
 
@@ -3793,6 +3839,11 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 	var space_state := get_world_3d().direct_space_state
 	var physics_frame := int(Engine.get_physics_frames())
 	var stride := maxi(raycast_frame_stride, 1)
+	# Faster travel compresses the entire flight, including the falling tail.
+	# Scaling velocity by k requires gravity * k² for the same spatial arc.
+	# stream_range only ends pressure; it does not stop a point or its damage.
+	var travel_scale := extend_speed / maxf(emission_speed, 0.001)
+	var flight_gravity := gravity_acceleration * travel_scale * travel_scale
 	for point in points:
 		if point.phase == PointPhase.LANDING:
 			point.landing_age += delta
@@ -3800,12 +3851,12 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 
 		point.age += delta
 		if point.powered:
-			var time_expired := use_time_lifetime and point.age >= point_time_lifetime
+			var time_expired := use_time_lifetime and point.age >= point_time_lifetime * emission_speed / maxf(extend_speed, 0.001)
 			var distance_expired := use_distance_lifetime and point.distance_travelled >= stream_range
 			if time_expired or distance_expired:
 				point.powered = false
 		if not point.powered:
-			point.velocity.y -= gravity_acceleration * delta
+			point.velocity.y -= flight_gravity * delta
 
 		var previous := point.position
 		var next := previous + point.velocity * delta
@@ -3838,13 +3889,11 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 				# paints, damages or is sent.
 				if collider != null:
 					var on_body := collider is MayoEnemy
-					_spawn_impact_spray(hit.position, hit.normal, point.velocity, on_body, shooter)
-					if on_body:
-						# The stream is on a monster *now*. Local, and on every
-						# peer: what it drives is this player's own reticle and
-						# their own sound.
-						shooter.on_target_left = on_target_window
-						_play_enemy_splat(collider as MayoEnemy, hit.position)
+					if on_body and (collider as MayoEnemy).is_alive():
+						_note_stream_contact(collider as MayoEnemy, hit.position,
+							hit.normal, point.velocity, shooter)
+					else:
+						_spawn_impact_spray(hit.position, hit.normal, point.velocity, false, shooter)
 				if _is_authority() and collider != null:
 					if on_floor:
 						_record_floor_splat(shooter, point.burst_index, hit.position)
@@ -3980,12 +4029,13 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 				shove_share = float(book.size()) / float(maxi(shove_full_party, 1))
 			enemy.take_shove(shooter.player.global_position, shove_share)
 			var was_alive := enemy.is_alive()
+			var crossed_before := enemy._flinch_crossed
 			enemy.take_sauce_hit(shooter.player.global_position)
 			if was_alive:
 				if not enemy.is_alive():
-					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds)
-				elif enemy.is_flinching():
-					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds)
+					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
+				elif enemy._flinch_crossed > crossed_before:
+					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds, 1)
 			# Ketchup piles up on the body rather than on the floor, and the stack
 			# that fills it sets it off. After the hit, so a body the stream has
 			# just killed goes off as the corpse it now is instead of soaking one
@@ -4101,14 +4151,16 @@ func _burst_ketchup(enemy: MayoEnemy, shooter: Shooter) -> void:
 		# does -- the flinch, the turn and the topple are all in there.
 		var hits := maxi(1, int(round(damage / maxf(other.sauce_damage_per_hit, 0.001))))
 		var killed := false
+		var crossed_before := other._flinch_crossed
+		_credit_hit(other, shooter)
 		for _hit in hits:
 			if not other.is_alive():
 				break
 			killed = other.take_sauce_hit(centre)
 		if killed or not other.is_alive():
-			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds)
-		elif other.is_flinching():
-			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds)
+			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
+		elif other._flinch_crossed > crossed_before:
+			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
 		_stain_body_with_ketchup(other, centre)
 
 	# **Players get sauce and nothing else.** A blast the party set off itself, on
@@ -4239,10 +4291,8 @@ func station_in_reach(player: MayoPlayer) -> int:
 	return best
 
 
-## E. Like the wipe, this is a shared state change -- the tank a peer is firing
-## out of is one every peer is simulating -- so a client asks and the server
-## decides whether they are really standing at a machine.
-func _request_refill(sauce := -1) -> void:
+## A number key selects a fresh bottle. The server checks the stall's reach.
+func _request_refill(sauce: int) -> void:
 	if _local == null:
 		return
 	if _is_authority():
@@ -4254,9 +4304,10 @@ func _request_refill(sauce := -1) -> void:
 ## The authority's side of a refill request, wherever it came from. A client
 ## asking is not proof it is standing at a station, so the reach is tested here
 ## against the body the server is simulating.
-## `sauce` is an index into `STATION_SAUCES`, or -1 for another bottle of
-## whatever the player already has.
-func refill_for(peer_id: int, sauce := -1) -> bool:
+## `sauce` must explicitly select one of `STATION_SAUCES`.
+func refill_for(peer_id: int, sauce: int) -> bool:
+	if sauce < 0 or sauce >= STATION_SAUCES.size():
+		return false
 	var shooter: Shooter = _shooters.get(peer_id)
 	if shooter == null:
 		return false
@@ -4279,17 +4330,21 @@ func refill_for(peer_id: int, sauce := -1) -> bool:
 ## rather than derived, because unlike the drain -- which every peer works out
 ## from the firing flag it already has -- a refill is not something a peer can
 ## see coming.
-func apply_refill(peer_id: int, sauce := -1) -> void:
+func apply_refill(peer_id: int, sauce: int) -> void:
+	if sauce < 0 or sauce >= STATION_SAUCES.size():
+		return
 	var shooter: Shooter = _shooters.get(peer_id)
 	if shooter == null:
 		return
 	shooter.sauce = 1.0
-	# `sauce` of -1 is "the same again": E tops the bottle up with whatever is
-	# already in it, and only a number key changes what that is. Sent rather than
-	# worked out locally, because unlike the station in reach this *is* a
-	# decision, and the peer that made it is the only one that knows it.
-	if sauce >= 0 and sauce < STATION_SAUCES.size():
-		shooter.sauce_kind = STATION_SAUCES[sauce]
+	shooter.sauce_kind = STATION_SAUCES[sauce]
+	shooter.fire_hold = 0.0
+	shooter.fire_cooldown = BOTTLE_PICKUP_SECONDS
+	shooter.catch_hold = 0.0
+	shooter.catch_roll = 0.0
+	shooter.catches_in_a_row = 0
+	shooter.bottle_pickup_left = BOTTLE_PICKUP_SECONDS
+	_apply_nozzle_sway(shooter)
 	_apply_sauce_look(shooter)
 
 
@@ -4301,7 +4356,7 @@ func local_at_station() -> bool:
 ## Which sauce the local bottle holds, as an index into `STATION_SAUCES`, for the
 ## prompt to mark. -1 when there is no local player to ask about.
 func local_sauce_kind() -> int:
-	if _local == null:
+	if _local == null or (_tutorial != null and not _tutorial.has_bottle(_local.peer_id)):
 		return -1
 	return STATION_SAUCES.find(_local.sauce_kind)
 
@@ -4437,9 +4492,10 @@ func _enforce_spacing_constraint(shooter: Shooter = null) -> void:
 			if direction.length_squared() < 0.000001:
 				direction = shooter.attack_direction
 			var projected_gap := (front.position - back.position).dot(direction)
-			if projected_gap <= point_spacing:
+			var travel_spacing := point_spacing * extend_speed / maxf(emission_speed, 0.001)
+			if projected_gap <= travel_spacing:
 				continue
-			var correction := direction * (projected_gap - point_spacing)
+			var correction := direction * (projected_gap - travel_spacing)
 			var front_free := front.phase == PointPhase.AIR
 			var back_free := back.phase == PointPhase.AIR
 			if front_free and back_free:
@@ -4475,6 +4531,45 @@ func _update_visuals(shooter: Shooter = null) -> void:
 	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, strand_thickness, 0.004)
 	shooter.shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward,
 		strand_thickness * 0.72, 0.012)
+	_update_nozzle_visual(shooter)
+
+
+## A tapered visual connection from the recoiling nozzle to the newest sauce.
+## Never added to the simulation, so recoil cannot move hits or extend range.
+func _nozzle_segments(shooter: Shooter, camera_position: Vector3) -> Array:
+	if not shooter.was_firing or shooter.nozzle != Nozzle.STREAM or shooter.points.is_empty():
+		return []
+	if not is_instance_valid(shooter.weapon_sway) or not is_instance_valid(shooter.muzzle):
+		return []
+	var tail: MayoPoint = shooter.points.back()
+	# No tethers to an earlier squirt, an old point waiting at the cap, or a
+	# fading stain. A freshly landed point can close the gap against a nearby wall.
+	if tail.burst_index != shooter.burst_index or tail.age > 0.08 \
+			or (tail.phase == PointPhase.LANDING and tail.landing_age > 0.001) \
+			or _is_near_camera(tail, camera_position):
+		return []
+	var forward := -shooter.weapon_sway.global_basis.z
+	var tip := shooter.weapon_sway.to_global(shooter.muzzle.position) - forward * 0.003
+	var gap := tip.distance_to(tail.position)
+	if gap > 0.8 or gap < 0.001:
+		return []
+	var bend := tip + forward * minf(0.06, gap * 0.3)
+	var nozzle_width := clampf(bottle_radius * 0.32 / maxf(strand_thickness, 0.001), 0.05, 1.0)
+	var segment: Array = []
+	for index in 4:
+		var t := float(index) / 3.0
+		var point := RibbonPoint.new()
+		point.position = tip.lerp(bend, t).lerp(bend.lerp(tail.position, t), t)
+		point.width_scale = lerpf(nozzle_width, 1.0, t)
+		segment.push_back(point)
+	return [segment]
+
+
+func _update_nozzle_visual(shooter: Shooter) -> void:
+	if shooter.nozzle_visual == null:
+		return
+	shooter.nozzle_visual.update_ribbon(_nozzle_segments(shooter, _camera.global_position),
+		_camera.global_position, -_camera.global_basis.z, strand_thickness)
 
 
 ## True for points sitting on top of the camera, which in first person would
@@ -4750,8 +4845,8 @@ func _build_lump_mesh(material: Material) -> ArrayMesh:
 ## sauce arrive, pause, and only then spit. Nothing here paints, damages or is
 ## sent -- the pool, the dice and the sound are all local.
 func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
-		on_body := false, shooter: Shooter = null) -> void:
-	if _speck_multimesh == null or _impact_clock > 0.0:
+		on_body := false, shooter: Shooter = null, accent := 1.0, force := false) -> void:
+	if _speck_multimesh == null or (_impact_clock > 0.0 and not force):
 		return
 	_impact_clock = impact_min_interval
 	var bounce := direction
@@ -4764,7 +4859,7 @@ func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
 	# Sauce hitting a body throws more of itself, and throws it wider, than
 	# sauce hitting a kerb. Without this a monster and a wall spit identically
 	# and the spray says nothing about what is being hit.
-	var plenty := body_impact_multiplier if on_body else 1.0
+	var plenty := (body_impact_multiplier if on_body else 1.0) * accent
 	var blobs := impact_blobs if not on_body else maxi(1, int(round(float(impact_blobs) * plenty)))
 	var specks := impact_specks if not on_body else int(round(float(impact_specks) * plenty))
 	for index in blobs + specks:
@@ -4790,7 +4885,7 @@ func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
 			thrown = normal
 		thrown = thrown.normalized()
 		_take_speck(now, at + normal * 0.02, thrown * speed * _feel_rng.randf_range(0.7, 1.3),
-			radius * _feel_rng.randf_range(0.75, 1.3),
+			radius * sqrt(accent) * _feel_rng.randf_range(0.75, 1.3),
 			shooter.peer_id if shooter != null else 1,
 			shooter.sauce_kind if shooter != null else ContaminationGrid.KIND_MAYO)
 	_speck_buffer_dirty = true
@@ -5023,6 +5118,39 @@ func _write_speck_transform(index: int, speck: MayoSpeck,
 ##
 ## Local presentation, run on every peer off its own copy of the hit -- see
 ## `_spawn_impact_spray`.
+func _note_stream_contact(enemy: MayoEnemy, at: Vector3, normal: Vector3,
+		direction: Vector3, shooter: Shooter) -> void:
+	var key := enemy.get_instance_id()
+	var first := not _enemy_contact_clock.has(key)
+	_enemy_contact_clock[key] = 0.22
+	shooter.on_target_left = on_target_window
+	if first or not _enemy_impact_clock.has(key):
+		_spawn_impact_spray(at, normal, direction, true, shooter, 1.6 if first else 1.0, true)
+		_enemy_impact_clock[key] = impact_min_interval
+	if first:
+		if shooter.is_local and _crosshair is Crosshair:
+			(_crosshair as Crosshair).confirm_impact(false)
+		_play_contact_accent(first_contact_sound, at, 1.0, 2.0)
+		_enemy_splat_clock[key] = splat_interval_max
+	else:
+		_play_enemy_splat(enemy, at)
+
+
+func _play_contact_accent(clip: AudioStream, at: Vector3, pitch: float, gain: float) -> void:
+	if clip == null:
+		return
+	var voice := _free_splat_voice()
+	if voice == null and not _splat_voices.is_empty():
+		voice = _splat_voices[_splat_voice_cursor]
+	if voice == null:
+		return
+	voice.global_position = at
+	voice.stream = clip
+	voice.pitch_scale = pitch
+	voice.volume_db = splat_volume_db + gain
+	voice.play()
+
+
 func _play_enemy_splat(enemy: MayoEnemy, at: Vector3) -> void:
 	var key := enemy.get_instance_id()
 	if _enemy_splat_clock.get(key, 0.0) > 0.0:
@@ -5030,8 +5158,7 @@ func _play_enemy_splat(enemy: MayoEnemy, at: Vector3) -> void:
 	_enemy_splat_clock[key] = _feel_rng.randf_range(
 		minf(splat_interval_min, splat_interval_max),
 		maxf(splat_interval_min, splat_interval_max))
-	# Silent until there are clips -- see `_begin_spray_feel`. The timer above
-	# still runs, so the rate stays measurable and tunable without them.
+	# Keep timing active even when regular splat clips have been cleared.
 	if splat_sounds.is_empty():
 		return
 	var voice := _free_splat_voice()
@@ -5126,7 +5253,7 @@ func _advance_hit_credit(delta: float) -> void:
 ## happens once has to be sent once, and arrive.
 ##
 ## Offline there is no net, so it is applied directly.
-func _broadcast_enemy_shake(enemy: MayoEnemy, degrees: float, seconds: float) -> void:
+func _broadcast_enemy_shake(enemy: MayoEnemy, degrees: float, seconds: float, accent := 0) -> void:
 	var index := _enemies.find(enemy)
 	if index < 0:
 		return
@@ -5137,20 +5264,27 @@ func _broadcast_enemy_shake(enemy: MayoEnemy, degrees: float, seconds: float) ->
 	for peer_id in book:
 		peers.append(peer_id)
 	if is_instance_valid(_net) and _net.is_online():
-		_net.send_enemy_shake(index, peers, degrees, seconds)
-	apply_enemy_shake(index, peers, degrees, seconds)
+		_net.send_enemy_shake(index, peers, degrees, seconds, accent)
+	apply_enemy_shake(index, peers, degrees, seconds, accent)
 
 
 ## Starts the shake on this peer, for the listed players. Everybody runs it and
 ## each keeps only its own: the list is short and the alternative is a message
 ## per player.
 func apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
-		degrees: float, seconds: float) -> void:
+		degrees: float, seconds: float, accent := 0) -> void:
 	if enemy_index < 0 or enemy_index >= _enemies.size():
 		return
 	if _local == null or not peers.has(_local.peer_id):
 		return
 	var enemy := _enemies[enemy_index]
+	if accent > 0:
+		_play_contact_accent(defeat_sound if accent == 2 else first_contact_sound,
+			enemy.global_position, 0.85 if accent == 2 else 0.92, 4.0 if accent == 2 else 1.0)
+		_spawn_impact_spray(enemy.global_position, Vector3.UP, Vector3.DOWN,
+			true, _local, 2.0 if accent == 2 else 1.3, true)
+		if _crosshair is Crosshair:
+			(_crosshair as Crosshair).confirm_impact(accent == 2)
 	var toward := enemy.global_position - _local.player.global_position
 	toward.y = 0.0
 	if toward.length_squared() < 0.000001:
@@ -5202,6 +5336,11 @@ func _free_splat_voice() -> AudioStreamPlayer3D:
 ## how soon each enemy may next be heard.
 func _advance_impact_clocks(delta: float) -> void:
 	_impact_clock = maxf(_impact_clock - delta, 0.0)
+	for clocks in [_enemy_contact_clock, _enemy_impact_clock]:
+		for key in clocks.keys():
+			clocks[key] -= delta
+			if clocks[key] <= 0.0:
+				clocks.erase(key)
 	for key in _enemy_splat_clock:
 		var left: float = _enemy_splat_clock[key] - delta
 		_enemy_splat_clock[key] = maxf(left, 0.0)

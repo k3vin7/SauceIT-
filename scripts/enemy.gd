@@ -221,7 +221,7 @@ var _ketchup_at := -1000.0
 
 @export_group("Flinching")
 ## How far it rocks back when a threshold is crossed.
-@export_range(0.0, 45.0, 0.5, "suffix:°") var flinch_degrees := 9.0
+@export_range(0.0, 45.0, 0.5, "suffix:°") var flinch_degrees := 12.0
 ## And how long the whole rock-back-and-recover takes.
 @export_range(0.05, 1.0, 0.01, "suffix:s") var flinch_seconds := 0.18
 
@@ -301,6 +301,9 @@ var _attack_animation_active := false
 ## needs nothing added to the state packet: the angle already travels.
 ## Where the stream is currently pushing it, in metres a second, decaying.
 var _shove := Vector3.ZERO
+var _pressure_left := 0.0
+var _pressure_pose := 0.0
+var _contact_kick_left := 0.0
 ## Whether it has noticed anybody. Latched rather than recomputed from the
 ## distance every frame -- see `give_up_range`.
 var _alerted := false
@@ -867,6 +870,9 @@ func take_shove(from: Vector3, strength := 1.0) -> void:
 	# Set from whoever landed the hit, so a body being hosed from two sides is
 	# pushed by whichever stream reached it last. At 187 landings a second that
 	# alternates fast enough to average out into the middle of them.
+	if _pressure_left <= 0.0:
+		_contact_kick_left = 0.14
+	_pressure_left = 0.14
 	_shove = away.normalized() * shove_speed * clampf(strength, 0.0, 1.0)
 
 
@@ -961,11 +967,20 @@ func is_flinching() -> bool:
 ## added to the state packet for it. A half-sine: away from upright and back,
 ## reaching the full angle in the middle rather than at the end.
 func _advance_flinch(delta: float) -> void:
-	if _flinch_left <= 0.0:
+	if _flinch_left <= 0.0 and _pressure_left <= 0.0 and _pressure_pose < 0.0001 \
+			and _contact_kick_left <= 0.0 and absf(fall_angle) < 0.0001:
 		return
+	_pressure_left = maxf(_pressure_left - delta, 0.0)
+	_pressure_pose = lerpf(_pressure_pose, 1.0 if _pressure_left > 0.0 else 0.0,
+		1.0 - exp(-delta / 0.07))
+	_contact_kick_left = maxf(_contact_kick_left - delta, 0.0)
+	var contact := sin((1.0 - _contact_kick_left / 0.14) * PI) if _contact_kick_left > 0.0 else 0.0
 	_flinch_left = maxf(_flinch_left - delta, 0.0)
 	var through := 1.0 - _flinch_left / maxf(flinch_seconds, 0.001)
-	fall_angle = deg_to_rad(flinch_degrees) * sin(through * PI)
+	var flinch := deg_to_rad(flinch_degrees) * sin(through * PI)
+	# A brief first-contact recoil, then a restrained lean under sustained pressure.
+	# This shares the replicated pose and never stops chasing or contact attacks.
+	fall_angle = maxf(flinch, deg_to_rad(5.0) * contact) + deg_to_rad(2.5) * _pressure_pose
 	_apply_pose()
 
 

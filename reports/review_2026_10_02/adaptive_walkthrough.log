@@ -1,0 +1,32 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+OpenGL API 4.1 Metal - 90.5 - Compatibility - Using Device: Apple - Apple M5
+
+STAGE IDLE t=0.999 player=(0.0, 1.28, 1.55) hp=100.0 sauce=0.0
+STAGE GET_SAUCE t=1.505 player=(0.0, 1.28, 1.55) hp=100.0 sauce=0.0
+LINE 뚱보: 먹기 전에 소스부터 챙기자.
+STAGE FIRST_FIGHT t=5.365 player=(7.862347, 1.28, -1.357131) hp=100.0 sauce=1.0
+LINE 뚱보: 야, 토스트다.
+LINE 뚱보: 음식이 알아서 오네. 서비스 좋다.
+LINE 뚱보: 잠깐, 소스부터 뿌리고.
+LINE 뚱보: 가만있어 봐. 골고루 안 묻잖아.
+STAGE MONSTER_CUE t=15.762 player=(-0.021305, 1.280942, -4.001056) hp=100.0 sauce=0.72083333333333
+STAGE MONSTER_ARRIVES t=17.47 player=(-0.021305, 1.280942, -4.001056) hp=100.0 sauce=0.71388888888889
+LINE 낯선 목소리: 저기요!! 들리시나요? 뒤를 조심해요!!
+STAGE RUN t=20.167 player=(-0.021305, 1.280942, -4.001056) hp=100.0 sauce=0.71388888888889
+LINE 낯선 목소리: Shift를 누르고 포장마차 사이로 뛰세요! 저 덩치는 못 지나올 거예요!
+STAGE TRAPPED t=24.779 player=(-0.002906, 1.280942, -42.6375) hp=100.0 sauce=0.71388888888889
+LINE 낯선 목소리: 잘 빠져나왔어요! 저 덩치는 걸렸네요.
+TRAP monster=(-0.009445, 2.093591, -29.94765) radius=1.71010996022224 player=(-0.00014, 1.280942, -48.18414) slips=[]
+REVIEW adaptive walk: had any fall=true scripted-spill fall=false
+LINE 낯선 목소리: 마요네즈 위에서는 뛰지 말고 걸어요!
+LINE 낯선 목소리: 저쪽 매대에도 소스가 있어요! E를 눌러 소스통을 채우세요!
+STAGE REFILL t=30.952 player=(10.91926, 1.280942, -52.99382) hp=100.0 sauce=1.0
+STAGE COOP_FIGHT t=31.037 player=(10.91926, 1.280942, -52.99382) hp=100.0 sauce=1.0
+LINE 박사: 현장 조사 나온 박사예요. 음식이 움직이는 건 저도 처음 보는데… 같이 정리해보죠.
+LINE 뚱보: 소스도 채웠겠다, 저것부터 치우자.
+STAGE OUTRO t=37.952 player=(-0.001639, 1.280942, -35.83204) hp=100.0 sauce=0.61666666666667
+LINE 박사: 다른 먹거리 구역에서도 신고가 들어왔어요. 같이 가주실 수 있나요?
+LINE 뚱보: 아, 거긴 아직 못 먹어봤는데.
+LINE 뚱보: 빨리 가서 저것들부터 치워요.
+STAGE COMPLETE t=43.594 player=(-0.001639, 1.280942, -35.83204) hp=100.0 sauce=0.61666666666667
+REVIEW_REAL_SAUCE_TUTORIAL_OK

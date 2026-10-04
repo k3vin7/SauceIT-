@@ -1,0 +1,46 @@
+Godot Engine v4.7.1.stable.official.a13da4feb - https://godotengine.org
+
+ERROR: Condition "ret != noErr" is true. Returning: ""
+   at: get_system_ca_certificates (platform/macos/os_macos.mm:1035)
+STAGE IDLE t=0.279 player=(0.0, 1.28, 1.55) hp=100.0 sauce=0.0
+STAGE GET_SAUCE t=0.287 player=(0.0, 1.28, 1.55) hp=100.0 sauce=0.0
+LINE 뚱보: 먹기 전에 소스부터 챙기자.
+WALK 0 at=(0.0, 1.28, 1.55) target=(8.0, 2.8, -1.406667) state=0 velocity=(0.0, 0.0, 0.0) collisions=["FloorContamination"]
+STAGE FIRST_FIGHT t=0.373 player=(7.862347, 1.28, -1.357131) hp=100.0 sauce=1.0
+WALK 0 at=(7.862347, 1.28, -1.357131) target=(0.0, 0.0, -4.0) state=0 velocity=(4.892832, 0.0, -1.760729) collisions=["FloorContamination"]
+LINE 뚱보: 야, 토스트다.
+LINE 뚱보: 음식이 알아서 오네. 서비스 좋다.
+LINE 뚱보: 잠깐, 소스부터 뿌리고.
+LINE 뚱보: 가만있어 봐. 골고루 안 묻잖아.
+STAGE MONSTER_CUE t=0.768 player=(-0.021305, 1.280942, -4.001056) hp=100.0 sauce=0.72083333333333
+STAGE MONSTER_ARRIVES t=0.825 player=(-0.021305, 1.280942, -4.001056) hp=100.0 sauce=0.71388888888889
+LINE 낯선 목소리: 저기요!! 들리시나요? 뒤를 조심해요!!
+STAGE RUN t=0.901 player=(-0.021305, 1.280942, -4.001056) hp=100.0 sauce=0.71388888888889
+LINE 낯선 목소리: Shift를 누르고 포장마차 사이로 뛰세요! 저 덩치는 못 지나올 거예요!
+WALK 0 at=(-0.021305, 1.280942, -4.001056) target=(0.0, 0.0, -48.464) state=0 velocity=(0.0, 0.0, 0.0) collisions=["Tutorial02_Bruiser"]
+WALK 120 at=(-0.019593, 1.280942, -9.354939) target=(0.0, 0.0, -48.464) state=3 velocity=(0.0, 0.0, 0.0) collisions=["FloorContamination"]
+WALK 240 at=(-0.019506, 1.280942, -9.365496) target=(0.0, 0.0, -48.464) state=4 velocity=(0.0, 0.0, 0.0) collisions=["Tutorial02_Bruiser"]
+WALK 360 at=(-0.019333, 1.280942, -9.386608) target=(0.0, 0.0, -48.464) state=3 velocity=(0.0, 0.0, 0.0) collisions=["Tutorial02_Bruiser"]
+WALK 480 at=(-0.019162, 1.280942, -9.407721) target=(0.0, 0.0, -48.464) state=2 velocity=(0.0, 0.0, 0.0) collisions=["Tutorial02_Bruiser"]
+WALK 600 at=(-0.019077, 1.280942, -9.418277) target=(0.0, 0.0, -48.464) state=4 velocity=(0.0, 0.0, 0.0) collisions=["FloorContamination"]
+WALK 720 at=(-0.018908, 1.280942, -9.439389) target=(0.0, 0.0, -48.464) state=3 velocity=(0.0, 0.0, 0.0) collisions=["FloorContamination"]
+WALK 840 at=(-0.018741, 1.280942, -9.460502) target=(0.0, 0.0, -48.464) state=2 velocity=(0.0, 0.0, 0.0) collisions=["FloorContamination"]
+WALK 960 at=(-0.018657, 1.280942, -9.471058) target=(0.0, 0.0, -48.464) state=4 velocity=(0.0, 0.0, 0.0) collisions=["Tutorial02_Bruiser"]
+WALK 1080 at=(-0.018492, 1.280942, -9.49217) target=(0.0, 0.0, -48.464) state=3 velocity=(0.0, 0.0, 0.0) collisions=["Tutorial02_Bruiser"]
+WALK 1200 at=(-0.018328, 1.280942, -9.512727) target=(0.0, 0.0, -48.464) state=2 velocity=(0.004914, 0.0, -0.6) collisions=["FloorContamination"]
+WALK 1320 at=(-0.018246, 1.280942, -9.523839) target=(0.0, 0.0, -48.464) state=4 velocity=(0.0, 0.0, 0.0) collisions=["FloorContamination"]
+WALK 1440 at=(-0.018084, 1.280942, -9.544951) target=(0.0, 0.0, -48.464) state=3 velocity=(0.0, 0.0, 0.0) collisions=["FloorContamination"]
+ERROR: cannot cross wreck passage
+   at: push_error (core/variant/variant_utility.cpp:1023)
+   GDScript backtrace (most recent call first):
+       [0] _run (/tmp/review_sauce_diagnostic.gd:196)
+       [1] scenario (/tmp/review_sauce_diagnostic.gd:151)
+       [2] until (/tmp/review_sauce_diagnostic.gd:47)
+       [3] step (/tmp/review_sauce_diagnostic.gd:36)
+ERROR: monster never wedged
+   at: push_error (core/variant/variant_utility.cpp:1023)
+   GDScript backtrace (most recent call first):
+       [0] _run (/tmp/review_sauce_diagnostic.gd:196)
+       [1] scenario (/tmp/review_sauce_diagnostic.gd:151)
+       [2] until (/tmp/review_sauce_diagnostic.gd:47)
+       [3] step (/tmp/review_sauce_diagnostic.gd:36)
