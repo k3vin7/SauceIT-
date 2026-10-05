@@ -2773,13 +2773,14 @@ func _add_machine_panel(holder: Node3D, panel_name: String, machine_position: Ve
 ## the walk north from the start zone runs into them one at a time rather than
 ## all at once. Adding another is a line.
 const ENEMY_SPAWNS := [
-	[290, 780],   # the run up from Kalda: the first one you meet
+	[290, 850],   # the run up from Kalda: the first one you meet
 	[270, 420],   # halfway along Karja tänav
 	[370, 550],   # waiting in the festival square
 ]
-## On the same opening road, about halfway between the player start and the
-## first hamburger/toast group, so it is always the first monster encountered.
-const FRY_STALKER_SPAWN := [290, 850]
+## Further up the same opening road, behind the first hamburger and its toast,
+## so the burger is what the player meets first and the stalker is what is
+## waiting once they are past it.
+const FRY_STALKER_SPAWN := [290, 780]
 ## A pair flanks each bruiser, this far to either side of it.
 ##
 ## **In metres, off the bruiser's own position -- not in map pixels.** The pair
