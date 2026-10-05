@@ -135,8 +135,17 @@ func _ready() -> void:
 	if skeleton == null:
 		return
 	_body = skeleton.find_bone("Body")
-	_upper = [skeleton.find_bone("Arm.L.Upper"), skeleton.find_bone("Arm.R.Upper")]
-	_lower = [skeleton.find_bone("Arm.L.Lower"), skeleton.find_bone("Arm.R.Lower")]
+	# **Two spellings, because two rigs.** The mockup this was written against
+	# named its bones `Arm.L.Upper`; the authored crawler names them
+	# `UpperArm.L`. Asked for only the first, `find_bone` returned -1, `has_rig`
+	# said no, and the whole modifier did nothing -- which is what "the rig
+	# cannot reach the floor" actually was. Measured on the crawler, the arm is
+	# 3.29 m against a shoulder 1.10 m off the ground; reaching was never the
+	# problem.
+	_upper = [_either(skeleton, "UpperArm.L", "Arm.L.Upper"),
+		_either(skeleton, "UpperArm.R", "Arm.R.Upper")]
+	_lower = [_either(skeleton, "Forearm.L", "Arm.L.Lower"),
+		_either(skeleton, "Forearm.R", "Arm.R.Lower")]
 	_hand = [skeleton.find_bone("Hand.L"), skeleton.find_bone("Hand.R")]
 	if not has_rig():
 		return
@@ -167,6 +176,12 @@ func _ready() -> void:
 		_shoulder_across[side] = chain.origin.x
 		_hand_contact_basis[side] = skeleton.get_bone_global_rest(
 			_hand[side]).basis.orthonormalized()
+
+
+## The first of two names that the skeleton actually has, or -1.
+static func _either(skeleton: Skeleton3D, first: String, second: String) -> int:
+	var found := skeleton.find_bone(first)
+	return found if found >= 0 else skeleton.find_bone(second)
 
 
 ## True when every bone this needs was found. A rig without them is not an error

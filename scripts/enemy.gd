@@ -383,6 +383,7 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	contamination.add_visual_overlay(_visual_root)
 
 	health = max_health
+	_attach_gait()
 	_set_locomotion_animation(false)
 
 
@@ -423,6 +424,32 @@ func _relative_transform(node: Node3D) -> Transform3D:
 		chain = (at as Node3D).transform * chain
 		at = at.get_parent()
 	return chain
+
+
+## **Hangs the hand-walking modifier on the rig, when it is asked for.**
+##
+## A `SkeletonModifier3D` runs after the animation has posed the skeleton, which
+## is the only place a procedural gait can live: the authored Crawl clip still
+## plays and still carries the body, and this writes the arms over the top of it.
+##
+## Off by default. Turning it on is a decision about how the monster moves, not
+## a repair, and the clip is what ships.
+func _attach_gait() -> void:
+	if not procedural_gait or _visual_root == null:
+		return
+	var skeletons := _visual_root.find_children("*", "Skeleton3D", true, false)
+	if skeletons.is_empty():
+		push_warning("Hamburger monster has no Skeleton3D, so no procedural gait")
+		return
+	var skeleton := skeletons[0] as Skeleton3D
+	var gait := EnemyGait.new()
+	gait.name = "Gait"
+	skeleton.add_child(gait)
+	if not gait.has_rig():
+		push_warning("Hamburger monster rig is missing the bones the gait drives")
+		gait.queue_free()
+		return
+	_gait = gait
 
 
 ## Adds the authored monster as presentation only.
