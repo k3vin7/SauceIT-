@@ -869,7 +869,7 @@ func _bones() -> Array:
 ## than their own. One cylinder cannot be honest about a body with arms, and
 ## losing the sauce entirely is the worse of the two.
 func _body_radius() -> float:
-	return _arm_span
+	return _bun_radius
 
 
 ## Every bone's capsule baked into one mesh, in the body's space. Baked rather

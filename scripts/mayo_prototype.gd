@@ -2813,6 +2813,11 @@ func _build_enemies() -> void:
 		enemy.position = StreetMap.from_pixels(spawn[0], spawn[1]) \
 			+ Vector3(0.0, enemy.stand_height(), 0.0)
 		_enemies.push_back(enemy)
+		# **The opening burger stands alone.** Its pair of rushers moved to the
+		# fry stalker behind it, so the first thing met is one heavy on its own
+		# and the escort is what is waiting once the party is past it.
+		if index == 0:
+			continue
 		for pair_index in TOAST_RUSHER_PAIR_OFFSETS.size():
 			var rusher := MayoEnemy.new()
 			rusher.name = "Enemy%02d_ToastRusher%d" % [index, pair_index + 1]
@@ -2841,6 +2846,21 @@ func _build_enemies() -> void:
 		FRY_STALKER_SPAWN[0], FRY_STALKER_SPAWN[1]) \
 		+ Vector3(0.0, fry_stalker.stand_height(), 0.0)
 	_enemies.push_back(fry_stalker)
+	for pair_index in TOAST_RUSHER_PAIR_OFFSETS.size():
+		var escort := MayoEnemy.new()
+		escort.name = "Enemy_FryToastRusher%d" % (pair_index + 1)
+		escort.authority = _is_authority()
+		add_child(escort)
+		escort.build_moldy_toast_rusher(body_cell_size,
+			contamination_brush_radius, toast_scene)
+		escort.nav = _nav
+		if _local != null:
+			escort.match_player_speed(_local.player.walk_speed,
+				toast_rusher_speed_fraction)
+		escort.position = fry_stalker.position \
+			+ Vector3(TOAST_RUSHER_PAIR_OFFSETS[pair_index], 0.0, 0.0)
+		escort.position.y = escort.stand_height()
+		_enemies.push_back(escort)
 	_apply_enemy_sight_rings()
 	# Scale them to the party that exists now. Offline that is one player and
 	# the multiplier is 1, so a solo game is untouched.
