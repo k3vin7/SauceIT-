@@ -188,5 +188,13 @@ func _to_grid(world_position: Vector3, world_normal := Vector3.ZERO) -> Vector2:
 		return Vector2(across, local.y)
 	# A cap: the radius out from the axis takes the place of the height, so
 	# what the side chart throws away is exactly what this one keeps.
-	var rim := minf(Vector2(about.x, about.z).length(), cap_depth)
+	#
+	# **Clamped just inside the rim, not to it.** The grid is `height + cap_depth
+	# * 2` tall, so a point at the full `cap_depth` maps to exactly its edge --
+	# and a cell index is floored, so exactly the edge is one past the last row
+	# and the splat is thrown away. Anything landing on the outermost ring of a
+	# cap vanished rather than being drawn at the rim, which on this monster is
+	# every hit that reaches an arm.
+	var reach := maxf(cap_depth - cell_size, 0.0)
+	var rim := minf(Vector2(about.x, about.z).length(), reach)
 	return Vector2(across, signf(facing.y) * (height * 0.5 + rim))

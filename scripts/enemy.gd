@@ -263,6 +263,10 @@ var _settled_for := 0.0
 var _fall_pivot := Vector3.ZERO
 ## Half the thickness of the torso: what it comes to rest on.
 var _rest_radius := 0.37
+## The bun's own radius and half the fingertip-to-fingertip span, both measured
+## off the authored model in `build`.
+var _bun_radius := 0.9
+var _arm_span := 1.0
 
 
 func _ready() -> void:
@@ -280,15 +284,30 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	# scaling multiplies up from here and never from the scaled value.
 	solo_health = max_health
 	health = max_health
-	height = MODEL_TARGET_SIZE.y
-	radius = MODEL_TARGET_SIZE.x * 0.5
 	contact_interval = 1.5
-	contact_reach = 0.70 * MODEL_SCALE_MULTIPLIER
 	attack_lock_seconds = 1.5
 	attack_impact_delay_seconds = MODEL_ATTACK_IMPACT_SECONDS
 
+	# **The model first, so everything physical can be measured off it.** The
+	# visual used to be built last and placed against numbers guessed ahead of
+	# it; built first, the numbers come from the thing the player can see.
+	_build_visual()
+	var drawn := _visual_bounds()
+	height = drawn.size.y
+	# **The bun is round; the width is arms.** Seen from above a burger is a
+	# circle, and the 10 m across is two arms splayed out -- so the body's own
+	# radius is half its *depth*, and taking half its width instead is what made
+	# the three body cylinders twice as deep as the monster.
+	_bun_radius = drawn.size.z * 0.5
+	# What contact is measured from. The body, not the fingertips: the arms
+	# reach beyond it and `contact_reach` is what says how far.
+	radius = _bun_radius
+	_arm_span = drawn.size.x * 0.5
+	contact_reach = maxf(_arm_span - _bun_radius, 0.0)
+	_visual_root.position = Vector3(0.0, -stand_height(), 0.0)
+
 	var bones := _bones()
-	_rest_radius = MODEL_REST_RADIUS
+	_rest_radius = _bun_radius
 
 	# One collider per bone rather than one capsule around the lot. A single
 	# capsule wide enough to cover the outstretched arms is a fat pill that
@@ -321,7 +340,6 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	# drawing the capsule mockup over the authored monster.
 	_body_mesh.visible = false
 	add_child(_body_mesh)
-	_build_visual()
 
 	contamination = BodyContamination.new()
 	contamination.name = "BodyContamination"
@@ -334,7 +352,9 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	# middle to the rim. The caps are polar charts stacked above and below
 	# the side band in the same mask, which is why this costs nothing on the
 	# wire. A player leaves this at zero: their ends are hemispheres.
-	contamination.cap_depth = _body_radius()
+	# The caps are the bun's own top and bottom, which are the bun's width -- not
+	# the span the side band is wrapped at.
+	contamination.cap_depth = _bun_radius
 	add_child(contamination)
 	# The unwrap maps a surface point by its angle about the body's axis, which
 	# is an honest unwrap only for a surface of revolution. A burger very nearly
@@ -361,9 +381,46 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	_set_locomotion_animation(false)
 
 
-## Adds the authored monster as presentation only. Its transform deliberately
-## derives from the legacy body height; colliders, reach and spawn placement
-## remain exactly as before.
+## **The authored model's own size, in the body's space, measured rather than
+## assumed.**
+##
+## Everything the burger is physically -- how tall it stands, how wide its
+## colliders are, how the contamination grid is scaled -- used to come from
+## `Vector3(2, 2, 2) * 5`, a cube. The model is not a cube: measured, it is 2.70 m
+## tall, 4.55 m across the bun and 10.0 m from fingertip to fingertip. That one
+## wrong assumption put the colliders at twice the model's depth, left the origin
+## floating 2.3 m above its head, and stretched the stain unwrap by 3.7.
+##
+## Taken off the instantiated node so a new export cannot silently reintroduce it.
+func _visual_bounds() -> AABB:
+	var lo := Vector3.INF
+	var hi := -Vector3.INF
+	for node in _visual_root.find_children("*", "MeshInstance3D", true):
+		var mesh := node as MeshInstance3D
+		var box := mesh.get_aabb()
+		var to_body := _visual_root.transform * _relative_transform(mesh)
+		for corner in 8:
+			var at: Vector3 = to_body * (box.position + box.size * Vector3(
+				float(corner & 1), float((corner >> 1) & 1), float((corner >> 2) & 1)))
+			lo = lo.min(at)
+			hi = hi.max(at)
+	if lo.x > hi.x:
+		return AABB()
+	return AABB(lo, hi - lo)
+
+
+## A descendant's transform relative to `_visual_root`, walked by hand because
+## nothing is in the tree yet when this is asked.
+func _relative_transform(node: Node3D) -> Transform3D:
+	var chain := Transform3D()
+	var at: Node = node
+	while at != null and at != _visual_root:
+		chain = (at as Node3D).transform * chain
+		at = at.get_parent()
+	return chain
+
+
+## Adds the authored monster as presentation only.
 func _build_visual() -> void:
 	_visual_root = HAMBURGER_MONSTER.instantiate() as Node3D
 	if _visual_root == null:
@@ -371,7 +428,8 @@ func _build_visual() -> void:
 		return
 	_visual_root.name = "HamburgerMonsterVisual"
 	_visual_root.scale = MODEL_SCALE
-	_visual_root.position = Vector3(0.0, -height * 0.5, 0.0)
+	# Placed by `build` once it has measured this node; until then it sits at the
+	# body origin so the measurement is of the model and nothing else.
 	# The Blender asset faces -Y, which becomes +Z through glTF's Y-up export;
 	# this half turn aligns its mouth with MayoEnemy's established -Z front.
 	_visual_root.rotation.y = PI
@@ -696,45 +754,66 @@ const FLAT := TAU * 0.25
 ## `kind` is "disc" (a cylinder: centre, radius, height) or "limb" (a capsule:
 ## two ends and a radius). A burger tier needs the cylinder -- a capsule wide
 ## enough to be a bun is also that tall.
+## **The burger as colliders, built to the model that was measured.**
+##
+## Three stacked discs for the bun and its filling, and an arm and a hand either
+## side. Per bone rather than one capsule round the lot: a capsule wide enough to
+## cover the outstretched arms is a fat pill nothing could walk past, and sauce
+## aimed at an arm would land on thin air a metre outside it.
+##
+## Every number is a share of what the model actually is -- the bun's radius and
+## the body's height -- rather than a share of a cube that was never its shape.
+## The discs are as wide as the bun and no wider; they used to be as wide as the
+## *arm span*, which is what made the solid twice as deep as the monster.
 func _bones() -> Array:
-	var sx := MODEL_SCALE_MULTIPLIER
-	var sy := MODEL_SCALE_MULTIPLIER
-	var sz := MODEL_SCALE_MULTIPLIER
-	var sr := MODEL_SCALE_MULTIPLIER
-	var centre_y := -height * 0.5
-	# Capsule radius extends beyond each endpoint. At 5x the old hand endpoint
-	# put that extension below the body's floor, so CharacterBody3D was pushed
-	# upward by the street and the visible model appeared to hover. Clamp each
-	# limb centreline high enough that its full capsule ends exactly at the same
-	# -height/2 floor as the burger.
-	var floor_y := -height * 0.5
-	var arm_radius := 0.17 * sr
-	var hand_radius := 0.20 * sr
-	var arm_low_y := maxf(centre_y + 0.11 * sy, floor_y + arm_radius)
-	var hand_low_y := maxf(centre_y + 0.03 * sy, floor_y + hand_radius)
+	var r := _bun_radius
+	var top := height * 0.5
+	var floor_y := -top
+	var arm_radius := 0.19 * r
+	var hand_radius := 0.22 * r
+	# Each limb's centreline is held high enough that its capsule ends on the
+	# same floor the bun does, rather than poking through it and lifting the
+	# whole body off the street.
+	var arm_y := floor_y + maxf(0.30 * height, arm_radius)
+	var hand_y := floor_y + hand_radius
+	# The arms leave the bun at its rim and end at the fingertips the model
+	# draws, so the solid stops where the silhouette does.
+	var reach := _arm_span
 	return [
-		{"kind": "disc", "centre": Vector3(0.0, centre_y + 0.14 * sy, 0.0),
-			"radius": 0.82 * sr, "height": 0.18 * sy},
-		{"kind": "disc", "centre": Vector3(0.0, centre_y + 0.27 * sy, 0.0),
-			"radius": MODEL_BODY_RADIUS, "height": 0.13 * sy},
-		{"kind": "disc", "centre": Vector3(0.0, centre_y + 0.38 * sy, 0.0),
-			"radius": 0.84 * sr, "height": 0.16 * sy},
-		{"kind": "limb", "a": Vector3(-0.29 * sx, centre_y + 0.22 * sy, 0.17 * sz),
-			"b": Vector3(-0.81 * sx, arm_low_y, -0.18 * sz), "radius": arm_radius},
-		{"kind": "limb", "a": Vector3(0.29 * sx, centre_y + 0.22 * sy, 0.17 * sz),
-			"b": Vector3(0.81 * sx, arm_low_y, -0.18 * sz), "radius": arm_radius},
-		{"kind": "limb", "a": Vector3(-0.81 * sx, hand_low_y, -0.18 * sz),
-			"b": Vector3(-0.98 * sx, hand_low_y, -0.34 * sz), "radius": hand_radius},
-		{"kind": "limb", "a": Vector3(0.81 * sx, hand_low_y, -0.18 * sz),
-			"b": Vector3(0.98 * sx, hand_low_y, -0.34 * sz), "radius": hand_radius},
+		{"kind": "disc", "centre": Vector3(0.0, floor_y + 0.18 * height, 0.0),
+			"radius": r * 0.91, "height": 0.36 * height},
+		{"kind": "disc", "centre": Vector3(0.0, floor_y + 0.47 * height, 0.0),
+			"radius": r, "height": 0.26 * height},
+		{"kind": "disc", "centre": Vector3(0.0, floor_y + 0.80 * height, 0.0),
+			"radius": r * 0.93, "height": 0.40 * height},
+		{"kind": "limb", "a": Vector3(-r * 0.55, floor_y + 0.52 * height, 0.0),
+			"b": Vector3(-(reach - hand_radius * 2.0), arm_y, 0.0), "radius": arm_radius},
+		{"kind": "limb", "a": Vector3(r * 0.55, floor_y + 0.52 * height, 0.0),
+			"b": Vector3(reach - hand_radius * 2.0, arm_y, 0.0), "radius": arm_radius},
+		{"kind": "limb", "a": Vector3(-(reach - hand_radius * 2.0), hand_y, 0.0),
+			"b": Vector3(-(reach - hand_radius), hand_y, -hand_radius), "radius": hand_radius},
+		{"kind": "limb", "a": Vector3(reach - hand_radius * 2.0, hand_y, 0.0),
+			"b": Vector3(reach - hand_radius, hand_y, -hand_radius), "radius": hand_radius},
 	]
 
 
 ## The half-width the unwrap wraps the body around, and what `contact_reach` is
 ## measured beyond: the widest the burger gets, which is the patty, not a
 ## shoulder and not the arms.
+## **The arm span, not the bun.**
+##
+## The unwrap wraps a cylinder round the body and maps a hit by its angle about
+## the axis -- so the cylinder has to be wide enough to contain every point that
+## can be hit, and the widest this monster gets is its fingertips. Handed the
+## bun's radius instead, a shot landing on an arm sits 3.55 m out on a 2.27 m
+## cylinder, falls outside the grid, and paints nothing at all: measured, hits
+## from either side vanished while hits to front and back worked.
+##
+## The cost is that the bun's own stains are drawn at the arm span's scale rather
+## than their own. One cylinder cannot be honest about a body with arms, and
+## losing the sauce entirely is the worse of the two.
 func _body_radius() -> float:
-	return MODEL_BODY_RADIUS
+	return _arm_span
 
 
 ## Every bone's capsule baked into one mesh, in the body's space. Baked rather

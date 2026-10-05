@@ -45,9 +45,23 @@ func _run() -> void:
 	var station: Vector3 = StreetMap.VENDING_SIZE
 	print("refill station %.2v -> monster %.2f m wide, %.2f m tall (%.1fx tall)" % [
 		station, enemy.radius * 2.0, enemy.height, enemy.height / station.y])
-	_check(is_equal_approx(enemy.height, MayoEnemy.MODEL_TARGET_SIZE.y),
-		"the enemy is %.2f m tall, not the requested 5x target %.2f m" % [
-			enemy.height, MayoEnemy.MODEL_TARGET_SIZE.y])
+	# **As tall as the model, not as tall as a number.** This asserted a 5x cube
+	# target of 10 m while the authored monster is 2.70 m, which left the body
+	# origin floating 2.3 m above its own head and the stain unwrap stretched by
+	# 3.7. The size now comes off the model, so the check is that it still does.
+	var model := AABB()
+	var model_started := false
+	for node in enemy._visual_root.find_children("*", "MeshInstance3D", true, false):
+		var mesh_node := node as MeshInstance3D
+		if mesh_node.mesh == null:
+			continue
+		var into: Transform3D = enemy.global_transform.affine_inverse() * mesh_node.global_transform
+		var part: AABB = into * mesh_node.mesh.get_aabb()
+		model = model.merge(part) if model_started else part
+		model_started = true
+	_check(model_started and absf(enemy.height - model.size.y) < 0.02,
+		"the enemy stands %.2f m against a model %.2f m tall" % [
+			enemy.height, model.size.y])
 
 	# Everything below is measured in the **body's own space**. In world space
 	# an axis-aligned box grows with the body's yaw, so a collider that fits
@@ -86,12 +100,31 @@ func _run() -> void:
 			"the monster is %.2f m across axis %d but solid over only %.2f m of it"
 				% [drawn.size[axis], axis, solid.size[axis]])
 
-	# Round, not flat: the old figure was a body and much thinner front to back
-	# than wide. A burger is a stack of discs, and the collider has to be too,
-	# or one side of it goes back to being air.
-	_check(absf(solid.size.x - solid.size.z) < solid.size.x * 0.35,
-		"the monster is solid over %.2f m across and %.2f m deep, which is not a burger"
-			% [solid.size.x, solid.size.z])
+	# **The bun is round; the arms are not the bun.**
+	#
+	# This compared the whole solid's width against its depth, which was true of
+	# the mockup -- a burger on its own is a stack of discs -- and is false of the
+	# authored crawler, whose arms splay out to twice the bun's width. Measured
+	# over everything it demanded a monster 10 m deep to match 10 m of arm span,
+	# and that demand is exactly what made the body cylinders twice as deep as the
+	# model. Asked of the body shapes alone, it still says what it meant to say.
+	var bun := AABB()
+	var first := true
+	for shape in shapes:
+		if not String(shape.name).ends_with("Bun") and String(shape.name) != "Fillings":
+			continue
+		var cs := shape as CollisionShape3D
+		var box: AABB = cs.transform * cs.shape.get_debug_mesh().get_aabb()
+		bun = box if first else bun.merge(box)
+		first = false
+	_check(not first, "no bun shapes were found, so this tests nothing")
+	_check(absf(bun.size.x - bun.size.z) < bun.size.x * 0.1,
+		"the bun is solid over %.2f m across and %.2f m deep, which is not a burger"
+			% [bun.size.x, bun.size.z])
+	# And the arms stay inside the silhouette they are drawn at.
+	_check(solid.size.x <= drawn.size.x * 1.08,
+		"the monster is solid over %.2f m across a %.2f m silhouette"
+			% [solid.size.x, drawn.size.x])
 
 	# And point by point: the centre of every measured disc/capsule has to be
 	# solid. The envelope above can be the right size and still be hollow where
