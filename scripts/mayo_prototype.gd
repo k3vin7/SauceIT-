@@ -337,6 +337,19 @@ class MayoSpeck:
 ## Draws every enemy's sight and give-up ranges on the ground. **`F3` toggles
 ## it.** A development aid: the ranges are invisible otherwise, so tuning them
 ## is guesswork about why a body did or did not set off.
+## **Marks where sauce hit a monster, and where the chart sends it.**
+##
+## Two balls per hit, for a few seconds. The first sits exactly where the ray met
+## the collider -- where the player aimed. The second is that same splat read back
+## out of the mask and turned into a point again, so it sits where the chart
+## believes the stain is. Together they separate faults that look alike from
+## outside: the ray landing somewhere other than the skin, the chart sending it
+## somewhere else again, and the shader drawing a faithful mask in the wrong
+## place. If the two balls agree and the stain is still wrong, the fault is after
+## both of them.
+@export var debug_show_enemy_hits := false
+@export_range(0.5, 20.0, 0.5, "suffix:s") var debug_hit_marker_seconds := 5.0
+
 @export var show_enemy_sight := false:
 	set(value):
 		show_enemy_sight = value
@@ -3470,10 +3483,47 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 				elif enemy.is_flinching():
 					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds)
 		var enemy_cell := enemy.paint_mayo(hit_position, hit_normal)
+		_mark_enemy_hit(enemy, hit_position, enemy_cell)
 		if enemy_cell.x < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
 			SPLAT_ENEMY, index, enemy_cell.x, enemy_cell.y]))
+
+
+## Drops the two debug balls for one hit on a monster. Does nothing unless
+## `debug_show_enemy_hits` is on, and nothing at all to the simulation: the
+## markers are children of the world with no collider and no physics.
+func _mark_enemy_hit(enemy: MayoEnemy, at: Vector3, cell: Vector2i) -> void:
+	if not debug_show_enemy_hits:
+		return
+	_drop_marker(at, Color(0.2, 0.9, 1.0))
+	if cell.x < 0 or enemy.contamination == null:
+		return
+	var charted: Vector3 = enemy.contamination.debug_cell_to_world(cell)
+	if charted != Vector3.INF:
+		_drop_marker(charted, Color(1.0, 0.2, 0.8))
+
+
+func _drop_marker(at: Vector3, tint: Color) -> void:
+	var ball := MeshInstance3D.new()
+	var sphere := SphereMesh.new()
+	sphere.radius = 0.12
+	sphere.height = 0.24
+	sphere.radial_segments = 8
+	sphere.rings = 4
+	ball.mesh = sphere
+	var material := StandardMaterial3D.new()
+	material.albedo_color = tint
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	# Drawn through whatever is in front of it: a marker inside the monster it
+	# is marking would otherwise be the one thing you cannot see.
+	material.no_depth_test = true
+	material.render_priority = 2
+	ball.material_override = material
+	ball.global_position = at
+	add_child(ball)
+	ball.global_position = at
+	get_tree().create_timer(debug_hit_marker_seconds).timeout.connect(ball.queue_free)
 
 
 ## Replays a batch of splat centre cells from the server. `paint_cell` depends

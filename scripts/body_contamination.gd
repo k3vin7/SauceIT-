@@ -176,6 +176,30 @@ func debug_to_grid(world_position: Vector3, world_normal: Vector3) -> Vector2:
 	return _to_grid(world_position, world_normal)
 
 
+## **The chart run backwards: a painted cell turned back into a world point.**
+##
+## Only for the debug markers. `_to_grid` throws the radius away on the side band
+## and the height away on a cap, so this puts back the one the chart assumes --
+## the body's own radius, and the band's own top or bottom. A marker that lands
+## where the sauce was aimed says the chart is faithful; one that lands somewhere
+## else says by how much and on which axis.
+func debug_cell_to_world(cell: Vector2i) -> Vector3:
+	if cell.x < 0 or cell.y < 0:
+		return Vector3.INF
+	var local := Vector2(
+		(float(cell.x) + 0.5) * grid.cell_size - grid.extent.x * 0.5,
+		(float(cell.y) + 0.5) * grid.cell_size - grid.extent.y * 0.5)
+	var angle := local.x / maxf(radius, 0.0001)
+	var about := Vector3(sin(angle) * radius, local.y, cos(angle) * radius)
+	var band := height * 0.5
+	if cap_depth > 0.0 and absf(local.y) > band:
+		# A cap: the height the side band threw away comes back, and the rim
+		# distance takes the place of the height.
+		var rim := absf(local.y) - band
+		about = Vector3(sin(angle) * rim, signf(local.y) * band, cos(angle) * rim)
+	return _body.to_global(about + axis_offset)
+
+
 func _to_grid(world_position: Vector3, world_normal := Vector3.ZERO) -> Vector2:
 	var local := _body.to_local(world_position)
 	var about := local - axis_offset
