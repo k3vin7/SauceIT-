@@ -205,6 +205,13 @@ var kind := EnemyKind.BRUISER
 
 ## Legacy inspector flag retained for scene compatibility. The Tripo crawler's
 ## supplied Crawl action owns its hand plants, so no modifier is attached.
+## **Off, and `probe_enemy` holds it off.**
+##
+## The authored Crawl owns this monster's hands. The procedural modifier was
+## written for the mockup rig and does nothing on this one: the probe measures a
+## planted hand and a swinging hand moving the same 0.000 m a frame, and the
+## plant target out of the arms' reach without a support crouch they do not get.
+## Turning it on layers a modifier that writes nothing over a clip that works.
 @export var procedural_gait := false
 
 var health := 240.0
@@ -725,7 +732,24 @@ func _advance_pending_attack(delta: float) -> MayoPlayer:
 	return victim if gap <= reach else null
 
 
+## **A corpse stops being something to walk into.**
+##
+## Nothing moved a dead body off the living layer, so a fallen burger -- ten
+## metres of it -- stayed solid in the street for the rest of the session, and the
+## party had to walk round every monster they had already beaten.
+##
+## Moved rather than switched off: a ray is cast against every layer, so the
+## strand still finds a corpse and sauce still lands on it. Only the bodies that
+## walk, which collide against the living layer alone, stop seeing it.
+const CORPSE_LAYER := 2
+
+
+func _lay_to_rest() -> void:
+	collision_layer = CORPSE_LAYER
+
+
 func _play_death_animation() -> void:
+	_lay_to_rest()
 	_attack_animation_active = false
 	_attack_lock_left = 0.0
 	_attack_target = null
