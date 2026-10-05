@@ -93,6 +93,14 @@ extends SkeletonModifier3D
 ## 0 standing still, 1 walking. Faded rather than switched: cut at the moment a
 ## monster stops, it freezes mid-step with one arm in the air.
 var strength := 0.0
+## **Standing still with both palms down, 0 to 1.**
+##
+## Blended into the hand targets rather than written onto `phase`: moving the
+## cycle to a double-support point and back would make the hands jump the moment
+## the body set off again, because `phase` is derived from ground covered and
+## would snap straight back to it. The cycle keeps running underneath; this only
+## decides how much of it reaches the hands.
+var stand := 0.0
 
 ## Cycles. The whole number is strides taken, the fraction is where in the
 ## current one the monster is.
@@ -227,6 +235,12 @@ func hand_target(side: int, at_phase: float, scale: float) -> Vector3:
 	return Vector3(float(_shoulder_across[side]) * track_width, lift, forward)
 
 
+## Where a hand rests while the body is standing: planted, directly out from its
+## own shoulder, at the same height it plants at while walking.
+func standing_target(side: int) -> Vector3:
+	return Vector3(float(_shoulder_across[side]) * track_width, plant_height(), 0.0)
+
+
 ## The stride the monster is really taking: what was asked for, or what the
 ## arms can span, whichever is shorter. The enemy turns the gait by this, so a
 ## clamped stride shortens the steps rather than making the hands skate.
@@ -353,6 +367,12 @@ func _apply() -> void:
 		_stretch_bone(skeleton, _lower[side], stretch)
 		var shoulder_pose := skeleton.get_bone_global_pose(_upper[side])
 		var target := hand_target(side, phase, scale)
+		if stand > 0.0:
+			# Both palms on the floor, level with the shoulders. A body that has
+			# arrived used to let the modifier fade out, which handed the arms
+			# back to the clip and stood it up with both hands in the air -- the
+			# pause between drags.
+			target = target.lerp(standing_target(side), stand)
 		_reach(skeleton, side, shoulder_pose, target, stretch)
 
 

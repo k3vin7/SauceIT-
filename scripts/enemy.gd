@@ -1156,8 +1156,15 @@ func _advance_gait(step: Vector3, walking: bool, delta: float) -> void:
 		_fry_visual.set_motion(_ground_covered, walking and _attack_lock_left <= 0.0)
 	if _gait != null:
 		_gait.phase = _ground_covered / maxf(_gait.stride_in_use(), 0.01)
-		_gait.strength = move_toward(_gait.strength, 1.0 if walking else 0.0,
-			delta / maxf(gait_settle_seconds, 0.01))
+		# **The arms are given back to the clip only for an attack.** A body that
+		# has merely arrived keeps them: it stands with both palms down instead of
+		# fading out and letting the authored pose stand it up with its hands in
+		# the air, which was the pause between drags. The slam is the one thing
+		# that has to own the arms, so that is the one thing that takes them.
+		var swinging := _attack_animation_active or _attack_lock_left > 0.0
+		var settle := delta / maxf(gait_settle_seconds, 0.01)
+		_gait.strength = move_toward(_gait.strength, 0.0 if swinging else 1.0, settle)
+		_gait.stand = move_toward(_gait.stand, 0.0 if walking else 1.0, settle)
 	if _animation_player != null and not _attack_animation_active and is_alive():
 		# The clip keeps pace with the ground too: at a standstill it idles at
 		# its own rate, and walking it runs at the share of full speed the
