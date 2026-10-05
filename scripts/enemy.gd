@@ -53,6 +53,11 @@ var solo_health := 240.0
 ## How fast it swings round to face where you have moved to. It is not a turret:
 ## running past one should leave it briefly pointed at where you were.
 @export_range(0.5, 20.0, 0.1, "suffix:rad/s") var turn_speed := 2.4
+## And how fast while an attack has its hands committed. Slower on purpose: a
+## body that tracked a circling player at the walking rate would spin on the spot
+## mid-swing, which reads as the floor turning rather than the monster following.
+## Fast enough to punish standing still, slow enough that stepping round it works.
+@export_range(0.0, 20.0, 0.1, "suffix:rad/s") var attack_turn_speed := 0.9
 ## How often the route is worked out again. Every frame is waste -- a route is
 ## still good while the player is in the same part of the street -- and never is
 ## a chase that follows you to where you used to be.
@@ -1307,19 +1312,41 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		var direction := flat.normalized()
 		velocity.x = direction.x * pace
 		velocity.z = direction.z * pace
-		# Turned toward the player rather than snapped: a snap makes it read as
-		# a camera-facing sprite, and the stain on its back is worth seeing.
-		# A body's front is its -z, so facing a direction is atan2 of its
-		# negation -- the same form `debug_aim_at` uses to point the player at
-		# something. Facing `atan2(direction.x, direction.z)` instead turns its
-		# *back* to the target: it walks at you backwards, and then topples onto
-		# that back, which looks for all the world like falling forwards.
-		facing_yaw = rotate_toward(facing_yaw,
-			atan2(-direction.x, -direction.z), turn_speed * delta)
-		_apply_pose()
 	else:
 		velocity.x = 0.0
 		velocity.z = 0.0
+
+	# **Where it faces is not where it is going.**
+	#
+	# This used to live inside the walking branch, and `flat` is zero for the
+	# whole of an attack -- a second and a half with the lock on. So a monster
+	# that stopped to swing kept the heading it last walked at, and a player who
+	# stepped round it watched both hands come down on the ground beside them.
+	#
+	# It turns toward whatever it is chasing whether it is walking or not, and
+	# where it is walking is the direction it chose to walk, which during a
+	# chase is the route rather than the straight line -- a body rounding a
+	# corner quite correctly faces the corner.
+	#
+	# Turned rather than snapped: a snap makes it read as a camera-facing sprite,
+	# and the stain on its back is worth seeing. A body's front is its -z, so
+	# facing a direction is atan2 of its negation -- the same form `debug_aim_at`
+	# uses. Facing `atan2(direction.x, direction.z)` instead turns its *back* to
+	# the target: it walks at you backwards, then topples onto that back, which
+	# looks for all the world like falling forwards.
+	var toward := flat
+	if toward.length_squared() <= 0.000001 and target != null:
+		toward = Vector3(target.global_position.x - global_position.x, 0.0,
+			target.global_position.z - global_position.z)
+	if toward.length_squared() > 0.000001:
+		var heading := toward.normalized()
+		# Slower while the hands are committed. At the walking rate a body
+		# swinging at someone who circles it spins on the spot, which reads as
+		# the floor turning rather than the monster tracking.
+		var rate := attack_turn_speed if _attack_lock_left > 0.0 else turn_speed
+		facing_yaw = rotate_toward(facing_yaw,
+			atan2(-heading.x, -heading.z), rate * delta)
+		_apply_pose()
 
 	# The shove rides on top of the walk rather than replacing it, so a body
 	# being hosed head-on is pushed backwards while still trying to come at you
