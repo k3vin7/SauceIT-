@@ -9,7 +9,7 @@ extends CharacterBody3D
 ## the local keyboard, and the clients' copies are set from the network with
 ## `apply_network_state` rather than simulated.
 
-enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
+enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP, DEAD }
 
 ## Shared by player construction and enemies whose authored size is expressed
 ## as a multiple of the player's actual gameplay body.
@@ -43,6 +43,9 @@ const CAPSULE_HEIGHT := 2.56
 ## Beat spent flat on the floor between hitting it and pushing back up.
 @export_range(0.0, 3.0, 0.01, "suffix:s") var down_duration := 0.5
 @export_range(0.05, 3.0, 0.01, "suffix:s") var stand_up_duration := 0.5
+## The supplied death clip is 48 frames at 24 fps. Keep the body in the world
+## for that full performance before the authority respawns it.
+@export_range(0.1, 5.0, 0.05, "suffix:s") var death_duration := 2.0
 ## How hard the slide scrubs off speed once the player goes down. The player
 ## keeps the speed they slipped at and carries it forward, so at run speed this
 ## is what sets how far they skid.
@@ -115,6 +118,29 @@ func take_damage(amount: float) -> bool:
 
 func heal_to_full() -> void:
 	health = max_health
+
+
+func begin_death() -> void:
+	state = State.DEAD
+	_state_timer = 0.0
+	velocity = Vector3.ZERO
+	_pending_enemy_impact = Vector3.ZERO
+
+
+func finish_respawn(at: Vector3) -> void:
+	global_position = at
+	velocity = Vector3.ZERO
+	health = max_health
+	state = State.NORMAL
+	_state_timer = 0.0
+	fall_direction = 1.0
+	_recovery_timer = 0.0
+	wipe_timer = 0.0
+	_jump_was_held = false
+
+
+func state_time() -> float:
+	return _state_timer
 
 
 func health_fraction() -> float:
@@ -327,12 +353,16 @@ func fall_tilt() -> float:
 			return 1.0
 		State.STANDING_UP:
 			return 1.0 - clampf(_state_timer / maxf(stand_up_duration, 0.0001), 0.0, 1.0)
+		State.DEAD:
+			return 0.0
 		_:
 			return 0.0
 
 
 func _advance_fall(delta: float) -> void:
 	_state_timer += delta
+	if state == State.DEAD:
+		return
 	if state == State.STUMBLE and _state_timer >= stumble_duration:
 		state = State.FALLING
 		_state_timer = 0.0
