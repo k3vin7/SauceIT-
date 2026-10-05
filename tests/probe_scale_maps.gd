@@ -75,8 +75,9 @@ func _check_scene(path: String, expected_scale: float) -> void:
 		path, dummies.size()])
 	for node in dummies:
 		var dummy := node as MayoEnemy
-		_check(dummy != null and is_equal_approx(dummy.height, 4.1),
-			"%s has a dummy that is not the 4.1 m enemy body" % path)
+		var crawler_height := MayoEnemy.MODEL_TARGET_SIZE.y
+		_check(dummy != null and is_equal_approx(dummy.height, crawler_height),
+			"%s has a dummy that is not the scaled crawler body" % path)
 		_check(not dummy.authority and dummy.get_child_count() > 0,
 			"%s dummy is active or has no collision geometry" % path)
 

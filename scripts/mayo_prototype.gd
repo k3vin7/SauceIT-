@@ -1838,12 +1838,15 @@ func spawn_position_for(slot: int) -> Vector3:
 	# y is half the capsule's height, so it stands on the floor rather than in it.
 	# One per player the session holds. Far enough apart that nobody starts
 	# inside anyone else -- the capsules are 1.28 m across -- and clear of the
-	# three walls, which a spawn inside leaves the player stuck.
+	# three walls, which a spawn inside leaves the player stuck. The formation
+	# sits toward Kalda's south end so the local player starts behind the course
+	# instead of already standing well into its first approach.
+	const START_BACK_OFFSET := 8.0
 	const SPAWNS := [
-		Vector3(0.0, 1.28, 1.55),
-		Vector3(-2.2, 1.28, 4.2),
-		Vector3(2.6, 1.28, 4.6),
-		Vector3(0.0, 1.28, 6.4),
+		Vector3(0.0, 1.28, 1.55 + START_BACK_OFFSET),
+		Vector3(-2.2, 1.28, 4.2 + START_BACK_OFFSET),
+		Vector3(2.6, 1.28, 4.6 + START_BACK_OFFSET),
+		Vector3(0.0, 1.28, 6.4 + START_BACK_OFFSET),
 	]
 	return SPAWNS[slot % SPAWNS.size()]
 

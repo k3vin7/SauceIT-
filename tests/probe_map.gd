@@ -456,6 +456,8 @@ func _run() -> void:
 	for slot in 4:
 		var spawn: Vector3 = scene.spawn_position_for(slot)
 		_check(floor_set.has(_cell_at(spawn)), "spawn %d at %.1v is not on the street" % [slot, spawn])
+	_check(scene.spawn_position_for(0).z > StreetMap.CELL * 2.0,
+		"the local spawn is still too far forward on Kalda: %.2f" % scene.spawn_position_for(0).z)
 	print("spawns: 4 of 4 on the street, at %.1v .. %.1v" % [
 		scene.spawn_position_for(0), scene.spawn_position_for(3)])
 
