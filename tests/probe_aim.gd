@@ -72,11 +72,19 @@ func _run() -> void:
 	await physics_frame
 	var eye: Vector3 = scene._player.global_position + Vector3.UP * scene.eye_height
 	_check(scene._camera.global_position.distance_to(eye) < 0.001, "first-person camera is not at eye height")
-	_check(not scene._body_mesh.visible, "player body is visible in first person")
+	_check(not scene._local.player_visual.visible, "player body is visible in first person")
 	scene.set_first_person(false)
 	await physics_frame
 	var offset: Vector3 = scene._camera.global_position - eye
-	_check(scene._body_mesh.visible, "player body is hidden in third person")
+	_check(scene._local.player_visual.visible, "player body is hidden in third person")
+	_check(scene._local.player_animation != null, "Character_1 has no AnimationPlayer")
+	for required in [scene._local.walk_animation, scene._local.run_animation,
+			scene._local.death_animation]:
+		_check(not required.is_empty(), "Character_1 is missing a gameplay animation")
+	_check(scene._local.character_gauge != null, "the held sauce container has no live gauge")
+	_check(scene._local.character_muzzle != null, "the held sauce container has no muzzle socket")
+	_check(scene._muzzle == scene._local.character_muzzle,
+		"third person still fires from the hidden viewmodel bottle")
 	_check(absf(offset.z - scene.shoulder_distance) < 0.001, "shoulder camera is not behind the player")
 	_check(absf(offset.x - scene.shoulder_offset_right) < 0.001, "shoulder camera has no lateral offset")
 	# Against the player's own size rather than a fixed number of metres, or

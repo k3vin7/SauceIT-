@@ -6,7 +6,7 @@ Godot 4 3D prototype for validating one continuous viscous mayonnaise strand, pe
 
 1. Open this directory in Godot 4.4 or newer.
 2. Run the project (`F6`/`F5`). The main scene is already configured.
-3. Move with `WASD`, hold `Shift` to run, `Space` to jump, aim with the mouse, and hold the left mouse button to fire. `R` wipes sauce off your screen. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
+3. Move with `WASD`, hold `Shift` to run, `Space` to jump, aim with the mouse, and hold the left mouse button to fire. `R` wipes sauce off your screen, and `C` switches between the two playable characters. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
 4. `E` at one of the blue stalls fills the sauce bottle. Fire runs about a second on a full bottle, then pauses half a second and goes again on its own if you are still holding; each squirt is shorter than the last, so the stalls are where you go when they stop reaching.
 5. Spray the floor, then run across your own mayo. Running over a painted cell knocks you down; walking over it does not.
 6. `F2` opens the LAN panel; without it the game is the single-player one it has always been.
@@ -427,6 +427,7 @@ godot --headless --path . --script res://tests/probe_network.gd                #
 godot --headless --path . --script res://tests/probe_panel.gd                  # the F2 panel is on screen and centred
 godot --headless --path . --script res://tests/probe_harness.gd                # the two-player harness swaps controls correctly
 godot --headless --path . --script res://tests/probe_body.gd                   # body stains, glasses, and the wipe
+godot --headless --path . --script res://tests/probe_character_switch.gd       # both player models, animation sets, C-switch presentation
 ```
 
 `probe_determinism.gd` prints `MAYO_GRID_HASH`; run it twice and compare, since a difference between two processes is exactly what would break the grid sync.

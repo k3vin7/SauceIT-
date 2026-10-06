@@ -104,7 +104,8 @@ const BLOCK_REPLIES_PER_SECOND := 1.0
 const MAX_CLIENTS := 3
 ## Floats per player in a state packet: position xyz, yaw, velocity xz, firing,
 ## aim pitch, fall state, fall timer, fall direction, wipe timer, health, sauce
-## level, nozzle state. The peer ids travel alongside as ints -- a peer id is a
+## level, nozzle state, character index. The peer ids travel alongside as ints
+## -- a peer id is a
 ## full 32-bit random number and does not survive a round trip through a 32-bit
 ## float.
 ##
@@ -114,12 +115,12 @@ const MAX_CLIENTS := 3
 ## a different fight. The host tosses it and sends the answer; the level rides
 ## along rather than being derived, so nobody has to guess which band a bottle
 ## is in either.
-const STATE_STRIDE := 15
-## What that costs the host. One player is 15 floats plus a 4-byte id, so 64
-## bytes; a four-player session is 256 bytes of state a frame, and the host sends
+const STATE_STRIDE := 16
+## What that costs the host. One player is 16 floats plus a 4-byte id, so 68
+## bytes; a four-player session is 272 bytes of state a frame, and the host sends
 ## it to each of the three guests at the physics rate:
 ##
-##     4 x 64 x 3 guests x 60 Hz = 46.1 kB/s of state
+##     4 x 68 x 3 guests x 60 Hz = 49.0 kB/s of state
 ##
 ## The splats ride alongside on the reliable channel, 16 bytes each. Four players
 ## all hosing the floor land about 750 points a second between them:
@@ -817,14 +818,14 @@ func _within_budget(sender: int) -> bool:
 
 
 func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
-		yaw: float, pitch: float) -> void:
+		yaw: float, pitch: float, character_index := 0) -> void:
 	if not _online or multiplayer.is_server():
 		return
 	# The handshake takes a few frames, and the keys sent during it have nowhere
 	# to go yet.
 	if _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
-	_submit_input.rpc_id(1, move, run, jump, firing, yaw, pitch)
+	_submit_input.rpc_id(1, move, run, jump, firing, yaw, pitch, character_index)
 
 
 ## The server applies the last input it heard from each client before running
@@ -870,6 +871,7 @@ func apply_client_input() -> void:
 			and not shooter.player.is_wiping()
 		shooter.aim_yaw = packet[3]
 		shooter.aim_pitch = packet[4]
+		world.set_character_variant(id, packet[6])
 
 
 func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
@@ -885,13 +887,13 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			velocity.x, velocity.z,
 			1.0 if shooter.firing else 0.0, shooter.aim_pitch,
 			float(state[3]), state[4], state[5], state[6], state[7],
-			shooter.sauce, float(shooter.nozzle)]))
+			shooter.sauce, float(shooter.nozzle), float(shooter.character_index)]))
 	return data
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
 func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
-		yaw: float, pitch: float) -> void:
+		yaw: float, pitch: float, character_index := 0) -> void:
 	if not multiplayer.is_server():
 		return
 	if not _within_budget(multiplayer.get_remote_sender_id()):
@@ -903,7 +905,8 @@ func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
 		return
 	_client_input[multiplayer.get_remote_sender_id()] = [
 		clamp_direction(move), run, firing, wrap_angle(yaw),
-		clamp_angle(pitch, deg_to_rad(world.pitch_limit_degrees)), jump]
+		clamp_angle(pitch, deg_to_rad(world.pitch_limit_degrees)), jump,
+		clampi(character_index, 0, world.PLAYER_CHARACTERS.size() - 1)]
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
@@ -927,6 +930,8 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		# catch at different moments from the screen next to it.
 		shooter.sauce = clampf(data[index + 13], 0.0, 1.0)
 		shooter.nozzle = clampi(int(round(data[index + 14])), 0, 3)
+		world.set_character_variant(ids[slot],
+			clampi(int(round(data[index + 15])), 0, world.PLAYER_CHARACTERS.size() - 1))
 		# The local player's own aim is never taken back from the server: it is
 		# already ahead of this packet.
 		if not shooter.is_local:

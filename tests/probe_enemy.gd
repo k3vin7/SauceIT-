@@ -526,10 +526,16 @@ func _run() -> void:
 	print("standing in it the whole time would take %.1f s to empty the bar" % to_kill)
 	_check(to_kill > 8.0, "the enemy empties a full bar in %.1f s, which is not weak" % to_kill)
 
-	# --- an emptied bar sends the player back to the start ---
+	# --- an emptied bar plays the supplied death, then respawns clean ---
 	player.contamination.paint_mayo(player.global_position + Vector3(0.0, 0.2, 0.6), Vector3.BACK)
 	_check(player.contamination.painted_cell_count() > 0, "the player could not be dirtied")
 	scene._damage_player(player, player.max_health)
+	_check(player.state == MayoPlayer.State.DEAD, "an empty bar skipped the death state")
+	await process_frame
+	_check(scene._local.player_animation.current_animation == scene._local.death_animation,
+		"the supplied death animation did not start")
+	for _frame in int(ceil(player.death_duration * 60.0)) + 4:
+		await physics_frame
 	var spawn: Vector3 = scene.spawn_position_for(0)
 	print("emptied: back at %.1v (spawn %.1v), health %.0f, %d cells of sauce left" % [
 		player.global_position, spawn, player.health,

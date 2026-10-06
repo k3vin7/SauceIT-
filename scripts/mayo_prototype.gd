@@ -12,6 +12,18 @@ const VisorOverlayScript := preload("res://scripts/visor_overlay.gd")
 const HealthHudScript := preload("res://scripts/health_hud.gd")
 const MinimapScript := preload("res://scripts/minimap.gd")
 const KeyLegendScript := preload("res://scripts/key_legend.gd")
+const PLAYER_CHARACTERS: Array[PackedScene] = [
+	preload("res://assets/players/Character_1/Character_1.glb"),
+	preload("res://assets/players/Character_2/Character_2.glb"),
+]
+const PLAYER_CHARACTER_NAMES := ["Character_1", "Character_2"]
+## Authored mesh bounds in Blender metres. Gameplay stays on the same 2.56 m
+## capsule whichever presentation is selected.
+const PLAYER_CHARACTER_SOURCE_HEIGHTS := [8.94, 9.513729]
+const PLAYER_CHARACTER_ANIMATIONS := [
+	["Weapon_Walk", "Weapon_Run", "Weapon_Death"],
+	["Walk_WeaponHold", "Run_WeaponHold", "Death_WeaponHold"],
+]
 const StallRoofScript := preload("res://scripts/stall_roof.gd")
 const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 	preload("res://assets/food_booths/food_booth_s1.glb"),
@@ -110,9 +122,25 @@ class Shooter:
 	var is_local := false
 	var player: MayoPlayer
 	var body_mesh: MeshInstance3D
+	var player_visual: Node3D
+	var player_animation: AnimationPlayer
+	var player_animation_name := StringName()
+	var character_index := 0
+	## Kept separately for the local player so an older server state arriving
+	## between the C press and its input packet cannot undo the requested swap.
+	var requested_character_index := 0
+	var walk_animation := StringName()
+	var run_animation := StringName()
+	var death_animation := StringName()
+	var character_muzzle: Node3D
+	var viewmodel_muzzle: Marker3D
+	var character_gauge: MeshInstance3D
+	var character_gauge_scale := Vector3.ONE
+	var character_gauge_material: StandardMaterial3D
+	var spawn_slot := 0
 	var aim_pivot: Node3D
 	var weapon: Node3D
-	var muzzle: Marker3D
+	var muzzle: Node3D
 	var points: Array[MayoPoint] = []
 	var emit_distance := 0.0
 	var attack_direction := Vector3.FORWARD
@@ -862,7 +890,7 @@ var _rng: RandomNumberGenerator:
 	get: return _local.rng
 var _player: MayoPlayer:
 	get: return _local.player
-var _muzzle: Marker3D:
+var _muzzle: Node3D:
 	get: return _local.muzzle
 var _aim_pivot: Node3D:
 	get: return _local.aim_pivot
@@ -976,6 +1004,7 @@ func _physics_process(delta: float) -> void:
 	for shooter in _shooters.values():
 		_update_aim(shooter)
 	if _is_authority():
+		_advance_player_respawns()
 		for shooter in _shooters.values():
 			_update_slip(shooter)
 		# After the slip test and before the strand: an enemy that shoved a
@@ -1444,7 +1473,8 @@ func _read_local_input() -> void:
 		move = Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
 		run = Input.is_action_pressed("run")
 		jump = Input.is_action_pressed("jump")
-	_net.send_input(move, run, jump, _local.firing, _local.aim_yaw, _local.aim_pitch)
+	_net.send_input(move, run, jump, _local.firing, _local.aim_yaw, _local.aim_pitch,
+		_local.requested_character_index)
 
 
 func _fire_held() -> bool:
@@ -1500,6 +1530,7 @@ func _process(_delta: float) -> void:
 	_update_deep_readout(_delta)
 	for shooter in _shooters.values():
 		_update_fallen_body(shooter)
+		_update_player_animation(shooter)
 		_update_visor(shooter)
 		_update_sauce_look(shooter)
 
@@ -1615,6 +1646,7 @@ func _place_viewmodel() -> void:
 ## level on the bottle is that other people can read it.
 func _update_sauce_look(shooter: Shooter) -> void:
 	_update_bottle_gauge(shooter)
+	_update_character_gauge(shooter)
 
 
 func _update_visor(shooter: Shooter) -> void:
@@ -1635,6 +1667,16 @@ func _update_fallen_body(shooter: Shooter) -> void:
 	# never overlap, since fall_tilt is 0 while stumbling.
 	shooter.body_mesh.rotation.z = deg_to_rad(fall_body_roll_degrees) * tilt * shooter.player.fall_direction \
 		+ deg_to_rad(stumble_body_roll_degrees) * shooter.player.stumble_wobble()
+	if shooter.player_visual == null or not is_instance_valid(shooter.player_visual):
+		return
+	# The authored Death action supplies its own collapse. Slip-and-recovery still
+	# uses the existing replicated node tilt because it is gameplay state, not a
+	# lethal animation.
+	if shooter.player.state == MayoPlayer.State.DEAD:
+		shooter.player_visual.rotation = Vector3(0.0, PI, 0.0)
+	else:
+		shooter.player_visual.rotation = Vector3(
+			shooter.body_mesh.rotation.x, PI, shooter.body_mesh.rotation.z)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -1666,6 +1708,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("refill_sauce"):
 		_request_refill()
 		return
+	if event.is_action_pressed("switch_character"):
+		_local.requested_character_index = \
+			(_local.requested_character_index + 1) % PLAYER_CHARACTERS.size()
+		set_character_variant(_local.peer_id, _local.requested_character_index)
+		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		apply_look((event as InputEventMouseMotion).relative)
 
@@ -1683,8 +1730,22 @@ func apply_look(relative: Vector2) -> void:
 ## else's stays visible in both modes -- that is the whole point of them.
 func set_first_person(enabled: bool) -> void:
 	_first_person = enabled
-	if _local != null and is_instance_valid(_local.body_mesh):
-		_local.body_mesh.visible = not enabled
+	for shooter in _shooters.values():
+		# The capsule remains a hidden paint/collision proxy. The authored mesh is
+		# the body that changes visibility with camera mode.
+		if is_instance_valid(shooter.body_mesh):
+			shooter.body_mesh.visible = false
+		if is_instance_valid(shooter.player_visual):
+			shooter.player_visual.visible = shooter != _local or not enabled
+		if is_instance_valid(shooter.weapon):
+			shooter.weapon.visible = shooter == _local and enabled
+		if shooter == _local:
+			if enabled or shooter.character_muzzle == null:
+				shooter.muzzle = shooter.viewmodel_muzzle
+			else:
+				shooter.muzzle = shooter.character_muzzle
+		elif shooter.character_muzzle != null:
+			shooter.muzzle = shooter.character_muzzle
 	# You look through your own lenses, not at them: the mask reaches you as the
 	# screen overlay instead. Everyone else's stay visible in both modes.
 	if _local != null and _local.player.visor != null:
@@ -1694,19 +1755,16 @@ func set_first_person(enabled: bool) -> void:
 	# mispositioned. Everyone else's stays visible in both modes: their bottle
 	# now carries how much sauce they have left, and a team that can read each
 	# other's bottles across the street can cover a reload without being told.
-	if _local != null and is_instance_valid(_local.weapon):
-		_local.weapon.visible = enabled
 	_update_camera()
 
 
 func _ensure_input_actions() -> void:
 	# Registered in code so the toggle works without editing the input map.
-	if InputMap.has_action("toggle_camera_mode"):
-		return
-	InputMap.add_action("toggle_camera_mode")
-	var toggle := InputEventKey.new()
-	toggle.physical_keycode = KEY_F1
-	InputMap.action_add_event("toggle_camera_mode", toggle)
+	if not InputMap.has_action("toggle_camera_mode"):
+		InputMap.add_action("toggle_camera_mode")
+		var toggle := InputEventKey.new()
+		toggle.physical_keycode = KEY_F1
+		InputMap.action_add_event("toggle_camera_mode", toggle)
 	if not InputMap.has_action("run"):
 		InputMap.add_action("run")
 		var run := InputEventKey.new()
@@ -1747,6 +1805,11 @@ func _ensure_input_actions() -> void:
 		var network := InputEventKey.new()
 		network.physical_keycode = KEY_F2
 		InputMap.action_add_event("toggle_network_panel", network)
+	if not InputMap.has_action("switch_character"):
+		InputMap.add_action("switch_character")
+		var character := InputEventKey.new()
+		character.physical_keycode = KEY_C
+		InputMap.action_add_event("switch_character", character)
 
 
 ## Turns the sound off at the bus, which is the only place that catches all of
@@ -2061,6 +2124,7 @@ func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
 	var shooter := Shooter.new()
 	shooter.peer_id = peer_id
 	shooter.is_local = is_local
+	shooter.spawn_slot = slot
 	# Seeded per peer so two players firing at once do not share a jitter
 	# sequence. Peer 1 keeps the original seed, so the single-player game and
 	# the checks built on it emit exactly the strand they always did.
@@ -2216,6 +2280,12 @@ func _build_player_body(shooter: Shooter) -> void:
 	shooter.player.contamination = contamination
 	contamination.configure(shooter.player, body_mesh, capsule_shape.radius,
 		capsule_shape.height, _body_color(shooter.is_local))
+	# Collision and paint projection remain on the stable capsule. The authored
+	# mesh is presentation only, so animation cannot move gameplay hit geometry.
+	body_mesh.visible = false
+	_build_player_visual(shooter)
+	if shooter.player_visual != null:
+		contamination.add_visual_overlay(shooter.player_visual)
 
 	# The pivot carries the pitch so the nozzle and muzzle follow vertical aim.
 	# The player body itself only yaws.
@@ -2235,6 +2305,159 @@ func _build_player_body(shooter: Shooter) -> void:
 	shooter.player.visor = visor
 
 	_build_weapon(shooter)
+
+
+## Imports the selected character as an animated presentation layer over the
+## stable gameplay capsule. Both GLBs face +Z after Blender's axis conversion;
+## the half-turn aligns their authored -Y front with the game's -Z forward.
+func _build_player_visual(shooter: Shooter) -> void:
+	var index := clampi(shooter.character_index, 0, PLAYER_CHARACTERS.size() - 1)
+	var character_name: String = PLAYER_CHARACTER_NAMES[index]
+	var visual := PLAYER_CHARACTERS[index].instantiate() as Node3D
+	if visual == null:
+		push_error("%s GLB did not instantiate as Node3D" % character_name)
+		return
+	visual.name = "%sVisual" % character_name
+	visual.scale = Vector3.ONE * (MayoPlayer.CAPSULE_HEIGHT \
+		/ float(PLAYER_CHARACTER_SOURCE_HEIGHTS[index]))
+	visual.position = Vector3(0.0, -MayoPlayer.CAPSULE_HEIGHT * 0.5, 0.0)
+	visual.rotation.y = PI
+	shooter.player.add_child(visual)
+	shooter.player_visual = visual
+	visual.visible = not shooter.is_local or not _first_person
+
+	var players := visual.find_children("*", "AnimationPlayer", true, false)
+	if players.is_empty():
+		push_error("%s has no AnimationPlayer" % character_name)
+	else:
+		shooter.player_animation = players[0] as AnimationPlayer
+		var animation_names: Array = PLAYER_CHARACTER_ANIMATIONS[index]
+		shooter.walk_animation = _find_player_animation(
+			shooter.player_animation, animation_names[0], character_name)
+		shooter.run_animation = _find_player_animation(
+			shooter.player_animation, animation_names[1], character_name)
+		shooter.death_animation = _find_player_animation(
+			shooter.player_animation, animation_names[2], character_name)
+		for looping in [shooter.walk_animation, shooter.run_animation]:
+			if not looping.is_empty():
+				shooter.player_animation.get_animation(looping).loop_mode = Animation.LOOP_LINEAR
+
+	var skeletons := visual.find_children("*", "Skeleton3D", true, false)
+	if not skeletons.is_empty():
+		var skeleton := skeletons[0] as Skeleton3D
+		if skeleton.find_bone("Character_1_SauceMuzzle") >= 0:
+			var attachment := BoneAttachment3D.new()
+			attachment.name = "SauceContainerMuzzle"
+			attachment.bone_name = "Character_1_SauceMuzzle"
+			skeleton.add_child(attachment)
+			shooter.character_muzzle = attachment
+	# Character 2 intentionally ships without a weapon mesh/socket. Its invisible
+	# aim-pivot muzzle remains the gameplay source until a shared third-person
+	# bottle is introduced.
+	if shooter.character_muzzle == null and index == 0:
+		push_error("Character_1 is missing its sauce-container muzzle socket")
+
+	var gauge_node := visual.find_child("*SauceContainer_Gauge*", true, false)
+	if gauge_node is MeshInstance3D:
+		shooter.character_gauge = gauge_node as MeshInstance3D
+		shooter.character_gauge_scale = shooter.character_gauge.scale
+		var source_material := shooter.character_gauge.get_active_material(0)
+		if source_material is StandardMaterial3D:
+			shooter.character_gauge_material = source_material.duplicate() as StandardMaterial3D
+			shooter.character_gauge.material_override = shooter.character_gauge_material
+
+
+func _find_player_animation(player: AnimationPlayer, suffix: String,
+		character_name := "Player character") -> StringName:
+	if player == null:
+		return StringName()
+	for candidate in player.get_animation_list():
+		if String(candidate).to_lower().ends_with(suffix.to_lower()):
+			return candidate
+	push_error("%s is missing animation %s" % [character_name, suffix])
+	return StringName()
+
+
+## Replaces presentation only: collision, health, sauce, contamination and
+## world position remain on the same player node. The selected index is carried
+## in the normal network state so every peer sees the same character.
+func set_character_variant(peer_id: int, requested_index: int) -> void:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null:
+		return
+	var index := posmod(requested_index, PLAYER_CHARACTERS.size())
+	if shooter.character_index == index and is_instance_valid(shooter.player_visual):
+		return
+	shooter.character_index = index
+	if is_instance_valid(shooter.player_visual):
+		shooter.player.remove_child(shooter.player_visual)
+		shooter.player_visual.queue_free()
+	shooter.player_visual = null
+	shooter.player_animation = null
+	shooter.player_animation_name = StringName()
+	shooter.walk_animation = StringName()
+	shooter.run_animation = StringName()
+	shooter.death_animation = StringName()
+	shooter.character_muzzle = null
+	shooter.character_gauge = null
+	shooter.character_gauge_material = null
+	_build_player_visual(shooter)
+	if shooter.player_visual != null and shooter.player.contamination != null:
+		shooter.player.contamination.add_visual_overlay(shooter.player_visual)
+	set_first_person(_first_person)
+
+
+func character_name_for(shooter: Shooter) -> String:
+	if shooter == null:
+		return ""
+	return PLAYER_CHARACTER_NAMES[clampi(
+		shooter.character_index, 0, PLAYER_CHARACTER_NAMES.size() - 1)]
+
+
+## Walk and run are authored in place, so gameplay velocity remains the source
+## of truth. With no dedicated idle clip, the first carry frame is held still.
+## Death is a one-shot and is never restarted while the respawn timer runs.
+func _update_player_animation(shooter: Shooter) -> void:
+	var player := shooter.player_animation
+	if player == null:
+		return
+	var desired := StringName("IdleCarry")
+	if shooter.player.state == MayoPlayer.State.DEAD:
+		desired = shooter.death_animation
+	elif shooter.player.state == MayoPlayer.State.NORMAL \
+			and Vector2(shooter.player.velocity.x, shooter.player.velocity.z).length_squared() > 0.01:
+		desired = shooter.run_animation if shooter.player.is_running() else shooter.walk_animation
+	if desired == shooter.player_animation_name:
+		return
+	shooter.player_animation_name = desired
+	if shooter == _local and is_instance_valid(shooter.weapon):
+		shooter.weapon.visible = _first_person and shooter.player.state != MayoPlayer.State.DEAD
+	player.speed_scale = 1.0
+	if desired == StringName("IdleCarry"):
+		if not shooter.walk_animation.is_empty():
+			player.play(shooter.walk_animation)
+			player.seek(0.0, true)
+			player.pause()
+	elif not desired.is_empty():
+		player.play(desired)
+
+
+func _update_character_gauge(shooter: Shooter) -> void:
+	if shooter.character_gauge == null or not is_instance_valid(shooter.character_gauge):
+		return
+	var level := clampf(shooter.sauce, 0.0, 1.0)
+	# The authored round gauge is the third-person equivalent of the liquid
+	# column in the first-person squeeze bottle: size shows amount, colour shows
+	# the same steady/spluttering/empty band.
+	shooter.character_gauge.scale = shooter.character_gauge_scale * lerpf(0.35, 1.0, level)
+	var tint := Color("fff0a8")
+	var stage := sauce_stage_of(level)
+	if stage == SauceStage.SPLUTTERING:
+		tint = Color("e8a33c")
+	elif stage == SauceStage.EMPTY:
+		tint = Color("c0392b")
+	if shooter.character_gauge_material != null:
+		shooter.character_gauge_material.albedo_color = tint
 
 
 ## Sauce bottle viewmodel, held to the lower right and angled so its nozzle
@@ -2282,6 +2505,10 @@ func _build_weapon(shooter: Shooter) -> void:
 	muzzle.position = Vector3(0.0, 0.0, -cursor)
 	weapon.add_child(muzzle)
 	shooter.muzzle = muzzle
+	shooter.viewmodel_muzzle = muzzle
+	if shooter.character_muzzle != null and not shooter.is_local:
+		shooter.muzzle = shooter.character_muzzle
+	weapon.visible = shooter.is_local and _first_person
 
 
 ## The sauce inside the bottle, which is the gauge.
@@ -2901,41 +3128,29 @@ func _advance_enemies(delta: float) -> void:
 			_damage_player(hit, enemy.contact_damage)
 
 
-## An empty bar puts the player back at the start, clean and whole. There is no
-## death or respawn system to hook into and inventing one is a bigger decision
-## than this is -- but leaving the player alive at zero with nothing happening
-## would make the bar a decoration, so they lose their ground instead.
+## An empty bar now holds the body in the world for the supplied two-second
+## death performance. The authority performs the eventual respawn; clients see
+## the same DEAD state and timer in the normal player-state packet.
 func _damage_player(player: MayoPlayer, amount: float) -> void:
 	if not player.take_damage(amount):
 		return
-	player.heal_to_full()
-	var shooter := _shooter_of(player)
-	if shooter != null:
+	player.begin_death()
+
+
+func _advance_player_respawns() -> void:
+	for shooter in _shooters.values():
+		var player := shooter.player as MayoPlayer
+		if player.state != MayoPlayer.State.DEAD or player.state_time() < player.death_duration:
+			continue
+		player.finish_respawn(spawn_position_for(shooter.spawn_slot))
 		shooter.sauce = 1.0
-	player.velocity = Vector3.ZERO
-	player.global_position = spawn_position_for(_slot_of(player))
-	if player.contamination != null:
-		player.contamination.clear()
-	if player.visor != null:
-		player.visor.clear()
-
-
-func _shooter_of(player: MayoPlayer) -> Shooter:
-	for id in _shooters:
-		var shooter: Shooter = _shooters[id]
-		if shooter.player == player:
-			return shooter
-	return null
-
-
-func _slot_of(player: MayoPlayer) -> int:
-	var slot := 0
-	for id in _shooters:
-		var shooter: Shooter = _shooters[id]
-		if shooter.player == player:
-			return slot
-		slot += 1
-	return 0
+		shooter.player_animation_name = StringName()
+		if shooter.player_animation != null:
+			shooter.player_animation.stop()
+		if player.contamination != null:
+			player.contamination.clear()
+		if player.visor != null:
+			player.visor.clear()
 
 
 ## Share of the painted floor thick enough to slip on, refreshed a few times a
