@@ -438,6 +438,61 @@ func _relative_transform(node: Node3D) -> Transform3D:
 	return chain
 
 
+## **A hit carried back into the pose the model was unwrapped in.**
+##
+## The paint probe is a copy of the model's *rest* mesh, because that is the only
+## pose a UV map is laid out for. The monster does not stand in it -- it raises
+## its arms -- so a hit on an arm lands where the rest arm is not, and a probe
+## cast there crosses nothing. The body is near enough to its rest pose that this
+## never showed on the bun; the arms are not.
+##
+## The limb colliders follow bones, so the bone a hit belongs to is known. Taking
+## the point into that bone and back out through the bone's rest transform puts
+## it on the skin it actually struck, whatever the arm was doing.
+##
+## Returns the point and the normal, both moved; an unmatched hit is returned as
+## it came, which is right for the body.
+func rest_space_hit(at: Vector3, normal: Vector3) -> Array:
+	var bone := _bone_for(at)
+	if bone < 0 or _skeleton == null:
+		return [at, normal]
+	var now: Transform3D = _skeleton.global_transform \
+		* _skeleton.get_bone_global_pose(bone)
+	var rest: Transform3D = _skeleton.global_transform \
+		* _skeleton.get_bone_global_rest(bone)
+	var back := rest * now.affine_inverse()
+	return [back * at, (back.basis * normal).normalized()]
+
+
+## Which limb bone a world point belongs to, or -1 for the body.
+##
+## The nearest limb segment that the point is actually near: a hit on the bun is
+## metres from either arm and must not be dragged into one.
+func _bone_for(at: Vector3) -> int:
+	if _skeleton == null or _limb_shapes.is_empty():
+		return -1
+	var into_body := global_transform.affine_inverse() * _skeleton.global_transform
+	var local: Vector3 = global_transform.affine_inverse() * at
+	var best := -1
+	var best_distance := INF
+	for limb in _limb_shapes:
+		var a: Vector3 = into_body * _skeleton.get_bone_global_pose(limb["a"]).origin
+		var b: Vector3 = into_body * _skeleton.get_bone_global_pose(limb["b"]).origin
+		var span := b - a
+		var along := 0.0
+		if span.length_squared() > 0.000001:
+			along = clampf((local - a).dot(span) / span.length_squared(), 0.0, 1.0)
+		var distance: float = (local - (a + span * along)).length()
+		var capsule := (limb["shape"] as CollisionShape3D).shape as CapsuleShape3D
+		var reach: float = (capsule.radius if capsule != null else 0.5) * 1.6
+		if distance < reach and distance < best_distance:
+			best_distance = distance
+			# The limb nearer the hand wins a tie, since that is the one a hit
+			# out at the fingertips belongs to.
+			best = limb["b"]
+	return best
+
+
 ## **Ties the arm colliders to the bones that draw the arms.**
 ##
 ## The limb shapes are written out once from `_bones()`, in a pose somebody typed:

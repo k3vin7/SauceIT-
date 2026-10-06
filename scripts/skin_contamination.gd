@@ -28,6 +28,10 @@ const PAINT_LAYER := 8
 var grids: Array[ContaminationGrid] = []
 var meshes: Array[MeshInstance3D] = []
 var resolution := 512
+## How far either side of a hit the probe looks for the surface. Generous: the
+## collider is a few primitives standing in for a sculpted model, so the point it
+## reports can sit well off the skin even where the pose has not moved anything.
+var probe_reach := 4.0
 var brush_radius := 0.2
 var mayo_color := Color("fff0a8")
 
@@ -120,7 +124,7 @@ func uv_at(world_position: Vector3, world_normal: Vector3) -> Dictionary:
 	lines.push_back(Vector3.UP)
 	var hit := {}
 	for line in lines:
-		var out: Vector3 = line * 1.5
+		var out: Vector3 = line * probe_reach
 		var query := PhysicsRayQueryParameters3D.create(
 			world_position + out, world_position - out)
 		query.collision_mask = PAINT_LAYER
