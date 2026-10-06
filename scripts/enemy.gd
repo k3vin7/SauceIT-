@@ -277,6 +277,10 @@ var _fall_pivot := Vector3.ZERO
 var _rest_radius := 0.37
 ## The bun's own radius and half the fingertip-to-fingertip span, both measured
 ## off the authored model in `build`.
+## The limb colliders and the bones they follow, filled in once the rig is known.
+## Empty on a monster whose rig has no arms, which is every one but the burger.
+var _limb_shapes: Array = []
+var _skeleton: Skeleton3D
 var _bun_radius := 0.9
 var _arm_span := 1.0
 
@@ -390,6 +394,7 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	contamination.add_visual_overlay(_visual_root)
 
 	health = max_health
+	_bind_limb_colliders()
 	_attach_gait()
 	_set_locomotion_animation(false)
 
@@ -431,6 +436,72 @@ func _relative_transform(node: Node3D) -> Transform3D:
 		chain = (at as Node3D).transform * chain
 		at = at.get_parent()
 	return chain
+
+
+## **Ties the arm colliders to the bones that draw the arms.**
+##
+## The limb shapes are written out once from `_bones()`, in a pose somebody typed:
+## arms out to the sides, hands near the floor. The model does not hold that pose.
+## It raises both arms over the bun and waves them about, so a shot aimed at a
+## hand met nothing where the hand was drawn and either passed through or landed
+## on the body behind it -- sauce on a part the player never aimed at, and none
+## on the part they did.
+##
+## The overall silhouette matched all along, which is why measuring the bounding
+## box said this was fine. A box can be the right size and have everything inside
+## it in the wrong place.
+func _bind_limb_colliders() -> void:
+	if _visual_root == null:
+		return
+	var skeletons := _visual_root.find_children("*", "Skeleton3D", true, false)
+	if skeletons.is_empty():
+		return
+	_skeleton = skeletons[0] as Skeleton3D
+	for side in ["L", "R"]:
+		var upper := _skeleton.find_bone("UpperArm." + side)
+		var fore := _skeleton.find_bone("Forearm." + side)
+		var hand := _skeleton.find_bone("Hand." + side)
+		if upper < 0 or fore < 0 or hand < 0:
+			_skeleton = null
+			_limb_shapes.clear()
+			return
+		var arm := _find_shape("Arm" + ("Left" if side == "L" else "Right"))
+		var palm := _find_shape("Hand" + ("Left" if side == "L" else "Right"))
+		if arm == null or palm == null:
+			continue
+		# The upper arm's shape spans shoulder to wrist rather than shoulder to
+		# elbow: two bones, one capsule, which is as much as a thrown strand can
+		# tell apart and one shape fewer to move every frame.
+		_limb_shapes.push_back({"shape": arm, "a": upper, "b": hand})
+		_limb_shapes.push_back({"shape": palm, "a": fore, "b": hand})
+	_follow_bones()
+
+
+func _find_shape(named: String) -> CollisionShape3D:
+	for child in get_children():
+		if child is CollisionShape3D and child.name == named:
+			return child as CollisionShape3D
+	return null
+
+
+## Moves each limb shape onto its bones. Run every frame the body is drawn,
+## because the pose it is matching changes every frame.
+func _follow_bones() -> void:
+	if _skeleton == null or _limb_shapes.is_empty():
+		return
+	var into_body := global_transform.affine_inverse() * _skeleton.global_transform
+	for limb in _limb_shapes:
+		var shape: CollisionShape3D = limb["shape"]
+		var capsule := shape.shape as CapsuleShape3D
+		if capsule == null:
+			continue
+		var a: Vector3 = into_body * _skeleton.get_bone_global_pose(limb["a"]).origin
+		var b: Vector3 = into_body * _skeleton.get_bone_global_pose(limb["b"]).origin
+		var span := b - a
+		if span.length_squared() < 0.000001:
+			continue
+		capsule.height = span.length() + capsule.radius * 2.0
+		shape.transform = Transform3D(_aligned_basis(span), (a + b) * 0.5)
 
 
 ## **Hangs the hand-walking modifier on the rig, when it is asked for.**
@@ -1088,6 +1159,9 @@ func _refresh_sight_rings() -> void:
 
 
 func _process(_delta: float) -> void:
+	# Every peer, not only the authority: a client's own player walks into these
+	# shapes and its own screen casts rays at them.
+	_follow_bones()
 	if _sight_ring == null:
 		return
 	# Flat on the ground under the body, whatever the body is doing. A little

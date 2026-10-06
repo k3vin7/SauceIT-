@@ -132,10 +132,30 @@ func _run() -> void:
 	var space := enemy.get_world_3d().direct_space_state
 	var hollow: Array[String] = []
 	var measured_parts: Array = enemy._bones()
+	# **The limbs are sampled at their bones, the body at its written parts.**
+	#
+	# The arm shapes follow the rig now, so the authored positions in `_bones()`
+	# are where they start and not where they are. Sampling those would report a
+	# hollow arm every time the model raised one. The bone is the honest place to
+	# ask: it comes from the rig and the animation, not from the collider, so a
+	# collider found there is a collider on the arm the player can see.
+	var rig: Skeleton3D = enemy._skeleton
+	var limb_bones := {}
+	if rig != null:
+		limb_bones = {
+			"ArmLeft": ["UpperArm.L", "Hand.L"], "ArmRight": ["UpperArm.R", "Hand.R"],
+			"HandLeft": ["Forearm.L", "Hand.L"], "HandRight": ["Forearm.R", "Hand.R"],
+		}
 	for index in measured_parts.size():
 		var part: Dictionary = measured_parts[index]
+		var named: String = MayoEnemy.BONE_NAMES[index]
 		var local_point: Vector3 = part["centre"] if part["kind"] == "disc" \
 			else ((part["a"] as Vector3) + (part["b"] as Vector3)) * 0.5
+		if limb_bones.has(named):
+			var pair: Array = limb_bones[named]
+			var into: Transform3D = enemy.global_transform.affine_inverse() * rig.global_transform
+			local_point = (into * rig.get_bone_global_pose(rig.find_bone(pair[0])).origin
+				+ into * rig.get_bone_global_pose(rig.find_bone(pair[1])).origin) * 0.5
 		var query := PhysicsPointQueryParameters3D.new()
 		query.position = enemy.global_transform * local_point
 		query.collide_with_areas = false
@@ -160,9 +180,21 @@ func _run() -> void:
 			% enemy._body_mesh.mesh.get_surface_count())
 	_check(absf(envelope.size.y - enemy.height) < enemy.height * 0.12,
 		"the mask is %.2f m tall against a %.2f m monster" % [envelope.size.y, enemy.height])
-	_check(absf(envelope.size.x - solid.size.x) < 0.02,
-		"the mask is %.2f m across and the colliders are %.2f m: the stain would not follow the sauce"
-			% [envelope.size.x, solid.size.x])
+	# **Against the model, not against the colliders.**
+	#
+	# This asked the mask's own mesh to be exactly as wide as the solid, which
+	# held while both were written from the same static list. The arm shapes
+	# follow the rig now, so the solid is as wide as the arms happen to be held
+	# this frame and the two can never agree again -- demanding it would be
+	# demanding the colliders go back to ignoring the pose.
+	#
+	# What the check is really protecting is that a stain lands where the sauce
+	# did, and the mask is drawn onto the model, so the model is what it has to
+	# match. The hit-to-cell-and-back round trip is measured separately and comes
+	# back inside half a cell.
+	_check(absf(envelope.size.x - drawn.size.x) < drawn.size.x * 0.05,
+		"the mask is %.2f m across a %.2f m monster: the stain would not follow the sauce"
+			% [envelope.size.x, drawn.size.x])
 
 	_check(not enemy._body_mesh.visible,
 		"the old capsule mockup is still visible over the hamburger monster")
