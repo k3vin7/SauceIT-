@@ -12,13 +12,18 @@ const VisorOverlayScript := preload("res://scripts/visor_overlay.gd")
 const HealthHudScript := preload("res://scripts/health_hud.gd")
 const MinimapScript := preload("res://scripts/minimap.gd")
 const KeyLegendScript := preload("res://scripts/key_legend.gd")
-const PLAYER_CHARACTER: PackedScene = preload(
-	"res://assets/players/Character_1/Character_1.glb")
-## The authored chef is 8.94 Blender metres tall in its exported coordinate
-## space. The gameplay body stays the established 2.56 m capsule; only the
-## presentation is scaled to that collider.
-const PLAYER_CHARACTER_SOURCE_HEIGHT := 8.94
-const PLAYER_CHARACTER_SCALE := MayoPlayer.CAPSULE_HEIGHT / PLAYER_CHARACTER_SOURCE_HEIGHT
+const PLAYER_CHARACTERS: Array[PackedScene] = [
+	preload("res://assets/players/Character_1/Character_1.glb"),
+	preload("res://assets/players/Character_2/Character_2.glb"),
+]
+const PLAYER_CHARACTER_NAMES := ["Character_1", "Character_2"]
+## Authored mesh bounds in Blender metres. Gameplay stays on the same 2.56 m
+## capsule whichever presentation is selected.
+const PLAYER_CHARACTER_SOURCE_HEIGHTS := [8.94, 9.513729]
+const PLAYER_CHARACTER_ANIMATIONS := [
+	["Weapon_Walk", "Weapon_Run", "Weapon_Death"],
+	["Walk_WeaponHold", "Run_WeaponHold", "Death_WeaponHold"],
+]
 const StallRoofScript := preload("res://scripts/stall_roof.gd")
 const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 	preload("res://assets/food_booths/food_booth_s1.glb"),
@@ -120,6 +125,10 @@ class Shooter:
 	var player_visual: Node3D
 	var player_animation: AnimationPlayer
 	var player_animation_name := StringName()
+	var character_index := 0
+	## Kept separately for the local player so an older server state arriving
+	## between the C press and its input packet cannot undo the requested swap.
+	var requested_character_index := 0
 	var walk_animation := StringName()
 	var run_animation := StringName()
 	var death_animation := StringName()
@@ -1451,7 +1460,8 @@ func _read_local_input() -> void:
 		move = Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
 		run = Input.is_action_pressed("run")
 		jump = Input.is_action_pressed("jump")
-	_net.send_input(move, run, jump, _local.firing, _local.aim_yaw, _local.aim_pitch)
+	_net.send_input(move, run, jump, _local.firing, _local.aim_yaw, _local.aim_pitch,
+		_local.requested_character_index)
 
 
 func _fire_held() -> bool:
@@ -1685,6 +1695,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("refill_sauce"):
 		_request_refill()
 		return
+	if event.is_action_pressed("switch_character"):
+		_local.requested_character_index = \
+			(_local.requested_character_index + 1) % PLAYER_CHARACTERS.size()
+		set_character_variant(_local.peer_id, _local.requested_character_index)
+		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		apply_look((event as InputEventMouseMotion).relative)
 
@@ -1732,12 +1747,11 @@ func set_first_person(enabled: bool) -> void:
 
 func _ensure_input_actions() -> void:
 	# Registered in code so the toggle works without editing the input map.
-	if InputMap.has_action("toggle_camera_mode"):
-		return
-	InputMap.add_action("toggle_camera_mode")
-	var toggle := InputEventKey.new()
-	toggle.physical_keycode = KEY_F1
-	InputMap.action_add_event("toggle_camera_mode", toggle)
+	if not InputMap.has_action("toggle_camera_mode"):
+		InputMap.add_action("toggle_camera_mode")
+		var toggle := InputEventKey.new()
+		toggle.physical_keycode = KEY_F1
+		InputMap.action_add_event("toggle_camera_mode", toggle)
 	if not InputMap.has_action("run"):
 		InputMap.add_action("run")
 		var run := InputEventKey.new()
@@ -1778,6 +1792,11 @@ func _ensure_input_actions() -> void:
 		var network := InputEventKey.new()
 		network.physical_keycode = KEY_F2
 		InputMap.action_add_event("toggle_network_panel", network)
+	if not InputMap.has_action("switch_character"):
+		InputMap.add_action("switch_character")
+		var character := InputEventKey.new()
+		character.physical_keycode = KEY_C
+		InputMap.action_add_event("switch_character", character)
 
 
 ## Turns the sound off at the bus, which is the only place that catches all of
@@ -2275,16 +2294,19 @@ func _build_player_body(shooter: Shooter) -> void:
 	_build_weapon(shooter)
 
 
-## Imports the supplied chef as an animated presentation layer over the stable
-## gameplay capsule. The GLB faces +Z after Blender's axis conversion; the
-## half-turn aligns its authored -Y front with the game's -Z forward.
+## Imports the selected character as an animated presentation layer over the
+## stable gameplay capsule. Both GLBs face +Z after Blender's axis conversion;
+## the half-turn aligns their authored -Y front with the game's -Z forward.
 func _build_player_visual(shooter: Shooter) -> void:
-	var visual := PLAYER_CHARACTER.instantiate() as Node3D
+	var index := clampi(shooter.character_index, 0, PLAYER_CHARACTERS.size() - 1)
+	var character_name: String = PLAYER_CHARACTER_NAMES[index]
+	var visual := PLAYER_CHARACTERS[index].instantiate() as Node3D
 	if visual == null:
-		push_error("Character_1 GLB did not instantiate as Node3D")
+		push_error("%s GLB did not instantiate as Node3D" % character_name)
 		return
-	visual.name = "CharacterVisual"
-	visual.scale = Vector3.ONE * PLAYER_CHARACTER_SCALE
+	visual.name = "%sVisual" % character_name
+	visual.scale = Vector3.ONE * (MayoPlayer.CAPSULE_HEIGHT \
+		/ float(PLAYER_CHARACTER_SOURCE_HEIGHTS[index]))
 	visual.position = Vector3(0.0, -MayoPlayer.CAPSULE_HEIGHT * 0.5, 0.0)
 	visual.rotation.y = PI
 	shooter.player.add_child(visual)
@@ -2293,12 +2315,16 @@ func _build_player_visual(shooter: Shooter) -> void:
 
 	var players := visual.find_children("*", "AnimationPlayer", true, false)
 	if players.is_empty():
-		push_error("Character_1 has no AnimationPlayer")
+		push_error("%s has no AnimationPlayer" % character_name)
 	else:
 		shooter.player_animation = players[0] as AnimationPlayer
-		shooter.walk_animation = _find_player_animation(shooter.player_animation, "Weapon_Walk")
-		shooter.run_animation = _find_player_animation(shooter.player_animation, "Weapon_Run")
-		shooter.death_animation = _find_player_animation(shooter.player_animation, "Weapon_Death")
+		var animation_names: Array = PLAYER_CHARACTER_ANIMATIONS[index]
+		shooter.walk_animation = _find_player_animation(
+			shooter.player_animation, animation_names[0], character_name)
+		shooter.run_animation = _find_player_animation(
+			shooter.player_animation, animation_names[1], character_name)
+		shooter.death_animation = _find_player_animation(
+			shooter.player_animation, animation_names[2], character_name)
 		for looping in [shooter.walk_animation, shooter.run_animation]:
 			if not looping.is_empty():
 				shooter.player_animation.get_animation(looping).loop_mode = Animation.LOOP_LINEAR
@@ -2312,7 +2338,10 @@ func _build_player_visual(shooter: Shooter) -> void:
 			attachment.bone_name = "Character_1_SauceMuzzle"
 			skeleton.add_child(attachment)
 			shooter.character_muzzle = attachment
-	if shooter.character_muzzle == null:
+	# Character 2 intentionally ships without a weapon mesh/socket. Its invisible
+	# aim-pivot muzzle remains the gameplay source until a shared third-person
+	# bottle is introduced.
+	if shooter.character_muzzle == null and index == 0:
 		push_error("Character_1 is missing its sauce-container muzzle socket")
 
 	var gauge_node := visual.find_child("*SauceContainer_Gauge*", true, false)
@@ -2325,14 +2354,51 @@ func _build_player_visual(shooter: Shooter) -> void:
 			shooter.character_gauge.material_override = shooter.character_gauge_material
 
 
-func _find_player_animation(player: AnimationPlayer, suffix: String) -> StringName:
+func _find_player_animation(player: AnimationPlayer, suffix: String,
+		character_name := "Player character") -> StringName:
 	if player == null:
 		return StringName()
 	for candidate in player.get_animation_list():
 		if String(candidate).to_lower().ends_with(suffix.to_lower()):
 			return candidate
-	push_error("Character_1 is missing animation %s" % suffix)
+	push_error("%s is missing animation %s" % [character_name, suffix])
 	return StringName()
+
+
+## Replaces presentation only: collision, health, sauce, contamination and
+## world position remain on the same player node. The selected index is carried
+## in the normal network state so every peer sees the same character.
+func set_character_variant(peer_id: int, requested_index: int) -> void:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null:
+		return
+	var index := posmod(requested_index, PLAYER_CHARACTERS.size())
+	if shooter.character_index == index and is_instance_valid(shooter.player_visual):
+		return
+	shooter.character_index = index
+	if is_instance_valid(shooter.player_visual):
+		shooter.player.remove_child(shooter.player_visual)
+		shooter.player_visual.queue_free()
+	shooter.player_visual = null
+	shooter.player_animation = null
+	shooter.player_animation_name = StringName()
+	shooter.walk_animation = StringName()
+	shooter.run_animation = StringName()
+	shooter.death_animation = StringName()
+	shooter.character_muzzle = null
+	shooter.character_gauge = null
+	shooter.character_gauge_material = null
+	_build_player_visual(shooter)
+	if shooter.player_visual != null and shooter.player.contamination != null:
+		shooter.player.contamination.add_visual_overlay(shooter.player_visual)
+	set_first_person(_first_person)
+
+
+func character_name_for(shooter: Shooter) -> String:
+	if shooter == null:
+		return ""
+	return PLAYER_CHARACTER_NAMES[clampi(
+		shooter.character_index, 0, PLAYER_CHARACTER_NAMES.size() - 1)]
 
 
 ## Walk and run are authored in place, so gameplay velocity remains the source

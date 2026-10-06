@@ -63,9 +63,12 @@ func _rows() -> Array:
 		["LMB", "spray", ""],
 		["E", "refill at a stall", ""],
 		["R", "wipe your glasses", ""],
+		["C", "character", ""],
 	]
 	if world == null or not is_instance_valid(world):
 		return rows
+	if world._local != null:
+		rows[6][2] = world.character_name_for(world._local)
 	rows.append(["F1", "camera", "first person" if world._first_person else "over the shoulder"])
 	var panel_open: bool = world._net_panel != null and world._net_panel.visible
 	rows.append(["F2", "LAN panel", "open" if panel_open else "closed"])
