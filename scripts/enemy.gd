@@ -20,6 +20,9 @@ const HAMBURGER_MONSTER := preload(
 ## source. The user-authored replacement blend is already 2.5x larger (5 m),
 ## so it needs only 2x presentation scale to reach that same 10 m result.
 ## The source is authored on ground Z=0, so no extra floor lift is applied.
+## How many vertices a body is measured from. Enough that the bound is tight to
+## well under a centimetre, few enough that the skinning is not felt at build.
+const MEASURED_VERTEX_SAMPLES := 400
 const MODEL_SCALE_MULTIPLIER := 5.0
 const MODEL_VISUAL_SCALE_MULTIPLIER := 2.0
 const MODEL_TARGET_SIZE := Vector3(2.0, 2.0, 2.0) * MODEL_SCALE_MULTIPLIER
@@ -409,22 +412,85 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 ## wrong assumption put the colliders at twice the model's depth, left the origin
 ## floating 2.3 m above its head, and stretched the stain unwrap by 3.7.
 ##
-## Taken off the instantiated node so a new export cannot silently reintroduce it.
+## **Measured on the skin, not on the mesh's own box.**
+##
+## A skinned mesh's vertices are stored in the pose it was modelled in, and this
+## model is never in that pose: skinning the same vertices into the pose it
+## actually stands in moves one of them 2.15 m in mesh units -- more than four
+## metres on screen -- and shrinks its depth by a third. Asking `get_aabb` gives
+## the modelling pose, so every size taken from it was a size the player never
+## sees. That is why the colliders could measure 1.00 against the model and still
+## sit in the wrong places: both numbers were the same wrong pose.
+##
+## Sampled rather than exhaustive. A few hundred vertices bound a body to well
+## under a centimetre and this runs once, while every vertex is fifteen thousand
+## matrix products per monster at build.
 func _visual_bounds() -> AABB:
+	_pose_for_measurement()
 	var lo := Vector3.INF
 	var hi := -Vector3.INF
 	for node in _visual_root.find_children("*", "MeshInstance3D", true):
 		var mesh := node as MeshInstance3D
-		var box := mesh.get_aabb()
 		var to_body := _visual_root.transform * _relative_transform(mesh)
-		for corner in 8:
-			var at: Vector3 = to_body * (box.position + box.size * Vector3(
-				float(corner & 1), float((corner >> 1) & 1), float((corner >> 2) & 1)))
-			lo = lo.min(at)
-			hi = hi.max(at)
+		for at in _skin_samples(mesh):
+			var in_body: Vector3 = to_body * at
+			lo = lo.min(in_body)
+			hi = hi.max(in_body)
 	if lo.x > hi.x:
 		return AABB()
 	return AABB(lo, hi - lo)
+
+
+## Puts the rig in the pose the monster stands in before anything is measured
+## off it. Without this the skeleton is still at its rest pose and the skinning
+## below would faithfully reproduce the box this exists to stop using.
+func _pose_for_measurement() -> void:
+	if _animation_player == null or _idle_animation.is_empty():
+		return
+	_animation_player.play(_idle_animation)
+	_animation_player.seek(0.0, true)
+	_animation_player.advance(0.0)
+
+
+## Vertices of one mesh, skinned into the pose the rig is holding. A mesh with no
+## skin is returned as the corners of its own box, which is all it has.
+func _skin_samples(mesh: MeshInstance3D) -> Array:
+	var out: Array = []
+	if mesh.mesh == null or mesh.mesh.get_surface_count() == 0:
+		return out
+	var skeletons := _visual_root.find_children("*", "Skeleton3D", true, false)
+	var arrays: Array = mesh.mesh.surface_get_arrays(0)
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	if mesh.skin == null or skeletons.is_empty() \
+			or arrays[Mesh.ARRAY_BONES] == null:
+		var box := mesh.mesh.get_aabb()
+		for corner in 8:
+			out.push_back(box.position + box.size * Vector3(
+				float(corner & 1), float((corner >> 1) & 1), float((corner >> 2) & 1)))
+		return out
+	var skeleton := skeletons[0] as Skeleton3D
+	var bones: PackedInt32Array = arrays[Mesh.ARRAY_BONES]
+	var weights: PackedFloat32Array = arrays[Mesh.ARRAY_WEIGHTS]
+	var per := bones.size() / maxi(vertices.size(), 1)
+	if per <= 0:
+		return out
+	var step := maxi(1, vertices.size() / MEASURED_VERTEX_SAMPLES)
+	for index in range(0, vertices.size(), step):
+		var raw: Vector3 = vertices[index]
+		var moved := Vector3.ZERO
+		var total := 0.0
+		for slot in per:
+			var bone: int = bones[index * per + slot]
+			var weight: float = weights[index * per + slot]
+			if weight <= 0.0:
+				continue
+			# How Godot skins: the bone where it is now, times the bind pose that
+			# says where the mesh was attached to it.
+			moved += (skeleton.get_bone_global_pose(bone)
+				* mesh.skin.get_bind_pose(bone) * raw) * weight
+			total += weight
+		out.push_back(moved / total if total > 0.0 else raw)
+	return out
 
 
 ## A descendant's transform relative to `_visual_root`, walked by hand because

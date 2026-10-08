@@ -49,16 +49,20 @@ func _run() -> void:
 	# target of 10 m while the authored monster is 2.70 m, which left the body
 	# origin floating 2.3 m above its own head and the stain unwrap stretched by
 	# 3.7. The size now comes off the model, so the check is that it still does.
+	# Skinned, for the reason spelled out where `drawn` is built below: the box
+	# the mesh carries is a pose this model is never in.
 	var model := AABB()
 	var model_started := false
 	for node in enemy._visual_root.find_children("*", "MeshInstance3D", true, false):
 		var mesh_node := node as MeshInstance3D
 		if mesh_node.mesh == null:
 			continue
-		var into: Transform3D = enemy.global_transform.affine_inverse() * mesh_node.global_transform
-		var part: AABB = into * mesh_node.mesh.get_aabb()
-		model = model.merge(part) if model_started else part
-		model_started = true
+		var into: Transform3D = enemy.global_transform.affine_inverse() \
+			* mesh_node.global_transform
+		for sample in enemy._skin_samples(mesh_node):
+			var point := AABB(into * (sample as Vector3), Vector3.ZERO)
+			model = model.merge(point) if model_started else point
+			model_started = true
 	_check(model_started and absf(enemy.height - model.size.y) < 0.02,
 		"the enemy stands %.2f m against a model %.2f m tall" % [
 			enemy.height, model.size.y])
@@ -68,6 +72,12 @@ func _run() -> void:
 	# exactly reads as half a metre too wide -- which is how the first attempt
 	# at this fix was written, and it looked wrong when it was right.
 	var to_body: Transform3D = enemy.global_transform.affine_inverse()
+	# **The drawn body is the skinned body.** `get_aabb` hands back the pose the
+	# mesh was modelled in, and this model is never in it: skinning the same
+	# vertices into the pose it stands in moves one of them four metres and takes
+	# a third off its depth. Measuring the box meant measuring a monster nobody
+	# sees, which is how colliders could read 1.00 against it and still sit in the
+	# wrong places.
 	var drawn := AABB()
 	var drawn_started := false
 	for node in enemy._visual_root.find_children("*", "MeshInstance3D", true, false):
@@ -75,9 +85,11 @@ func _run() -> void:
 		if mesh_node.mesh == null:
 			continue
 		var into: Transform3D = to_body * mesh_node.global_transform
-		var part: AABB = into * mesh_node.mesh.get_aabb()
-		drawn = drawn.merge(part) if drawn_started else part
-		drawn_started = true
+		for sample in enemy._skin_samples(mesh_node):
+			var at: Vector3 = into * (sample as Vector3)
+			var point := AABB(at, Vector3.ZERO)
+			drawn = drawn.merge(point) if drawn_started else point
+			drawn_started = true
 	var solid := AABB()
 	var solid_started := false
 	var shapes: Array[Node] = enemy.find_children("*", "CollisionShape3D", true, false)
