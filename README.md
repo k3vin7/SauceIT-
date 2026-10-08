@@ -1,6 +1,10 @@
-# MAYO MAN — Step 1 prototype
+# Sauce IT!
 
-Godot 4 3D prototype for validating one continuous viscous mayonnaise strand, per-point ballistic drop, wall attachment, and persistent grid contamination.
+Godot 4 co-op prototype. You spray sauce at food monsters on a festival street, and what you leave on the ground changes how everyone moves through it.
+
+It began as a step-1 study of one continuous viscous mayonnaise strand -- per-point ballistic drop, wall attachment, persistent grid contamination -- and most of this document is still about how those work, because they are still the core. The sections below describe what is **in the build today**.
+
+Where it is going next -- a title screen, a recruitment hub, a truck lobby and selectable stages -- is planned separately in [`reports/game_flow_plan_2026_10_08.md`](reports/game_flow_plan_2026_10_08.md). None of that is built yet.
 
 ## Run
 
@@ -286,9 +290,9 @@ The tank is drawn under the health bar, with a notch at `burst_midpoint` where t
 
 `MayoPlayer` walks at 5.2 m/s and runs at 10.4 while `Shift` is held; acceleration is scaled with them, so reaching the top speed still takes the time it did. Both speeds are exported, along with the four beats of going down: a stumble spent catching your balance, the fall, the pause spent flat on the floor, and pushing back up. Stepping on mayo starts the stumble, not the fall — controls are already locked there while the capsule sways side to side and the view shakes, and it is where an arm-flailing animation would go once there is a character model. There is no grace period afterwards. Slipping already requires the run key and a direction to be held, so a player who keeps sprinting across mayo goes straight back down on the frame they stand up — and with no run-up there is no speed left to skid with, so they are pinned in place until they let go of the key. Letting go makes the same patch harmless. Running onto a painted cell trips the player: the test is a plain cell lookup on the same grid the floor draws, with no probability in it. Walking never trips, and standing still with `Shift` held is not running, so it cannot trip you either. The player keeps the speed they slipped at and skids forward while going over backwards, landing on their back looking up; `Slip Slide Friction` sets how far that skid runs, about 0.5 m at run speed. Going down again inside `Recovery Window` (0.7 s from standing up) is a different fall: sprinting the instant you are upright means your feet never take the weight, so there is no balance to catch and the player pitches straight forward with no stumble, landing face down. `Forward Slip Slide Friction` scrubs that one harder, since a forward skid runs under the body rather than out from under it and a long one reads as a slide tackle. Standing up clears the direction, so the next fall is a backwards one again. While down, movement and firing are both locked out, and input cannot steer the skid. The shoulder camera stays upright through all of it, so the fall can be watched; only the first-person view goes over with the player.
 
-### LAN multiplayer (2 players)
+### LAN multiplayer (up to 4 players)
 
-`F2` opens the connection panel: one player presses **호스트 시작**, the other types the host's IP and presses **접속**. Port 24565 by default. No lobby and no matchmaking — the first peer to connect is the second player, and the panel closes straight back into the game. Nothing about this changes the offline game: with no session, the world is its own authority and runs exactly the code it ran before.
+`F2` opens the connection panel: one player presses **호스트 시작**, the other types the host's IP and presses **접속**. Port 24565 by default. No lobby and no matchmaking — each peer that connects takes the next free slot (`MAX_CLIENTS = 3`, so four players including the host), and the panel closes straight back into the game. Nothing about this changes the offline game: with no session, the world is its own authority and runs exactly the code it ran before.
 
 The split is server-authoritative, with one deliberate exception:
 
@@ -481,4 +485,28 @@ Note that the debugger's *Frame Time* reads ~16.6 ms even with the scene entirel
 
 ## Scope
 
-This step intentionally contains only WASD movement, FPS mouse-look aiming with a first/third-person camera toggle, one mayonnaise strand, static wall collision, flat-floor and wall contamination, ribbon shadow, and the seven-droplet landing accent. There is no UI, sound, inventory, recharge, extra sauce, enemy, or networking code.
+**This section used to describe step 1 and had gone badly out of date** -- it said there was "no UI, sound, inventory, recharge, extra sauce, enemy, or networking code", and every one of those seven is in the build now. What follows is what is actually here as of 2026-10-08.
+
+In:
+
+* **Movement and aim** -- WASD, run, jump, FPS mouse-look, first/third-person toggle.
+* **The strand** -- one continuous viscous strand, per-point ballistic drop, wall attachment, ribbon shadow, landing droplets.
+* **Contamination** -- floor, walls, stall roofs, player bodies, enemy bodies and the player's own glasses, all on the same metre grid. Thickness bands, and slipping when a trail gets deep.
+* **Three sauces** -- mayo, mustard, ketchup, picked with `1`/`2`/`3` at a stall.
+* **The bottle** -- a tank that runs down across a burst, spluttering as it empties, refilled at stalls.
+* **The glasses** -- sauce on your lenses blinds you, `R` wipes them, and everyone else can see you do it.
+* **Enemies** -- hamburger monsters and moldy toast rushers, with sight ranges, chase and gait.
+* **Party** -- health, going down, being revived, and a party health HUD.
+* **Four playable characters**, switched with `C`.
+* **The street** -- the Haapsalu *maitsete promenaad* map, generated from a lattice.
+* **Minimap**, key legend, crosshair, sauce audio.
+* **LAN co-op** for up to four players, server-authoritative.
+* **The opening tutorial sequence**, which runs on the street itself.
+
+Not in, and the subject of [`reports/game_flow_plan_2026_10_08.md`](reports/game_flow_plan_2026_10_08.md):
+
+* No title screen, menu or options.
+* No saving of any kind -- nothing is written to `user://`.
+* No map selection. `main.tscn` is the game, and the street is compiled into it.
+* No lobby, no player list, no matchmaking.
+* No stage clear condition.
