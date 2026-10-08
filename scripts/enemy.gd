@@ -23,6 +23,9 @@ const HAMBURGER_MONSTER := preload(
 ## How many vertices a body is measured from. Enough that the bound is tight to
 ## well under a centimetre, few enough that the skinning is not felt at build.
 const MEASURED_VERTEX_SAMPLES := 400
+## How many points of the walk the body is measured at. The sway is a slow
+## cycle, so a handful catch its extremes.
+const MEASURED_POSE_SAMPLES := 9
 const MODEL_SCALE_MULTIPLIER := 5.0
 const MODEL_VISUAL_SCALE_MULTIPLIER := 2.0
 const MODEL_TARGET_SIZE := Vector3(2.0, 2.0, 2.0) * MODEL_SCALE_MULTIPLIER
@@ -283,6 +286,11 @@ var _rest_radius := 0.37
 ## The limb colliders and the bones they follow, filled in once the rig is known.
 ## Empty on a monster whose rig has no arms, which is every one but the burger.
 var _limb_shapes: Array = []
+## The bun's three discs and where each sits relative to the Body bone's rest.
+## The bun sways a metre either way as the thing walks; left pinned to the node,
+## its colliders stood still while the monster lurched around inside them.
+var _body_shapes: Array = []
+var _body_bone := -1
 var _skeleton: Skeleton3D
 var _bun_radius := 0.9
 var _arm_span := 1.0
@@ -323,7 +331,12 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	radius = _bun_radius
 	_arm_span = drawn.size.x * 0.5
 	contact_reach = maxf(_arm_span - _bun_radius, 0.0)
-	_visual_root.position = Vector3(0.0, -stand_height(), 0.0)
+	# **Placed by where the skin actually ends, not by assuming it starts at zero.**
+	# A ground-origin model has its soles at local y 0 in the pose it was modelled
+	# in; skinned into the pose it stands in, the lowest point is somewhere else,
+	# and lifting by half the height put the whole body a third of a metre into the
+	# street -- which the physics then pushed back out of, so the monster hovered.
+	_visual_root.position = Vector3(0.0, -stand_height() - drawn.position.y, 0.0)
 
 	var bones := _bones()
 	_rest_radius = _bun_radius
@@ -426,9 +439,14 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 ## under a centimetre and this runs once, while every vertex is fifteen thousand
 ## matrix products per monster at build.
 func _visual_bounds() -> AABB:
-	_pose_for_measurement()
 	var lo := Vector3.INF
 	var hi := -Vector3.INF
+	# One pose -- the one it stands in. Taking the union of the whole walk sounds
+	# safer and is not: the silhouette swings a fifth of its own height through a
+	# stride, so the union describes a body a fifth too tall that nothing ever
+	# fills. What the sway needs is not a bigger box but colliders that move with
+	# it, which is `_follow_bones`.
+	_pose_for_measurement(0.0)
 	for node in _visual_root.find_children("*", "MeshInstance3D", true):
 		var mesh := node as MeshInstance3D
 		var to_body := _visual_root.transform * _relative_transform(mesh)
@@ -444,11 +462,14 @@ func _visual_bounds() -> AABB:
 ## Puts the rig in the pose the monster stands in before anything is measured
 ## off it. Without this the skeleton is still at its rest pose and the skinning
 ## below would faithfully reproduce the box this exists to stop using.
-func _pose_for_measurement() -> void:
-	if _animation_player == null or _idle_animation.is_empty():
+func _pose_for_measurement(through := 0.0) -> void:
+	if _animation_player == null or _walk_animation.is_empty():
 		return
-	_animation_player.play(_idle_animation)
-	_animation_player.seek(0.0, true)
+	var clip := _animation_player.get_animation(_walk_animation)
+	if clip == null:
+		return
+	_animation_player.play(_walk_animation)
+	_animation_player.seek(clip.length * clampf(through, 0.0, 1.0), true)
 	_animation_player.advance(0.0)
 
 
@@ -535,7 +556,7 @@ func rest_space_hit(at: Vector3, normal: Vector3) -> Array:
 ## The nearest limb segment that the point is actually near: a hit on the bun is
 ## metres from either arm and must not be dragged into one.
 func _bone_for(at: Vector3) -> int:
-	if _skeleton == null or _limb_shapes.is_empty():
+	if _skeleton == null or (_limb_shapes.is_empty() and _body_shapes.is_empty()):
 		return -1
 	var into_body := global_transform.affine_inverse() * _skeleton.global_transform
 	var local: Vector3 = global_transform.affine_inverse() * at
@@ -595,7 +616,25 @@ func _bind_limb_colliders() -> void:
 		# tell apart and one shape fewer to move every frame.
 		_limb_shapes.push_back({"shape": arm, "a": upper, "b": hand})
 		_limb_shapes.push_back({"shape": palm, "a": fore, "b": hand})
+
+	# **And the bun, which sways as much as the arms do.** Measured over a walk
+	# cycle the Body bone travels 1.00 m across and 1.10 m fore and aft, so three
+	# discs bolted to the node are three discs the monster walks out of.
+	_body_bone = _skeleton.find_bone("Body")
+	if _body_bone >= 0:
+		var rest := _bone_in_body(_body_bone, true).affine_inverse()
+		for named in ["BottomBun", "Fillings", "TopBun"]:
+			var disc := _find_shape(named)
+			if disc != null:
+				_body_shapes.push_back({"shape": disc, "at": rest * disc.transform})
 	_follow_bones()
+
+
+## A bone's transform in the body's own space, posed or at rest.
+func _bone_in_body(bone: int, at_rest := false) -> Transform3D:
+	var into := global_transform.affine_inverse() * _skeleton.global_transform
+	return into * (_skeleton.get_bone_global_rest(bone) if at_rest
+		else _skeleton.get_bone_global_pose(bone))
 
 
 func _find_shape(named: String) -> CollisionShape3D:
@@ -610,6 +649,21 @@ func _find_shape(named: String) -> CollisionShape3D:
 func _follow_bones() -> void:
 	if _skeleton == null or _limb_shapes.is_empty():
 		return
+	if _body_bone >= 0 and not _body_shapes.is_empty():
+		var now := _bone_in_body(_body_bone)
+		var floor_y := -height * 0.5
+		for part in _body_shapes:
+			var shape: CollisionShape3D = part["shape"]
+			var placed: Transform3D = now * (part["at"] as Transform3D)
+			# **Swayed, but never pushed through the street.** The bun rocks a
+			# metre either way as it walks and the colliders should rock with it,
+			# but a shape that dips below the body's own floor is a shape the
+			# ground pushes back -- and what the ground is pushing is the whole
+			# monster, which then hovers. Sideways it follows; downwards it stops.
+			var disc := shape.shape as CylinderShape3D
+			var reach: float = disc.height * 0.5 if disc != null else 0.0
+			placed.origin.y = maxf(placed.origin.y, floor_y + reach)
+			shape.transform = placed
 	var into_body := global_transform.affine_inverse() * _skeleton.global_transform
 	for limb in _limb_shapes:
 		var shape: CollisionShape3D = limb["shape"]
@@ -622,7 +676,15 @@ func _follow_bones() -> void:
 		if span.length_squared() < 0.000001:
 			continue
 		capsule.height = span.length() + capsule.radius * 2.0
-		shape.transform = Transform3D(_aligned_basis(span), (a + b) * 0.5)
+		var placed := Transform3D(_aligned_basis(span), (a + b) * 0.5)
+		# Held above the street for the same reason the bun is: an arm swinging
+		# below the body's own floor is pushed back by the ground, and what gets
+		# pushed is the monster. A hand may rest on the street; it may not reach
+		# under it.
+		var half: float = absf(placed.basis.y.y) * capsule.height * 0.5 \
+			+ (absf(placed.basis.x.y) + absf(placed.basis.z.y)) * capsule.radius
+		placed.origin.y = maxf(placed.origin.y, -height * 0.5 + half)
+		shape.transform = placed
 
 
 ## **Hangs the hand-walking modifier on the rig, when it is asked for.**
