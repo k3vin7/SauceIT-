@@ -25,7 +25,7 @@ func _make_world(index: int):
 	viewport.size = Vector2i(64, 64)
 	viewport.physics_object_picking = false
 	root.add_child(viewport)
-	var world = load("res://main.tscn").instantiate()
+	var world = load("res://tutorial_world.tscn").instantiate()
 	world.name = "World"
 	viewport.add_child(world)
 	world.set_process_unhandled_input(false)
@@ -117,9 +117,9 @@ func _run() -> void:
 	_check(gt.stomps_heard == 2, "guest did not hear both footsteps")
 	_check(_roster_signature(host) == _roster_signature(guest), "enemy indices differ")
 	for frame in 2000:
-		if host._player.position.z < TutorialWreck.SPILL_BACK - 2:
+		if host._player.position.z < TutorialCourse.SPILL_BACK - 2:
 			break
-		host.debug_aim_at(Vector3(0, host._player.position.y, TutorialWreck.EXIT.z))
+		host.debug_aim_at(Vector3(0, host._player.position.y, TutorialCourse.EXIT.z))
 		host.debug_set_input(Vector2(0, -1), ht.slipped.is_empty(), false)
 		await _wait(1)
 	host.debug_set_input(Vector2.ZERO, false, false)

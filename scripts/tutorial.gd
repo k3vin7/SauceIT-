@@ -1,6 +1,8 @@
 class_name MayoTutorial
 extends Node
 
+const TutorialCourseConfig := preload("res://scripts/tutorial_course.gd")
+
 ## Server-owned festival opening. Movement and looking always belong to the
 ## player; actions, not locked cutscenes, connect the lessons.
 static var disabled := false
@@ -257,7 +259,7 @@ func _begin_first_fight() -> void:
 	for index in world.party_size() + 1:
 		# Single file beyond the wreck: the party first sees the route being
 		# used by food walking towards them, before needing it to escape.
-		var at := Vector3(0.0, 0.0, TutorialWreck.SPILL_BACK - 5.0 - float(index) * 3.2)
+		var at: Vector3 = TutorialCourseConfig.first_enemy_position(index)
 		var enemy_id: int = world.tutorial_spawn_enemy(KIND_RUSHER, at)
 		if enemy_id >= 0:
 			fight_enemies.push_back(enemy_id)
@@ -289,9 +291,9 @@ func _watch_escape() -> void:
 	var crossed := false
 	for peer_id in world.shooter_ids():
 		var player: MayoPlayer = world.shooter_for(peer_id).player
-		if player.global_position.z < TutorialWreck.CENTRE_Z - TutorialWreck.DEPTH * 0.5:
+		if player.global_position.z < TutorialCourseConfig.CENTRE_Z - TutorialCourseConfig.DEPTH * 0.5:
 			crossed = true
-	var mouth := TutorialWreck.CENTRE_Z + TutorialWreck.DEPTH * 0.5
+	var mouth := TutorialCourseConfig.CENTRE_Z + TutorialCourseConfig.DEPTH * 0.5
 	# Trigger only on the actual body arriving at the narrow mouth. Waiting
 	# for a player to slip would strand somebody who crossed on foot.
 	if crossed and absf(monster.global_position.x) < monster.radius + 0.5 \
@@ -310,7 +312,7 @@ func _watch_escape() -> void:
 
 func _is_escaping(shooter) -> bool:
 	var player: MayoPlayer = shooter.player
-	return player.global_position.z < TutorialWreck.SPILL_BACK \
+	return player.global_position.z < TutorialCourseConfig.SPILL_BACK \
 		or (player.state == MayoPlayer.State.NORMAL and player.movement_input().length_squared() > 0.0 \
 			and player.frame_movement.z < -0.01)
 
@@ -386,9 +388,9 @@ func _pick_refill_station() -> void:
 	var stations: Array = world.refill_stations()
 	for index in stations.size():
 		var at: Vector3 = stations[index]["position"]
-		if at.z >= TutorialWreck.SPILL_BACK - 1.0:
+		if at.z >= TutorialCourseConfig.SPILL_BACK - 1.0:
 			continue
-		var distance := at.distance_squared_to(TutorialWreck.EXIT)
+		var distance := at.distance_squared_to(TutorialCourseConfig.EXIT)
 		if distance < best:
 			best = distance
 			_station = index
@@ -434,7 +436,7 @@ func marker_position() -> Vector3:
 			return Vector3.INF
 		return _station_position
 	if stage in [Stage.MONSTER_ARRIVES, Stage.RUN]:
-		return TutorialWreck.EXIT + Vector3.UP * 1.2
+		return TutorialCourseConfig.EXIT + Vector3.UP * 1.2
 	if refill_is_open():
 		if world._local != null and supplied.has(world._local.peer_id):
 			return Vector3.INF

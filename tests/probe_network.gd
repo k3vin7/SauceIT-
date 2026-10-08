@@ -322,11 +322,21 @@ func _run() -> void:
 	# --- a client's own strand paints nothing: the server owns the grid ---
 	var before_hash: String = client_world.grid_md5()
 	client_world.debug_set_aim(0.0, -34.0)
+	# Isolate the local simulation from the server response. On a fast loopback
+	# connection the authoritative splat can make the round trip in fewer than
+	# eight physics frames, which used to make this check blame a valid server
+	# broadcast on the client. Keeping the handshake flag down only suppresses
+	# outgoing input; the client still runs its strand and accepts state.
+	var joined_before_test: bool = client_world._net._joined
+	client_world._net._joined = false
 	client_world.debug_set_input(Vector2.ZERO, false, true)
-	# Held only long enough for the client's own strand to reach the floor and
-	# land, but the server's copy of that same shooter is what marks it.
+	# Held long enough for the client's own strand to reach the floor and land.
 	await _wait(8)
 	var client_only_hash: String = client_world.grid_md5()
+	# Let the same held input reach the authority now, then wait for its splat to
+	# return. This is a separate assertion from the local-authority check above.
+	client_world._net._joined = joined_before_test
+	await _wait(8)
 	client_world.debug_set_input(Vector2.ZERO, false, false)
 	await _wait(90)
 	var settled_hash: String = client_world.grid_md5()

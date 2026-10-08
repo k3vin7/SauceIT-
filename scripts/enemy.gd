@@ -1082,9 +1082,12 @@ func _apply_pose() -> void:
 ## state packet -- so every peer gets the corrected pose without anything new
 ## being sent.
 func _settle_onto_ground() -> void:
-	if not authority:
+	if not authority or not is_inside_tree():
 		return
-	var space := get_world_3d().direct_space_state
+	var world_3d := get_world_3d()
+	if world_3d == null:
+		return
+	var space := world_3d.direct_space_state
 	var bones := _bones()
 	var worst := -INF
 	for index in [2, 1, 0]:

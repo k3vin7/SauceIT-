@@ -11,7 +11,7 @@ func _run() -> void:
 		check(tutorial.stage == MayoTutorial.Stage.RUN, "waiting falsely completed escape")
 		check(not tutorial.monster_trapped, "heavy trapped before reaching the wreck")
 		check(world._player.health == hp, "slow reader was killed during the escape prompt")
-		check(await walk(TutorialWreck.EXIT, true), "delayed escape cannot cross the passage")
+		check(await walk(TutorialCourse.EXIT, true), "delayed escape cannot cross the passage")
 		check(await until(func(): return tutorial.monster_trapped), "delayed heavy never trapped")
 		check(await until(func(): return tutorial.refill_is_open()), "delayed escape has no refill")
 		check(tutorial.current_line_id() != MayoTutorial.SAY_RUN, "stale run order survived trapping")

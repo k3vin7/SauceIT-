@@ -19,8 +19,8 @@ extends SceneTree
 #   * no bodies, no captions, no drone and no tutorial spill in those scenes
 #   * the scale test's own fixtures still exist: the player, the dummies, the
 #     stopwatch and the reset
-#   * and a plain `main.tscn` still starts the sequence, which is the thing all
-#     of the above must not have broken
+#   * and only `tutorial_world.tscn` starts the sequence; `main.tscn` is now the
+#     preserved festival combat stage used by legacy development harnesses
 
 const SCALE_SCENES := [
 	["res://test_scale_227.tscn", 2.27],
@@ -128,22 +128,20 @@ func _run() -> void:
 		scene.free()
 		await process_frame
 
-	# --- and the plain game still runs it --------------------------------
-	# The switch is per world, so turning it off in those two scenes must leave
-	# this one alone. Without this the fix above could be "the tutorial never runs".
-	var world = load("res://main.tscn").instantiate()
+	# --- and the dedicated tutorial scene still runs it -------------------
+	var world = load("res://tutorial_world.tscn").instantiate()
 	root.add_child(world)
 	await process_frame
 	await physics_frame
 	world.set_process_unhandled_input(false)
 	var tutorial: MayoTutorial = world.tutorial()
-	_check(world.tutorial_enabled, "main.tscn has the sequence switched off")
-	_check(tutorial != null, "main.tscn built no tutorial")
+	_check(world.tutorial_enabled, "tutorial_world.tscn has the sequence switched off")
+	_check(tutorial != null, "tutorial_world.tscn built no tutorial")
 	if tutorial != null:
 		await _wait(180)
 		_check(tutorial.stage == MayoTutorial.Stage.GET_SAUCE, "main did not ask for sauce")
 		_check(tutorial.marker_position() != Vector3.INF, "starting stall has no marker")
-		_check(world.has_node("TutorialSauceStall"), "main has no starting stall")
+		_check(world.has_node("TutorialSauceStation"), "tutorial has no starting station")
 		_check(world.enemy_count() == 0, "enemies appeared before sauce pickup")
 		_check(not tutorial.has_bottle(1), "main started with a bottle")
 	world.free()

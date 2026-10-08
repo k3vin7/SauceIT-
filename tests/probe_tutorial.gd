@@ -1,6 +1,6 @@
 extends SceneTree
 
-# End-to-end festival story. All traversal uses player movement, initial/refill
+# End-to-end standalone tutorial story. All traversal uses player movement, initial/refill
 # interactions use the real station reach check. Damage is injected only once
 # toast bodies are in bottle range so the test is about staging, not aim.
 var failures: Array[String] = []
@@ -64,7 +64,7 @@ func shot(label: String) -> void:
 	picture.save_png("res://reports/tutorial_flow_%s.png" % label)
 
 func fresh() -> void:
-	world = load("res://main.tscn").instantiate()
+	world = load("res://tutorial_world.tscn").instantiate()
 	root.add_child(world)
 	world.set_process_unhandled_input(false)
 	tutorial = world.tutorial()
@@ -90,8 +90,8 @@ func start_fight() -> bool:
 		check(false, "no first fight after pickup")
 		return false
 	for index in tutorial.fight_enemies:
-		check(world.enemy_at(index).position.z < TutorialWreck.SPILL_BACK,
-			"toast spawned on starting side of wreck")
+		check(world.enemy_at(index).position.z > TutorialCourse.CENTRE_Z + TutorialCourse.DEPTH * 0.5,
+			"toast spawned beyond the tutorial fight area")
 	check(await walk(Vector3(0, 0, -4)), "cannot return to the street")
 	world.debug_aim_at(Vector3(0, world._player.global_position.y, -50))
 	var crossed := {}
@@ -102,7 +102,7 @@ func start_fight() -> bool:
 			if not enemy.is_alive():
 				continue
 			living += 1
-			if enemy.position.z > TutorialWreck.CENTRE_Z + TutorialWreck.DEPTH * 0.5:
+			if enemy.position.z > TutorialCourse.CENTRE_Z + TutorialCourse.DEPTH * 0.5:
 				crossed[index] = true
 			if enemy.global_position.distance_to(world._player.global_position) < world.stream_range:
 				if _real_sauce_first_fight:
@@ -144,7 +144,11 @@ func scenario(run: bool) -> void:
 		world = null
 		return
 	await shot("02_run")
-	check(await walk(TutorialWreck.EXIT, run), "cannot cross wreck passage")
+	var escaped := await walk(TutorialCourse.EXIT, run)
+	var escape_monster: MayoEnemy = world.enemy_at(tutorial.monster_index)
+	check(escaped, "cannot cross escape passage: player=%s state=%s monster=%s" % [
+		str(world._player.global_position), str(world._player.state),
+		str(escape_monster.global_position if escape_monster != null else Vector3.INF)])
 	if not await until(func(): return tutorial.monster_trapped):
 		check(false, "monster never wedged")
 		world.free()
@@ -169,7 +173,7 @@ func scenario(run: bool) -> void:
 	check(await until(func(): return tutorial.refill_is_open()), "fresh-bottle selection did not open")
 	check(tutorial.current_line_id() != MayoTutorial.SAY_RUN, "stale run instruction after escape")
 	var station: Dictionary = world.refill_stations()[tutorial.station_index()]
-	check(station.position.z < TutorialWreck.SPILL_BACK, "refill is on wrong side")
+	check(station.position.z < TutorialCourse.SPILL_BACK, "refill is on wrong side")
 	var approach: Vector3 = station.position + station.facing * 1.5
 	# Stay clear of the booth row until aligned with its front.
 	check(await walk(Vector3(0, 0, approach.z)), "cannot reach refill street")
@@ -178,7 +182,7 @@ func scenario(run: bool) -> void:
 	check(tutorial.supplied.has(1), "early refill during dialogue was ignored")
 	check(await until(func(): return tutorial.stage == MayoTutorial.Stage.COOP_FIGHT), "no final fight")
 	check(await walk(Vector3(0, 0, approach.z)), "cannot leave refill counter")
-	check(await walk(Vector3(0, 0, TutorialWreck.CENTRE_Z - 1.4)), "cannot approach pinned monster")
+	check(await walk(Vector3(0, 0, TutorialCourse.CENTRE_Z - 1.4)), "cannot approach pinned monster")
 	world.debug_aim_at(monster.global_position)
 	world.debug_set_input(Vector2.ZERO, false, true)
 	check(await until(func(): return not monster.is_alive(), 1800), "real sauce stream cannot hit pinned monster")

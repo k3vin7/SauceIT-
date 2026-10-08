@@ -34,6 +34,7 @@ const PLAYER_CHARACTER_ANIMATIONS := [
 const StallRoofScript := preload("res://scripts/stall_roof.gd")
 const TutorialScript := preload("res://scripts/tutorial.gd")
 const TutorialWreckScript := preload("res://scripts/tutorial_wreck.gd")
+const TutorialCourseScript := preload("res://scripts/tutorial_course.gd")
 const TutorialHudScript := preload("res://scripts/tutorial_hud.gd")
 const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 	preload("res://assets/food_booths/food_booth_s1.glb"),
@@ -87,6 +88,9 @@ signal air_shot_fired(peer_id: int, from: Vector3, direction: Vector3)
 ## Fired on every peer when a bottle crosses between steady, spluttering and
 ## empty, so sound and the bottle's own look can follow it.
 signal sauce_stage_changed(peer_id: int, stage: int)
+signal menu_requested
+signal tutorial_completed
+signal stage_cleared
 ## Floats per enemy in an enemy state packet: position xyz, yaw, health, and
 ## how far over it has fallen.
 const ENEMY_STATE_STRIDE := 7
@@ -408,6 +412,10 @@ class MayoSpeck:
 @export_range(0.2, 4.0, 0.05) var burst_pressure_curve := 1.7
 
 @export_group("Tutorial")
+enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE }
+## The combat/player implementation is shared. Only this small map profile changes
+## the floor, boundaries, spawn markers and tutorial obstacles.
+@export var map_kind: MapKind = MapKind.FESTIVAL_STREET
 ## Whether this world runs the opening sequence.
 ##
 ## **Per world, not per process.** A scene that embeds `main.tscn` to get a real
@@ -421,6 +429,12 @@ class MayoSpeck:
 ## for the headless probes, which have no scene file to put an override in. Either
 ## one being set keeps the sequence out of this world.
 @export var tutorial_enabled := true
+## A stage world starts with normal equipment, shows a kill objective and lets
+## the authority decide when the initial enemy roster has been eliminated.
+@export var stage_mode := false
+## The shipped app owns networking outside the replaceable play world. Legacy
+## development scenes may keep the in-world F2 panel by leaving this enabled.
+@export var network_ui_enabled := true
 
 @export_group("Enemies")
 ## How fast they walk, as a fraction of the player's walking speed. Under 1 they
@@ -930,6 +944,9 @@ var _local: Shooter
 ## peer id -> Shooter. Offline this holds the local player alone under id 1.
 var _shooters: Dictionary = {}
 var _net: MayoNet
+## Assigned before this node enters the tree by AppRoot. Keeping it outside the
+## replaceable world preserves ENet and the RPC path through truck/stage swaps.
+var external_net: MayoNet
 var _net_panel: Control
 var _input_enabled := true
 ## Splat centre cells found this frame, flushed to the peers at the end of it.
@@ -988,7 +1005,7 @@ var _refill_stations: Array[Dictionary] = []
 ## events and nothing else -- every beat it runs is a system that was already
 ## here. See `scripts/tutorial.gd`.
 var _tutorial_start_station := -1
-var _tutorial_wreck: TutorialWreck
+var _tutorial_wreck: Node3D
 var _tutorial: MayoTutorial
 var _tutorial_hud: MayoTutorialHud
 ## Every enemy the tutorial has asked for, in the order it asked, as
@@ -1009,6 +1026,10 @@ var _spray_edge_audio: AudioStreamPlayer
 ## The tutorial's heavy footsteps. Placeholder, on the same generated tones as
 ## the rest of the sound here.
 var _footstep_voice: AudioStreamPlayer3D
+var _completion_emitted := false
+var _stage_roster_initialized := false
+var _stage_clear_emitted := false
+var _stage_objective: Label
 
 # The single-player fields the checks and the rest of this file grew up with,
 # now views onto the local player's Shooter. Nothing assigns through them.
@@ -1133,6 +1154,11 @@ func _ready() -> void:
 	_update_camera()
 
 
+func _exit_tree() -> void:
+	if is_instance_valid(external_net) and external_net.world == self:
+		external_net.bind(null)
+
+
 func _physics_process(delta: float) -> void:
 	if _local == null:
 		return
@@ -1146,6 +1172,14 @@ func _physics_process(delta: float) -> void:
 		_update_aim(shooter)
 	if _tutorial != null:
 		_tutorial.advance(delta)
+		if _tutorial.is_complete() and not _completion_emitted:
+			_completion_emitted = true
+			tutorial_completed.emit()
+			# The app may queue this world for replacement from the signal. Do not
+			# finish the old world's combat tick after ownership has moved to the
+			# recruitment map.
+			if is_queued_for_deletion() or not is_inside_tree():
+				return
 		for shooter in _shooters.values():
 			if is_instance_valid(shooter.weapon):
 				shooter.weapon.visible = (not shooter.is_local or _first_person) and _tutorial.has_bottle(shooter.peer_id)
@@ -1195,6 +1229,7 @@ func _physics_process(delta: float) -> void:
 		step_started = Time.get_ticks_usec()
 	if _is_authority():
 		_finish_wipes()
+		_check_stage_clear()
 	if debug_profile_enabled:
 		debug_splats += _pending_splats.size() / SPLAT_STRIDE
 	if is_instance_valid(_net):
@@ -1862,12 +1897,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _local == null:
 		return
 	if event.is_action_pressed("ui_cancel"):
-		get_tree().quit()
+		menu_requested.emit()
+		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("toggle_camera_mode"):
 		set_first_person(not _first_person)
 		return
-	if event.is_action_pressed("toggle_network_panel"):
+	if network_ui_enabled and event.is_action_pressed("toggle_network_panel"):
 		set_network_panel_open(not _net_panel.visible)
 		return
 	if event.is_action_pressed("mute_sound"):
@@ -2032,7 +2068,8 @@ func _build_world() -> void:
 	# else, so a street stitched out of per-segment floors would be a rewrite of
 	# the sync rather than a map. The plane is sized to the map's bounding box
 	# and offset onto it instead of sitting at the origin.
-	var plane: Dictionary = StreetMap.floor_plane()
+	var plane: Dictionary = TutorialCourseScript.floor_plane() \
+		if map_kind == MapKind.TUTORIAL_RECTANGLE else StreetMap.floor_plane()
 	_floor = FloorScript.new()
 	_floor.name = "FloorContamination"
 	_floor.floor_size = plane["size"]
@@ -2045,12 +2082,19 @@ func _build_world() -> void:
 	# is a place to stand, and the street has walls and stalls to spray. The
 	# probes that fired at them build their own slab now, where they want it,
 	# which also stops a level change from moving a test's target.
-	_build_street()
+	if map_kind == MapKind.TUTORIAL_RECTANGLE:
+		_build_tutorial_space()
+	else:
+		_build_street()
 
-	_net = MayoNet.new()
-	_net.name = "Net"
-	add_child(_net)
-	_net.bind(self)
+	if is_instance_valid(external_net):
+		_net = external_net
+		_net.bind(self)
+	else:
+		_net = MayoNet.new()
+		_net.name = "Net"
+		add_child(_net)
+		_net.bind(self)
 
 	_local = _create_shooter(1, true)
 
@@ -2099,14 +2143,20 @@ func _build_world() -> void:
 	_build_droplet_pool(pool_material)
 	_build_impact_pool(pool_material)
 	_build_crosshair()
-	_build_network_panel()
+	if network_ui_enabled:
+		_build_network_panel()
 	# Before the enemies: whether the tutorial is running decides whether the
 	# street's standing roster is placed at all.
 	_build_tutorial()
 	_build_enemies()
+	_stage_roster_initialized = stage_mode and not _enemies.is_empty()
+	_update_stage_objective()
 	_build_sauce_audio()
 	# After the street, because it bakes the street's own cells into a texture.
-	_minimap.build()
+	if map_kind == MapKind.FESTIVAL_STREET:
+		_minimap.build()
+	else:
+		_minimap.visible = false
 
 
 ## The other player is a different colour, so it is obvious which capsule on
@@ -2122,6 +2172,8 @@ func spawn_position_for(slot: int) -> Vector3:
 	# One per player the session holds. Far enough apart that nobody starts
 	# inside anyone else -- the capsules are 1.28 m across -- and clear of the
 	# three walls, which a spawn inside leaves the player stuck.
+	if map_kind == MapKind.TUTORIAL_RECTANGLE:
+		return TutorialCourseScript.spawn_position(slot)
 	const SPAWNS := [
 		Vector3(0.0, 1.28, 1.55),
 		Vector3(-2.2, 1.28, 4.2),
@@ -2424,6 +2476,13 @@ func _build_crosshair() -> void:
 	_crosshair.visible = show_crosshair
 	layer.add_child(_crosshair)
 	_hud_layer = layer
+	if stage_mode:
+		_stage_objective = Label.new()
+		_stage_objective.name = "StageObjective"
+		_stage_objective.position = Vector2(24.0, 24.0)
+		_stage_objective.add_theme_font_size_override("font_size", 22)
+		_stage_objective.add_theme_color_override("font_color", Color("fff0a8"))
+		_hud_layer.add_child(_stage_objective)
 
 
 ## Host / join panel, opened with F2 and closed again once a session is up.
@@ -2454,6 +2513,21 @@ func set_network_panel_open(open: bool) -> void:
 	if DisplayServer.get_name() == "headless":
 		return
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if open else Input.MOUSE_MODE_CAPTURED
+
+
+func set_gameplay_input_enabled(enabled: bool) -> void:
+	_input_enabled = enabled
+	set_physics_process(enabled)
+	if _local != null:
+		_local.player.frozen = not enabled
+		if not enabled:
+			_local.firing = false
+	if DisplayServer.get_name() != "headless":
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if enabled else Input.MOUSE_MODE_VISIBLE
+
+
+func gameplay_input_enabled() -> bool:
+	return _input_enabled
 
 
 func _build_environment() -> void:
@@ -2871,6 +2945,52 @@ func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3,
 	wall.brush_radius = contamination_brush_radius
 	add_child(wall)
 	_walls.push_back(wall)
+
+
+## The standalone tutorial is deliberately a small authored rectangle. It uses
+## the same contaminable floor, player, bottle and enemies as the festival
+## stage, but none of StreetMap's roads, stalls or pixel coordinates.
+func _build_tutorial_space() -> void:
+	var width: float = TutorialCourseScript.WIDTH
+	var length: float = TutorialCourseScript.LENGTH
+	var height: float = TutorialCourseScript.WALL_HEIGHT
+	var thick := 0.6
+	_create_wall("TutorialWallLeft", Vector3(-width * 0.5, height * 0.5, 0.0),
+		Vector3(thick, height, length), Color("46515b"))
+	_create_wall("TutorialWallRight", Vector3(width * 0.5, height * 0.5, 0.0),
+		Vector3(thick, height, length), Color("46515b"))
+	_create_wall("TutorialWallNorth", Vector3(0.0, height * 0.5, -length * 0.5),
+		Vector3(width, height, thick), Color("46515b"))
+	_create_wall("TutorialWallSouth", Vector3(0.0, height * 0.5, length * 0.5),
+		Vector3(width, height, thick), Color("46515b"))
+
+	var station_size := Vector3(3.2, 3.0, 1.2)
+	var start_box := {"position": TutorialCourseScript.START_STATION,
+		"size": station_size, "facing": Vector3.BACK}
+	_create_vending_machine("TutorialSauceStation", start_box)
+	_tutorial_start_station = _refill_stations.size()
+	_add_refill_station(start_box)
+	var refill_box := {"position": TutorialCourseScript.REFILL_STATION,
+		"size": station_size, "facing": Vector3.BACK}
+	_create_vending_machine("TutorialRefillStation", refill_box)
+	_add_refill_station(refill_box)
+
+	# Colour bands on the floor identify the lesson areas without extra UI.
+	for entry in [
+		[TutorialCourseScript.FIRST_FIGHT, Vector3(12.0, 0.04, 12.0), Color(0.55, 0.24, 0.20, 0.18)],
+		[Vector3(0.0, 0.02, TutorialCourseScript.CENTRE_Z), Vector3(8.0, 0.03, 15.0), Color(0.95, 0.83, 0.35, 0.14)],
+		[Vector3(0.0, 0.03, -25.0), Vector3(12.0, 0.04, 12.0), Color(0.23, 0.56, 0.38, 0.16)],
+	]:
+		var zone := MeshInstance3D.new()
+		var mesh := BoxMesh.new()
+		mesh.size = entry[1]
+		zone.mesh = mesh
+		zone.position = entry[0]
+		var material := StandardMaterial3D.new()
+		material.albedo_color = entry[2]
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		zone.material_override = material
+		add_child(zone)
 
 
 ## Builds the street from `StreetMap`: the walls that bound it, the stalls
@@ -3294,10 +3414,13 @@ const TOAST_RUSHER_PAIR_OFFSETS := [-3.0, 3.0]
 func _build_enemies() -> void:
 	# Built here rather than with the street, because it has to read the props
 	# standing on the street as well as the street itself.
-	_nav = StreetNav.new()
-	_nav.build()
-	if _tutorial_wreck != null:
-		_tutorial_wreck.block_navigation(_nav)
+	if map_kind == MapKind.FESTIVAL_STREET:
+		_nav = StreetNav.new()
+		_nav.build()
+		if _tutorial_wreck != null and _tutorial_wreck.has_method("block_navigation"):
+			_tutorial_wreck.call("block_navigation", _nav)
+	else:
+		_nav = null
 	var toast_scene := load(MOLDY_TOAST_RUSHER_SCENE_PATH) as PackedScene
 	assert(toast_scene != null, "Moldy toast rusher scene was not imported")
 	# The tutorial places its own bodies and needs the street to itself: a
@@ -3365,9 +3488,10 @@ func _build_tutorial() -> void:
 	if not tutorial_enabled or MayoTutorial.disabled:
 		return
 	show_key_legend = false
-	_tutorial_wreck = TutorialWreckScript.new() as TutorialWreck
+	_tutorial_wreck = TutorialCourseScript.new() if map_kind == MapKind.TUTORIAL_RECTANGLE \
+		else TutorialWreckScript.new()
 	add_child(_tutorial_wreck)
-	_tutorial_wreck.seed_floor(_floor)
+	_tutorial_wreck.call("seed_floor", _floor)
 	_tutorial = TutorialScript.new() as MayoTutorial
 	_tutorial.world = self
 	add_child(_tutorial)
@@ -3481,6 +3605,8 @@ func tutorial_clear_corpse(index: int) -> void:
 ## Whether a body could stand here -- the router's own answer, so the burger is
 ## never put down inside a stall or through a wall.
 func tutorial_can_stand_at(at: Vector3) -> bool:
+	if map_kind == MapKind.TUTORIAL_RECTANGLE:
+		return TutorialCourseScript.can_stand(at)
 	if _nav == null:
 		return true
 	return _nav.is_walkable(StreetMap.cell_at(at))
@@ -3515,8 +3641,33 @@ func apply_tutorial_effect(kind: int, at: Vector3) -> void:
 		_local.shake_left = _local.shake_span
 		_local.shake_degrees = 0.85 if kind == 0 else 1.8
 		_local.shake_direction = (at - _local.player.global_position).normalized()
-	if kind == 1 and _tutorial_wreck != null:
-		_tutorial_wreck.play_impact()
+	if kind == 1 and _tutorial_wreck != null and _tutorial_wreck.has_method("play_impact"):
+		_tutorial_wreck.call("play_impact")
+
+
+func _check_stage_clear() -> void:
+	if not stage_mode or not _stage_roster_initialized or _stage_clear_emitted:
+		return
+	var alive := 0
+	for enemy in _enemies:
+		if is_instance_valid(enemy) and enemy.is_alive():
+			alive += 1
+	_update_stage_objective(alive)
+	if alive == 0:
+		_stage_clear_emitted = true
+		set_gameplay_input_enabled(false)
+		stage_cleared.emit()
+
+
+func _update_stage_objective(alive := -1) -> void:
+	if _stage_objective == null:
+		return
+	if alive < 0:
+		alive = 0
+		for enemy in _enemies:
+			if is_instance_valid(enemy) and enemy.is_alive():
+				alive += 1
+	_stage_objective.text = "목표 · 남은 적 %d명 처치" % alive
 
 
 ## One caption, to everybody. Only the line's index travels: the text itself is a
@@ -3589,7 +3740,13 @@ func _advance_enemies(delta: float) -> void:
 		if _tutorial != null:
 			chasing = _tutorial.targets_for(enemy, targets)
 		# Dead ones are advanced too: they are still toppling.
+		var previous_position: Vector3 = enemy.global_position
 		var hit := enemy.advance(delta, chasing)
+		if map_kind == MapKind.TUTORIAL_RECTANGLE \
+				and _tutorial != null and _tutorial.stage == MayoTutorial.Stage.RUN \
+				and enemy.grade == MayoEnemy.Grade.HEAVY and not enemy.tutorial_trapped:
+			enemy.global_position = TutorialCourseScript.constrain_bruiser(
+				enemy.global_position, previous_position, enemy.radius)
 		if hit == null:
 			continue
 		# The swing landed. Whether it costs anything is the sequence's to say

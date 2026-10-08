@@ -58,6 +58,7 @@ const MIN_ASPECT := 4.0 / 3.0
 const MAX_ASPECT := 21.0 / 9.0
 ## How long a peer has to prove it knows the code before it is dropped.
 const AUTH_TIMEOUT := 3.0
+const AUTH_REASON_GRACE := 0.2
 ## What a generated code is made of. No 0 or O, no 1, I or L: the code is read
 ## off one screen and typed into another, and those are the pairs that get read
 ## wrong. Five characters of this is about 28 million codes, which is far more
@@ -94,6 +95,7 @@ const CODE_SWEEP_SECONDS := 60.0
 ## dropping it without a word: a player who mistyped the code should find out
 ## that they have to wait rather than that the game is broken.
 const AUTH_BLOCKED_PREFIX := "mayo1-blocked:"
+const AUTH_FULL_PREFIX := "mayo1-full:"
 ## How often one address is worth answering. A blocked address can reconnect as
 ## fast as its machine allows, and an answer to each would be a packet out for
 ## every packet in -- a reflector pointed at whoever the attacker claims to be.
@@ -137,6 +139,18 @@ const STATE_STRIDE := 16
 ## state_bytes_sent and splat_bytes_sent count it; probe_harness prints both.
 
 signal status_changed(message: String)
+signal lobby_joined
+signal roster_changed
+signal transition_requested(stage_id: String, transition_id: int)
+signal play_authorized(transition_id: int)
+signal transition_failed(reason: String)
+signal result_ready(summary: Dictionary)
+signal truck_returned
+signal session_ended(reason: String)
+
+enum SessionPhase { OFFLINE, TRUCK, LOADING, STAGE, RESULT }
+const BUSY_PREFIX := "mayo1-busy:"
+const LOAD_TIMEOUT := 20.0
 
 ## The lobby code both ends must agree on. Checked during the handshake, before
 ## a peer is a peer at all: a guest that gets it wrong is disconnected without
@@ -198,6 +212,7 @@ var blocked_replies := 0
 var _block_replies: Dictionary = {}
 ## Peers that have been told why and are dropped on the next frame.
 var _pending_drops: Array[int] = []
+var _pending_drop_after: Dictionary = {}
 ## On a guest: when the host says it may knock again.
 var _blocked_until_local := 0.0
 ## Address -> [when it may try again, how many times it has been blocked].
@@ -211,10 +226,149 @@ var splat_bytes_sent := 0
 var _refused_for_code := false
 ## Whether this peer got past the handshake into the session.
 var _joined := false
+var lobby_flow := false
+var session_phase: int = SessionPhase.OFFLINE
+var selected_stage := "stage_1"
+var _lobby_ready: Dictionary = {}
+var _transition_id := 0
+var _transition_roster := PackedInt32Array()
+var _loaded_peers: Dictionary = {}
+var _load_clock := 0.0
+var _refused_busy := false
+var _refused_full := false
+var hosted_port := DEFAULT_PORT
+var _lobby_broadcast_at := 0.0
 
 
 func bind(new_world: Node) -> void:
 	world = new_world
+
+
+func _world_ready() -> bool:
+	return world != null and (not lobby_flow or session_phase == SessionPhase.STAGE)
+
+
+func begin_host_room(port := DEFAULT_PORT, code := "", open_to_anyone := false,
+		stage_id := "stage_1") -> bool:
+	lobby_flow = true
+	selected_stage = stage_id
+	lobby_code = code.strip_edges()
+	if not host(port, open_to_anyone):
+		lobby_flow = false
+		return false
+	session_phase = SessionPhase.TRUCK
+	_joined = true
+	_slots = {1: 0}
+	_lobby_ready = {1: true}
+	lobby_joined.emit()
+	roster_changed.emit()
+	return true
+
+
+func begin_join_room(address: String, port := DEFAULT_PORT, code := "") -> bool:
+	lobby_flow = true
+	lobby_code = code.strip_edges()
+	_refused_busy = false
+	_refused_full = false
+	var connected := join(address, port)
+	if not connected:
+		lobby_flow = false
+	return connected
+
+
+func cancel_join() -> void:
+	if _online and not _joined:
+		leave()
+		_set_status("connection cancelled")
+
+
+func phase() -> int:
+	return session_phase
+
+
+func seat_assignments() -> Dictionary:
+	return _slots.duplicate()
+
+
+func lobby_ready_count() -> int:
+	return _lobby_ready.size()
+
+
+func all_lobby_ready() -> bool:
+	return session_phase == SessionPhase.TRUCK and _lobby_ready.size() == _slots.size()
+
+
+func attach_play_world(new_world: Node) -> void:
+	bind(new_world)
+	if not lobby_flow or new_world == null:
+		return
+	new_world.reset_for_join()
+	var ids: Array = _slots.keys()
+	ids.sort()
+	var mine := local_id()
+	for id in ids:
+		new_world.create_avatar(int(id), int(_slots[id]), int(id) == mine)
+	new_world.claim_avatar(mine, int(_slots.get(mine, 0)))
+	new_world.set_gameplay_input_enabled(false)
+
+
+func report_world_loaded(transition: int) -> void:
+	if session_phase != SessionPhase.LOADING or transition != _transition_id:
+		return
+	if multiplayer.is_server():
+		_mark_loaded(local_id(), transition)
+	else:
+		_report_world_loaded.rpc_id(1, transition)
+
+
+func request_stage_start() -> bool:
+	if not lobby_flow or not multiplayer.is_server():
+		_set_status("only the host can start")
+		return false
+	if session_phase != SessionPhase.TRUCK or not all_lobby_ready():
+		_set_status("waiting for every player to initialize the lobby")
+		return false
+	_transition_id += 1
+	_transition_roster = PackedInt32Array(_slots.keys())
+	_transition_roster.sort()
+	_loaded_peers.clear()
+	_load_clock = 0.0
+	session_phase = SessionPhase.LOADING
+	_begin_stage_transition.rpc(selected_stage, _transition_id, _transition_roster)
+	transition_requested.emit(selected_stage, _transition_id)
+	_set_status("loading %s" % selected_stage)
+	return true
+
+
+func finish_stage(summary := {}) -> void:
+	if not lobby_flow or not multiplayer.is_server() or session_phase != SessionPhase.STAGE:
+		return
+	session_phase = SessionPhase.RESULT
+	_show_result.rpc(summary)
+	result_ready.emit(summary)
+
+
+func return_to_truck() -> bool:
+	if not lobby_flow or not multiplayer.is_server() or session_phase != SessionPhase.RESULT:
+		return false
+	session_phase = SessionPhase.TRUCK
+	_lobby_ready = {1: true}
+	_loaded_peers.clear()
+	_transition_roster.clear()
+	_return_to_truck.rpc()
+	truck_returned.emit()
+	_set_status("truck lobby")
+	return true
+
+
+func report_lobby_initialized() -> void:
+	if not lobby_flow or session_phase != SessionPhase.TRUCK:
+		return
+	if multiplayer.is_server():
+		_lobby_ready[local_id()] = true
+		_broadcast_lobby()
+	else:
+		_report_lobby_ready.rpc_id(1)
 
 
 func is_online() -> bool:
@@ -229,6 +383,22 @@ func is_server() -> bool:
 
 func status() -> String:
 	return _status
+
+
+func connection_summary() -> String:
+	var addresses: Array[String] = []
+	for address in IP.get_local_addresses():
+		# IPv4 is the least ambiguous value to type into the current join form.
+		# Loopback remains documented as the same-machine fallback, not advertised
+		# as the address another computer should use.
+		if not address.contains(":") and not address.begins_with("127.") \
+				and address != "0.0.0.0":
+			addresses.push_back(address)
+	if addresses.is_empty():
+		addresses.push_back("127.0.0.1")
+	return "IP %s · UDP %d · 코드 %s" % [
+		", ".join(addresses), hosted_port,
+		"없음" if lobby_code.is_empty() else lobby_code]
 
 
 func local_id() -> int:
@@ -250,11 +420,14 @@ func host(port := DEFAULT_PORT, open_to_anyone := false) -> bool:
 	# Somebody else's door, and no longer the one in front of this player.
 	_blocked_until_local = 0.0
 	var peer := ENetMultiplayerPeer.new()
-	var error := peer.create_server(port, MAX_CLIENTS)
+	# Keep one authentication slot beyond the three admitted guests so a fourth
+	# can receive an explicit "room full" reason instead of a generic timeout.
+	var error := peer.create_server(port, MAX_CLIENTS + 1)
 	if error != OK:
 		_set_status("could not open port %d (error %d)" % [port, error])
 		return false
 	_peer = peer
+	hosted_port = port
 	multiplayer.multiplayer_peer = peer
 	_online = true
 	_arm_authentication()
@@ -285,9 +458,13 @@ func join(address: String, port := DEFAULT_PORT) -> bool:
 func leave() -> void:
 	if not _online:
 		return
-	multiplayer.multiplayer_peer = null
-	_peer = null
+	# Mark the teardown before detaching the peer. Some backends deliver the
+	# disconnect signal synchronously from this assignment; a handler calling
+	# leave() again must see an already-closed session instead of sending a
+	# second disconnect packet on a zero-channel ENet peer.
 	_online = false
+	_peer = null
+	multiplayer.multiplayer_peer = null
 	_client_input.clear()
 	_input_this_tick.clear()
 	_wipe_budget.clear()
@@ -304,10 +481,20 @@ func leave() -> void:
 	_blocks.clear()
 	_block_replies.clear()
 	_pending_drops.clear()
+	_pending_drop_after.clear()
 	_next_sweep = 0.0
 	_slots = {1: 0}
 	_refused_for_code = false
 	_joined = false
+	session_phase = SessionPhase.OFFLINE
+	_lobby_ready.clear()
+	_loaded_peers.clear()
+	_transition_roster.clear()
+	_load_clock = 0.0
+	_refused_busy = false
+	_refused_full = false
+	_lobby_broadcast_at = 0.0
+	lobby_flow = false
 	_set_status("offline")
 
 
@@ -338,6 +525,15 @@ func _on_peer_authenticating(id: int) -> void:
 	# A blocked address is not asked for the code at all: it is told how long it
 	# has left and dropped, before either side has said anything else.
 	if multiplayer.is_server():
+		if lobby_flow and session_phase != SessionPhase.TRUCK:
+			scene_multiplayer.send_auth(id,
+				(BUSY_PREFIX + "session already started").to_utf8_buffer())
+			_queue_drop(id)
+			return
+		if lobby_flow and _slots.size() >= MAX_CLIENTS + 1:
+			scene_multiplayer.send_auth(id, AUTH_FULL_PREFIX.to_utf8_buffer())
+			_queue_drop(id)
+			return
 		var address := _address_of(id)
 		var remaining := block_remaining(address)
 		if remaining > 0.0:
@@ -350,7 +546,7 @@ func _on_peer_authenticating(id: int) -> void:
 				# Dropped next frame rather than now: disconnecting inside this
 				# call takes the answer with it and the guest is left with a
 				# silent failure, which is the thing being fixed.
-				_pending_drops.push_back(id)
+				_queue_drop(id)
 				return
 			multiplayer.multiplayer_peer.disconnect_peer(id)
 			return
@@ -366,6 +562,12 @@ func _may_answer_block(address: String, now := _now()) -> bool:
 	return true
 
 
+func _queue_drop(id: int) -> void:
+	if not _pending_drops.has(id):
+		_pending_drops.push_back(id)
+	_pending_drop_after[id] = _now() + AUTH_REASON_GRACE
+
+
 ## The host decides; a guest accepts whatever the host says, since the host has
 ## already checked the guest by the time it answers.
 func _check_code(id: int, data: PackedByteArray) -> void:
@@ -374,6 +576,12 @@ func _check_code(id: int, data: PackedByteArray) -> void:
 		return
 	if not multiplayer.is_server():
 		var message := data.get_string_from_utf8()
+		if message.begins_with(BUSY_PREFIX):
+			_refused_busy = true
+			return
+		if message.begins_with(AUTH_FULL_PREFIX):
+			_refused_full = true
+			return
 		if message.begins_with(AUTH_BLOCKED_PREFIX):
 			# Not completed: there is nothing to join. The host is about to drop
 			# this peer, and the wait is what there is to report.
@@ -481,7 +689,7 @@ func _on_authentication_failed(_id: int) -> void:
 	# The guest is told nothing but that it was refused, so the failure has to be
 	# remembered here: the connection_failed that follows would otherwise report
 	# it as an unreachable host.
-	if not multiplayer.is_server():
+	if not multiplayer.is_server() and not _refused_busy and not _refused_full:
 		_refused_for_code = true
 
 
@@ -499,6 +707,13 @@ func _on_peer_connected(id: int) -> void:
 		return
 	var slot := _free_slot()
 	_slots[id] = slot
+	if lobby_flow:
+		_accept_lobby.rpc_id(id, id, slot, selected_stage, _roster_packet())
+		_broadcast_lobby()
+		_set_status("player %d joined the truck" % id)
+		return
+	if world == null:
+		return
 	world.create_avatar(id, slot, false)
 	# The lenses exist as of now; whatever camera this peer has already claimed
 	# has to be put on them, or it waits for the peer to change its window.
@@ -554,14 +769,27 @@ func _on_peer_disconnected(id: int) -> void:
 	_view_budget.erase(id)
 	_views.erase(id)
 	_slots.erase(id)
-	if multiplayer.is_server():
+	_lobby_ready.erase(id)
+	_loaded_peers.erase(id)
+	if multiplayer.is_server() and world != null:
 		world.remove_avatar(id)
 		_despawn_avatar.rpc(id)
+	if lobby_flow:
+		roster_changed.emit()
+		# ENet reports the disconnect before the channel is fully retired. Sending
+		# an RPC from inside that callback can target a zero-channel peer when two
+		# players leave together, so debounce the compact roster publication until
+		# ENet has retired every disconnect from this burst.
+		if multiplayer.is_server():
+			_lobby_broadcast_at = _now() + 0.1
+		if session_phase == SessionPhase.LOADING:
+			_try_authorize_play()
 	_set_status("player %d left" % id)
 
 
 func _on_connected_to_server() -> void:
-	_joined = true
+	if not lobby_flow:
+		_joined = true
 	_blocked_until_local = 0.0
 	# The world is not touched here: the server's first message does that, so
 	# that a spawn cannot land before the reset and be wiped by it.
@@ -570,12 +798,16 @@ func _on_connected_to_server() -> void:
 
 func _on_connection_failed() -> void:
 	var refused := _refused_for_code
+	var busy := _refused_busy
+	var full := _refused_full
 	var waiting := blocked_seconds()
 	leave()
 	if waiting > 0:
 		_set_status("blocked, %d s left" % waiting)
 		return
-	_set_status("wrong lobby code" if refused else "connection failed")
+	_set_status("room is full" if full else (
+		"session is already in progress" if busy else (
+		"wrong lobby code" if refused else "connection failed")))
 
 
 func _on_server_disconnected() -> void:
@@ -583,18 +815,207 @@ func _on_server_disconnected() -> void:
 	# handshake, which is the only thing the host drops a peer over before it has
 	# a body. Once it is in, the same signal means what it always did.
 	var refused := _refused_for_code or not _joined
+	var busy := _refused_busy
+	var full := _refused_full
 	var waiting := blocked_seconds()
+	var was_lobby_flow := lobby_flow
 	leave()
-	world.reset_to_offline()
+	if world != null and not was_lobby_flow:
+		world.reset_to_offline()
 	if waiting > 0:
 		_set_status("blocked, %d s left" % waiting)
 		return
-	_set_status("wrong lobby code" if refused else "host closed the session")
+	var reason := "room is full" if full else (
+		"session is already in progress" if busy else (
+		"wrong lobby code" if refused else "host closed the session"))
+	_set_status(reason)
+	session_ended.emit(reason)
 
 
 func _set_status(message: String) -> void:
 	_status = message
 	status_changed.emit(message)
+
+
+# --------------------------------------------------------------------------
+# Persistent truck / stage session flow
+# --------------------------------------------------------------------------
+
+func _roster_packet() -> PackedInt32Array:
+	var packet := PackedInt32Array()
+	var ids: Array = _slots.keys()
+	ids.sort()
+	for id in ids:
+		packet.push_back(int(id))
+		packet.push_back(int(_slots[id]))
+	return packet
+
+
+func _apply_roster_packet(packet: PackedInt32Array) -> bool:
+	if packet.size() % 2 != 0 or packet.size() > (MAX_CLIENTS + 1) * 2:
+		return false
+	var parsed := {}
+	var used := {}
+	for index in range(0, packet.size(), 2):
+		var id := int(packet[index])
+		var seat := int(packet[index + 1])
+		if id <= 0 or seat < 0 or seat > MAX_CLIENTS or parsed.has(id) or used.has(seat):
+			return false
+		parsed[id] = seat
+		used[seat] = true
+	_slots = parsed
+	return true
+
+
+func _broadcast_lobby() -> void:
+	if not lobby_flow or not multiplayer.is_server():
+		return
+	var ready := PackedInt32Array(_lobby_ready.keys())
+	ready.sort()
+	var packet := _roster_packet()
+	for peer_id in _slots.keys():
+		if int(peer_id) != 1 and _peer_can_receive(int(peer_id)):
+			_sync_lobby.rpc_id(int(peer_id), packet, ready, selected_stage, session_phase)
+	roster_changed.emit()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _accept_lobby(id: int, seat: int, stage_id: String,
+		packet: PackedInt32Array) -> void:
+	if multiplayer.is_server() or not lobby_flow or not _apply_roster_packet(packet):
+		return
+	if not _slots.has(id) or int(_slots[id]) != seat:
+		return
+	_joined = true
+	_refused_for_code = false
+	_refused_busy = false
+	_refused_full = false
+	session_phase = SessionPhase.TRUCK
+	selected_stage = stage_id
+	_set_status("joined truck lobby as player %d" % id)
+	lobby_joined.emit()
+	roster_changed.emit()
+	_report_lobby_ready.rpc_id(1)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_lobby(packet: PackedInt32Array, ready: PackedInt32Array,
+		stage_id: String, remote_phase: int) -> void:
+	if multiplayer.is_server() or not lobby_flow or not _apply_roster_packet(packet):
+		return
+	selected_stage = stage_id
+	if remote_phase >= SessionPhase.OFFLINE and remote_phase <= SessionPhase.RESULT:
+		session_phase = remote_phase
+	_lobby_ready.clear()
+	for id in ready:
+		if _slots.has(id):
+			_lobby_ready[id] = true
+	roster_changed.emit()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _report_lobby_ready() -> void:
+	if not lobby_flow or not multiplayer.is_server() or session_phase != SessionPhase.TRUCK:
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if not _slots.has(sender):
+		return
+	_lobby_ready[sender] = true
+	_broadcast_lobby()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _begin_stage_transition(stage_id: String, transition: int,
+		participants: PackedInt32Array) -> void:
+	if multiplayer.is_server() or not lobby_flow or session_phase != SessionPhase.TRUCK:
+		return
+	if not participants.has(local_id()) or transition <= _transition_id:
+		return
+	selected_stage = stage_id
+	_transition_id = transition
+	_transition_roster = participants
+	_loaded_peers.clear()
+	_load_clock = 0.0
+	session_phase = SessionPhase.LOADING
+	_set_status("loading %s" % stage_id)
+	transition_requested.emit(stage_id, transition)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _report_world_loaded(transition: int) -> void:
+	if not lobby_flow or not multiplayer.is_server():
+		return
+	_mark_loaded(multiplayer.get_remote_sender_id(), transition)
+
+
+func _mark_loaded(peer_id: int, transition: int) -> void:
+	if session_phase != SessionPhase.LOADING or transition != _transition_id:
+		return
+	if not _transition_roster.has(peer_id) or not _slots.has(peer_id):
+		return
+	_loaded_peers[peer_id] = true
+	_try_authorize_play()
+
+
+func _try_authorize_play() -> void:
+	if not multiplayer.is_server() or session_phase != SessionPhase.LOADING:
+		return
+	for id in _transition_roster:
+		if _slots.has(id) and not _loaded_peers.has(id):
+			return
+	session_phase = SessionPhase.STAGE
+	_authorize_play.rpc(_transition_id)
+	play_authorized.emit(_transition_id)
+	_set_status("stage started")
+
+
+@rpc("authority", "call_remote", "reliable")
+func _authorize_play(transition: int) -> void:
+	if multiplayer.is_server() or session_phase != SessionPhase.LOADING \
+			or transition != _transition_id:
+		return
+	session_phase = SessionPhase.STAGE
+	play_authorized.emit(transition)
+	_set_status("stage started")
+
+
+func _fail_loading(reason: String) -> void:
+	if not multiplayer.is_server() or session_phase != SessionPhase.LOADING:
+		return
+	session_phase = SessionPhase.TRUCK
+	_lobby_ready = {1: true}
+	_loading_failed.rpc(reason)
+	transition_failed.emit(reason)
+	_set_status(reason)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _loading_failed(reason: String) -> void:
+	if multiplayer.is_server() or session_phase != SessionPhase.LOADING:
+		return
+	session_phase = SessionPhase.TRUCK
+	transition_failed.emit(reason)
+	_set_status(reason)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _show_result(summary: Dictionary) -> void:
+	if multiplayer.is_server() or session_phase != SessionPhase.STAGE:
+		return
+	session_phase = SessionPhase.RESULT
+	result_ready.emit(summary)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _return_to_truck() -> void:
+	if multiplayer.is_server() or session_phase != SessionPhase.RESULT:
+		return
+	session_phase = SessionPhase.TRUCK
+	_lobby_ready.clear()
+	_loaded_peers.clear()
+	_transition_roster.clear()
+	truck_returned.emit()
+	_set_status("truck lobby")
 
 
 # --------------------------------------------------------------------------
@@ -658,7 +1079,7 @@ static func wrap_angle(value: float) -> float:
 ## Called at the end of the world's physics frame: the server pushes the frame's
 ## splats and the state of every body, the client has already sent its input.
 func end_of_frame(splats: PackedInt32Array) -> void:
-	if not _online or not multiplayer.is_server():
+	if not _online or not multiplayer.is_server() or not _world_ready():
 		return
 	var guests := multiplayer.get_peers().size()
 	if not splats.is_empty():
@@ -696,7 +1117,7 @@ func request_wipe() -> void:
 ## clamps above, like every other client input.
 @rpc("any_peer", "call_remote", "reliable")
 func _request_wipe() -> void:
-	if not multiplayer.is_server():
+	if not multiplayer.is_server() or not _world_ready():
 		return
 	var sender := multiplayer.get_remote_sender_id()
 	if _wipe_budget.get(sender, WIPE_REQUESTS_PER_SECOND) < 1.0:
@@ -717,7 +1138,7 @@ func request_refill(sauce: int) -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func _request_refill(sauce: int) -> void:
-	if not multiplayer.is_server():
+	if not multiplayer.is_server() or not _world_ready():
 		return
 	var sender := multiplayer.get_remote_sender_id()
 	if _refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND) < 1.0:
@@ -737,6 +1158,8 @@ func broadcast_refill(peer_id: int, sauce: int) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _apply_refill(peer_id: int, sauce: int) -> void:
+	if not _world_ready():
+		return
 	world.apply_refill(peer_id, sauce)
 
 
@@ -744,6 +1167,8 @@ func _apply_refill(peer_id: int, sauce: int) -> void:
 ## when it has changed, and no more often than the host will listen, so the host
 ## never has to drop a report an honest client sent.
 func report_view(fov_degrees: float, aspect: float, delta: float) -> void:
+	if not _world_ready():
+		return
 	_view_cooldown = maxf(_view_cooldown - delta, 0.0)
 	# The host has nobody to ask, so it clamps its own camera the same way and
 	# paints its own lenses with the answer. Offline is the same case.
@@ -772,7 +1197,7 @@ func report_view(fov_degrees: float, aspect: float, delta: float) -> void:
 ## may be, and back to the sender as the values it has to render with.
 @rpc("any_peer", "call_remote", "reliable")
 func _submit_view(fov_degrees: float, aspect: float) -> void:
-	if not multiplayer.is_server():
+	if not multiplayer.is_server() or not _world_ready():
 		return
 	var sender := multiplayer.get_remote_sender_id()
 	if _view_budget.get(sender, VIEW_REPORTS_PER_SECOND) < 1.0:
@@ -793,7 +1218,7 @@ func _submit_view(fov_degrees: float, aspect: float) -> void:
 ## everyone sees is the host's either way.
 @rpc("authority", "call_remote", "reliable")
 func _accept_view(fov_degrees: float, aspect: float) -> void:
-	if multiplayer.is_server():
+	if multiplayer.is_server() or not _world_ready():
 		return
 	_view_acked = true
 	world.apply_view(fov_degrees, aspect)
@@ -824,7 +1249,7 @@ func _within_budget(sender: int) -> bool:
 
 func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
 		yaw: float, pitch: float, character_index := 0) -> void:
-	if not _online or multiplayer.is_server():
+	if not _online or multiplayer.is_server() or not _world_ready():
 		return
 	# The handshake takes a few frames, and the keys sent during it have nowhere
 	# to go yet.
@@ -836,7 +1261,7 @@ func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
 ## The server applies the last input it heard from each client before running
 ## the bodies, so a client that misses a tick keeps walking rather than stopping.
 func apply_client_input() -> void:
-	if not _online or not multiplayer.is_server():
+	if not _online or not multiplayer.is_server() or not _world_ready():
 		return
 	# A fresh allowance every tick. Anything a peer sent past last tick's was
 	# dropped as it arrived, so there is nothing here to catch up on.
@@ -899,7 +1324,7 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 @rpc("any_peer", "call_remote", "unreliable_ordered")
 func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
 		yaw: float, pitch: float, character_index := 0) -> void:
-	if not multiplayer.is_server():
+	if not multiplayer.is_server() or not _world_ready():
 		return
 	if not _within_budget(multiplayer.get_remote_sender_id()):
 		return
@@ -916,6 +1341,8 @@ func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
+	if not _world_ready():
+		return
 	debug_state_packets += 1
 	for slot in ids.size():
 		var index := slot * STATE_STRIDE
@@ -953,6 +1380,8 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _apply_enemy_state(data: PackedFloat32Array) -> void:
+	if not _world_ready():
+		return
 	world.apply_enemy_state(data)
 
 
@@ -975,6 +1404,8 @@ func send_enemy_shake(enemy_index: int, peers: PackedInt32Array,
 @rpc("authority", "call_remote", "reliable")
 func _apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
 		degrees: float, seconds: float, accent := 0) -> void:
+	if not _world_ready():
+		return
 	# From the server, so the range checks are about surviving a corrupt packet
 	# rather than about a hostile client -- but they are free and the rule in
 	# this file is that nothing off the wire is trusted unchecked.
@@ -1007,6 +1438,8 @@ func broadcast_tutorial_enemy(kind: int, at: Vector3) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _add_tutorial_enemy(kind: int, at: Vector3) -> void:
+	if not _world_ready():
+		return
 	if not all_finite([at.x, at.y, at.z]):
 		rejected_packets += 1
 		return
@@ -1020,6 +1453,8 @@ func broadcast_tutorial_effect(kind: int, at: Vector3) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _apply_tutorial_effect(kind: int, at: Vector3) -> void:
+	if not _world_ready():
+		return
 	if kind not in [0, 1] or not all_finite([at.x, at.y, at.z]):
 		return
 	world.apply_tutorial_effect(kind, at)
@@ -1047,6 +1482,8 @@ func broadcast_tutorial_cancel(tag: int) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _apply_tutorial_cancel(tag: int) -> void:
+	if not _world_ready():
+		return
 	world.apply_tutorial_cancel(tag)
 
 
@@ -1059,6 +1496,8 @@ func send_tutorial_line(peer_id: int, line_id: int) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _apply_tutorial_line(line_id: int, urgent: bool, tag: int) -> void:
+	if not _world_ready():
+		return
 	world.apply_tutorial_line(line_id, urgent, tag)
 
 
@@ -1080,22 +1519,30 @@ func send_tutorial_state(peer_id: int, data: PackedInt32Array) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _apply_tutorial_state(data: PackedInt32Array) -> void:
+	if not _world_ready():
+		return
 	world.apply_tutorial_state(data)
 
 
 @rpc("authority", "call_remote", "reliable")
 func _apply_splats(data: PackedInt32Array) -> void:
+	if not _world_ready():
+		return
 	world.apply_splats(data)
 
 
 @rpc("authority", "call_remote", "reliable")
 func _spawn_avatar(id: int, slot: int) -> void:
+	if not _world_ready():
+		return
 	_slots[id] = slot
 	world.create_avatar(id, slot, false)
 
 
 @rpc("authority", "call_remote", "reliable")
 func _despawn_avatar(id: int) -> void:
+	if not _world_ready():
+		return
 	world.remove_avatar(id)
 
 
@@ -1129,9 +1576,16 @@ func _ready() -> void:
 	process_physics_priority = -20
 
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	_drop_pending()
+	if _lobby_broadcast_at > 0.0 and _now() >= _lobby_broadcast_at:
+		_lobby_broadcast_at = 0.0
+		_broadcast_lobby()
 	apply_client_input()
+	if lobby_flow and multiplayer.is_server() and session_phase == SessionPhase.LOADING:
+		_load_clock += delta
+		if _load_clock >= LOAD_TIMEOUT:
+			_fail_loading("stage loading timed out; returned to truck")
 
 
 ## Peers that were answered last frame. Whatever was said to them has had a frame
@@ -1139,6 +1593,20 @@ func _physics_process(_delta: float) -> void:
 func _drop_pending() -> void:
 	if _pending_drops.is_empty() or not _online:
 		return
-	for id in _pending_drops:
-		multiplayer.multiplayer_peer.disconnect_peer(id)
-	_pending_drops.clear()
+	var now := _now()
+	for index in range(_pending_drops.size() - 1, -1, -1):
+		var id := _pending_drops[index]
+		if now < float(_pending_drop_after.get(id, now)):
+			continue
+		if _peer_can_receive(id):
+			multiplayer.multiplayer_peer.disconnect_peer(id)
+		_pending_drops.remove_at(index)
+		_pending_drop_after.erase(id)
+
+
+func _peer_can_receive(id: int) -> bool:
+	var enet := _peer as ENetMultiplayerPeer
+	if enet == null:
+		return false
+	var packet_peer := enet.get_peer(id)
+	return packet_peer != null and packet_peer.get_state() == ENetPacketPeer.STATE_CONNECTED

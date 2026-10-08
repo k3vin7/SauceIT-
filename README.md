@@ -4,16 +4,16 @@ Godot 4 co-op prototype. You spray sauce at food monsters on a festival street, 
 
 It began as a step-1 study of one continuous viscous mayonnaise strand -- per-point ballistic drop, wall attachment, persistent grid contamination -- and most of this document is still about how those work, because they are still the core. The sections below describe what is **in the build today**.
 
-Where it is going next -- a title screen, a recruitment hub, a truck lobby and selectable stages -- is planned separately in [`reports/game_flow_plan_2026_10_08.md`](reports/game_flow_plan_2026_10_08.md). None of that is built yet.
+The playable application now has a persistent title/tutorial/recruitment/truck/stage flow. The older technical sections below still document the combat simulation in detail.
 
 ## Run
 
-1. Open this directory in Godot 4.4 or newer.
-2. Run the project (`F6`/`F5`). The main scene is already configured.
-3. Move with `WASD`, hold `Shift` to run, `Space` to jump, aim with the mouse, and hold the left mouse button to fire. `R` wipes sauce off your screen. `F1` switches between first person and the over-the-shoulder third-person camera. `Esc` exits.
-4. `E` at one of the blue stalls fills the sauce bottle. Fire runs about a second on a full bottle, then pauses half a second and goes again on its own if you are still holding; each squirt is shorter than the last, so the stalls are where you go when they stop reaching.
-5. Spray the floor, then run across your own mayo. Running over a painted cell knocks you down; walking over it does not.
-6. `F2` opens the LAN panel; without it the game is the single-player one it has always been.
+1. Open this directory in Godot 4.4 or newer and run the project with `F5`. `app.tscn` is the configured entry scene and opens the **SAUCE IT!** title.
+2. Choose **게임 시작**. A fresh profile enters the rectangular tutorial; completing it writes `tutorial_completed` to `user://sauce_it.cfg` and moves to the recruitment office. Leaving early does not mark it complete. Later launches go straight to the office.
+3. In the office, move close to the large screen, look at it, and press `E`. Create a room or join one by host IP, port and admission code. Once authentication and the initial roster sync finish, the player enters the truck.
+4. The host chooses the available stage when creating the room, then presses **시작하기** in the truck. Everyone loads together and combat remains locked until every fixed participant reports ready. Clearing the objective opens the result screen; only the host can return everyone to the same truck session.
+
+Combat controls are `WASD`, `Shift` to run, `Space` to jump, mouse aim, left mouse to fire, `R` to wipe the visor, `F1` to switch camera, and `E` to refill. `Esc` opens the appropriate back/pause menu instead of quitting immediately. Options apply master volume and mouse sensitivity immediately and persist in the same save file.
 
 The mouse is captured and there is no on-screen cursor: aiming accumulates yaw and pitch from relative mouse motion, FPS-style, and a fixed crosshair marks the centre of the screen. `WASD` moves relative to where you are facing. Both camera modes run the same aim code and differ only in where the camera sits, so switching does not change how the weapon points.
 
@@ -27,7 +27,9 @@ All requested baseline values are under **Mayo Stream — Reference Values** and
 
 **Weapon Hold** places the sauce bottle: right, up and forward offsets from the eye, plus its radius and length. The bottle is a first-person viewmodel — in third person it would sit inside the capsule, so it is hidden. `Aim Convergence Distance` is the distance along the view axis where the strand crosses the crosshair; without it an off-centre nozzle fires parallel to the view and misses the reticle by the full hold offset (measured: 0.267 m).
 
-### The tutorial street
+### The festival street (stage 1)
+
+The generated street and all of its props are preserved as `stage_1_festival.tscn`. It runs normal combat with a full starting bottle, the initial enemy roster, and a server-authoritative “defeat all target enemies” clear condition. Tutorial dialogue, protection and scripted spawns do not run there. `tutorial_world.tscn` instead reuses the same player, sauce and enemy systems on a small `TutorialCourse` rectangle whose named markers supply the pickup, fights, escape gap, refill and finish positions.
 
 `scripts/street_map.gd` builds the level off the Haapsalu *maitsete promenaad* festival map. It is generated rather than authored, and the whole thing is one lattice: a cell is one person wide (the capsule's 1.28 m diameter) times `SCALE`, and every street is declared as `ROAD_CELLS = 8` of them. That is why "the road is eight people wide" stays true — it is the literal statement in the code, not a metre figure copied into six rectangles that drift apart when one is edited. `SCALE` is 3.6, so a cell is 4.61 m and a street is 36.86 m across; the promenade covers 295 × 382 m. **Wall height no longer rides on it** — the streets have been widened twice without the walls being asked to grow with them, so `WALL_HEIGHT` is now stated outright at 12.6 m. The trade is worth knowing: a wider street is a longer sightline over a wall of fixed height, so at some width the far side of the map starts showing above them.
 
@@ -292,7 +294,9 @@ The tank is drawn under the health bar, with a notch at `burst_midpoint` where t
 
 ### LAN multiplayer (up to 4 players)
 
-`F2` opens the connection panel: one player presses **호스트 시작**, the other types the host's IP and presses **접속**. Port 24565 by default. No lobby and no matchmaking — each peer that connects takes the next free slot (`MAX_CLIENTS = 3`, so four players including the host), and the panel closes straight back into the game. Nothing about this changes the offline game: with no session, the world is its own authority and runs exactly the code it ran before.
+The shipped flow opens networking from the recruitment-office screen. One machine hosts on port 24565 by default and shares its reachable IP, port, and admission code; guests enter all three values. The code authenticates a connection but does not discover a room. The connection and `MayoNet` node survive truck → loading → stage → result → truck transitions. Seats are assigned by the host and synchronized as `peer_id → seat_index`; three guests plus the host make the four-player maximum. New guests receive explicit wrong-code, room-full, connection-failed, or already-in-progress status instead of being moved early on a successful `join()` call.
+
+This is still direct ENet, with no central matchmaking server, public room list, NAT traversal, relay, Steam integration, or host migration. On one LAN, join the host's private address. Across the internet, the host must make the selected UDP port reachable (normally with router port forwarding and firewall permission) and share their public address. The host machine is the authority and closing it ends the room. `F2` remains available only in the standalone `main.tscn` combat-development scene; it does not bypass the shipped recruitment and truck flow.
 
 The split is server-authoritative, with one deliberate exception:
 
@@ -303,7 +307,7 @@ The split is server-authoritative, with one deliberate exception:
 * **Client input is validated, always.** Nothing a client sends is trusted. The keyboard path bounds itself — `Input.get_vector` never returns more than a full stick, the aim clamps to the pitch limit as the mouse moves — but a packet carries no such guarantee, and its values go straight into a body the server simulates. Every client RPC runs its floats through `MayoNet.all_finite` and drops the whole packet if any is NaN or infinite, then clamps each one to what the keys could have produced: `clamp_direction` for the move vector, `clamp_angle` for the pitch, `wrap_angle` for the yaw. Unbounded, a move vector is a speed hack; a single NaN is worse, because the server writes it into the next state packet and both screens follow it. **Any client input added later goes through the same helpers** — those are the only doors into the simulation from outside.
 * **Slipping is the server's.** It tests its own grid against its own bodies, and the fall state travels with its timer, so the stumble, the fall, the skid and standing up play out in the same order on both screens, the client trailing by the latency and nothing more. `probe_network` used to demand they read the same state on the *identical physics frame*, which is not a claim about correctness but about latency: state is sent once a physics frame and delivered once a *rendered* frame, so a level heavy enough to run several physics steps per rendered frame puts the client further behind and the check failed. It now allows the client to trail by up to three frames and fails if it ever shows a state the host has not just been in — lagging is the network, inventing or skipping one is a bug — and separately that the client went through every state the host did, so it cannot pass by sitting on a stale one.
 
-The session is not otherwise hardened, and is not meant to be: ENet here is unencrypted and unauthenticated, so anyone on the same LAN can take the second slot. The validation above is about not letting a client corrupt the simulation, not about keeping strangers out.
+The admission code is a lightweight application handshake, not encryption. ENet traffic is not end-to-end encrypted and the implementation is intended for direct sessions between players who already trust the host. The input validation above prevents a client from corrupting simulation state; it is not an internet account or identity system.
 
 `probe_determinism.gd` is what holds the grid claim up, and `probe_network.gd` runs an actual two-peer session in one process and checks the four things that matter: both screens' grids hash the same, A's mayo trips B, A sees B go down, and the fall states agree on every frame.
 
@@ -411,7 +415,7 @@ From the editor it is **not** `F5` — that always runs the project's main scene
 
 Host and client each get their own `SubViewport`, and so their own 3D world — sharing one would put both floors and all four capsules in the same physics space — and their own `MultiplayerAPI`, talking over the loopback exactly as two machines would. Both screens are shown side by side at the same brightness, which is the point: you are comparing what they draw. `Tab` moves the keyboard and mouse between them, or `1` and `2` pick a side outright, and the label says which one you are driving. The side you are not driving has its keys held at zero rather than reading the same keyboard, since `Input` is global and both worlds can see it.
 
-It is a development harness, not a game mode. The shipped scene is untouched.
+It is a development harness, not a game mode. `main.tscn` is the standalone festival-combat development scene (including the F2 panel), while the shipped project entry is `app.tscn`. Run `tutorial_world.tscn`, `recruitment_map.tscn`, `truck_lobby.tscn`, or `stage_1_festival.tscn` with `F6` when working on one space in isolation.
 
 ## Verification
 
@@ -427,6 +431,11 @@ Then:
 
 ```sh
 godot --headless --path . --script res://tests/smoke_test.gd
+godot --headless --path . --script res://tests/probe_game_flow.gd             # save/routing, maps, office screen, stage registry
+godot --headless --path . --script res://tests/probe_lobby_flow.gd            # real ENet: truck/loading/stage/result, 4-player cap, reconnect
+godot --headless --path . --script res://tests/probe_tutorial.gd              # complete the rectangular tutorial in solo paths
+godot --headless --path . --script res://tests/probe_tutorial_actions.gd      # pickup/refill/fight gates
+godot --headless --path . --script res://tests/probe_tutorial_scenes.gd       # tutorial/stage/dev scene isolation
 godot --headless --path . --script res://tests/profile_baseline.gd
 
 # Measurement harness
@@ -498,15 +507,14 @@ In:
 * **Enemies** -- hamburger monsters and moldy toast rushers, with sight ranges, chase and gait.
 * **Party** -- health, going down, being revived, and a party health HUD.
 * **Four playable characters**, switched with `C`.
-* **The street** -- the Haapsalu *maitsete promenaad* map, generated from a lattice.
+* **Four spaces** -- rectangular tutorial, local recruitment office, four-seat military truck graybox, and the preserved Haapsalu festival street as stage 1.
 * **Minimap**, key legend, crosshair, sauce audio.
-* **LAN co-op** for up to four players, server-authoritative.
-* **The opening tutorial sequence**, which runs on the street itself.
+* **Persistent app flow** -- title, saved options/tutorial progress, office recruitment, truck lobby, coordinated loading, stage result and truck return.
+* **LAN/direct-IP co-op** for up to four players, server-authoritative, with an admission-code handshake and fixed transition roster.
+* **Solo tutorial** on a marker-configured course, separated from the festival stage.
 
-Not in, and the subject of [`reports/game_flow_plan_2026_10_08.md`](reports/game_flow_plan_2026_10_08.md):
+Not in:
 
-* No title screen, menu or options.
-* No saving of any kind -- nothing is written to `user://`.
-* No map selection. `main.tscn` is the game, and the street is compiled into it.
-* No lobby, no player list, no matchmaking.
-* No stage clear condition.
+* Central matchmaking, a public room browser, NAT traversal, relay transport, Steam services, or host migration.
+* More playable stages. The registry deliberately exposes only `stage_1`; it does not present placeholder choices or auto-chain stages.
+* Final office/truck art or a dedicated sitting animation. Both spaces are functional 3D grayboxes, and truck characters use a temporary lowered, slightly leaned seated pose.
