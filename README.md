@@ -9,7 +9,7 @@ The playable application now has a persistent title/tutorial/recruitment/truck/s
 ## Run
 
 1. Open this directory in Godot 4.4 or newer and run the project with `F5`. `app.tscn` is the configured entry scene and opens the **SAUCE IT!** title.
-2. Choose **게임 시작**. A fresh profile enters the rectangular tutorial; completing it writes `tutorial_completed` to `user://sauce_it.cfg` and moves to the recruitment office. Leaving early does not mark it complete. Later launches go straight to the office.
+2. Choose **게임 시작**. A fresh profile enters the rectangular tutorial; completing it writes `tutorial_completed` to `user://sauce_it.cfg` and moves to the recruitment office. Later launches go straight to the office, while **튜토리얼 다시 하기** on the title screen lets a completed profile replay it at any time. Leaving early does not mark it complete.
 3. In the office, move close to the large screen, look at it, and press `E`. Create a room or join one by host IP, port and admission code. Once authentication and the initial roster sync finish, the player enters the truck.
 4. The host chooses the available stage when creating the room, then presses **시작하기** in the truck. Everyone loads together and combat remains locked until every fixed participant reports ready. Clearing the objective opens the result screen; only the host can return everyone to the same truck session.
 

@@ -1,7 +1,7 @@
 extends SceneTree
 
 var failures: Array[String] = []
-var test_save := "/tmp/sauce_it_flow_test_%d.cfg" % Time.get_ticks_usec()
+var test_save := "res://tmp/sauce_it_flow_test_%d.cfg" % Time.get_ticks_usec()
 
 
 func _initialize() -> void:
@@ -17,6 +17,14 @@ func _frames(count: int) -> void:
 	for _index in count:
 		await process_frame
 		await physics_frame
+
+
+func _find_button(node: Node, text: String) -> Button:
+	for child in node.find_children("*", "Button", true, false):
+		var button := child as Button
+		if button != null and button.text == text:
+			return button
+	return null
 
 
 func _run() -> void:
@@ -108,13 +116,15 @@ func _run() -> void:
 	var app_scene := load("res://app.tscn") as PackedScene
 	_check(app_scene != null, "app entry scene does not load")
 	if app_scene != null:
-		var app_save := "/tmp/sauce_it_app_test_%d.cfg" % Time.get_ticks_usec()
+		var app_save := "res://tmp/sauce_it_app_test_%d.cfg" % Time.get_ticks_usec()
 		var app = app_scene.instantiate()
 		app.save_path_override = app_save
 		root.add_child(app)
 		await _frames(2)
 		_check(app.flow == SauceApp.Flow.TITLE, "app did not begin at title")
 		_check(app.get_node_or_null("TitleUI") != null, "SAUCE IT title UI was not created")
+		_check(_find_button(app.get_node("TitleUI"), "튜토리얼 다시 하기") == null,
+			"fresh profile incorrectly offered tutorial replay")
 		app._start_game()
 		await _frames(2)
 		_check(app.flow == SauceApp.Flow.TUTORIAL,
@@ -145,10 +155,35 @@ func _run() -> void:
 		returning_app.save_path_override = app_save
 		root.add_child(returning_app)
 		await _frames(2)
+		var replay_button := _find_button(
+			returning_app.get_node("TitleUI"), "튜토리얼 다시 하기")
+		_check(replay_button != null,
+			"completed profile did not offer tutorial replay on the title screen")
 		returning_app._start_game()
 		await _frames(2)
 		_check(returning_app.flow == SauceApp.Flow.RECRUITMENT,
 			"returning completed profile did not skip the tutorial")
+		returning_app._open_pause()
+		_check(returning_app._pause_layer != null,
+			"pause menu did not open from recruitment")
+		returning_app._open_options()
+		_check(returning_app._options_layer != null,
+			"options did not open on top of the pause menu")
+		returning_app._close_options()
+		_check(returning_app._mouse_should_be_visible(),
+			"closing pause-menu options would capture the cursor behind the pause menu")
+		returning_app._close_pause()
+		_check(not returning_app._mouse_should_be_visible(),
+			"closing the pause menu did not restore gameplay cursor capture")
+		returning_app._show_title()
+		await _frames(2)
+		replay_button = _find_button(
+			returning_app.get_node("TitleUI"), "튜토리얼 다시 하기")
+		if replay_button != null:
+			replay_button.pressed.emit()
+			await _frames(2)
+		_check(returning_app.flow == SauceApp.Flow.TUTORIAL,
+			"tutorial replay button did not enter the tutorial")
 		returning_app.free()
 		DirAccess.remove_absolute(app_save)
 

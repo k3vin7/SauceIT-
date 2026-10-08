@@ -100,6 +100,8 @@ func _show_title() -> void:
 	subtitle.modulate = Color(0.72, 0.8, 0.84)
 	column.add_child(subtitle)
 	column.add_child(_button("게임 시작", _start_game))
+	if save_store.tutorial_completed:
+		column.add_child(_button("튜토리얼 다시 하기", _show_tutorial))
 	column.add_child(_button("옵션", _open_options))
 	column.add_child(_button("종료", func(): get_tree().quit()))
 
@@ -558,4 +560,13 @@ func _set_mouse_visible(visible: bool) -> void:
 
 
 func _restore_mouse_for_flow() -> void:
-	_set_mouse_visible(flow in [Flow.TITLE, Flow.TRUCK_LOBBY, Flow.RESULT])
+	_set_mouse_visible(_mouse_should_be_visible())
+
+
+func _mouse_should_be_visible() -> bool:
+	# Options can be opened on top of the pause menu. Closing only that top
+	# layer must not capture the cursor while the pause menu is still active.
+	for layer in [_options_layer, _pause_layer, _recruitment_layer]:
+		if layer != null and is_instance_valid(layer):
+			return true
+	return flow in [Flow.TITLE, Flow.TRUCK_LOBBY, Flow.RESULT]
