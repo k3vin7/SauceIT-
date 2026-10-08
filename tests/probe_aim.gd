@@ -77,11 +77,17 @@ func _run() -> void:
 	await physics_frame
 	var eye: Vector3 = scene._player.global_position + Vector3.UP * scene.eye_height
 	_check(scene._camera.global_position.distance_to(eye) < 0.001, "first-person camera is not at eye height")
-	_check(not scene._body_mesh.visible, "player body is visible in first person")
+	# The capsule is a paint and collision proxy and stays hidden in both modes;
+	# the authored character over it is the body that appears in third person.
+	_check(not scene._body_mesh.visible, "the capsule proxy is drawn in first person")
+	_check(not scene._local.player_visual.visible,
+		"your own character is drawn in first person")
 	scene.set_first_person(false)
 	await physics_frame
 	var offset: Vector3 = scene._camera.global_position - eye
-	_check(scene._body_mesh.visible, "player body is hidden in third person")
+	_check(not scene._body_mesh.visible, "the capsule proxy is drawn in third person")
+	_check(scene._local.player_visual.visible,
+		"your own character is hidden in third person")
 	_check(absf(offset.z - scene.shoulder_distance) < 0.001, "shoulder camera is not behind the player")
 	_check(absf(offset.x - scene.shoulder_offset_right) < 0.001, "shoulder camera has no lateral offset")
 	# Against the player's own size rather than a fixed number of metres, or
