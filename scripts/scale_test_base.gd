@@ -37,6 +37,15 @@ func initialize_scale(scale_factor: float) -> void:
 	_update_info_labels()
 	await get_tree().physics_frame
 	_build_enemy_dummies()
+	# Two frames, not one. The corridor's colliders are rebuilt against the
+	# scale set at the top of this function, and they are not in place until a
+	# frame after that: standing the player on the spawn before they are leaves
+	# the capsule inside the terrain, and the physics server pushes it back out
+	# on the next frame -- 0.49 m down Karja, with the velocity never leaving
+	# zero, so nothing here looked like it had moved. Every walk time this
+	# harness measures started from that displaced point rather than from the
+	# spawn its own labels are computed against.
+	await get_tree().physics_frame
 	reset_to_spawn()
 	_initialized = true
 	_capture_if_requested()

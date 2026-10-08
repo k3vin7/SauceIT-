@@ -62,9 +62,16 @@ func _check_scene(path: String, expected_scale: float) -> void:
 
 	_check(player != null and player is MayoPlayer,
 		"%s did not instance the actual MayoPlayer from main.tscn" % path)
-	_check(is_equal_approx(player.global_position.x, ScaleTestBase.SPAWN_POSITION.x) \
-		and is_equal_approx(player.global_position.z, ScaleTestBase.SPAWN_POSITION.z),
-		"%s player is not at the Kalda spawn" % path)
+	# Within a centimetre, not `is_equal_approx`: this is read after the body has
+	# been standing on the corridor for a frame, and a capsule resting on a
+	# collider settles with sub-millimetre jitter that a 1e-6 comparison calls a
+	# different place. The reset check further down compares exactly, because it
+	# reads the position before physics has had a frame at it.
+	var from_spawn := Vector2(
+		player.global_position.x - ScaleTestBase.SPAWN_POSITION.x,
+		player.global_position.z - ScaleTestBase.SPAWN_POSITION.z).length()
+	_check(from_spawn < 0.01,
+		"%s player is %.3f m from the Kalda spawn" % [path, from_spawn])
 	var capsule := player_shape.shape as CapsuleShape3D if player_shape != null else null
 	_check(capsule != null and is_equal_approx(capsule.height, 2.56),
 		"%s player capsule is not 2.56 m" % path)
