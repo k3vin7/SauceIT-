@@ -12,6 +12,11 @@ func _check(condition: bool, message: String) -> void:
 		failures.push_back(message)
 
 
+func _check_sauce_tube(shooter, label: String) -> void:
+	_check(shooter.character_muzzle != null, "%s has no SauceTubeMuzzle" % label)
+	_check(shooter.character_gauge != null, "%s has no embedded SauceFill" % label)
+
+
 func _run() -> void:
 	var scene = load("res://main.tscn").instantiate()
 	root.add_child(scene)
@@ -27,6 +32,18 @@ func _run() -> void:
 	_check(shooter.character_index == 0, "the default character is not Character_1")
 	_check(shooter.player_visual.name == "Character_1Visual",
 		"Character_1 visual was not built")
+	_check_sauce_tube(shooter, "Character_1")
+	_check(shooter.bottle_contents != null, "the first-person production tube has no SauceFill")
+	var viewmodel_full_scale: Vector3 = shooter.bottle_contents_scale
+	shooter.sauce = 0.5
+	scene._update_sauce_look(shooter)
+	_check(is_equal_approx(shooter.bottle_contents.scale.y, viewmodel_full_scale.y * 0.5),
+		"the first-person SauceFill does not show half a tank")
+	_check(is_equal_approx(shooter.character_gauge.scale.z,
+		shooter.character_gauge_scale.z * 0.5),
+		"the third-person SauceFill does not show half a tank")
+	shooter.sauce = 1.0
+	scene._update_sauce_look(shooter)
 
 	var has_c_binding := false
 	for event in InputMap.action_get_events("switch_character"):
@@ -41,6 +58,7 @@ func _run() -> void:
 	_check(shooter.character_index == 1, "character index did not switch to Character_2")
 	_check(shooter.player_visual.name == "Character_2Visual",
 		"Character_2 visual was not built")
+	_check_sauce_tube(shooter, "Character_2")
 	_check(shooter.player_animation != null, "Character_2 has no AnimationPlayer")
 	for required in [shooter.walk_animation, shooter.run_animation, shooter.death_animation]:
 		_check(not required.is_empty(), "Character_2 is missing a gameplay animation")
@@ -59,6 +77,7 @@ func _run() -> void:
 	_check(shooter.character_index == 2, "character index did not switch to Character_3")
 	_check(shooter.player_visual.name == "Character_3Visual",
 		"Character_3 visual was not built")
+	_check_sauce_tube(shooter, "Character_3")
 	_check(shooter.player_animation != null, "Character_3 has no AnimationPlayer")
 	for required in [shooter.walk_animation, shooter.run_animation, shooter.death_animation]:
 		_check(not required.is_empty(), "Character_3 is missing a gameplay animation")
@@ -83,6 +102,7 @@ func _run() -> void:
 	_check(shooter.character_index == 3, "character index did not switch to Character_4")
 	_check(shooter.player_visual.name == "Character_4Visual",
 		"Character_4 visual was not built")
+	_check_sauce_tube(shooter, "Character_4")
 	_check(shooter.player_animation != null, "Character_4 has no AnimationPlayer")
 	for required in [shooter.walk_animation, shooter.run_animation, shooter.death_animation]:
 		_check(not required.is_empty(), "Character_4 is missing a gameplay animation")
