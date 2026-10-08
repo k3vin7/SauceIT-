@@ -33,6 +33,9 @@ const DEFAULT_ASPECT := 16.0 / 9.0
 ## The world's brush in metres, shared with the body, floor and walls.
 @export_range(0.01, 1.5, 0.005, "suffix:m") var brush_radius := 0.4
 @export var mayo_color := Color("fff0a8")
+## The mask's own clean value. It is not painted onto the lens any more -- clean
+## glass is drawn as nothing at all -- so this is only what an unpainted cell
+## reads as to anything that asks the grid.
 @export var lens_color := Color(0.12, 0.15, 0.19, 1.0)
 ## How far the lenses tip up while they are being wiped.
 @export_range(0.0, 90.0, 1.0, "suffix:°") var wipe_lift_degrees := 55.0
@@ -143,6 +146,10 @@ func wipe_lift() -> float:
 ## same mask. Its own UVs are used, so the grid's (0,0) corner has to be the
 ## quad's (-u, -v) corner, which is the convention ContaminationGrid.cell_of
 ## already uses everywhere else.
+##
+## The glass itself is not drawn, only what has landed on it. Filling the clean
+## cells put a near-black 1.0 x 0.6 m pane on the face, which in third person
+## the wearer's own camera looks straight through at their own head.
 func _build_lens() -> void:
 	_hinge = Node3D.new()
 	_hinge.name = "LensHinge"
@@ -166,9 +173,10 @@ func _build_lens() -> void:
 	# grid's counts up.
 	_lens.rotation.x = PI
 	var material := ShaderMaterial.new()
-	material.shader = preload("res://scripts/contamination.gdshader")
+	# The lens shader, not the surface one: the clean glass is see-through, so
+	# only the sauce on it is drawn. See visor_lens.gdshader for why.
+	material.shader = preload("res://scripts/visor_lens.gdshader")
 	material.set_shader_parameter("mask_texture", grid.texture)
-	material.set_shader_parameter("clean_color", lens_color)
 	material.set_shader_parameter("mayo_color", mayo_color)
 	_lens.material_override = material
 	_hinge.add_child(_lens)

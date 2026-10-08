@@ -315,7 +315,12 @@ func _run() -> void:
 	var deposit := float(1 << ContaminationGrid.KIND_BITS) / 255.0
 	var surfaces := {
 		"a body": load("res://scripts/body_contamination.gdshader"),
-		"the glasses": load("res://scripts/visor_overlay.gdshader"),
+		"the glasses on screen": load("res://scripts/visor_overlay.gdshader"),
+		# The same mask again, on the lens others look at. It has its own shader
+		# because clean glass is not drawn there, and a threshold that drifted
+		# from the overlay's would put the stain others see somewhere other than
+		# where the wearer is blinded.
+		"the lenses others see": load("res://scripts/visor_lens.gdshader"),
 		"a stall roof": load("res://scripts/roof_contamination.gdshader"),
 		"the monster overlay": load("res://scripts/enemy_contamination_overlay.gdshader"),
 		"the floor and walls": load("res://scripts/contamination.gdshader"),
