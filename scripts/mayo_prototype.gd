@@ -1316,7 +1316,7 @@ func _report_air_shot(shooter: Shooter, delta: float) -> void:
 	if shooter.air_puff > 0.0:
 		return
 	shooter.air_puff = air_puff_interval
-	var from: Vector3 = shooter.muzzle.global_position if shooter.muzzle != null \
+	var from: Vector3 = shooter.muzzle.global_position if is_instance_valid(shooter.muzzle) \
 		else shooter.player.global_position
 	air_shot_fired.emit(shooter.peer_id, from, shooter.attack_direction)
 
@@ -1924,11 +1924,16 @@ func set_first_person(enabled: bool) -> void:
 		if is_instance_valid(shooter.weapon):
 			shooter.weapon.visible = shooter == _local and enabled \
 				and (_tutorial == null or _tutorial.has_bottle(shooter.peer_id))
+		var has_character_muzzle := is_instance_valid(shooter.character_muzzle)
 		if shooter == _local:
 			shooter.muzzle = shooter.viewmodel_muzzle if enabled \
-				or shooter.character_muzzle == null else shooter.character_muzzle
-		elif shooter.character_muzzle != null:
-			shooter.muzzle = shooter.character_muzzle
+				or not has_character_muzzle else shooter.character_muzzle
+		else:
+			# Most imported characters have no authored bottle socket. Switching
+			# away from one that does queues its visual (and socket) for deletion,
+			# so retaining that reference leaves the next shot reading a freed node.
+			shooter.muzzle = shooter.character_muzzle if has_character_muzzle \
+				else shooter.viewmodel_muzzle
 	# You look through your own lenses, not at them: the mask reaches you as the
 	# screen overlay instead. Everyone else's stay visible in both modes.
 	if _local != null and _local.player.visor != null:

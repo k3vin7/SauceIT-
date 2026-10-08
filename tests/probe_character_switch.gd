@@ -136,6 +136,23 @@ func _run() -> void:
 		and is_zero_approx(player_collision.position.y),
 		"switching back did not restore the Character_1 collider")
 
+	# A remote Character_1 fires from its authored bottle socket. When it changes
+	# to a character without that socket, the old visual is freed and the stable
+	# viewmodel muzzle must replace it instead of leaving a dangling reference.
+	var remote = scene.create_avatar(2, 1, false)
+	var old_remote_muzzle = remote.muzzle
+	_check(is_instance_valid(old_remote_muzzle), "remote Character_1 has no muzzle")
+	scene.set_character_variant(remote.peer_id, 1)
+	await process_frame
+	_check(is_instance_valid(remote.muzzle),
+		"remote character switch left the muzzle pointing at a freed node")
+	_check(remote.muzzle == remote.viewmodel_muzzle,
+		"remote character without a bottle socket did not fall back to the viewmodel muzzle")
+	var point_count: int = remote.points.size()
+	scene._emit_point(remote)
+	_check(remote.points.size() == point_count + 1,
+		"remote character could not emit after switching away from Character_1")
+
 	if failures.is_empty():
 		print("CHARACTER_SWITCH_OK")
 		quit(0)
