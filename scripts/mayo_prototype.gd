@@ -15,14 +15,22 @@ const KeyLegendScript := preload("res://scripts/key_legend.gd")
 const PLAYER_CHARACTERS: Array[PackedScene] = [
 	preload("res://assets/players/Character_1/Character_1.glb"),
 	preload("res://assets/players/Character_2/Character_2.glb"),
+	preload("res://assets/players/Character_3/Character_3.glb"),
+	preload("res://assets/players/Character_4/Character_4.glb"),
 ]
-const PLAYER_CHARACTER_NAMES := ["Character_1", "Character_2"]
+const PLAYER_CHARACTER_NAMES := ["Character_1", "Character_2", "Character_3", "Character_4"]
 ## Authored mesh bounds in Blender metres. Gameplay stays on the same 2.56 m
 ## capsule whichever presentation is selected.
-const PLAYER_CHARACTER_SOURCE_HEIGHTS := [8.94, 9.513729]
+const PLAYER_CHARACTER_SOURCE_HEIGHTS := [8.94, 9.513729, 7.888794, 5.453089]
+## Character 4 is much wider for its height than the first three. Scaling its
+## whole presentation and capsule to 72% gives it a comparable gameplay read
+## while preserving the authored proportions.
+const PLAYER_CHARACTER_SIZE_MULTIPLIERS := [1.0, 1.0, 1.0, 0.72]
 const PLAYER_CHARACTER_ANIMATIONS := [
 	["Weapon_Walk", "Weapon_Run", "Weapon_Death"],
 	["Walk_WeaponHold", "Run_WeaponHold", "Death_WeaponHold"],
+	["Character_3_Armed_Walk", "Character_3_Armed_Run", "Character_3_Armed_Death"],
+	["Walk_Weapon", "Run_Weapon", "Death_Weapon"],
 ]
 const StallRoofScript := preload("res://scripts/stall_roof.gd")
 const FOOD_BOOTH_SCENES: Array[PackedScene] = [
@@ -121,6 +129,7 @@ class Shooter:
 	var peer_id := 1
 	var is_local := false
 	var player: MayoPlayer
+	var player_collision: CollisionShape3D
 	var body_mesh: MeshInstance3D
 	var player_visual: Node3D
 	var player_animation: AnimationPlayer
@@ -2259,6 +2268,7 @@ func _build_player_body(shooter: Shooter) -> void:
 	capsule_shape.height = MayoPlayer.CAPSULE_HEIGHT
 	collision.shape = capsule_shape
 	shooter.player.add_child(collision)
+	shooter.player_collision = collision
 
 	var body_mesh := MeshInstance3D.new()
 	body_mesh.name = "CapsuleBody"
@@ -2308,7 +2318,7 @@ func _build_player_body(shooter: Shooter) -> void:
 
 
 ## Imports the selected character as an animated presentation layer over the
-## stable gameplay capsule. Both GLBs face +Z after Blender's axis conversion;
+## stable gameplay capsule. The GLBs face +Z after Blender's axis conversion;
 ## the half-turn aligns their authored -Y front with the game's -Z forward.
 func _build_player_visual(shooter: Shooter) -> void:
 	var index := clampi(shooter.character_index, 0, PLAYER_CHARACTERS.size() - 1)
@@ -2319,7 +2329,8 @@ func _build_player_visual(shooter: Shooter) -> void:
 		return
 	visual.name = "%sVisual" % character_name
 	visual.scale = Vector3.ONE * (MayoPlayer.CAPSULE_HEIGHT \
-		/ float(PLAYER_CHARACTER_SOURCE_HEIGHTS[index]))
+		/ float(PLAYER_CHARACTER_SOURCE_HEIGHTS[index]) \
+		* float(PLAYER_CHARACTER_SIZE_MULTIPLIERS[index]))
 	visual.position = Vector3(0.0, -MayoPlayer.CAPSULE_HEIGHT * 0.5, 0.0)
 	visual.rotation.y = PI
 	shooter.player.add_child(visual)
@@ -2351,9 +2362,8 @@ func _build_player_visual(shooter: Shooter) -> void:
 			attachment.bone_name = "Character_1_SauceMuzzle"
 			skeleton.add_child(attachment)
 			shooter.character_muzzle = attachment
-	# Character 2 intentionally ships without a weapon mesh/socket. Its invisible
-	# aim-pivot muzzle remains the gameplay source until a shared third-person
-	# bottle is introduced.
+	# Characters 2-4 currently rely on the invisible aim-pivot muzzle. Character
+	# 4's Weapon_Socket is reserved for future third-person weapon geometry.
 	if shooter.character_muzzle == null and index == 0:
 		push_error("Character_1 is missing its sauce-container muzzle socket")
 
@@ -2378,9 +2388,9 @@ func _find_player_animation(player: AnimationPlayer, suffix: String,
 	return StringName()
 
 
-## Replaces presentation only: collision, health, sauce, contamination and
-## world position remain on the same player node. The selected index is carried
-## in the normal network state so every peer sees the same character.
+## Replaces the presentation and applies that character's matching capsule.
+## Health, sauce and world position remain on the same player node. The selected
+## index is carried in the normal network state so every peer sees the same size.
 func set_character_variant(peer_id: int, requested_index: int) -> void:
 	var shooter: Shooter = _shooters.get(peer_id)
 	if shooter == null:
@@ -2401,10 +2411,35 @@ func set_character_variant(peer_id: int, requested_index: int) -> void:
 	shooter.character_muzzle = null
 	shooter.character_gauge = null
 	shooter.character_gauge_material = null
+	_apply_player_character_size(shooter, index)
 	_build_player_visual(shooter)
 	if shooter.player_visual != null and shooter.player.contamination != null:
 		shooter.player.contamination.add_visual_overlay(shooter.player_visual)
 	set_first_person(_first_person)
+
+
+func _apply_player_character_size(shooter: Shooter, index: int) -> void:
+	var multiplier := float(PLAYER_CHARACTER_SIZE_MULTIPLIERS[index])
+	var radius := MayoPlayer.CAPSULE_RADIUS * multiplier
+	var height := MayoPlayer.CAPSULE_HEIGHT * multiplier
+	# Keep the bottom of every capsule at the same local point so shrinking a
+	# character never leaves its collider hovering above the floor.
+	var center_y := (height - MayoPlayer.CAPSULE_HEIGHT) * 0.5
+	if is_instance_valid(shooter.player_collision):
+		var shape := shooter.player_collision.shape as CapsuleShape3D
+		if shape != null:
+			shape.radius = radius
+			shape.height = height
+		shooter.player_collision.position.y = center_y
+	if is_instance_valid(shooter.body_mesh):
+		var mesh := shooter.body_mesh.mesh as CapsuleMesh
+		if mesh != null:
+			mesh.radius = radius
+			mesh.height = height
+		shooter.body_mesh.position.y = center_y
+	if shooter.player.contamination != null:
+		shooter.player.contamination.configure(shooter.player, shooter.body_mesh,
+			radius, height, _body_color(shooter.is_local))
 
 
 func character_name_for(shooter: Shooter) -> String:
