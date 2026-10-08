@@ -11,6 +11,11 @@ extends CharacterBody3D
 
 enum State { NORMAL, STUMBLE, FALLING, DOWN, STANDING_UP }
 
+## Shared by player construction and imported character presentation so every
+## variant remains aligned with the established gameplay body.
+const CAPSULE_RADIUS := 0.64
+const CAPSULE_HEIGHT := 2.56
+
 @export_group("Movement")
 @export_range(0.5, 24.0, 0.1, "suffix:m/s") var walk_speed := 5.2
 @export_range(0.5, 28.0, 0.1, "suffix:m/s") var run_speed := 10.4

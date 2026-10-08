@@ -12,6 +12,25 @@ const VisorOverlayScript := preload("res://scripts/visor_overlay.gd")
 const HealthHudScript := preload("res://scripts/health_hud.gd")
 const MinimapScript := preload("res://scripts/minimap.gd")
 const KeyLegendScript := preload("res://scripts/key_legend.gd")
+const PLAYER_CHARACTERS: Array[PackedScene] = [
+	preload("res://assets/players/Character_1/Character_1.glb"),
+	preload("res://assets/players/Character_2/Character_2.glb"),
+	preload("res://assets/players/Character_3/Character_3.glb"),
+	preload("res://assets/players/Character_4/Character_4.glb"),
+]
+const PLAYER_CHARACTER_NAMES := ["Character_1", "Character_2", "Character_3", "Character_4"]
+## Authored mesh bounds in Blender metres. Gameplay stays on the same 2.56 m
+## capsule whichever presentation is selected.
+const PLAYER_CHARACTER_SOURCE_HEIGHTS := [8.94, 9.513729, 7.888794, 5.453089]
+## Character 4 is much wider for its height than the first three. Scaling its
+## whole presentation and capsule to 72% gives it a comparable gameplay read.
+const PLAYER_CHARACTER_SIZE_MULTIPLIERS := [1.0, 1.0, 1.0, 0.72]
+const PLAYER_CHARACTER_ANIMATIONS := [
+	["Weapon_Walk", "Weapon_Run", "Weapon_Death"],
+	["Walk_WeaponHold", "Run_WeaponHold", "Death_WeaponHold"],
+	["Character_3_Armed_Walk", "Character_3_Armed_Run", "Character_3_Armed_Death"],
+	["Walk_Weapon", "Run_Weapon", "Death_Weapon"],
+]
 const StallRoofScript := preload("res://scripts/stall_roof.gd")
 const TutorialScript := preload("res://scripts/tutorial.gd")
 const TutorialWreckScript := preload("res://scripts/tutorial_wreck.gd")
@@ -151,10 +170,26 @@ class Shooter:
 	var peer_id := 1
 	var is_local := false
 	var player: MayoPlayer
+	var player_collision: CollisionShape3D
 	var body_mesh: MeshInstance3D
+	var player_visual: Node3D
+	var player_animation: AnimationPlayer
+	var player_animation_name := StringName()
+	var character_index := 0
+	## Kept separately for the local player so an older server state arriving
+	## between the C press and its input packet cannot undo the requested swap.
+	var requested_character_index := 0
+	var walk_animation := StringName()
+	var run_animation := StringName()
+	var death_animation := StringName()
+	var character_muzzle: Node3D
+	var viewmodel_muzzle: Marker3D
+	var character_gauge: MeshInstance3D
+	var character_gauge_scale := Vector3.ONE
+	var character_gauge_material: StandardMaterial3D
 	var aim_pivot: Node3D
 	var weapon: Node3D
-	var muzzle: Marker3D
+	var muzzle: Node3D
 	var points: Array[MayoPoint] = []
 	var emit_distance := 0.0
 	var attack_direction := Vector3.FORWARD
@@ -987,7 +1022,7 @@ var _rng: RandomNumberGenerator:
 	get: return _local.rng
 var _player: MayoPlayer:
 	get: return _local.player
-var _muzzle: Marker3D:
+var _muzzle: Node3D:
 	get: return _local.muzzle
 var _aim_pivot: Node3D:
 	get: return _local.aim_pivot
@@ -1602,7 +1637,8 @@ func _read_local_input() -> void:
 		move = Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
 		run = Input.is_action_pressed("run")
 		jump = Input.is_action_pressed("jump")
-	_net.send_input(move, run, jump, _local.firing, _local.aim_yaw, _local.aim_pitch)
+	_net.send_input(move, run, jump, _local.firing, _local.aim_yaw, _local.aim_pitch,
+		_local.requested_character_index)
 
 
 func _fire_held() -> bool:
@@ -1661,6 +1697,7 @@ func _process(_delta: float) -> void:
 	_update_deep_readout(_delta)
 	for shooter in _shooters.values():
 		_update_fallen_body(shooter)
+		_update_player_animation(shooter)
 		_update_visor(shooter)
 		_update_sauce_look(shooter)
 
@@ -1795,6 +1832,7 @@ func _place_viewmodel() -> void:
 ## level on the bottle is that other people can read it.
 func _update_sauce_look(shooter: Shooter) -> void:
 	_update_bottle_gauge(shooter)
+	_update_character_gauge(shooter)
 
 
 func _update_visor(shooter: Shooter) -> void:
@@ -1815,6 +1853,9 @@ func _update_fallen_body(shooter: Shooter) -> void:
 	# never overlap, since fall_tilt is 0 while stumbling.
 	shooter.body_mesh.rotation.z = deg_to_rad(fall_body_roll_degrees) * tilt * shooter.player.fall_direction \
 		+ deg_to_rad(stumble_body_roll_degrees) * shooter.player.stumble_wobble()
+	if shooter.player_visual != null and is_instance_valid(shooter.player_visual):
+		shooter.player_visual.rotation = Vector3(
+			shooter.body_mesh.rotation.x, PI, shooter.body_mesh.rotation.z)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -1837,6 +1878,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event.is_action_pressed("toggle_key_legend"):
 		show_key_legend = not show_key_legend
+		return
+	if event.is_action_pressed("switch_character"):
+		_local.requested_character_index = posmod(
+			_local.requested_character_index + 1, PLAYER_CHARACTERS.size())
+		set_character_variant(_local.peer_id, _local.requested_character_index)
 		return
 	if not _input_enabled:
 		return
@@ -1868,8 +1914,21 @@ func apply_look(relative: Vector2) -> void:
 ## else's stays visible in both modes -- that is the whole point of them.
 func set_first_person(enabled: bool) -> void:
 	_first_person = enabled
-	if _local != null and is_instance_valid(_local.body_mesh):
-		_local.body_mesh.visible = not enabled
+	for shooter in _shooters.values():
+		# The capsule remains a hidden paint/collision proxy. The authored mesh is
+		# the body that changes visibility with camera mode.
+		if is_instance_valid(shooter.body_mesh):
+			shooter.body_mesh.visible = false
+		if is_instance_valid(shooter.player_visual):
+			shooter.player_visual.visible = shooter != _local or not enabled
+		if is_instance_valid(shooter.weapon):
+			shooter.weapon.visible = shooter == _local and enabled \
+				and (_tutorial == null or _tutorial.has_bottle(shooter.peer_id))
+		if shooter == _local:
+			shooter.muzzle = shooter.viewmodel_muzzle if enabled \
+				or shooter.character_muzzle == null else shooter.character_muzzle
+		elif shooter.character_muzzle != null:
+			shooter.muzzle = shooter.character_muzzle
 	# You look through your own lenses, not at them: the mask reaches you as the
 	# screen overlay instead. Everyone else's stay visible in both modes.
 	if _local != null and _local.player.visor != null:
@@ -1879,8 +1938,6 @@ func set_first_person(enabled: bool) -> void:
 	# mispositioned. Everyone else's stays visible in both modes: their bottle
 	# now carries how much sauce they have left, and a team that can read each
 	# other's bottles across the street can cover a reload without being told.
-	if _local != null and is_instance_valid(_local.weapon):
-		_local.weapon.visible = enabled and (_tutorial == null or _tutorial.has_bottle(_local.peer_id))
 	_update_camera()
 
 
@@ -1892,6 +1949,11 @@ func _ensure_input_actions() -> void:
 	var toggle := InputEventKey.new()
 	toggle.physical_keycode = KEY_F1
 	InputMap.action_add_event("toggle_camera_mode", toggle)
+	if not InputMap.has_action("switch_character"):
+		InputMap.add_action("switch_character")
+		var character := InputEventKey.new()
+		character.physical_keycode = KEY_C
+		InputMap.action_add_event("switch_character", character)
 	if not InputMap.has_action("run"):
 		InputMap.add_action("run")
 		var run := InputEventKey.new()
@@ -2417,16 +2479,17 @@ func _build_player_body(shooter: Shooter) -> void:
 	# Everything measured against the body scales with these: the eye height and
 	# the spawn height below it, the lens quad, the self-hit distance, and the
 	# shoulder camera's framing. The contamination grid takes them directly.
-	capsule_shape.radius = 0.64
-	capsule_shape.height = 2.56
+	capsule_shape.radius = MayoPlayer.CAPSULE_RADIUS
+	capsule_shape.height = MayoPlayer.CAPSULE_HEIGHT
 	collision.shape = capsule_shape
 	shooter.player.add_child(collision)
+	shooter.player_collision = collision
 
 	var body_mesh := MeshInstance3D.new()
 	body_mesh.name = "CapsuleBody"
 	var capsule_mesh := CapsuleMesh.new()
-	capsule_mesh.radius = 0.64
-	capsule_mesh.height = 2.56
+	capsule_mesh.radius = MayoPlayer.CAPSULE_RADIUS
+	capsule_mesh.height = MayoPlayer.CAPSULE_HEIGHT
 	body_mesh.mesh = capsule_mesh
 	shooter.player.add_child(body_mesh)
 	shooter.body_mesh = body_mesh
@@ -2442,6 +2505,12 @@ func _build_player_body(shooter: Shooter) -> void:
 	shooter.player.contamination = contamination
 	contamination.configure(shooter.player, body_mesh, capsule_shape.radius,
 		capsule_shape.height, _body_color(shooter.is_local))
+	# Collision and paint projection remain on the stable capsule. The imported
+	# character is presentation only, so animation cannot move gameplay geometry.
+	body_mesh.visible = false
+	_build_player_visual(shooter)
+	if shooter.player_visual != null:
+		contamination.add_visual_overlay(shooter.player_visual)
 
 	# The pivot carries the pitch so the nozzle and muzzle follow vertical aim.
 	# The player body itself only yaws.
@@ -2461,6 +2530,174 @@ func _build_player_body(shooter: Shooter) -> void:
 	shooter.player.visor = visor
 
 	_build_weapon(shooter)
+
+
+## Imports the selected character as an animated presentation layer over the
+## stable gameplay capsule. The GLBs face +Z after Blender's axis conversion;
+## the half-turn aligns their authored front with the game's -Z forward.
+func _build_player_visual(shooter: Shooter) -> void:
+	var index := clampi(shooter.character_index, 0, PLAYER_CHARACTERS.size() - 1)
+	var character_name: String = PLAYER_CHARACTER_NAMES[index]
+	var visual := PLAYER_CHARACTERS[index].instantiate() as Node3D
+	if visual == null:
+		push_error("%s GLB did not instantiate as Node3D" % character_name)
+		return
+	visual.name = "%sVisual" % character_name
+	visual.scale = Vector3.ONE * (MayoPlayer.CAPSULE_HEIGHT \
+		/ float(PLAYER_CHARACTER_SOURCE_HEIGHTS[index]) \
+		* float(PLAYER_CHARACTER_SIZE_MULTIPLIERS[index]))
+	visual.position = Vector3(0.0, -MayoPlayer.CAPSULE_HEIGHT * 0.5, 0.0)
+	visual.rotation.y = PI
+	shooter.player.add_child(visual)
+	shooter.player_visual = visual
+	visual.visible = not shooter.is_local or not _first_person
+
+	var players := visual.find_children("*", "AnimationPlayer", true, false)
+	if players.is_empty():
+		push_error("%s has no AnimationPlayer" % character_name)
+	else:
+		shooter.player_animation = players[0] as AnimationPlayer
+		var animation_names: Array = PLAYER_CHARACTER_ANIMATIONS[index]
+		shooter.walk_animation = _find_player_animation(
+			shooter.player_animation, animation_names[0], character_name)
+		shooter.run_animation = _find_player_animation(
+			shooter.player_animation, animation_names[1], character_name)
+		shooter.death_animation = _find_player_animation(
+			shooter.player_animation, animation_names[2], character_name)
+		for looping in [shooter.walk_animation, shooter.run_animation]:
+			if not looping.is_empty():
+				shooter.player_animation.get_animation(looping).loop_mode = Animation.LOOP_LINEAR
+
+	var skeletons := visual.find_children("*", "Skeleton3D", true, false)
+	if not skeletons.is_empty():
+		var skeleton := skeletons[0] as Skeleton3D
+		if skeleton.find_bone("Character_1_SauceMuzzle") >= 0:
+			var attachment := BoneAttachment3D.new()
+			attachment.name = "SauceContainerMuzzle"
+			attachment.bone_name = "Character_1_SauceMuzzle"
+			skeleton.add_child(attachment)
+			shooter.character_muzzle = attachment
+	if shooter.character_muzzle == null and index == 0:
+		push_error("Character_1 is missing its sauce-container muzzle socket")
+
+	var gauge_node := visual.find_child("*SauceContainer_Gauge*", true, false)
+	if gauge_node is MeshInstance3D:
+		shooter.character_gauge = gauge_node as MeshInstance3D
+		shooter.character_gauge_scale = shooter.character_gauge.scale
+		var source_material := shooter.character_gauge.get_active_material(0)
+		if source_material is StandardMaterial3D:
+			shooter.character_gauge_material = source_material.duplicate() as StandardMaterial3D
+			shooter.character_gauge.material_override = shooter.character_gauge_material
+
+
+func _find_player_animation(player: AnimationPlayer, suffix: String,
+		character_name := "Player character") -> StringName:
+	if player == null:
+		return StringName()
+	for candidate in player.get_animation_list():
+		if String(candidate).to_lower().ends_with(suffix.to_lower()):
+			return candidate
+	push_error("%s is missing animation %s" % [character_name, suffix])
+	return StringName()
+
+
+## Replaces the presentation and applies that character's matching capsule.
+## Health, sauce and world position remain on the same player node. The selected
+## index is carried in normal network state so every peer sees the same choice.
+func set_character_variant(peer_id: int, requested_index: int) -> void:
+	var shooter: Shooter = _shooters.get(peer_id)
+	if shooter == null:
+		return
+	var index := posmod(requested_index, PLAYER_CHARACTERS.size())
+	if shooter.character_index == index and is_instance_valid(shooter.player_visual):
+		return
+	shooter.character_index = index
+	if is_instance_valid(shooter.player_visual):
+		shooter.player.remove_child(shooter.player_visual)
+		shooter.player_visual.queue_free()
+	shooter.player_visual = null
+	shooter.player_animation = null
+	shooter.player_animation_name = StringName()
+	shooter.walk_animation = StringName()
+	shooter.run_animation = StringName()
+	shooter.death_animation = StringName()
+	shooter.character_muzzle = null
+	shooter.character_gauge = null
+	shooter.character_gauge_material = null
+	_apply_player_character_size(shooter, index)
+	_build_player_visual(shooter)
+	if shooter.player_visual != null and shooter.player.contamination != null:
+		shooter.player.contamination.add_visual_overlay(shooter.player_visual)
+	set_first_person(_first_person)
+
+
+func _apply_player_character_size(shooter: Shooter, index: int) -> void:
+	var multiplier := float(PLAYER_CHARACTER_SIZE_MULTIPLIERS[index])
+	var radius := MayoPlayer.CAPSULE_RADIUS * multiplier
+	var height := MayoPlayer.CAPSULE_HEIGHT * multiplier
+	# Keep the bottom of every capsule at the same local point so shrinking a
+	# character never leaves its collider hovering above the floor.
+	var center_y := (height - MayoPlayer.CAPSULE_HEIGHT) * 0.5
+	if is_instance_valid(shooter.player_collision):
+		var shape := shooter.player_collision.shape as CapsuleShape3D
+		if shape != null:
+			shape.radius = radius
+			shape.height = height
+		shooter.player_collision.position.y = center_y
+	if is_instance_valid(shooter.body_mesh):
+		var mesh := shooter.body_mesh.mesh as CapsuleMesh
+		if mesh != null:
+			mesh.radius = radius
+			mesh.height = height
+		shooter.body_mesh.position.y = center_y
+	if shooter.player.contamination != null:
+		shooter.player.contamination.configure(shooter.player, shooter.body_mesh,
+			radius, height, _body_color(shooter.is_local))
+
+
+func character_name_for(shooter: Shooter) -> String:
+	if shooter == null:
+		return ""
+	return PLAYER_CHARACTER_NAMES[clampi(
+		shooter.character_index, 0, PLAYER_CHARACTER_NAMES.size() - 1)]
+
+
+## Walk and run are authored in place, so gameplay velocity remains the source
+## of truth. With no dedicated idle clip, the first carry frame is held still.
+func _update_player_animation(shooter: Shooter) -> void:
+	var player := shooter.player_animation
+	if player == null:
+		return
+	var desired := StringName("IdleCarry")
+	if shooter.player.state == MayoPlayer.State.NORMAL \
+			and Vector2(shooter.player.velocity.x, shooter.player.velocity.z).length_squared() > 0.01:
+		desired = shooter.run_animation if shooter.player.is_running() else shooter.walk_animation
+	if desired == shooter.player_animation_name:
+		return
+	shooter.player_animation_name = desired
+	player.speed_scale = 1.0
+	if desired == StringName("IdleCarry"):
+		if not shooter.walk_animation.is_empty():
+			player.play(shooter.walk_animation)
+			player.seek(0.0, true)
+			player.pause()
+	elif not desired.is_empty():
+		player.play(desired)
+
+
+func _update_character_gauge(shooter: Shooter) -> void:
+	if shooter.character_gauge == null or not is_instance_valid(shooter.character_gauge):
+		return
+	var level := clampf(shooter.sauce, 0.0, 1.0)
+	shooter.character_gauge.scale = shooter.character_gauge_scale * lerpf(0.35, 1.0, level)
+	var tint := SAUCE_TINTS[clampi(shooter.sauce_kind, 0, SAUCE_TINTS.size() - 1)]
+	var stage := sauce_stage_of(level)
+	if stage == SauceStage.SPLUTTERING:
+		tint = tint.darkened(0.2)
+	elif stage == SauceStage.EMPTY:
+		tint = Color("c0392b")
+	if shooter.character_gauge_material != null:
+		shooter.character_gauge_material.albedo_color = tint
 
 
 ## Sauce bottle viewmodel, held to the lower right and angled so its nozzle
@@ -2508,6 +2745,11 @@ func _build_weapon(shooter: Shooter) -> void:
 	muzzle.position = Vector3(0.0, 0.0, -cursor)
 	weapon.add_child(muzzle)
 	shooter.muzzle = muzzle
+	shooter.viewmodel_muzzle = muzzle
+	if shooter.character_muzzle != null and not shooter.is_local:
+		shooter.muzzle = shooter.character_muzzle
+	weapon.visible = shooter.is_local and _first_person \
+		and (_tutorial == null or _tutorial.has_bottle(shooter.peer_id))
 
 
 ## The sauce inside the bottle, which is the gauge.
