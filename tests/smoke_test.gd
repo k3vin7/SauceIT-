@@ -108,6 +108,15 @@ func _run() -> void:
 	scene._create_wall("ImpactWall", Vector3(2.35, 1.1, -0.72),
 		Vector3(1.65, 2.2, 0.18), Color("886b61"))
 	scene.debug_aim_at(Vector3(2.35, 1.1, -0.72))
+	# **A fresh squeeze, because the wall is 10.5 m away.**
+	#
+	# The sections above fire the strand, and `burst_elapsed` is what the pressure
+	# falls off against -- it never resets here, so by this point the hand has been
+	# closed for several seconds and the throw is down to its floor. Measured, the
+	# strand reached 5.0 m and the wall was never touched, which read as the wall
+	# route being broken when what was broken was this file's own state. The same
+	# section run on a fresh scene reaches 10.4 m and paints 32 cells.
+	scene._local.burst_elapsed = 0.0
 	var accumulator := 0.0
 	for _frame in 70:
 		accumulator += scene.extend_speed / 60.0
