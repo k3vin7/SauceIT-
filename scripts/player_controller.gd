@@ -412,16 +412,16 @@ func can_slip() -> bool:
 
 ## Slipping starts with a stumble, not the fall itself -- unless the player is
 ## still recovering from the last one. Sprinting the instant you are upright
-## means your feet never take the weight, so you pitch straight forward with no
-## balance to catch: the stumble is skipped and the fall starts immediately.
+## means your feet never take the weight, so you go straight over backward with
+## no balance to catch: the stumble is skipped and the fall starts immediately.
 func begin_slip() -> void:
 	if state != State.NORMAL:
 		return
 	if _recovery_timer > 0.0:
-		fall_direction = -1.0
+		fall_direction = 1.0
 		state = State.FALLING
 	else:
-		fall_direction = 1.0
+		fall_direction = -1.0
 		state = State.STUMBLE
 	_state_timer = 0.0
 
