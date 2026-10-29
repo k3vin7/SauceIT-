@@ -1675,8 +1675,14 @@ func _update_fallen_body(shooter: Shooter) -> void:
 	if shooter.player.state == MayoPlayer.State.DEAD:
 		shooter.player_visual.rotation = Vector3(0.0, PI, 0.0)
 	else:
+		# The model is authored facing +Z, so it carries a half turn about Y
+		# that the capsule does not. Euler order is YXZ -- the yaw is applied
+		# last, in the parent's frame -- and a half turn about Y flips the
+		# model's X and Z, so the same tilt written here comes out mirrored:
+		# the capsule and camera pitch back, the model falls on its face.
+		# Negated, the two tip together.
 		shooter.player_visual.rotation = Vector3(
-			shooter.body_mesh.rotation.x, PI, shooter.body_mesh.rotation.z)
+			-shooter.body_mesh.rotation.x, PI, -shooter.body_mesh.rotation.z)
 
 
 func _unhandled_input(event: InputEvent) -> void:

@@ -90,14 +90,21 @@ func _run() -> void:
 	fry._alerted = true
 	fry._contact_cooldown = 0.0
 	var hit = fry.advance(0.016, [player])
-	_check(hit == player, "the front-leg slam did not register at close range")
+	_check(hit == null, "the slam dealt its damage before the claws had come down")
 	_check(fry.is_attack_locked(), "the slam did not plant the front legs")
+	_check(is_equal_approx(fry.attack_impact_delay_seconds,
+		FryStalkerVisual.PLANT_AT * fry.attack_lock_seconds),
+		"the slam's damage is not timed to the claws planting")
 	var planted_at := Vector2(fry.global_position.x, fry.global_position.z)
 	fry.take_shove(player.global_position)
-	fry.advance(0.45, [player])
+	hit = fry.advance(0.45, [player])
+	_check(hit == null, "the slam landed during the wind-up")
 	var after_lock_step := Vector2(fry.global_position.x, fry.global_position.z)
 	_check(after_lock_step.distance_to(planted_at) < 0.01,
 		"the planted Fry Stalker slid during its punish window")
+	# Past the plant point the pending hit comes due, on the player still in reach.
+	hit = fry.advance(fry.attack_impact_delay_seconds, [player])
+	_check(hit == player, "the front-leg slam never landed once the claws were planted")
 	if visual != null:
 		visual._process(fry.attack_lock_seconds * 0.48)
 		_check(visual.debug_foot_position(0).y < 0.02

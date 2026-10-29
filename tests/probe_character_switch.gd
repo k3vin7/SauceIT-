@@ -53,9 +53,17 @@ func _run() -> void:
 	var switch_event := InputEventAction.new()
 	switch_event.action = &"switch_character"
 	switch_event.pressed = true
+	# Sauce the player before the first switch. Each rebuild below has to keep it:
+	# a keypress is not a wash, whether the capsule stays the same size or not.
+	var stain = shooter.player.contamination
+	stain.paint_mayo_cell(Vector2i(3, 3))
+	var stained_cells: int = stain.painted_cell_count()
+	_check(stained_cells > 0, "the test stain did not land on the player")
 	scene._unhandled_input(switch_event)
 	await process_frame
 	_check(shooter.character_index == 1, "character index did not switch to Character_2")
+	_check(stain.painted_cell_count() == stained_cells,
+		"switching to a same-sized character washed the player")
 	_check(shooter.player_visual.name == "Character_2Visual",
 		"Character_2 visual was not built")
 	_check_sauce_tube(shooter, "Character_2")
@@ -87,19 +95,30 @@ func _run() -> void:
 	state = scene._net._collect_state(ids)
 	_check(int(state[scene._net.STATE_STRIDE - 1]) == 2,
 		"Character_3 selection is missing from network state")
+	# A second machine hears about this player as a remote body, peer 2 to it.
+	var remote_ids := PackedInt32Array([2])
 	var replica = load("res://main.tscn").instantiate()
 	root.add_child(replica)
 	await process_frame
+	replica.create_avatar(2, 1, false)
+	replica._net._apply_state(remote_ids, state)
+	await process_frame
+	_check(replica.shooter_for(2).character_index == 2,
+		"Character_3 selection was not applied from network state")
+	# But its own player's choice is never taken back from a packet: the one in
+	# flight still carries the index from before the press.
 	replica._net._apply_state(ids, state)
 	await process_frame
-	_check(replica._local.character_index == 2,
-		"Character_3 selection was not applied from network state")
+	_check(replica._local.character_index == 0,
+		"a state packet overrode the local player's own character choice")
 	root.remove_child(replica)
 	replica.queue_free()
 
 	scene._unhandled_input(switch_event)
 	await process_frame
 	_check(shooter.character_index == 3, "character index did not switch to Character_4")
+	_check(stain.painted_cell_count() > 0,
+		"switching to the small character washed the player")
 	_check(shooter.player_visual.name == "Character_4Visual",
 		"Character_4 visual was not built")
 	_check_sauce_tube(shooter, "Character_4")
@@ -126,12 +145,13 @@ func _run() -> void:
 	replica = load("res://main.tscn").instantiate()
 	root.add_child(replica)
 	await process_frame
-	replica._net._apply_state(ids, state)
+	var remote = replica.create_avatar(2, 1, false)
+	replica._net._apply_state(remote_ids, state)
 	await process_frame
-	_check(replica._local.character_index == 3,
+	_check(remote.character_index == 3,
 		"Character_4 selection was not applied from network state")
 	var replica_collision: CollisionShape3D
-	for child in replica._local.player.get_children():
+	for child in remote.player.get_children():
 		if child is CollisionShape3D:
 			replica_collision = child as CollisionShape3D
 			break
@@ -150,6 +170,8 @@ func _run() -> void:
 	await process_frame
 	_check(shooter.player_visual.name == "Character_1Visual",
 		"switching back did not rebuild Character_1")
+	_check(stain.painted_cell_count() > 0,
+		"switching back to the full-sized character washed the player")
 	var character_1_capsule := player_collision.shape as CapsuleShape3D
 	_check(is_equal_approx(character_1_capsule.radius, MayoPlayer.CAPSULE_RADIUS) \
 		and is_equal_approx(character_1_capsule.height, MayoPlayer.CAPSULE_HEIGHT) \

@@ -10,6 +10,10 @@ extends Node3D
 ## source actions.
 
 const SOURCE_HEIGHT := 4.2
+## How far into the slam the front claws are fully planted, as a share of its
+## duration: `_slam_curve` reaches 1.0 here. The enemy times its damage to it,
+## so the hit lands when the claws do and not during the wind-up.
+const PLANT_AT := 0.40
 const STRIDE := 2.10
 const STANCE_SHARE := 0.62
 const STEP_REACH := 0.52
@@ -242,8 +246,8 @@ func _animate_leg(index: int, attack_t: float) -> void:
 func _slam_curve(t: float) -> float:
 	if t < 0.24:
 		return _ease(t / 0.24) * 0.35
-	if t < 0.40:
-		return lerpf(0.35, 1.0, _ease((t - 0.24) / 0.16))
+	if t < PLANT_AT:
+		return lerpf(0.35, 1.0, _ease((t - 0.24) / (PLANT_AT - 0.24)))
 	if t < 0.82:
 		return 1.0
 	return 1.0 - _ease((t - 0.82) / 0.18)

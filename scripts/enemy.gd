@@ -513,6 +513,10 @@ func build_fry_stalker(cell_size: float, brush_radius: float) -> void:
 	contact_interval = 1.4
 	contact_reach = 0.72 * model_scale
 	attack_lock_seconds = 1.4
+	# The damage waits for the claws. Without this it landed the instant the
+	# slam began, 0.56 s before the visual had lifted a leg -- the one attack
+	# built to be read had no telegraph at all.
+	attack_impact_delay_seconds = FryStalkerVisualScript.PLANT_AT * attack_lock_seconds
 	sight_range = 26.0
 	give_up_range = 44.0
 	impact_push_speed = 0.0

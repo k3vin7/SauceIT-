@@ -930,11 +930,16 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		# catch at different moments from the screen next to it.
 		shooter.sauce = clampf(data[index + 13], 0.0, 1.0)
 		shooter.nozzle = clampi(int(round(data[index + 14])), 0, 3)
-		world.set_character_variant(ids[slot],
-			clampi(int(round(data[index + 15])), 0, world.PLAYER_CHARACTERS.size() - 1))
 		# The local player's own aim is never taken back from the server: it is
-		# already ahead of this packet.
+		# already ahead of this packet. Nor is their character: a `C` press
+		# rebuilds the visual at once, and the packet already in flight still
+		# carries the old index -- applying it would tear the new model down,
+		# and the echo a round trip later would build it a third time. The
+		# server clamps the index exactly as the client did, so there is
+		# nothing it could correct.
 		if not shooter.is_local:
+			world.set_character_variant(ids[slot],
+				clampi(int(round(data[index + 15])), 0, world.PLAYER_CHARACTERS.size() - 1))
 			shooter.firing = data[index + 6] > 0.5
 			shooter.aim_pitch = data[index + 7]
 			# The yaw has to land on the aim, not only on the body: _update_aim

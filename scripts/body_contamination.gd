@@ -83,8 +83,15 @@ func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 	radius = capsule_radius
 	height = capsule_height
 	grid.wrap_x = true
+	# A body is reconfigured when its player switches character, and the grid
+	# rebuild underneath wipes the mask. The sauce already on them has to come
+	# through: a keypress is not a wash. Snapshot first, put it back after.
+	var kept := grid.cells.duplicate()
+	var kept_width := grid.width
+	var kept_height := grid.height
 	grid.configure(Vector2(TAU * radius, height + cap_depth * 2.0), cell_size,
 		clean_color, mayo_color)
+	_carry_over(kept, kept_width, kept_height)
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://scripts/body_contamination.gdshader")
 	material.set_shader_parameter("mask_texture", grid.texture)
@@ -99,6 +106,29 @@ func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 
 func _process(_delta: float) -> void:
 	grid.upload_if_dirty()
+
+
+## Puts a previous mask back onto a freshly configured grid. Same size -- the
+## usual switch, between characters that share a capsule -- and the bytes go
+## back as they were. A different size, which is the small character coming or
+## going, and the old chart is stretched over the new one cell for cell, nearest
+## neighbour: u is still the angle and v still the height on both, so a stain
+## stays where it was on the body. Both peers run this on the same bytes, so the
+## grids still agree. The first configure finds no mask and leaves the grid clean.
+func _carry_over(kept: PackedByteArray, kept_width: int, kept_height: int) -> void:
+	if kept.is_empty() or kept.size() != kept_width * kept_height:
+		return
+	if kept_width == grid.width and kept_height == grid.height:
+		grid.restore_cells(kept)
+		return
+	var resampled := PackedByteArray()
+	resampled.resize(grid.width * grid.height)
+	for y in grid.height:
+		var source_y := mini(y * kept_height / grid.height, kept_height - 1)
+		for x in grid.width:
+			var source_x := mini(x * kept_width / grid.width, kept_width - 1)
+			resampled[y * grid.width + x] = kept[source_y * kept_width + source_x]
+	grid.restore_cells(resampled)
 
 
 ## Projects the same deterministic mask over an authored multi-mesh visual.
