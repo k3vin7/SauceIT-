@@ -25,6 +25,8 @@ const MODEL_VISUAL_SCALE_MULTIPLIER := 2.0
 const MODEL_TARGET_SIZE := Vector3(2.0, 2.0, 2.0) * MODEL_SCALE_MULTIPLIER
 const MODEL_SCALE := Vector3.ONE * MODEL_VISUAL_SCALE_MULTIPLIER
 const MODEL_BODY_RADIUS := 0.90 * MODEL_SCALE_MULTIPLIER
+## Nominal only: the death measures the real thickness off the mesh, see
+## `_measure_rest_thickness`. Kept for the body before it has a visual.
 const MODEL_REST_RADIUS := 0.90 * MODEL_SCALE_MULTIPLIER
 ## Attack_GroundSlam reaches the ground on frame 16 at 24 fps.
 const MODEL_ATTACK_IMPACT_SECONDS := 15.0 / 24.0
@@ -261,8 +263,13 @@ var _flinch_crossed := 0
 var _settled_for := 0.0
 ## World point the feet were planted on when it died -- the axis it goes over.
 var _fall_pivot := Vector3.ZERO
-## Half the thickness of the torso: what it comes to rest on.
+## How far the body reaches behind its node: what it comes to rest on. The
+## build writes a nominal figure; the death measures the real one off the
+## visual, see `_measure_rest_thickness`.
 var _rest_radius := 0.37
+## True once the corpse has been dropped onto the ground and found to rest
+## there, so `_settle_onto_ground` stops casting rays for it every tick.
+var _rested := false
 
 
 func _ready() -> void:
@@ -848,7 +855,12 @@ func take_sauce_hit(from := Vector3.INF) -> bool:
 	# A flinch under way is abandoned rather than finished: it is going over now.
 	_flinch_left = 0.0
 	_settled_for = 0.0
+	_rested = false
 	_play_death_animation()
+	# Measured after the rig is back in its rest pose, which is what it falls in.
+	var thickness := _measure_rest_thickness()
+	if thickness > 0.0:
+		_rest_radius = thickness
 	return true
 
 
@@ -1075,15 +1087,22 @@ func _apply_pose() -> void:
 		+ Vector3.UP * (_rest_radius * sin(fall_angle)))
 
 
-## Lifts the settled body until nothing of it is through the floor.
+## Drops the settled body onto the ground: lifts it until nothing of it is
+## through the floor, lowers it until something of it touches.
 ##
-## The topple is an arc about the feet with a fixed allowance for the torso's
+## The topple is an arc about the feet with an allowance for the body's
 ## thickness, which is right on flat ground and wrong everywhere else -- a body
 ## that dies on a kerb, on a ramp or half under a stall counter arrives with
-## part of itself inside the geometry. So once it is down, the three bones that
-## decide the silhouette -- **head, middle and feet**, indices 2, 1 and 0 of
-## `_bones()` -- are dropped onto whatever is under them and the **whole node**
-## is raised by the worst of them.
+## part of itself inside the geometry. So once it is down, every mesh of the
+## visual is dropped onto whatever is under its lowest point and the **whole
+## node** is moved by the worst of them.
+##
+## Off the visual, not off a bone table. This used to read the hamburger's
+## `_bones()` -- for every kind of enemy, at the hamburger's scale -- and so
+## held every corpse with its centre 4.5 m up: a toast slice floated four
+## metres over the street, and the burger itself, two metres thicker in the
+## table than in the mesh, hung above its own shadow. The meshes are what the
+## player sees resting on the ground, so they are what is measured.
 ##
 ## The node, not the mesh. Lifting the mesh alone is what put the visible body
 ## somewhere the collider was not, which is the fault the death animation was
@@ -1092,35 +1111,68 @@ func _apply_pose() -> void:
 ##
 ## Authority only, and it changes `global_position`, which is already in the
 ## state packet -- so every peer gets the corrected pose without anything new
-## being sent.
+## being sent. Runs until the body is found at rest, then not again.
 func _settle_onto_ground() -> void:
-	if not authority:
+	if not authority or _rested:
 		return
 	var space := get_world_3d().direct_space_state
-	var bones := _bones()
 	var worst := -INF
-	for index in [2, 1, 0]:
-		var bone: Dictionary = bones[index]
-		var centre: Vector3 = global_transform * (bone["centre"] as Vector3)
-		# Flat on its back, a disc rests on its side, so what hangs below its
-		# centre is its radius rather than half its height.
-		var reach: float = bone["radius"]
+	for mesh_instance in _visual_meshes():
+		var aabb: AABB = mesh_instance.get_aabb()
+		var lowest := Vector3.INF
+		for corner in 8:
+			var point: Vector3 = mesh_instance.global_transform * aabb.get_endpoint(corner)
+			if point.y < lowest.y:
+				lowest = point
+		# Cast from inside the body, level with the mesh's centre, so a point
+		# already through the floor still finds the surface it is through.
+		var centre: Vector3 = mesh_instance.global_transform * aabb.get_center()
 		var query := PhysicsRayQueryParameters3D.create(
-			centre, centre - Vector3.UP * (reach + height))
+			Vector3(lowest.x, maxf(centre.y, lowest.y), lowest.z),
+			lowest - Vector3.UP * height)
 		query.exclude = [get_rid()]
 		query.collide_with_areas = false
 		var hit := space.intersect_ray(query)
 		if hit.is_empty():
 			continue
-		# Positive when the bone's underside is through the surface.
-		worst = maxf(worst, (hit.position.y as float) - (centre.y - reach))
+		# Positive when the mesh's underside is through the surface.
+		worst = maxf(worst, (hit.position.y as float) - lowest.y)
 	if worst == -INF:
 		return
 	var lift := worst + ground_clearance
 	if absf(lift) < 0.0005:
+		_rested = true
 		return
 	global_position += Vector3.UP * lift
 	_fall_pivot += Vector3.UP * lift
+
+
+## Every mesh of the visual, whatever built it -- an imported GLB or the Fry
+## Stalker's primitives.
+func _visual_meshes() -> Array:
+	if _visual_root == null or not is_instance_valid(_visual_root):
+		return []
+	return _visual_root.find_children("*", "MeshInstance3D", true, false)
+
+
+## How far the visual reaches behind the node, along its local +Z: the body goes
+## over onto its back, so this is the thickness it lands on, and what
+## `_apply_pose` lifts the centre by as it goes. Measured rather than written
+## down, because written down it was wrong: the hamburger's nominal 4.5 m was
+## its old bone table at 5x, and the mesh is 2.3 m -- so the centre *rose* 1.6 m
+## in the middle of the fall and came to rest in the air. Returns 0 when there
+## is nothing to measure, and the nominal figure stands.
+func _measure_rest_thickness() -> float:
+	if not is_inside_tree():
+		return 0.0
+	var into_body := global_transform.affine_inverse()
+	var deepest := 0.0
+	for mesh_instance in _visual_meshes():
+		var to_body: Transform3D = into_body * mesh_instance.global_transform
+		var aabb: AABB = mesh_instance.get_aabb()
+		for corner in 8:
+			deepest = maxf(deepest, (to_body * aabb.get_endpoint(corner)).z)
+	return deepest
 
 
 func paint_mayo(world_position: Vector3, world_normal: Vector3) -> Vector2i:

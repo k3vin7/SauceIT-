@@ -542,12 +542,27 @@ func _run() -> void:
 	# Resting on the ground rather than sunk into it or hovering over it. The
 	# height to expect is measured from the feet it toppled about, not from
 	# zero: the street it is standing on is not at y = 0.
-	var expected_rest: float = enemy._fall_pivot.y + enemy._rest_radius
-	print("at rest the body centre is %.2f m up; its feet are at %.2f and it is %.2f m thick" % [
-		enemy.global_position.y, enemy._fall_pivot.y, enemy._rest_radius])
-	_check(absf(enemy.global_position.y - expected_rest) < 0.02,
-		"flat on its back it sits %.2f m up rather than the %.2f m its own thickness puts it at"
-			% [enemy.global_position.y, expected_rest])
+	# Measured where the player looks: the lowest point of the visible meshes
+	# against the ground under them. The node's own height is not the thing --
+	# a body whose centre sits exactly its thickness up is still floating if
+	# the thickness was written down wrong, which is what it was.
+	var mesh_floor := INF
+	for mesh_instance in enemy._visual_meshes():
+		var aabb: AABB = mesh_instance.get_aabb()
+		for corner in 8:
+			mesh_floor = minf(mesh_floor,
+				(mesh_instance.global_transform * aabb.get_endpoint(corner)).y)
+	var ground_query := PhysicsRayQueryParameters3D.create(
+		enemy.global_position + Vector3.UP * 50.0, enemy.global_position - Vector3.UP * 50.0)
+	ground_query.exclude = [enemy.get_rid()]
+	var ground_hit := enemy.get_world_3d().direct_space_state.intersect_ray(ground_query)
+	var ground_y: float = ground_hit.position.y if not ground_hit.is_empty() else NAN
+	print("at rest the body centre is %.2f m up; its feet are at %.2f, it is %.2f m thick, and its mesh is %.3f m off the ground" % [
+		enemy.global_position.y, enemy._fall_pivot.y, enemy._rest_radius, mesh_floor - ground_y])
+	_check(not is_nan(ground_y), "there is no ground under the corpse to measure against")
+	_check(absf(mesh_floor - ground_y - enemy.ground_clearance) < 0.02,
+		"flat on its back its mesh is %.2f m off the ground rather than resting on it"
+			% (mesh_floor - ground_y))
 	_check(hud.enemy_bar_rect(enemy, camera).size.x == 0.0,
 		"a dead enemy still has a health bar over it")
 
