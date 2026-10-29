@@ -117,6 +117,11 @@ const MAX_CLIENTS := 3
 ## along rather than being derived, so nobody has to guess which band a bottle
 ## is in either.
 const STATE_STRIDE := 16
+## Where one occupant is standing in the truck: x, y, z and the yaw they are
+## facing. The truck carries no bottle, no health and no aim pitch, so it needs
+## none of the sixteen floats a stage body does -- four, four times a frame at
+## the four-player maximum, is 80 bytes of pose a frame against the stage's 272.
+const LOBBY_POSE_STRIDE := 4
 ## What that costs the host. One player is 16 floats plus a 4-byte id, so 68
 ## bytes; a four-player session is 272 bytes of state a frame, and the host sends
 ## it to each of the three guests at the physics rate:
@@ -230,6 +235,14 @@ var lobby_flow := false
 var session_phase: int = SessionPhase.OFFLINE
 var selected_stage := "stage_1"
 var _lobby_ready: Dictionary = {}
+## The truck the party is riding in, while the session sits in its lobby phase.
+## It is bound by the TruckLobby itself rather than through `bind`, which is the
+## combat world's: the two spaces never exist at the same time, and the truck
+## shares none of the world's interface beyond the three occupant calls below.
+var lobby_space: Node
+## peer id -> the last [move, yaw] a client sent from the truck, applied every
+## tick until the next one arrives, exactly as `_client_input` is in the stage.
+var _lobby_input: Dictionary = {}
 var _transition_id := 0
 var _transition_roster := PackedInt32Array()
 var _loaded_peers: Dictionary = {}
@@ -246,6 +259,25 @@ func bind(new_world: Node) -> void:
 
 func _world_ready() -> bool:
 	return world != null and (not lobby_flow or session_phase == SessionPhase.STAGE)
+
+
+## The truck tells the session it exists, and takes it back on the way out. A
+## stale pointer here would have the host walking bodies in a freed scene one
+## frame into the stage load.
+func bind_lobby(space: Node) -> void:
+	lobby_space = space
+	_lobby_input.clear()
+
+
+func unbind_lobby(space: Node) -> void:
+	if lobby_space == space:
+		lobby_space = null
+		_lobby_input.clear()
+
+
+func _lobby_space_ready() -> bool:
+	return lobby_space != null and is_instance_valid(lobby_space) \
+		and (not lobby_flow or session_phase == SessionPhase.TRUCK)
 
 
 func begin_host_room(port := DEFAULT_PORT, code := "", open_to_anyone := false,
@@ -763,6 +795,7 @@ func _free_slot() -> int:
 
 func _on_peer_disconnected(id: int) -> void:
 	_client_input.erase(id)
+	_lobby_input.erase(id)
 	_input_this_tick.erase(id)
 	_wipe_budget.erase(id)
 	_refill_budget.erase(id)
@@ -1247,6 +1280,82 @@ func _within_budget(sender: int) -> bool:
 	return true
 
 
+## The truck runs on the same split as the stage: clients send their keys, the
+## host walks every body and sends back where they ended up. Nothing in a lobby
+## is competitive, but a player who sees themselves standing somewhere the seat
+## next to them does not is the same bug in either space, and the stage already
+## has the helpers for not having it.
+##
+## It is also what runs the truck when there is no session at all -- the scene
+## opened on its own with `F6` -- because then this peer is the only authority
+## there is.
+func run_lobby(delta: float) -> void:
+	if not _lobby_space_ready():
+		return
+	if not _online:
+		lobby_space.step_occupants({}, delta)
+		return
+	if not multiplayer.is_server():
+		return
+	# `apply_client_input` hands out a fresh allowance every tick, but it
+	# returns early outside the stage, so the truck has to clear its own:
+	# without this every guest spends its one packet on the first truck frame
+	# and is never heard from again -- it stands still on the host's screen
+	# while walking on its own.
+	_input_this_tick.clear()
+	lobby_space.step_occupants(_lobby_input, delta)
+	if multiplayer.get_peers().is_empty():
+		return
+	var ids := PackedInt32Array()
+	var data := PackedFloat32Array()
+	for peer_id in lobby_space.occupant_ids():
+		var pose: Array = lobby_space.occupant_pose(int(peer_id))
+		var at: Vector3 = pose[0]
+		ids.push_back(int(peer_id))
+		data.append_array(PackedFloat32Array([at.x, at.y, at.z, pose[1]]))
+	_apply_lobby_poses.rpc(ids, data)
+
+
+## A guest's keys on their way to the host. Unreliable like the stage's: the
+## host applies the last packet it heard until a newer one lands, so a dropped
+## one coasts rather than stutters.
+func send_lobby_input(move: Vector2, yaw: float) -> void:
+	if not _online or multiplayer.is_server() or not _lobby_space_ready():
+		return
+	if not _joined or _peer == null \
+			or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+	_submit_lobby_input.rpc_id(1, move, yaw)
+
+
+@rpc("any_peer", "call_remote", "unreliable_ordered")
+func _submit_lobby_input(move: Vector2, yaw: float) -> void:
+	if not multiplayer.is_server() or not _lobby_space_ready():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if not _within_budget(sender):
+		return
+	# The same two doors as every other client packet. A truck is a smaller
+	# place to cheat in, but a NaN written into a pose is still broadcast to
+	# everyone and still takes all four screens with it.
+	if not all_finite([move, yaw]):
+		rejected_packets += 1
+		return
+	_lobby_input[sender] = [clamp_direction(move), wrap_angle(yaw)]
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _apply_lobby_poses(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
+	if not _lobby_space_ready():
+		return
+	for slot in ids.size():
+		var index := slot * LOBBY_POSE_STRIDE
+		if index + LOBBY_POSE_STRIDE > data.size():
+			return
+		lobby_space.apply_occupant_pose(ids[slot],
+			Vector3(data[index], data[index + 1], data[index + 2]), data[index + 3])
+
+
 func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
 		yaw: float, pitch: float, character_index := 0) -> void:
 	if not _online or multiplayer.is_server() or not _world_ready():
@@ -1582,6 +1691,7 @@ func _physics_process(delta: float) -> void:
 		_lobby_broadcast_at = 0.0
 		_broadcast_lobby()
 	apply_client_input()
+	run_lobby(delta)
 	if lobby_flow and multiplayer.is_server() and session_phase == SessionPhase.LOADING:
 		_load_clock += delta
 		if _load_clock >= LOAD_TIMEOUT:

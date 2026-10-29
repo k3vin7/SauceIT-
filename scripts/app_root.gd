@@ -251,6 +251,7 @@ func _show_truck() -> void:
 	_clear_all_ui()
 	var truck := TruckScene.instantiate() as TruckLobby
 	truck.session = session
+	truck.mouse_sensitivity = save_store.mouse_sensitivity
 	truck.start_requested.connect(_request_start)
 	truck.leave_requested.connect(_leave_session)
 	space_root.add_child(truck)
@@ -413,6 +414,8 @@ func _save_options() -> void:
 	_apply_options()
 	if current_space is RecruitmentMap:
 		(current_space as RecruitmentMap).mouse_sensitivity = save_store.mouse_sensitivity
+	elif current_space is TruckLobby:
+		(current_space as TruckLobby).mouse_sensitivity = save_store.mouse_sensitivity
 	elif current_space != null and current_space.has_method("apply_look"):
 		current_space.set("mouse_sensitivity", save_store.mouse_sensitivity)
 	_close_options()
@@ -569,4 +572,7 @@ func _mouse_should_be_visible() -> bool:
 	for layer in [_options_layer, _pause_layer, _recruitment_layer]:
 		if layer != null and is_instance_valid(layer):
 			return true
-	return flow in [Flow.TITLE, Flow.TRUCK_LOBBY, Flow.RESULT]
+	# The truck is walked through rather than watched, so it holds its own
+	# cursor -- captured to look around, released with `Tab` for the host
+	# buttons -- and `set_input_locked` hands it back when a panel opens.
+	return flow in [Flow.TITLE, Flow.RESULT]
