@@ -23,7 +23,8 @@ const PLAYER_CHARACTER_NAMES := ["Character_1", "Character_2", "Character_3", "C
 ## capsule whichever presentation is selected.
 const PLAYER_CHARACTER_SOURCE_HEIGHTS := [8.94, 9.513729, 7.888794, 5.453089]
 ## Character 4 is much wider for its height than the first three. Scaling its
-## whole presentation and capsule to 72% gives it a comparable gameplay read.
+## whole presentation and capsule to 72% gives it a comparable gameplay read
+## while preserving the authored proportions.
 const PLAYER_CHARACTER_SIZE_MULTIPLIERS := [1.0, 1.0, 1.0, 0.72]
 const PLAYER_CHARACTER_ANIMATIONS := [
 	["Weapon_Walk", "Weapon_Run", "Weapon_Death"],
@@ -31,6 +32,8 @@ const PLAYER_CHARACTER_ANIMATIONS := [
 	["Character_3_Armed_Walk", "Character_3_Armed_Run", "Character_3_Armed_Death"],
 	["Walk_Weapon", "Run_Weapon", "Death_Weapon"],
 ]
+const SAUCE_TUBE_SCENE: PackedScene = preload(
+	"res://assets/props/Production_SauceTube_S1/Production_SauceTube_S1.glb")
 const StallRoofScript := preload("res://scripts/stall_roof.gd")
 const TutorialScript := preload("res://scripts/tutorial.gd")
 const TutorialWreckScript := preload("res://scripts/tutorial_wreck.gd")
@@ -191,6 +194,7 @@ class Shooter:
 	var character_gauge: MeshInstance3D
 	var character_gauge_scale := Vector3.ONE
 	var character_gauge_material: StandardMaterial3D
+	var spawn_slot := 0
 	var aim_pivot: Node3D
 	var weapon: Node3D
 	var muzzle: Node3D
@@ -244,6 +248,7 @@ class Shooter:
 	## Which of the three bands the bottle is in, so a change can be noticed.
 	var sauce_stage := 0
 	var bottle_contents: MeshInstance3D
+	var bottle_contents_scale := Vector3.ONE
 	var bottle_material: StandardMaterial3D
 	## Counts down to the next puff of air from an empty bottle.
 	var air_puff := 0.0
@@ -446,6 +451,9 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE }
 ## The toast rushers can be outrun, but not merely walked away from. Their low
 ## health makes turning to spray one down the intended answer to the charge.
 @export_range(0.1, 3.0, 0.05) var toast_rusher_speed_fraction := 1.65
+## Between the 0.70 bruiser and 1.65 toast: threatening, but its planted-claw
+## recovery can still be exploited on foot.
+@export_range(0.1, 3.0, 0.05) var fry_stalker_speed_fraction := 1.10
 ## Draws every enemy's sight and give-up ranges on the ground. **`F3` toggles
 ## it.** A development aid: the ranges are invisible otherwise, so tuning them
 ## is guesswork about why a body did or did not set off.
@@ -662,8 +670,13 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE }
 @export_range(-0.6, 0.6, 0.01, "suffix:m") var weapon_offset_right := 0.155
 @export_range(-0.6, 0.3, 0.01, "suffix:m") var weapon_offset_up := -0.15
 @export_range(0.1, 1.0, 0.01, "suffix:m") var weapon_offset_forward := 0.28
+## Total length of the production tube viewmodel. The authored source is 1.2 m
+## tall and is uniformly fitted to this length at runtime.
+@export_range(0.08, 0.5, 0.01, "suffix:m") var bottle_length := 0.35
+## The nozzle's opening. The tube is authored geometry now, so nothing is built
+## from this; it sets how wide the strand's ribbon is where it leaves the tip,
+## see `_nozzle_segments`.
 @export_range(0.02, 0.14, 0.005, "suffix:m") var bottle_radius := 0.052
-@export_range(0.08, 0.5, 0.01, "suffix:m") var bottle_length := 0.20
 ## The strand is launched at the point the crosshair marks, this far down the
 ## camera forward axis, so an off-centre nozzle still fires through the centre.
 ##
@@ -1186,6 +1199,7 @@ func _physics_process(delta: float) -> void:
 			if not _tutorial.allows_firing(shooter.peer_id):
 				shooter.firing = false
 	if _is_authority():
+		_advance_player_respawns()
 		for shooter in _shooters.values():
 			_update_slip(shooter)
 		# Before the enemies step, so a body wading into mustard is slowed on the
@@ -1888,9 +1902,22 @@ func _update_fallen_body(shooter: Shooter) -> void:
 	# never overlap, since fall_tilt is 0 while stumbling.
 	shooter.body_mesh.rotation.z = deg_to_rad(fall_body_roll_degrees) * tilt * shooter.player.fall_direction \
 		+ deg_to_rad(stumble_body_roll_degrees) * shooter.player.stumble_wobble()
-	if shooter.player_visual != null and is_instance_valid(shooter.player_visual):
+	if shooter.player_visual == null or not is_instance_valid(shooter.player_visual):
+		return
+	# The authored Death action supplies its own collapse. Slip-and-recovery still
+	# uses the existing replicated node tilt because it is gameplay state, not a
+	# lethal animation.
+	if shooter.player.state == MayoPlayer.State.DEAD:
+		shooter.player_visual.rotation = Vector3(0.0, PI, 0.0)
+	else:
+		# The model is authored facing +Z, so it carries a half turn about Y
+		# that the capsule does not. Euler order is YXZ -- the yaw is applied
+		# last, in the parent's frame -- and a half turn about Y flips the
+		# model's X and Z, so the same tilt written here comes out mirrored:
+		# the capsule and camera pitch back, the model falls on its face.
+		# Negated, the two tip together.
 		shooter.player_visual.rotation = Vector3(
-			shooter.body_mesh.rotation.x, PI, shooter.body_mesh.rotation.z)
+			-shooter.body_mesh.rotation.x, PI, -shooter.body_mesh.rotation.z)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -2038,6 +2065,11 @@ func _ensure_input_actions() -> void:
 		var network := InputEventKey.new()
 		network.physical_keycode = KEY_F2
 		InputMap.action_add_event("toggle_network_panel", network)
+	if not InputMap.has_action("switch_character"):
+		InputMap.add_action("switch_character")
+		var character := InputEventKey.new()
+		character.physical_keycode = KEY_C
+		InputMap.action_add_event("switch_character", character)
 
 
 ## Turns the sound off at the bus, which is the only place that catches all of
@@ -2398,6 +2430,7 @@ func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
 	var shooter := Shooter.new()
 	shooter.peer_id = peer_id
 	shooter.is_local = is_local
+	shooter.spawn_slot = slot
 	# Seeded per peer so two players firing at once do not share a jitter
 	# sequence. Peer 1 keeps the original seed, so the single-player game and
 	# the checks built on it emit exactly the strand they always did.
@@ -2650,16 +2683,16 @@ func _build_player_visual(shooter: Shooter) -> void:
 	var skeletons := visual.find_children("*", "Skeleton3D", true, false)
 	if not skeletons.is_empty():
 		var skeleton := skeletons[0] as Skeleton3D
-		if skeleton.find_bone("Character_1_SauceMuzzle") >= 0:
+		if skeleton.find_bone("SauceTubeMuzzle") >= 0:
 			var attachment := BoneAttachment3D.new()
-			attachment.name = "SauceContainerMuzzle"
-			attachment.bone_name = "Character_1_SauceMuzzle"
+			attachment.name = "SauceTubeMuzzle"
+			attachment.bone_name = "SauceTubeMuzzle"
 			skeleton.add_child(attachment)
 			shooter.character_muzzle = attachment
-	if shooter.character_muzzle == null and index == 0:
-		push_error("Character_1 is missing its sauce-container muzzle socket")
+	if shooter.character_muzzle == null:
+		push_error("%s is missing its SauceTubeMuzzle socket" % character_name)
 
-	var gauge_node := visual.find_child("*SauceContainer_Gauge*", true, false)
+	var gauge_node := visual.find_child("*SauceFill*", true, false)
 	if gauge_node is MeshInstance3D:
 		shooter.character_gauge = gauge_node as MeshInstance3D
 		shooter.character_gauge_scale = shooter.character_gauge.scale
@@ -2743,17 +2776,23 @@ func character_name_for(shooter: Shooter) -> String:
 
 ## Walk and run are authored in place, so gameplay velocity remains the source
 ## of truth. With no dedicated idle clip, the first carry frame is held still.
+## Death is a one-shot and is never restarted while the respawn timer runs.
 func _update_player_animation(shooter: Shooter) -> void:
 	var player := shooter.player_animation
 	if player == null:
 		return
 	var desired := StringName("IdleCarry")
-	if shooter.player.state == MayoPlayer.State.NORMAL \
+	if shooter.player.state == MayoPlayer.State.DEAD:
+		desired = shooter.death_animation
+	elif shooter.player.state == MayoPlayer.State.NORMAL \
 			and Vector2(shooter.player.velocity.x, shooter.player.velocity.z).length_squared() > 0.01:
 		desired = shooter.run_animation if shooter.player.is_running() else shooter.walk_animation
 	if desired == shooter.player_animation_name:
 		return
 	shooter.player_animation_name = desired
+	if shooter == _local and is_instance_valid(shooter.weapon):
+		shooter.weapon.visible = _first_person and shooter.player.state != MayoPlayer.State.DEAD \
+			and (_tutorial == null or _tutorial.has_bottle(shooter.peer_id))
 	player.speed_scale = 1.0
 	if desired == StringName("IdleCarry"):
 		if not shooter.walk_animation.is_empty():
@@ -2768,7 +2807,13 @@ func _update_character_gauge(shooter: Shooter) -> void:
 	if shooter.character_gauge == null or not is_instance_valid(shooter.character_gauge):
 		return
 	var level := clampf(shooter.sauce, 0.0, 1.0)
-	shooter.character_gauge.scale = shooter.character_gauge_scale * lerpf(0.35, 1.0, level)
+	# Embedded SauceFill geometry is anchored at the tube base and extends along
+	# local +Z after Blender-to-Godot axis conversion. Only that axis shrinks, so
+	# the sauce surface recedes while the bottle and the hand contact stay fixed.
+	var fill_scale := shooter.character_gauge_scale
+	fill_scale.z *= maxf(level, 0.001)
+	shooter.character_gauge.scale = fill_scale
+	shooter.character_gauge.visible = level > 0.004
 	var tint := SAUCE_TINTS[clampi(shooter.sauce_kind, 0, SAUCE_TINTS.size() - 1)]
 	var stage := sauce_stage_of(level)
 	if stage == SauceStage.SPLUTTERING:
@@ -2779,8 +2824,8 @@ func _update_character_gauge(shooter: Shooter) -> void:
 		shooter.character_gauge_material.albedo_color = tint
 
 
-## Sauce bottle viewmodel, held to the lower right and angled so its nozzle
-## points at the crosshair rather than straight down the view axis.
+## Production sauce-tube viewmodel, held to the lower right and angled so its
+## nozzle points at the crosshair rather than straight down the view axis.
 func _build_weapon(shooter: Shooter) -> void:
 	var hold := Vector3(weapon_offset_right, weapon_offset_up, -weapon_offset_forward)
 	var weapon := Node3D.new()
@@ -2799,29 +2844,34 @@ func _build_weapon(shooter: Shooter) -> void:
 	weapon.add_child(sway)
 	shooter.weapon_sway = sway
 
-	# Translucent, so what is inside it is what you read. A squeeze bottle is a
-	# translucent bottle with sauce in it, and that is the whole gauge.
-	var body_color := Color(0.82, 0.80, 0.75, 0.40)
-	var cap_color := Color("2f3a47")
-	var label_color := Color("c25b3f")
-	var cursor := 0.0
-	# Squeeze-bottle silhouette: tapering body, a label band, then a dark cap and
-	# tip that clear the body so the nozzle reads against the scene.
-	cursor = _add_bottle_part(sway, "Body", bottle_radius, bottle_radius * 0.72,
-		bottle_length, cursor, body_color, 0.45, 16)
-	_add_bottle_contents(shooter, sway)
-	_add_bottle_part(sway, "Label", bottle_radius * 1.04, bottle_radius * 0.95,
-		bottle_length * 0.3, bottle_length * 0.22, label_color, 0.6, 16)
-	cursor = _add_bottle_part(sway, "Shoulder", bottle_radius * 0.72, bottle_radius * 0.4,
-		bottle_length * 0.26, cursor, body_color, 0.45, 14)
-	cursor = _add_bottle_part(sway, "Cap", bottle_radius * 0.46, bottle_radius * 0.42,
-		bottle_length * 0.26, cursor, cap_color, 0.55, 14)
-	cursor = _add_bottle_part(sway, "Tip", bottle_radius * 0.42, bottle_radius * 0.16,
-		bottle_length * 0.22, cursor, cap_color, 0.5, 12)
+	var tube := SAUCE_TUBE_SCENE.instantiate() as Node3D
+	if tube == null:
+		push_error("Production_SauceTube_S1 did not instantiate as Node3D")
+		return
+	tube.name = "ProductionSauceTube"
+	# Blender +Z imports as Godot +Y. Rotate that axis onto camera-forward -Z;
+	# the source is exactly 1.2 m from base to nozzle.
+	tube.scale = Vector3.ONE * (bottle_length / 1.2)
+	tube.rotation_degrees.x = -90.0
+	# A small visual-only cant exposes the translucent side wall and the moving
+	# sauce surface to the first-person camera. The logical muzzle remains on the
+	# weapon axis; at this length the visible tip offset stays inside the strand.
+	tube.rotate_object_local(Vector3.UP, deg_to_rad(7.0))
+	sway.add_child(tube)
+	var contents_node := tube.find_child("*SauceFill*", true, false)
+	if contents_node is MeshInstance3D:
+		shooter.bottle_contents = contents_node as MeshInstance3D
+		shooter.bottle_contents_scale = shooter.bottle_contents.scale
+		var source_material := shooter.bottle_contents.get_active_material(0)
+		if source_material is StandardMaterial3D:
+			shooter.bottle_material = source_material.duplicate() as StandardMaterial3D
+			shooter.bottle_contents.material_override = shooter.bottle_material
+	else:
+		push_error("Production_SauceTube_S1 is missing SauceFill")
 
 	var muzzle := Marker3D.new()
 	muzzle.name = "Muzzle"
-	muzzle.position = Vector3(0.0, 0.0, -cursor)
+	muzzle.position = Vector3(0.0, 0.0, -bottle_length)
 	weapon.add_child(muzzle)
 	shooter.muzzle = muzzle
 	shooter.viewmodel_muzzle = muzzle
@@ -2829,6 +2879,7 @@ func _build_weapon(shooter: Shooter) -> void:
 		shooter.muzzle = shooter.character_muzzle
 	weapon.visible = shooter.is_local and _first_person \
 		and (_tutorial == null or _tutorial.has_bottle(shooter.peer_id))
+	_update_bottle_gauge(shooter)
 
 
 ## The sauce inside the bottle, which is the gauge.
@@ -2843,33 +2894,6 @@ func _build_weapon(shooter: Shooter) -> void:
 ## who most need to know how you are doing are the other three and they cannot
 ## see your HUD.
 ##
-## PLACEHOLDER: a plain cylinder and a flat colour. A modelled bottle wants the
-## same thing -- one node scaled along the bottle axis -- so swap the mesh here
-## and leave `_update_bottle_gauge` alone.
-func _add_bottle_contents(shooter: Shooter, weapon: Node3D) -> void:
-	var contents := MeshInstance3D.new()
-	contents.name = "Contents"
-	var mesh := CylinderMesh.new()
-	# Just inside the wall, and tapering with it so it does not poke through.
-	mesh.top_radius = bottle_radius * 0.72 * 0.86
-	mesh.bottom_radius = bottle_radius * 0.86
-	mesh.height = bottle_length
-	mesh.radial_segments = 16
-	contents.mesh = mesh
-	# Same build as the body: along +Y, then turned onto the bottle axis.
-	contents.rotation_degrees.x = -90.0
-
-	var material := StandardMaterial3D.new()
-	material.albedo_color = Color("fff0a8")
-	material.roughness = 0.3
-	contents.material_override = material
-	weapon.add_child(contents)
-
-	shooter.bottle_contents = contents
-	shooter.bottle_material = material
-	_update_bottle_gauge(shooter)
-
-
 ## Runs the column down as the bottle empties and recolours it by band. Called
 ## every frame for every shooter, off the level the authority sent, so the
 ## bottle in someone else's hand reads the same as the one in yours.
@@ -2877,11 +2901,12 @@ func _update_bottle_gauge(shooter: Shooter) -> void:
 	if shooter.bottle_contents == null or not is_instance_valid(shooter.bottle_contents):
 		return
 	var level := clampf(shooter.sauce, 0.0, 1.0)
-	# The mesh is a bottle-length cylinder turned onto the axis, so scaling its
-	# own Y shortens it along the bottle. Anchored at the base: the surface
-	# drops away from the nozzle rather than shrinking about its middle.
-	shooter.bottle_contents.scale.y = maxf(level, 0.001)
-	shooter.bottle_contents.position.z = -bottle_length * level * 0.5
+	# The authored SauceFill mesh starts at the tube base. Blender +Z becomes
+	# Godot +Y inside the imported model, so this shortens it without moving the
+	# base or allowing the liquid to poke through the translucent shell.
+	var fill_scale := shooter.bottle_contents_scale
+	fill_scale.y *= maxf(level, 0.001)
+	shooter.bottle_contents.scale = fill_scale
 	shooter.bottle_contents.visible = level > 0.004
 
 	var stage := sauce_stage_of(level)
@@ -2898,43 +2923,6 @@ func _update_bottle_gauge(shooter: Shooter) -> void:
 		tint = Color("c0392b")
 	if shooter.bottle_material != null:
 		shooter.bottle_material.albedo_color = tint
-
-
-## Adds one cylinder section along the bottle axis starting at `offset`, and
-## returns the offset of its far end.
-func _add_bottle_part(weapon: Node3D, part_name: String, back_radius: float, front_radius: float,
-		length: float, offset: float, color: Color, roughness: float, segments: int) -> float:
-	var part := MeshInstance3D.new()
-	part.name = part_name
-	var mesh := CylinderMesh.new()
-	# The mesh is built along +Y then rotated onto -Z, so its "top" faces forward.
-	mesh.top_radius = front_radius
-	mesh.bottom_radius = back_radius
-	mesh.height = length
-	mesh.radial_segments = segments
-	part.mesh = mesh
-	part.rotation_degrees.x = -90.0
-	part.position = Vector3(0.0, 0.0, -(offset + length * 0.5))
-	var material := StandardMaterial3D.new()
-	material.albedo_color = color
-	material.roughness = roughness
-	# An alpha in the colour does nothing on its own: `StandardMaterial3D`
-	# ignores it until transparency is switched on, so the bottle body was set
-	# translucent and drawn solid, with the sauce that is supposed to be the
-	# gauge sealed inside it. Back faces stay culled -- only the near wall is
-	# wanted between the eye and the contents, and drawing the far wall as well
-	# puts a second layer of tint over them.
-	if color.a < 1.0:
-		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		# The contents are opaque, so they are drawn in the opaque pass and the
-		# bottle blends over them. Writing depth from the wall as well would let
-		# it occlude whichever of them the sorter happened to put second.
-		material.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
-	part.material_override = material
-	weapon.add_child(part)
-	return offset + length
-
-
 func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3, color: Color) -> void:
 	var wall := WallScript.new()
 	wall.name = wall_name
@@ -3399,6 +3387,9 @@ const ENEMY_SPAWNS := [
 	[270, 420],   # halfway along Karja tänav
 	[370, 550],   # waiting in the festival square
 ]
+## On the same opening road, about halfway between the player start and the
+## first hamburger/toast group, so it is always the first monster encountered.
+const FRY_STALKER_SPAWN := [290, 850]
 ## A pair flanks each bruiser, this far to either side of it.
 ##
 ## **In metres, off the bruiser's own position -- not in map pixels.** The pair
@@ -3459,6 +3450,19 @@ func _build_enemies() -> void:
 				+ Vector3(TOAST_RUSHER_PAIR_OFFSETS[pair_index], 0.0, 0.0)
 			rusher.position.y = rusher.stand_height()
 			_enemies.push_back(rusher)
+	var fry_stalker := MayoEnemy.new()
+	fry_stalker.name = "Enemy_FryStalker"
+	fry_stalker.authority = _is_authority()
+	add_child(fry_stalker)
+	fry_stalker.build_fry_stalker(body_cell_size, contamination_brush_radius)
+	fry_stalker.nav = _nav
+	if _local != null:
+		fry_stalker.match_player_speed(_local.player.walk_speed,
+			fry_stalker_speed_fraction)
+	fry_stalker.position = StreetMap.from_pixels(
+		FRY_STALKER_SPAWN[0], FRY_STALKER_SPAWN[1]) \
+		+ Vector3(0.0, fry_stalker.stand_height(), 0.0)
+	_enemies.push_back(fry_stalker)
 	_apply_enemy_sight_rings()
 	# Scale them to the party that exists now. Offline that is one player and
 	# the multiplier is 1, so a solo game is untouched.
@@ -3758,11 +3762,10 @@ func _advance_enemies(delta: float) -> void:
 		_damage_player(hit, enemy.contact_damage)
 
 
-## An empty bar puts the player back at the start, whole, topped up and upright
-## -- but **not clean**. There is no death or respawn system to hook into and
-## inventing one is a bigger decision than this is; leaving the player alive at
-## zero with nothing happening would make the bar a decoration, so they lose their
-## ground instead.
+## An empty bar holds the body in the world for the character's death clip --
+## `death_duration` -- and then puts the player back at the start, whole, topped
+## up and upright. The authority runs the clock; clients see the same DEAD state
+## and timer in the normal player-state packet.
 ##
 ## What it does not do is wash them. The sauce on the body and on the glasses is
 ## the player's to deal with: the glasses come clean when they wipe them, and
@@ -3771,26 +3774,34 @@ func _advance_enemies(delta: float) -> void:
 func _damage_player(player: MayoPlayer, amount: float) -> void:
 	if not player.take_damage(amount):
 		return
-	player.heal_to_full()
+	player.begin_death()
+	# The clip starts on the frame they die, not the frame after: `_process`
+	# would pick the state up a render frame later, and on the frame it matters
+	# most the body would still be standing in its carry pose.
 	var shooter := _shooter_of(player)
 	if shooter != null:
+		_update_player_animation(shooter)
+
+
+func _advance_player_respawns() -> void:
+	for shooter in _shooters.values():
+		var player := shooter.player as MayoPlayer
+		if player.state != MayoPlayer.State.DEAD or player.state_time() < player.death_duration:
+			continue
+		player.finish_respawn(spawn_position_for(shooter.spawn_slot))
 		shooter.sauce = 1.0
-	player.velocity = Vector3.ZERO
-	player.global_position = spawn_position_for(_slot_of(player))
-	# Out of whatever they were in the middle of, as well as back at the start.
-	# The state machine travels in the player packet, so resetting it here is
-	# what puts an upright body on every screen -- see `MayoPlayer.reset_state`.
-	player.reset_state()
-	# **The sauce on them stays on them.** Losing your ground does not wash you:
-	# the body and the glasses keep every cell, on every peer, and the glasses
-	# come clean the one way they ever did -- the player wipes them. Dying is not
-	# a wipe.
-	#
-	# `reset_state` cancelled a wipe that was running, so the server's note that
-	# this player is mid-wipe has to go with it. Without this line `_finish_wipes`
-	# sees a wipe whose timer has "run out", and clears the lenses for everybody
-	# -- which would hand the player exactly the free clean this rule is against.
-	_wiping.erase(player.peer_id)
+		shooter.player_animation_name = StringName()
+		if shooter.player_animation != null:
+			shooter.player_animation.stop()
+		# **The sauce on them stays on them.** Dying does not wash you: the body
+		# and the glasses keep every cell, on every peer, and the glasses come
+		# clean the one way they ever did -- the player wipes them.
+		#
+		# `reset_state` cancelled a wipe that was running, so the server's note
+		# that this player is mid-wipe has to go with it. Without this line
+		# `_finish_wipes` sees a wipe whose timer has "run out", and clears the
+		# lenses for everybody -- exactly the free clean this rule is against.
+		_wiping.erase(player.peer_id)
 
 
 func _shooter_of(player: MayoPlayer) -> Shooter:
@@ -3799,16 +3810,6 @@ func _shooter_of(player: MayoPlayer) -> Shooter:
 		if shooter.player == player:
 			return shooter
 	return null
-
-
-func _slot_of(player: MayoPlayer) -> int:
-	var slot := 0
-	for id in _shooters:
-		var shooter: Shooter = _shooters[id]
-		if shooter.player == player:
-			return slot
-		slot += 1
-	return 0
 
 
 ## Share of the painted floor thick enough to slip on, refreshed a few times a

@@ -13,20 +13,36 @@ extends CharacterBody3D
 ## are, so the enemy that is about to hit you is in the same place on every
 ## screen.
 
-## Fixed by the sauce refill station: twice its width and twice its height.
-## Taking them from `StreetMap.VENDING_SIZE` rather than writing the metres out
-## means the two cannot drift apart.
-const WIDTH_MULTIPLE := 2.0
-const HEIGHT_MULTIPLE := 2.0
-const GaitScript := preload("res://scripts/enemy_gait.gd")
+const FryStalkerVisualScript := preload("res://scripts/fry_stalker_visual.gd")
 const HAMBURGER_MONSTER := preload(
 	"res://assets/enemies/hamburger_monster/hamburger_monster.glb")
-## Evaluated mesh bounds in the authored Blender file, in metres. Scaling by
-## this keeps the visible monster's soles and crown aligned with the legacy
-## gameplay body's exact height.
-const MODEL_SOURCE_HEIGHT := 1.7729597
-## The height the proportions in `_bones` are written as fractions of.
-const MODEL_HEIGHT := 4.1
+## The authored crawler, measured off its meshes at scale 1: fingertip to
+## fingertip, ground to crown, front to back. It is a wide, low thing -- nearly
+## four times as wide as it is tall -- and every figure below is derived from
+## these three so a re-export only has to update this line.
+const MODEL_SOURCE_SIZE := Vector3(5.0, 1.35, 2.27)
+## How wide the burger stands on the street, which is the one knob. 4.1 m is
+## the footprint the festival street was built around: it walks under a 4.54 m
+## stall canopy, wedges in the tutorial's escape gap, and a toast pair stands
+## beside it inside five metres. Grown to 10 m for a while, and nothing on the
+## street fitted it; and for a while the body was declared 10 m *tall* over a
+## mesh a quarter of that, so three quarters of it was air that sauce flew
+## through. The body is now exactly the mesh.
+const BURGER_WIDTH := 4.1
+const MODEL_SCALE_FACTOR := BURGER_WIDTH / MODEL_SOURCE_SIZE.x
+const MODEL_TARGET_SIZE := MODEL_SOURCE_SIZE * MODEL_SCALE_FACTOR
+const MODEL_SCALE := Vector3.ONE * MODEL_SCALE_FACTOR
+## The burger stack itself, hands not counted: half its depth, since the stack
+## is round and the depth is all stack. The unwrap turns about this, and the
+## hands are what `contact_reach` adds beyond it.
+const MODEL_BODY_RADIUS := MODEL_SOURCE_SIZE.z * 0.5 * MODEL_SCALE_FACTOR
+## Nominal only: the death measures the real thickness off the mesh, see
+## `_measure_rest_thickness`. Kept for the body before it has a visual.
+const MODEL_REST_RADIUS := MODEL_BODY_RADIUS
+## Attack_GroundSlam reaches the ground on frame 16 at 24 fps.
+const MODEL_ATTACK_IMPACT_SECONDS := 15.0 / 24.0
+const FRY_STALKER_SOURCE_HEIGHT := 4.2
+const FRY_STALKER_PLAYER_HEIGHT_MULTIPLE := 2.5
 
 @export_group("Health")
 @export_range(10.0, 2000.0, 1.0) var max_health := 240.0
@@ -96,8 +112,8 @@ var solo_health := 240.0
 
 @export_group("Its charge")
 ## How hard a contact hit throws the player, flat and upward. **Zero on the
-## bruiser**, which lands a bite rather than a charge; the rusher runs into you
-## and the shove is the point of it.
+## bruiser**, which slams with both hands rather than charging; the rusher runs
+## into you and the shove is the point of it.
 @export_range(0.0, 30.0, 0.1, "suffix:m/s") var impact_push_speed := 0.0
 @export_range(0.0, 15.0, 0.1, "suffix:m/s") var impact_lift_speed := 0.0
 
@@ -107,9 +123,14 @@ var solo_health := 240.0
 ## notice and get out.
 @export_range(0.0, 100.0, 0.5) var contact_damage := 6.0
 @export_range(0.1, 5.0, 0.05, "suffix:s") var contact_interval := 0.8
-## Beyond the two capsule radii. Its arms are not modelled, so this stands in
-## for them.
+## Beyond the two body radii. The crawler's authored hands already extend the
+## attack, so its build leaves this at zero.
 @export_range(0.0, 3.0, 0.05, "suffix:m") var contact_reach := 0.5
+## A Fry Stalker leaves its front claws buried after a slam. During this
+## window it cannot chase or be pushed, giving the player a deliberate opening.
+@export_range(0.0, 4.0, 0.05, "suffix:s") var attack_lock_seconds := 0.0
+## Time from the start of an attack to its visible contact frame.
+@export_range(0.0, 2.0, 0.01, "suffix:s") var attack_impact_delay_seconds := 0.0
 
 ## The two kinds a body can be. Minions die to a squirt and never stagger;
 ## heavies soak a party's worth of sauce and flinch on the way down.
@@ -120,7 +141,7 @@ enum Grade { MINION, HEAVY }
 ## health, and built by `build_moldy_toast_rusher`. They share everything else
 ## -- the chase, the contamination, the topple and the state packet -- because
 ## the difference between them is proportions and numbers, not behaviour.
-enum EnemyKind { BRUISER, MOLDY_TOAST_RUSHER }
+enum EnemyKind { BRUISER, MOLDY_TOAST_RUSHER, FRY_STALKER }
 
 @export_group("Its kind")
 ## What this one counts as. It changes nothing on its own -- what reads it is
@@ -230,10 +251,9 @@ var _ketchup_at := -1000.0
 ## at the moment a monster stops, it freezes mid-step with one elbow bent.
 @export_range(0.05, 2.0, 0.05, "suffix:s") var gait_settle_seconds := 0.25
 
-## Whether to plant the hands and solve the arms back from them. The modifier
-## keeps the palm at its authored floor height and lowers the body just enough
-## to give the short arms a usable, bent reach.
-@export var procedural_gait := true
+## Legacy inspector flag retained for scene compatibility. The Tripo crawler's
+## supplied Crawl action owns its hand plants, so no modifier is attached.
+@export var procedural_gait := false
 
 var health := 240.0
 ## Clients simulate no enemies at all, exactly as they simulate no bodies.
@@ -242,7 +262,7 @@ var contamination: BodyContamination
 ## Half the silhouette's width: the arms reach this far out, so it is also the
 ## capsule that the unwrap wraps around.
 var radius := 1.15
-var height := 4.1
+var height := MODEL_TARGET_SIZE.y
 ## Where it is looking, kept separately from `rotation.y` because a body part
 ## way through falling over is turned about two axes and the yaw can no longer
 ## be read back off the node.
@@ -296,6 +316,10 @@ var _idle_animation := &""
 var _walk_animation := &""
 var _attack_animation := &""
 var _attack_animation_active := false
+var _attack_target: MayoPlayer
+var _attack_impact_left := 0.0
+var _fry_visual: Node
+var _attack_lock_left := 0.0
 ## How far through the flinch it is, in seconds, counting down. The flinch is
 ## driven **through `fall_angle`** rather than through a field of its own, so it
 ## needs nothing added to the state packet: the angle already travels.
@@ -318,8 +342,13 @@ var _flinch_crossed := 0
 var _settled_for := 0.0
 ## World point the feet were planted on when it died -- the axis it goes over.
 var _fall_pivot := Vector3.ZERO
-## Half the thickness of the torso: what it comes to rest on.
+## How far the body reaches behind its node: what it comes to rest on. The
+## build writes a nominal figure; the death measures the real one off the
+## visual, see `_measure_rest_thickness`.
 var _rest_radius := 0.37
+## True once the corpse has been dropped onto the ground and found to rest
+## there, so `_settle_onto_ground` stops casting rays for it every tick.
+var _rested := false
 
 
 func _ready() -> void:
@@ -337,14 +366,16 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	# scaling multiplies up from here and never from the scaled value.
 	solo_health = max_health
 	health = max_health
-	var station: Vector3 = StreetMap.VENDING_SIZE
-	height = station.y * HEIGHT_MULTIPLE
-	# The burger is very nearly as wide as it is tall, so its width comes
-	# from the model rather than from the refill station it is sized against.
-	radius = _body_radius()
+	height = MODEL_TARGET_SIZE.y
+	radius = MODEL_BODY_RADIUS
+	contact_interval = 1.5
+	# The hands reach the rest of the way to the fingertips.
+	contact_reach = MODEL_TARGET_SIZE.x * 0.5 - MODEL_BODY_RADIUS
+	attack_lock_seconds = 1.5
+	attack_impact_delay_seconds = MODEL_ATTACK_IMPACT_SECONDS
 
 	var bones := _bones()
-	_rest_radius = _body_radius()
+	_rest_radius = MODEL_REST_RADIUS
 
 	# One collider per bone rather than one capsule around the lot. A single
 	# capsule wide enough to cover the outstretched arms is a fat pill that
@@ -383,10 +414,7 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	contamination.name = "BodyContamination"
 	contamination.cell_size = cell_size
 	contamination.brush_radius = brush_radius
-	# The burger sits back of its own node, and the unwrap turns about an
-	# axis. Turning about the node instead skews a stain by up to ten degrees
-	# around the flanks -- which is exactly where anyone aims.
-	contamination.axis_offset = Vector3(0.0, 0.0, -0.0756 * height)
+	contamination.axis_offset = Vector3.ZERO
 	# A burger has a flat top and a flat bottom, and the side chart cannot
 	# draw either: it keeps a point's angle and its height and throws the
 	# radius away, so a stain on the crown comes out as a streak from the
@@ -417,7 +445,7 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	contamination.add_visual_overlay(_visual_root)
 
 	health = max_health
-	_play_animation(_idle_animation)
+	_set_locomotion_animation(false)
 
 
 ## Adds the authored monster as presentation only. Its transform deliberately
@@ -429,8 +457,7 @@ func _build_visual() -> void:
 		push_error("Hamburger monster GLB did not instantiate as Node3D")
 		return
 	_visual_root.name = "HamburgerMonsterVisual"
-	var model_scale := height / MODEL_SOURCE_HEIGHT
-	_visual_root.scale = Vector3.ONE * model_scale
+	_visual_root.scale = MODEL_SCALE
 	_visual_root.position = Vector3(0.0, -height * 0.5, 0.0)
 	# The Blender asset faces -Y, which becomes +Z through glTF's Y-up export;
 	# this half turn aligns its mouth with MayoEnemy's established -Z front.
@@ -442,22 +469,10 @@ func _build_visual() -> void:
 		push_error("Hamburger monster has no AnimationPlayer")
 		return
 	_animation_player = players[0] as AnimationPlayer
-	_idle_animation = _find_animation("Idle")
-	_walk_animation = _find_animation("Walk")
-	_attack_animation = _find_animation("Attack")
+	_walk_animation = _find_animation("Crawl")
+	_idle_animation = _walk_animation
+	_attack_animation = _find_animation("Attack_GroundSlam")
 	_animation_player.animation_finished.connect(_on_animation_finished)
-
-	# `EnemyGait` plants the hands and solves the arms back from them. The rig's
-	# arms are too short to move fore and aft while the body stays at its authored
-	# height, so the modifier adds a small support crouch to the body instead of
-	# lifting the plant point into the air. That preserves the floor contact and
-	# gives the elbows room to bend under load.
-	if procedural_gait:
-		for node in _visual_root.find_children("*", "Skeleton3D", true, false):
-			_gait = GaitScript.new()
-			_gait.name = "Gait"
-			node.add_child(_gait)
-			break
 
 
 ## The moldy toast rusher: small, quick, and it charges rather than bites.
@@ -567,6 +582,89 @@ func build_moldy_toast_rusher(cell_size: float, brush_radius: float,
 	_play_animation(_idle_animation)
 
 
+## The Fry Stalker: the supplied 4.2 m carton creature, with eight articulated
+## fry legs and a front-pair ground slam. It is a heavy like the hamburger, but
+## moves between the hamburger and toast speeds and shares the hamburger's
+## sight distance and health budget.
+func build_fry_stalker(cell_size: float, brush_radius: float) -> void:
+	kind = EnemyKind.FRY_STALKER
+	grade = Grade.HEAVY
+	flinch_thresholds = [0.25, 0.5, 0.75]
+	height = MayoPlayer.CAPSULE_HEIGHT * FRY_STALKER_PLAYER_HEIGHT_MULTIPLE
+	var model_scale := height / FRY_STALKER_SOURCE_HEIGHT
+	radius = 1.0 * model_scale
+	_rest_radius = 0.55 * model_scale
+	max_health = 240.0
+	solo_health = max_health
+	health = max_health
+	sauce_damage_per_hit = 0.4
+	turn_speed = 4.2
+	contact_damage = 10.0
+	contact_interval = 1.4
+	contact_reach = 0.72 * model_scale
+	attack_lock_seconds = 1.4
+	# The damage waits for the claws. Without this it landed the instant the
+	# slam began, 0.56 s before the visual had lifted a leg -- the one attack
+	# built to be read had no telegraph at all.
+	attack_impact_delay_seconds = FryStalkerVisualScript.PLANT_AT * attack_lock_seconds
+	sight_range = 26.0
+	give_up_range = 44.0
+	impact_push_speed = 0.0
+	impact_lift_speed = 0.0
+	shove_speed = 4.8
+
+	# A solid carton and four long lower-body capsules cover the authored
+	# silhouette without turning the open spaces between eight legs into a wall.
+	var carton_shape := BoxShape3D.new()
+	carton_shape.size = Vector3(1.7, 2.15, 1.15) * model_scale
+	var carton_collision := CollisionShape3D.new()
+	carton_collision.name = "Carton"
+	carton_collision.shape = carton_shape
+	carton_collision.position = Vector3(0.0, 0.58, 0.0) * model_scale
+	add_child(carton_collision)
+	for spec in [
+		[Vector3(-0.35, 0.10, -0.35), Vector3(-0.83, -1.75, -0.82)],
+		[Vector3(0.35, 0.10, -0.35), Vector3(0.83, -1.75, -0.82)],
+		[Vector3(-0.35, 0.10, 0.35), Vector3(-0.83, -1.75, 0.82)],
+		[Vector3(0.35, 0.10, 0.35), Vector3(0.83, -1.75, 0.82)],
+	]:
+		var a: Vector3 = spec[0] * model_scale
+		var b: Vector3 = spec[1] * model_scale
+		var span: Vector3 = b - a
+		var shape := CapsuleShape3D.new()
+		shape.radius = 0.12 * model_scale
+		shape.height = span.length() + shape.radius * 2.0
+		var collision := CollisionShape3D.new()
+		collision.name = "Leg"
+		collision.shape = shape
+		collision.transform = Transform3D(_aligned_basis(span), (a + b) * 0.5)
+		add_child(collision)
+
+	_body_mesh = MeshInstance3D.new()
+	_body_mesh.name = "EnemyBody"
+	var mask_box := BoxMesh.new()
+	mask_box.size = Vector3(1.7, 2.15, 1.15) * model_scale
+	_body_mesh.mesh = mask_box
+	_body_mesh.position = Vector3(0.0, 0.58, 0.0) * model_scale
+	_body_mesh.visible = false
+	add_child(_body_mesh)
+
+	_fry_visual = FryStalkerVisualScript.new()
+	_fry_visual.name = "FryStalkerVisual"
+	_fry_visual.scale = Vector3.ONE * model_scale
+	_fry_visual.position.y = -stand_height()
+	_visual_root = _fry_visual
+	add_child(_visual_root)
+
+	contamination = BodyContamination.new()
+	contamination.name = "BodyContamination"
+	contamination.cell_size = cell_size
+	contamination.brush_radius = brush_radius
+	add_child(contamination)
+	contamination.configure(self, _body_mesh, radius, height, Color("9e0b06"))
+	contamination.add_visual_overlay(_visual_root)
+
+
 ## `required` is false for the rusher, whose rig has a different set of clips:
 ## a missing one there is a fallback, not a fault.
 func _find_animation(suffix: String, required := true) -> StringName:
@@ -591,21 +689,51 @@ func _play_animation(animation: StringName) -> void:
 func _set_locomotion_animation(moving: bool) -> void:
 	if not is_alive() or _attack_animation_active:
 		return
-	_play_animation(_walk_animation if moving else _idle_animation)
+	if moving:
+		_play_animation(_walk_animation)
+		return
+	if _animation_player == null or _idle_animation.is_empty():
+		return
+	if _animation_player.current_animation != _idle_animation:
+		_animation_player.play(_idle_animation)
+	_animation_player.seek(0.0, true)
+	_animation_player.pause()
 
 
 func _play_attack_animation() -> void:
+	if _fry_visual != null:
+		_fry_visual.play_slam(attack_lock_seconds)
 	if _animation_player == null or _attack_animation.is_empty():
 		return
 	_attack_animation_active = true
-	# A new damage tick is a new bite, even if the previous clip had not quite
-	# reached its final frame yet.
+	# A new attack restarts the hand-slam wind-up from its readable first pose.
 	_animation_player.stop()
 	_animation_player.play(_attack_animation)
 
 
+## Returns the victim only on the hand-slam contact frame. Leaving the authored
+## reach during the wind-up makes the clearly telegraphed attack miss.
+func _advance_pending_attack(delta: float) -> MayoPlayer:
+	if _attack_target == null:
+		return null
+	_attack_impact_left = maxf(_attack_impact_left - delta, 0.0)
+	if _attack_impact_left > 0.0:
+		return null
+	var victim := _attack_target
+	_attack_target = null
+	if not is_instance_valid(victim):
+		return null
+	var reach := radius + _target_radius(victim) + contact_reach
+	var gap := Vector2(victim.global_position.x - global_position.x,
+		victim.global_position.z - global_position.z).length()
+	return victim if gap <= reach else null
+
+
 func _play_death_animation() -> void:
 	_attack_animation_active = false
+	_attack_lock_left = 0.0
+	_attack_target = null
+	_attack_impact_left = 0.0
 	# `fall_angle` turns the gameplay body, its colliders and the visual together.
 	# The imported Death clip also translates, rotates and scales the Body bone
 	# and throws both arms elsewhere. Playing both made the visible corpse fall a
@@ -634,7 +762,8 @@ func _play_death_animation() -> void:
 
 func _on_animation_finished(animation: StringName) -> void:
 	if animation == _idle_animation or animation == _walk_animation:
-		_animation_player.play(animation)
+		var moving := Vector2(velocity.x, velocity.z).length_squared() > 0.000001
+		_set_locomotion_animation(moving)
 		return
 	if animation != _attack_animation:
 		return
@@ -653,59 +782,48 @@ const FLAT := TAU * 0.25
 ## The body, in its own space: y runs from -height/2 at the soles to +height/2
 ## at the crown, and x is its right.
 ##
-## **Measured off the monster, not invented.** These were a humanoid stick
-## figure left over from the mock enemy the burger replaced -- head, torso,
-## pelvis, two arms, two legs -- and a burger is nothing like that shape, so it
-## was drawn 4.2 m across and solid over 1.9 m of it. Sauce aimed anywhere but
-## its middle went straight through it.
-##
-## Every number below is the real extent of the parts it stands for, read out
-## of the GLB **in the body's own space**. That last part matters: measured in
-## world space an axis-aligned box grows with the body's yaw, and a collider
-## that fits perfectly reads as half a metre too wide.
-##
-##     bottom bun            y -0.82 ..  0.63   radius 1.49
-##     patty, cheese, salad  y -0.18 ..  0.86   radius 1.71
-##     top bun and face      y  0.42 ..  2.04   radius 1.56
-##     arms, shoulder-hand   y -2.08 ..  0.65   radius 0.46, at x +/-1.52
-##     hands                 y -2.07 .. -1.11   radius 0.50, reaching forward
-##
-## The burger sits a third of a metre back of its own origin, which is why
-## every disc is offset in z rather than centred.
-##
-## Three discs for the burger, because that is what a burger is and because the
-## tiers are what a player aims at -- sauce should land on the bun or the patty
-## and be seen to have. The arms are not decoration: the monster has no legs,
-## it walks on its hands, so they carry every low shot.
+## Measured off the crawler's rest rig in body space, in source units -- see
+## `MODEL_SOURCE_SIZE` -- with y running up from the soles. Three stacked discs
+## are the bun, the fillings and the bun; a capsule per side is the arm from the
+## shoulder to the forearm, and another the hand out to the fingertips, which
+## is where the model is widest.
 ##
 ## `kind` is "disc" (a cylinder: centre, radius, height) or "limb" (a capsule:
 ## two ends and a radius). A burger tier needs the cylinder -- a capsule wide
 ## enough to be a bun is also that tall.
+##
+## Nothing here reaches below the soles: a hand capsule's radius extends past
+## its endpoint, so each hand lies at its own radius above the floor and its
+## underside rests exactly on it. Lower, and CharacterBody3D is pushed up off
+## the street by its own collider and the whole monster hovers. The hands run
+## straight out along x rather than following the slight slant of the forearm,
+## so that their boxes are exact: a tilted capsule's bounding box reaches
+## below the capsule and past its fingertips, and both the floor check and the
+## mask-matches-colliders check read the box.
 func _bones() -> Array:
-	var h := height
-	var cz := -0.0756 * h
+	var s := MODEL_SCALE_FACTOR
+	var floor_y := -height * 0.5
+	var stack := MODEL_BODY_RADIUS
+	var arm_radius := 0.20 * s
+	var hand_radius := 0.28 * s
+	var up := func(y: float) -> float: return floor_y + y * s
 	return [
-		{"kind": "disc", "centre": Vector3(0.0, -0.0244 * h, cz),
-			"radius": 0.3634 * h, "height": 0.3561 * h},
-		{"kind": "disc", "centre": Vector3(0.0, 0.0829 * h, cz),
-			"radius": 0.4171 * h, "height": 0.2537 * h},
-		{"kind": "disc", "centre": Vector3(0.0, 0.3000 * h, cz),
-			"radius": 0.3805 * h, "height": 0.3951 * h},
-		# The end points are pulled in by one radius each, because a capsule's
-		# caps reach that far past them -- given the shoulder and the knuckle
-		# as they measure, the shape overhangs both by half a metre.
-		{"kind": "limb", "a": Vector3(-0.3707 * h, 0.0463 * h, -0.0366 * h),
-			"b": Vector3(-0.3707 * h, -0.3951 * h, -0.1732 * h), "radius": 0.1122 * h},
-		{"kind": "limb", "a": Vector3(0.3707 * h, 0.0463 * h, -0.0366 * h),
-			"b": Vector3(0.3707 * h, -0.3951 * h, -0.1732 * h), "radius": 0.1122 * h},
-		# The hands, which the arms' own capsules stop short of: the fingers
-		# reach forward past them, and a shot at the knuckles met nothing.
-		# Given per side rather than mirrored, because the model's hands are
-		# posed differently and mirroring one onto the other misses by 0.2 m.
-		{"kind": "limb", "a": Vector3(0.4357 * h, -0.3884 * h, -0.0316 * h),
-			"b": Vector3(0.4357 * h, -0.3884 * h, -0.2268 * h), "radius": 0.1220 * h},
-		{"kind": "limb", "a": Vector3(-0.3904 * h, -0.3886 * h, -0.0869 * h),
-			"b": Vector3(-0.3904 * h, -0.3886 * h, -0.2821 * h), "radius": 0.1220 * h},
+		{"kind": "disc", "centre": Vector3(0.0, up.call(0.22), 0.0),
+			"radius": stack * 0.97, "height": 0.44 * s},
+		{"kind": "disc", "centre": Vector3(0.0, up.call(0.62), 0.0),
+			"radius": stack, "height": 0.36 * s},
+		{"kind": "disc", "centre": Vector3(0.0, up.call(1.05), 0.0),
+			"radius": stack * 0.93, "height": 0.50 * s},
+		{"kind": "limb", "a": Vector3(-0.72 * s, up.call(0.55), 0.43 * s),
+			"b": Vector3(-1.48 * s, up.call(0.43), 0.17 * s), "radius": arm_radius},
+		{"kind": "limb", "a": Vector3(0.72 * s, up.call(0.55), 0.43 * s),
+			"b": Vector3(1.48 * s, up.call(0.43), 0.17 * s), "radius": arm_radius},
+		{"kind": "limb", "a": Vector3(-1.48 * s, floor_y + hand_radius, -0.14 * s),
+			"b": Vector3(-(MODEL_SOURCE_SIZE.x * 0.5 - 0.28) * s, floor_y + hand_radius, -0.14 * s),
+			"radius": hand_radius},
+		{"kind": "limb", "a": Vector3(1.48 * s, floor_y + hand_radius, -0.14 * s),
+			"b": Vector3((MODEL_SOURCE_SIZE.x * 0.5 - 0.28) * s, floor_y + hand_radius, -0.14 * s),
+			"radius": hand_radius},
 	]
 
 
@@ -713,7 +831,7 @@ func _bones() -> Array:
 ## measured beyond: the widest the burger gets, which is the patty, not a
 ## shoulder and not the arms.
 func _body_radius() -> float:
-	return 0.4171 * height
+	return MODEL_BODY_RADIUS
 
 
 ## Every bone's capsule baked into one mesh, in the body's space. Baked rather
@@ -823,7 +941,12 @@ func take_sauce_hit(from := Vector3.INF) -> bool:
 	# A flinch under way is abandoned rather than finished: it is going over now.
 	_flinch_left = 0.0
 	_settled_for = 0.0
+	_rested = false
 	_play_death_animation()
+	# Measured after the rig is back in its rest pose, which is what it falls in.
+	var thickness := _measure_rest_thickness()
+	if thickness > 0.0:
+		_rest_radius = thickness
 	return true
 
 
@@ -963,6 +1086,10 @@ func is_flinching() -> bool:
 	return _flinch_left > 0.0
 
 
+func is_attack_locked() -> bool:
+	return _attack_lock_left > 0.0
+
+
 ## Rocks back and recovers, writing `fall_angle` -- which is why nothing is
 ## added to the state packet for it. A half-sine: away from upright and back,
 ## reaching the full angle in the middle rather than at the end.
@@ -1035,6 +1162,8 @@ func _advance_fall(delta: float) -> void:
 func _advance_gait(step: Vector3, walking: bool, delta: float) -> void:
 	var covered := Vector2(step.x, step.z).length()
 	_ground_covered += covered
+	if _fry_visual != null:
+		_fry_visual.set_motion(_ground_covered, walking and _attack_lock_left <= 0.0)
 	if _gait != null:
 		_gait.phase = _ground_covered / maxf(_gait.stride_in_use(), 0.01)
 		_gait.strength = move_toward(_gait.strength, 1.0 if walking else 0.0,
@@ -1063,15 +1192,22 @@ func _apply_pose() -> void:
 		+ Vector3.UP * (_rest_radius * sin(fall_angle)))
 
 
-## Lifts the settled body until nothing of it is through the floor.
+## Drops the settled body onto the ground: lifts it until nothing of it is
+## through the floor, lowers it until something of it touches.
 ##
-## The topple is an arc about the feet with a fixed allowance for the torso's
+## The topple is an arc about the feet with an allowance for the body's
 ## thickness, which is right on flat ground and wrong everywhere else -- a body
 ## that dies on a kerb, on a ramp or half under a stall counter arrives with
-## part of itself inside the geometry. So once it is down, the three bones that
-## decide the silhouette -- **head, middle and feet**, indices 2, 1 and 0 of
-## `_bones()` -- are dropped onto whatever is under them and the **whole node**
-## is raised by the worst of them.
+## part of itself inside the geometry. So once it is down, every mesh of the
+## visual is dropped onto whatever is under its lowest point and the **whole
+## node** is moved by the worst of them.
+##
+## Off the visual, not off a bone table. This used to read the hamburger's
+## `_bones()` -- for every kind of enemy, at the hamburger's scale -- and so
+## held every corpse with its centre 4.5 m up: a toast slice floated four
+## metres over the street, and the burger itself, two metres thicker in the
+## table than in the mesh, hung above its own shadow. The meshes are what the
+## player sees resting on the ground, so they are what is measured.
 ##
 ## The node, not the mesh. Lifting the mesh alone is what put the visible body
 ## somewhere the collider was not, which is the fault the death animation was
@@ -1080,38 +1216,80 @@ func _apply_pose() -> void:
 ##
 ## Authority only, and it changes `global_position`, which is already in the
 ## state packet -- so every peer gets the corrected pose without anything new
-## being sent.
+## being sent. Runs until the body is found at rest, then not again.
 func _settle_onto_ground() -> void:
-	if not authority or not is_inside_tree():
+	if not authority or _rested or not is_inside_tree():
 		return
 	var world_3d := get_world_3d()
 	if world_3d == null:
 		return
 	var space := world_3d.direct_space_state
-	var bones := _bones()
 	var worst := -INF
-	for index in [2, 1, 0]:
-		var bone: Dictionary = bones[index]
-		var centre: Vector3 = global_transform * (bone["centre"] as Vector3)
-		# Flat on its back, a disc rests on its side, so what hangs below its
-		# centre is its radius rather than half its height.
-		var reach: float = bone["radius"]
+	for mesh_instance in _visual_meshes():
+		var aabb: AABB = mesh_instance.get_aabb()
+		var lowest := Vector3.INF
+		for corner in 8:
+			var point: Vector3 = mesh_instance.global_transform * aabb.get_endpoint(corner)
+			if point.y < lowest.y:
+				lowest = point
+		# Cast from inside the body, level with the mesh's centre, so a point
+		# already through the floor still finds the surface it is through.
+		var centre: Vector3 = mesh_instance.global_transform * aabb.get_center()
 		var query := PhysicsRayQueryParameters3D.create(
-			centre, centre - Vector3.UP * (reach + height))
-		query.exclude = [get_rid()]
+			Vector3(lowest.x, maxf(centre.y, lowest.y), lowest.z),
+			lowest - Vector3.UP * height)
 		query.collide_with_areas = false
-		var hit := space.intersect_ray(query)
+		# The ground is the street, not whoever is standing in it. A body dies
+		# next to the player who killed it as often as not, and a ray that
+		# stopped at their shoulder would lay the corpse across their head.
+		var exclude: Array[RID] = [get_rid()]
+		var hit := {}
+		for _attempt in 6:
+			query.exclude = exclude
+			hit = space.intersect_ray(query)
+			if hit.is_empty() or not (hit.collider is CharacterBody3D):
+				break
+			exclude.append((hit.collider as CollisionObject3D).get_rid())
 		if hit.is_empty():
 			continue
-		# Positive when the bone's underside is through the surface.
-		worst = maxf(worst, (hit.position.y as float) - (centre.y - reach))
+		# Positive when the mesh's underside is through the surface.
+		worst = maxf(worst, (hit.position.y as float) - lowest.y)
 	if worst == -INF:
 		return
 	var lift := worst + ground_clearance
 	if absf(lift) < 0.0005:
+		_rested = true
 		return
 	global_position += Vector3.UP * lift
 	_fall_pivot += Vector3.UP * lift
+
+
+## Every mesh of the visual, whatever built it -- an imported GLB or the Fry
+## Stalker's primitives.
+func _visual_meshes() -> Array:
+	if _visual_root == null or not is_instance_valid(_visual_root):
+		return []
+	return _visual_root.find_children("*", "MeshInstance3D", true, false)
+
+
+## How far the visual reaches behind the node, along its local +Z: the body goes
+## over onto its back, so this is the thickness it lands on, and what
+## `_apply_pose` lifts the centre by as it goes. Measured rather than written
+## down, because written down it was wrong: the hamburger's nominal 4.5 m was
+## its old bone table at 5x, and the mesh is 2.3 m -- so the centre *rose* 1.6 m
+## in the middle of the fall and came to rest in the air. Returns 0 when there
+## is nothing to measure, and the nominal figure stands.
+func _measure_rest_thickness() -> float:
+	if not is_inside_tree():
+		return 0.0
+	var into_body := global_transform.affine_inverse()
+	var deepest := 0.0
+	for mesh_instance in _visual_meshes():
+		var to_body: Transform3D = into_body * mesh_instance.global_transform
+		var aabb: AABB = mesh_instance.get_aabb()
+		for corner in 8:
+			deepest = maxf(deepest, (to_body * aabb.get_endpoint(corner)).z)
+	return deepest
 
 
 ## **One more layer of ketchup, if enough time has passed for one.** Returns true
@@ -1248,6 +1426,8 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		return null
 	_contact_cooldown = maxf(_contact_cooldown - delta, 0.0)
 	mustard_slow = maxf(mustard_slow - delta, 0.0)
+	_attack_lock_left = maxf(_attack_lock_left - delta, 0.0)
+	var pending_hit := _advance_pending_attack(delta)
 	# Rocking back from a threshold. It keeps walking through it: the flinch is
 	# a stagger, not a stun, and stopping the chase would make a steady stream
 	# of hits into a hold.
@@ -1279,7 +1459,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		# waypoints -- so it rounds the same corners rather than sliding at it.
 		flat = _step_toward(bait.global_position, delta) - global_position
 		flat.y = 0.0
-	elif target != null:
+	elif target != null and _attack_lock_left <= 0.0:
 		flat = _step_toward(target.global_position, delta) - global_position
 		flat.y = 0.0
 
@@ -1309,8 +1489,12 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	# The shove rides on top of the walk rather than replacing it, so a body
 	# being hosed head-on is pushed backwards while still trying to come at you
 	# -- which is what leaning into a hose looks like.
-	velocity.x += _shove.x
-	velocity.z += _shove.z
+	if _attack_lock_left <= 0.0:
+		velocity.x += _shove.x
+		velocity.z += _shove.z
+	else:
+		velocity.x = 0.0
+		velocity.z = 0.0
 	_shove = _shove.move_toward(Vector3.ZERO,
 		shove_speed / maxf(shove_decay_seconds, 0.01) * delta)
 
@@ -1323,6 +1507,8 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	var walking := Vector2(velocity.x, velocity.z).length_squared() > 0.000001
 	_set_locomotion_animation(walking)
 	_advance_gait(global_position - stood_at, walking, delta)
+	if pending_hit != null:
+		return pending_hit
 
 	# Baited: it is swiping at the drone, not at the party. Returning null before
 	# the reach tests is what makes that true of the damage *and* of the contact
@@ -1348,8 +1534,13 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	# does flat.
 	if not _reaches_height(target):
 		return null
-	_contact_cooldown = contact_interval
+	_contact_cooldown = maxf(contact_interval, attack_lock_seconds)
+	_attack_lock_left = attack_lock_seconds
 	_play_attack_animation()
+	if attack_impact_delay_seconds > 0.0:
+		_attack_target = target
+		_attack_impact_left = attack_impact_delay_seconds
+		return null
 	# A rusher does not bite, it runs into you: the shove is what it is for, and
 	# it is what stops a swarm of them being a stationary damage tick.
 	if impact_push_speed > 0.0 or impact_lift_speed > 0.0:

@@ -2,7 +2,7 @@ extends SceneTree
 
 # The enemy, end to end:
 #
-#   * it is twice the sauce refill station's width and height
+#   * the replacement hamburger uses its requested uniform 5x scale
 #   * it walks at the player at half the player's walking speed, and keeps
 #     walking at them after they move
 #   * sauce sticks to it the way it sticks to a player, and the same hit that
@@ -50,8 +50,9 @@ func _run() -> void:
 	var station: Vector3 = StreetMap.VENDING_SIZE
 	print("refill station %.2v -> monster %.2f m wide, %.2f m tall (%.1fx tall)" % [
 		station, enemy.radius * 2.0, enemy.height, enemy.height / station.y])
-	_check(is_equal_approx(enemy.height, station.y * 2.0),
-		"the enemy is %.2f m tall, not twice the station's %.2f m" % [enemy.height, station.y])
+	_check(is_equal_approx(enemy.height, MayoEnemy.MODEL_TARGET_SIZE.y),
+		"the enemy is %.2f m tall, not the %.2f m its mesh is at the chosen width" % [
+			enemy.height, MayoEnemy.MODEL_TARGET_SIZE.y])
 
 	# Everything below is measured in the **body's own space**. In world space
 	# an axis-aligned box grows with the body's yaw, so a collider that fits
@@ -79,6 +80,9 @@ func _run() -> void:
 	print("drawn %.2f x %.2f x %.2f, solid %.2f x %.2f x %.2f, in %d parts" % [
 		drawn.size.x, drawn.size.y, drawn.size.z,
 		solid.size.x, solid.size.y, solid.size.z, shapes.size()])
+	_check(solid.position.y >= -enemy.height * 0.5 - 0.02,
+		"a collider reaches %.2f below the %.2f body floor and lifts the monster" % [
+			solid.position.y, -enemy.height * 0.5])
 	_check(shapes.size() >= 3,
 		"the monster is %d collider(s): the burger is meant to be three tiers plus its arms"
 			% shapes.size())
@@ -87,34 +91,33 @@ func _run() -> void:
 			"the monster is %.2f m across axis %d but solid over only %.2f m of it"
 				% [drawn.size[axis], axis, solid.size[axis]])
 
-	# Round, not flat: the old figure was a body and much thinner front to back
-	# than wide. A burger is a stack of discs, and the collider has to be too,
-	# or one side of it goes back to being air.
-	_check(absf(solid.size.x - solid.size.z) < solid.size.x * 0.35,
-		"the monster is solid over %.2f m across and %.2f m deep, which is not a burger"
-			% [solid.size.x, solid.size.z])
+	# As deep as it is drawn, not flat: the old figure was a body and much
+	# thinner front to back than the burger it stood in for. The crawler is wide
+	# because of its arms, so width is no guide; the depth is all burger stack
+	# and has to match the mesh, or one side of it goes back to being air.
+	_check(absf(solid.size.z - drawn.size.z) < drawn.size.z * 0.35,
+		"the monster is solid over %.2f m of its %.2f m depth, which is not the burger drawn"
+			% [solid.size.z, drawn.size.z])
 
-	# And point by point: a spot on the patty, on each bun and on an arm has to
-	# be solid. The envelope above can be the right size and still be hollow
-	# where it counts.
+	# And point by point: the centre of every measured disc/capsule has to be
+	# solid. The envelope above can be the right size and still be hollow where
+	# the replacement's hands or burger layers actually are.
 	var space := enemy.get_world_3d().direct_space_state
-	var probes := {
-		"the bottom bun": Vector3(0.0, -0.024 * enemy.height, -0.076 * enemy.height),
-		"the patty's rim": Vector3(0.39 * enemy.height, 0.083 * enemy.height, -0.076 * enemy.height),
-		"the top bun": Vector3(0.0, 0.30 * enemy.height, -0.076 * enemy.height),
-		"an arm": Vector3(-0.3707 * enemy.height, -0.30 * enemy.height, -0.12 * enemy.height),
-	}
 	var hollow: Array[String] = []
-	for where in probes.keys():
+	var measured_parts: Array = enemy._bones()
+	for index in measured_parts.size():
+		var part: Dictionary = measured_parts[index]
+		var local_point: Vector3 = part["centre"] if part["kind"] == "disc" \
+			else ((part["a"] as Vector3) + (part["b"] as Vector3)) * 0.5
 		var query := PhysicsPointQueryParameters3D.new()
-		query.position = enemy.global_transform * (probes[where] as Vector3)
+		query.position = enemy.global_transform * local_point
 		query.collide_with_areas = false
 		var found := false
 		for hit in space.intersect_point(query, 8):
 			if hit.collider == enemy:
 				found = true
 		if not found:
-			hollow.push_back(where)
+			hollow.push_back(MayoEnemy.BONE_NAMES[index])
 	print("solid at: %s" % ("every part sampled" if hollow.is_empty() else "hollow at " + str(hollow)))
 	_check(hollow.is_empty(),
 		"sauce would pass through %s" % str(hollow))
@@ -149,6 +152,11 @@ func _run() -> void:
 			and not enemy._walk_animation.is_empty()
 			and not enemy._attack_animation.is_empty(),
 		"the hamburger monster did not import all three required animations")
+	_check(String(enemy._walk_animation).ends_with("Crawl")
+			and String(enemy._attack_animation).ends_with("Attack_GroundSlam"),
+		"the crawler did not bind Crawl and the hand-slam attack")
+	_check(enemy._idle_animation == enemy._walk_animation,
+		"the crawler idle is not holding the first planted Crawl pose")
 	_check(not ("_death_animation" in enemy),
 		"a Death clip is bound again: it fights the node fall the corpse is on")
 	var visual_meshes := enemy._visual_root.find_children(
@@ -157,15 +165,15 @@ func _run() -> void:
 	for visual_mesh in visual_meshes:
 		_check((visual_mesh as MeshInstance3D).material_overlay != null,
 			"a hamburger mesh is missing the sauce-contamination overlay")
-	# Three discs for the burger and one capsule per arm, so what you can see
-	# is what you can hit.
+	# Three discs for the burger and an arm/hand capsule per side, so what you
+	# can see is what you can hit.
 	var colliders := 0
 	for child in enemy.get_children():
 		if child is CollisionShape3D:
 			colliders += 1
-	print("colliders: %d (three burger tiers and two arms)" % colliders)
-	_check(colliders >= 5,
-		"the monster has %d colliders; it needs a tier each for the buns and the patty, and an arm each side"
+	print("colliders: %d (three burger tiers, two arms, two hands)" % colliders)
+	_check(colliders >= 7,
+		"the monster has %d colliders; it needs three burger tiers plus both arms and hands"
 			% colliders)
 
 	# --- speed, and that it is actually chasing ---
@@ -279,39 +287,11 @@ func _run() -> void:
 	_check(worst_off < 60.0,
 		"its front sat %.0f deg off the way it was travelling: it is going backwards"
 			% worst_off)
-	# And it has to have a front to look with, or none of that is visible. The
-	# old figure showed its front by reaching its arms forward, and the burger
-	# cannot: its colliders are discs and a disc has no front. What it has is a
-	# face, so that is what is checked -- the mouth and eyes have to sit forward
-	# of the body, on -Z, which is the front every other body in the game uses.
-	var to_body_now: Transform3D = enemy.global_transform.affine_inverse()
-	var face := AABB()
-	var face_started := false
-	for node in enemy._visual_root.find_children("*", "MeshInstance3D", true, false):
-		var mesh_node := node as MeshInstance3D
-		var part_name := String(mesh_node.name)
-		if mesh_node.mesh == null:
-			continue
-		if not (part_name.contains("Eye") or part_name.contains("Pupil")
-			or part_name.contains("Mouth") or part_name.contains("Fang")
-			or part_name.contains("Gum")):
-			continue
-		var into_body: Transform3D = to_body_now * mesh_node.global_transform
-		var part: AABB = into_body * mesh_node.mesh.get_aabb()
-		face = face.merge(part) if face_started else part
-		face_started = true
-	var face_z := face.position.z + face.size.z * 0.5
-	var face_x := face.position.x + face.size.x * 0.5
-	print("its face sits at x %.2f, z %.2f in its own space (front is -Z)" % [
-		face_x, face_z])
-	_check(face_started, "the monster has no face meshes, so its facing tests nothing")
-	_check(face_z < -enemy._body_radius() * 0.3,
-		"its face sits at z %.2f: it is not looking the way the body is pointed" % face_z)
-	# Square on, not over a shoulder: a face off to one side means the model is
-	# turned by the wrong angle, and it would walk at you sideways.
-	_check(absf(face_x) < absf(face_z) * 0.4,
-		"its face sits at x %.2f against z %.2f: the model is turned off-square"
-			% [face_x, face_z])
+	# The Tripo crawler is one skinned mesh, so facial sub-mesh names cannot be
+	# used as orientation markers. Its Blender -Y front becomes glTF +Z and the
+	# runtime half-turn must put that on the enemy's established -Z front.
+	_check(is_equal_approx(absf(enemy._visual_root.rotation.y), PI),
+		"the crawler visual is not turned from glTF +Z onto gameplay -Z")
 
 	# --- a stain lands at the angle the sauce hit, not ten degrees off it ---
 	# The unwrap turns about an axis, and the burger sits back of its own node,
@@ -474,22 +454,22 @@ func _run() -> void:
 		+ Vector3(0.0, 0.0, enemy.radius + 0.64)
 	player.global_position.y = stand_y
 	var ticks := 0
-	var bite_animation_seen := false
+	var slam_animation_seen := false
 	var seconds := 1.5
 	for _f in int(seconds * 60.0):
 		var was: float = player.health
 		await physics_frame
 		if player.health < was:
 			ticks += 1
-			bite_animation_seen = bite_animation_seen \
+			slam_animation_seen = slam_animation_seen \
 				or enemy._animation_player.current_animation == enemy._attack_animation
 	var taken: float = health_before - player.health
 	var expected := int(seconds / enemy.contact_interval)
 	print("%.1f s of standing in it: %d hits for %.0f damage (one every %.2f s)" % [
 		seconds, ticks, taken, enemy.contact_interval])
 	_check(ticks > 0, "standing inside the enemy cost the player nothing")
-	_check(bite_animation_seen,
-		"a contact-damage tick did not start the biting Attack animation")
+	_check(slam_animation_seen,
+		"a contact-damage tick did not reach the hand-slam impact frame")
 	_check(ticks <= expected + 1,
 		"it hit %d times in %.1f s, more than the %.2f s cooldown allows" % [
 			ticks, seconds, enemy.contact_interval])
@@ -499,12 +479,18 @@ func _run() -> void:
 	print("standing in it the whole time would take %.1f s to empty the bar" % to_kill)
 	_check(to_kill > 8.0, "the enemy empties a full bar in %.1f s, which is not weak" % to_kill)
 
-	# --- an emptied bar sends the player back to the start ---
+	# --- an emptied bar plays the supplied death, then respawns clean ---
 	player.contamination.paint_mayo(player.global_position + Vector3(0.0, 0.2, 0.6), Vector3.BACK)
 	_check(player.contamination.painted_cell_count() > 0, "the player could not be dirtied")
 	var dirty_before := player.contamination.cells_md5()
 	var cells_before: int = player.contamination.painted_cell_count()
 	scene._damage_player(player, player.max_health)
+	_check(player.state == MayoPlayer.State.DEAD, "an empty bar skipped the death state")
+	await process_frame
+	_check(scene._local.player_animation.current_animation == scene._local.death_animation,
+		"the supplied death animation did not start")
+	for _frame in int(ceil(player.death_duration * 60.0)) + 4:
+		await physics_frame
 	var spawn: Vector3 = scene.spawn_position_for(0)
 	print("emptied: back at %.1v (spawn %.1v), health %.0f, %d cells of sauce left (was %d)" % [
 		player.global_position, spawn, player.health,
@@ -588,12 +574,27 @@ func _run() -> void:
 	# Resting on the ground rather than sunk into it or hovering over it. The
 	# height to expect is measured from the feet it toppled about, not from
 	# zero: the street it is standing on is not at y = 0.
-	var expected_rest: float = enemy._fall_pivot.y + enemy._rest_radius
-	print("at rest the body centre is %.2f m up; its feet are at %.2f and it is %.2f m thick" % [
-		enemy.global_position.y, enemy._fall_pivot.y, enemy._rest_radius])
-	_check(absf(enemy.global_position.y - expected_rest) < 0.02,
-		"flat on its back it sits %.2f m up rather than the %.2f m its own thickness puts it at"
-			% [enemy.global_position.y, expected_rest])
+	# Measured where the player looks: the lowest point of the visible meshes
+	# against the ground under them. The node's own height is not the thing --
+	# a body whose centre sits exactly its thickness up is still floating if
+	# the thickness was written down wrong, which is what it was.
+	var mesh_floor := INF
+	for mesh_instance in enemy._visual_meshes():
+		var aabb: AABB = mesh_instance.get_aabb()
+		for corner in 8:
+			mesh_floor = minf(mesh_floor,
+				(mesh_instance.global_transform * aabb.get_endpoint(corner)).y)
+	var ground_query := PhysicsRayQueryParameters3D.create(
+		enemy.global_position + Vector3.UP * 50.0, enemy.global_position - Vector3.UP * 50.0)
+	ground_query.exclude = [enemy.get_rid()]
+	var ground_hit := enemy.get_world_3d().direct_space_state.intersect_ray(ground_query)
+	var ground_y: float = ground_hit.position.y if not ground_hit.is_empty() else NAN
+	print("at rest the body centre is %.2f m up; its feet are at %.2f, it is %.2f m thick, and its mesh is %.3f m off the ground" % [
+		enemy.global_position.y, enemy._fall_pivot.y, enemy._rest_radius, mesh_floor - ground_y])
+	_check(not is_nan(ground_y), "there is no ground under the corpse to measure against")
+	_check(absf(mesh_floor - ground_y - enemy.ground_clearance) < 0.02,
+		"flat on its back its mesh is %.2f m off the ground rather than resting on it"
+			% (mesh_floor - ground_y))
 	_check(hud.enemy_bar_rect(enemy, camera).size.x == 0.0,
 		"a dead enemy still has a health bar over it")
 
@@ -648,8 +649,9 @@ func _run() -> void:
 				% mesh_node.name)
 		if held != null:
 			rest_places[mesh_node.name] = Transform3D(held as Transform3D)
-	_check(rest_places.size() > 20,
-		"only %d meshes carry a rest pose" % rest_places.size())
+	var mesh_count := doomed._visual_root.find_children("*", "MeshInstance3D", true, false).size()
+	_check(mesh_count > 0 and rest_places.size() == mesh_count,
+		"only %d of %d meshes carry a rest pose" % [rest_places.size(), mesh_count])
 
 	var deaths := 0
 	while doomed.is_alive() and deaths < 5000:
@@ -683,11 +685,10 @@ func _run() -> void:
 	doomed.queue_free()
 	await physics_frame
 
-	# --- it walks on its hands rather than being paddled along ---
-	# The imported Walk clip swings the arms and holds the body level, which
-	# reads as a burger hanging in the air being rowed. `EnemyGait` bends the
-	# elbows under load and lets the body fall and be caught between steps, on
-	# top of the clip rather than instead of it.
+	# --- the authored crawler action owns the hand walk ---
+	# The replacement already contains planted-hand Crawl animation and its own
+	# IK controls. The old SkeletonModifier targeted different bone names and
+	# would fight the supplied performance if it were left enabled.
 	#
 	# What has to hold is that it is keyed to the **ground**, not to a clock. A
 	# monster slowed or shoved has to take shorter steps rather than the same
@@ -697,16 +698,16 @@ func _run() -> void:
 	# catches a kerb on the way would be testing the pathing instead.
 	# The shipped monsters use it: the plant target stays at the authored floor
 	# height and the body crouches enough for the short arms to reach it.
-	_check(enemy.procedural_gait,
-		"the street's monsters still use the floating paddle walk")
-	_check(enemy._gait != null,
-		"the street's monsters enable the hand walk but have no gait modifier")
+	_check(not enemy.procedural_gait,
+		"the crawler still enables the obsolete procedural gait")
+	_check(enemy._gait == null,
+		"the crawler has an old gait modifier layered over its authored Crawl")
 	var strider: MayoEnemy = MayoEnemy.new()
 	root.add_child(strider)
 	strider.build(scene.body_cell_size, scene.contamination_brush_radius, Color("4d3f6b"))
 	await physics_frame
 	var gait = strider._gait
-	_check(gait != null, "the monster has no gait, so it walks the way it used to")
+	_check(gait == null, "the old gait modifier was attached to the replacement rig")
 	if gait != null:
 		_check(gait.has_rig(),
 			"the gait did not find the arm bones it bends, so it does nothing")

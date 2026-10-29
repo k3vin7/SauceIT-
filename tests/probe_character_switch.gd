@@ -12,6 +12,11 @@ func _check(condition: bool, message: String) -> void:
 		failures.push_back(message)
 
 
+func _check_sauce_tube(shooter, label: String) -> void:
+	_check(shooter.character_muzzle != null, "%s has no SauceTubeMuzzle" % label)
+	_check(shooter.character_gauge != null, "%s has no embedded SauceFill" % label)
+
+
 func _run() -> void:
 	var scene = load("res://main.tscn").instantiate()
 	root.add_child(scene)
@@ -27,6 +32,18 @@ func _run() -> void:
 	_check(shooter.character_index == 0, "the default character is not Character_1")
 	_check(shooter.player_visual.name == "Character_1Visual",
 		"Character_1 visual was not built")
+	_check_sauce_tube(shooter, "Character_1")
+	_check(shooter.bottle_contents != null, "the first-person production tube has no SauceFill")
+	var viewmodel_full_scale: Vector3 = shooter.bottle_contents_scale
+	shooter.sauce = 0.5
+	scene._update_sauce_look(shooter)
+	_check(is_equal_approx(shooter.bottle_contents.scale.y, viewmodel_full_scale.y * 0.5),
+		"the first-person SauceFill does not show half a tank")
+	_check(is_equal_approx(shooter.character_gauge.scale.z,
+		shooter.character_gauge_scale.z * 0.5),
+		"the third-person SauceFill does not show half a tank")
+	shooter.sauce = 1.0
+	scene._update_sauce_look(shooter)
 
 	var has_c_binding := false
 	for event in InputMap.action_get_events("switch_character"):
@@ -36,11 +53,20 @@ func _run() -> void:
 	var switch_event := InputEventAction.new()
 	switch_event.action = &"switch_character"
 	switch_event.pressed = true
+	# Sauce the player before the first switch. Each rebuild below has to keep it:
+	# a keypress is not a wash, whether the capsule stays the same size or not.
+	var stain = shooter.player.contamination
+	stain.paint_mayo_cell(Vector2i(3, 3))
+	var stained_cells: int = stain.painted_cell_count()
+	_check(stained_cells > 0, "the test stain did not land on the player")
 	scene._unhandled_input(switch_event)
 	await process_frame
 	_check(shooter.character_index == 1, "character index did not switch to Character_2")
+	_check(stain.painted_cell_count() == stained_cells,
+		"switching to a same-sized character washed the player")
 	_check(shooter.player_visual.name == "Character_2Visual",
 		"Character_2 visual was not built")
+	_check_sauce_tube(shooter, "Character_2")
 	_check(shooter.player_animation != null, "Character_2 has no AnimationPlayer")
 	for required in [shooter.walk_animation, shooter.run_animation, shooter.death_animation]:
 		_check(not required.is_empty(), "Character_2 is missing a gameplay animation")
@@ -59,6 +85,7 @@ func _run() -> void:
 	_check(shooter.character_index == 2, "character index did not switch to Character_3")
 	_check(shooter.player_visual.name == "Character_3Visual",
 		"Character_3 visual was not built")
+	_check_sauce_tube(shooter, "Character_3")
 	_check(shooter.player_animation != null, "Character_3 has no AnimationPlayer")
 	for required in [shooter.walk_animation, shooter.run_animation, shooter.death_animation]:
 		_check(not required.is_empty(), "Character_3 is missing a gameplay animation")
@@ -68,21 +95,33 @@ func _run() -> void:
 	state = scene._net._collect_state(ids)
 	_check(int(state[scene._net.STATE_STRIDE - 1]) == 2,
 		"Character_3 selection is missing from network state")
+	# A second machine hears about this player as a remote body, peer 2 to it.
+	var remote_ids := PackedInt32Array([2])
 	var replica = load("res://main.tscn").instantiate()
 	root.add_child(replica)
 	await process_frame
+	replica.create_avatar(2, 1, false)
+	replica._net._apply_state(remote_ids, state)
+	await process_frame
+	_check(replica.shooter_for(2).character_index == 2,
+		"Character_3 selection was not applied from network state")
+	# But its own player's choice is never taken back from a packet: the one in
+	# flight still carries the index from before the press.
 	replica._net._apply_state(ids, state)
 	await process_frame
-	_check(replica._local.character_index == 2,
-		"Character_3 selection was not applied from network state")
+	_check(replica._local.character_index == 0,
+		"a state packet overrode the local player's own character choice")
 	root.remove_child(replica)
 	replica.queue_free()
 
 	scene._unhandled_input(switch_event)
 	await process_frame
 	_check(shooter.character_index == 3, "character index did not switch to Character_4")
+	_check(stain.painted_cell_count() > 0,
+		"switching to the small character washed the player")
 	_check(shooter.player_visual.name == "Character_4Visual",
 		"Character_4 visual was not built")
+	_check_sauce_tube(shooter, "Character_4")
 	_check(shooter.player_animation != null, "Character_4 has no AnimationPlayer")
 	for required in [shooter.walk_animation, shooter.run_animation, shooter.death_animation]:
 		_check(not required.is_empty(), "Character_4 is missing a gameplay animation")
@@ -106,12 +145,13 @@ func _run() -> void:
 	replica = load("res://main.tscn").instantiate()
 	root.add_child(replica)
 	await process_frame
-	replica._net._apply_state(ids, state)
+	var remote = replica.create_avatar(2, 1, false)
+	replica._net._apply_state(remote_ids, state)
 	await process_frame
-	_check(replica._local.character_index == 3,
+	_check(remote.character_index == 3,
 		"Character_4 selection was not applied from network state")
 	var replica_collision: CollisionShape3D
-	for child in replica._local.player.get_children():
+	for child in remote.player.get_children():
 		if child is CollisionShape3D:
 			replica_collision = child as CollisionShape3D
 			break
@@ -130,28 +170,33 @@ func _run() -> void:
 	await process_frame
 	_check(shooter.player_visual.name == "Character_1Visual",
 		"switching back did not rebuild Character_1")
+	_check(stain.painted_cell_count() > 0,
+		"switching back to the full-sized character washed the player")
 	var character_1_capsule := player_collision.shape as CapsuleShape3D
 	_check(is_equal_approx(character_1_capsule.radius, MayoPlayer.CAPSULE_RADIUS) \
 		and is_equal_approx(character_1_capsule.height, MayoPlayer.CAPSULE_HEIGHT) \
 		and is_zero_approx(player_collision.position.y),
 		"switching back did not restore the Character_1 collider")
 
-	# A remote Character_1 fires from its authored bottle socket. When it changes
-	# to a character without that socket, the old visual is freed and the stable
-	# viewmodel muzzle must replace it instead of leaving a dangling reference.
-	var remote = scene.create_avatar(2, 1, false)
-	var old_remote_muzzle = remote.muzzle
+	# A remote character fires from the tube socket in its own hands. Switching
+	# it frees the old visual -- socket included -- so the muzzle has to move to
+	# the new character's socket rather than keep pointing at a freed node.
+	var remote_here = scene.create_avatar(3, 2, false)
+	var old_remote_muzzle = remote_here.muzzle
 	_check(is_instance_valid(old_remote_muzzle), "remote Character_1 has no muzzle")
-	scene.set_character_variant(remote.peer_id, 1)
+	_check(old_remote_muzzle == remote_here.character_muzzle,
+		"a remote character does not fire from its own tube socket")
+	scene.set_character_variant(remote_here.peer_id, 1)
 	await process_frame
-	_check(is_instance_valid(remote.muzzle),
+	_check(is_instance_valid(remote_here.muzzle),
 		"remote character switch left the muzzle pointing at a freed node")
-	_check(remote.muzzle == remote.viewmodel_muzzle,
-		"remote character without a bottle socket did not fall back to the viewmodel muzzle")
-	var point_count: int = remote.points.size()
-	scene._emit_point(remote)
-	_check(remote.points.size() == point_count + 1,
-		"remote character could not emit after switching away from Character_1")
+	_check(remote_here.muzzle == remote_here.character_muzzle
+		and remote_here.muzzle != old_remote_muzzle,
+		"remote character switch did not move the muzzle to the new character's socket")
+	var point_count: int = remote_here.points.size()
+	scene._emit_point(remote_here)
+	_check(remote_here.points.size() == point_count + 1,
+		"remote character could not emit after switching character")
 
 	if failures.is_empty():
 		print("CHARACTER_SWITCH_OK")

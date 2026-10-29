@@ -201,6 +201,12 @@ func _run() -> void:
 			open_to = b
 			break
 	_check(open_from != open_to, "nowhere on the map has a clear straight run")
+	# The body is lifted out of whatever it was doing and set down here: a slam
+	# plants it for a second and a half, and a planted body does not chase, so
+	# a lock left over from the contact above would read as a routing fault.
+	enemy._attack_lock_left = 0.0
+	enemy._attack_target = null
+	enemy._contact_cooldown = 0.0
 	enemy.global_position = open_from + Vector3(0.0, enemy.stand_height(), 0.0)
 	player.global_position = open_to + Vector3(0.0, stand, 0.0)
 	await physics_frame
