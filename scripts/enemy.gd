@@ -14,6 +14,7 @@ extends CharacterBody3D
 ## screen.
 
 const FryStalkerVisualScript := preload("res://scripts/fry_stalker_visual.gd")
+const TomatoVisualsScript := preload("res://scripts/tomato_visuals.gd")
 const HAMBURGER_MONSTER := preload(
 	"res://assets/enemies/hamburger_monster/hamburger_monster.glb")
 ## The authored crawler, measured off its meshes at scale 1: fingertip to
@@ -141,7 +142,14 @@ enum Grade { MINION, HEAVY }
 ## health, and built by `build_moldy_toast_rusher`. They share everything else
 ## -- the chase, the contamination, the topple and the state packet -- because
 ## the difference between them is proportions and numbers, not behaviour.
-enum EnemyKind { BRUISER, MOLDY_TOAST_RUSHER, FRY_STALKER }
+enum EnemyKind {
+	BRUISER, MOLDY_TOAST_RUSHER, FRY_STALKER,
+	## Stage 2, La Tomatina. Primitive bodies -- see `TomatoVisuals` -- that
+	## share the chase, the stain, the topple and the packet with the three
+	## above, and add one trick each in `_advance_special`.
+	TOMATO_GRUNT, TOMATO_BRUTE, BOWLING_TOMATO, TOMATO_BALL, KETCHUP_SPITTER,
+	CAPRESE_CRAWLER,
+}
 
 @export_group("Its kind")
 ## What this one counts as. It changes nothing on its own -- what reads it is
@@ -349,6 +357,69 @@ var _rest_radius := 0.37
 ## True once the corpse has been dropped onto the ground and found to rest
 ## there, so `_settle_onto_ground` stops casting rays for it every tick.
 var _rested := false
+
+# --- La Tomatina ---------------------------------------------------------------
+
+## How far the juice flies when this body bursts, in metres; zero for a body
+## that does not burst. **Assigned by the world at build, deterministically**
+## -- from the body's index and the map's seed -- so every peer holds the same
+## figure and a client can throw the fragments itself when the packet says the
+## body died, without the radius travelling.
+var burst_radius := 0.0
+## 0 small, 1 medium, 2 large: which of the three a grunt was dealt. The large
+## one is drawn bigger and darker so it can be told apart before it goes.
+var burst_tier := 0
+## A bowled tomato that met a wall asks the world to burst it here; INF when
+## nothing is pending. See `take_burst_request`.
+var _burst_request := Vector3.INF
+
+## The brute's charge: how long is left of it, which way it is going, and how
+## long until it may charge again.
+const BRUTE_CHARGE_RANGE := 14.0
+const BRUTE_CHARGE_SECONDS := 1.2
+const BRUTE_CHARGE_SPEED_SCALE := 2.2
+const BRUTE_CHARGE_COOLDOWN := 4.0
+## How long it is stuck for after running into a wall.
+const BRUTE_WALL_STUN := 0.8
+var _charge_left := 0.0
+var _charge_cooldown := 0.0
+var _charge_direction := Vector3.ZERO
+
+## The bowler's lane. It stands still and rolls a ball from its pool every
+## `BOWLING_INTERVAL` at whoever it can see down a straight street; the balls
+## are bodies of their own (`TOMATO_BALL`), built with it so the enemy list
+## stays append-only, parked under the floor between throws.
+const BOWLING_INTERVAL := 4.0
+const BOWLING_RANGE := 30.0
+const BALL_SPEED := 14.0
+const BALL_LIFETIME := 6.0
+const BALL_PARK := Vector3(0.0, -50.0, 0.0)
+const BALLS_PER_BOWLER := 3
+var ball_pool: Array = []
+var ball_owner: MayoEnemy = null
+var _launch_cooldown := 2.0
+var _ball_velocity := Vector3.ZERO
+var _ball_live := false
+var _ball_left := 0.0
+## Player instance id -> seconds until the ball may knock them down again.
+var _ball_hit_cooldown: Dictionary = {}
+
+## The spitter: holds its distance and spits a hitscan stream of ketchup at
+## whoever it can see. The spit is a request the world fulfils -- it paints
+## the visor, the body and a puddle, and none of that is this body's to do.
+const SPIT_RANGE := 18.0
+const SPIT_HOLD_RANGE := 11.0
+const SPIT_INTERVAL := 3.0
+var _spit_cooldown := 1.5
+var _spit_request: MayoPlayer = null
+
+## The crawler's thread: within range and in sight it reels one player in,
+## and a hit on it lets go for a while -- which is what a teammate is for.
+const TETHER_RANGE := 8.0
+const TETHER_REEL_SPEED := 6.5
+const TETHER_BREAK_SECONDS := 2.0
+var tether_target: MayoPlayer = null
+var _tether_break_left := 0.0
 
 
 func _ready() -> void:
@@ -665,6 +736,448 @@ func build_fry_stalker(cell_size: float, brush_radius: float) -> void:
 	contamination.add_visual_overlay(_visual_root)
 
 
+# --- La Tomatina builders ------------------------------------------------------
+
+## The common tail of every primitive build: the hidden mask mesh, the
+## primitive visual at the body's origin, and the contamination grid wrapped
+## round the whole thing. Colliders are the builder's own, added before this.
+func _finish_primitive_body(cell_size: float, brush_radius: float, mask: Mesh,
+		visual: Node3D, skin: Color) -> void:
+	_body_mesh = MeshInstance3D.new()
+	_body_mesh.name = "EnemyBody"
+	_body_mesh.mesh = mask
+	_body_mesh.visible = false
+	add_child(_body_mesh)
+	_visual_root = visual
+	add_child(_visual_root)
+	contamination = BodyContamination.new()
+	contamination.name = "BodyContamination"
+	contamination.cell_size = cell_size
+	contamination.brush_radius = brush_radius
+	add_child(contamination)
+	contamination.configure(self, _body_mesh, radius, height, skin)
+	contamination.add_visual_overlay(_visual_root)
+
+
+func _add_sphere_collider(sphere_radius: float, at := Vector3.ZERO) -> void:
+	var shape := SphereShape3D.new()
+	shape.radius = sphere_radius
+	var collision := CollisionShape3D.new()
+	collision.name = "Body"
+	collision.shape = shape
+	collision.position = at
+	add_child(collision)
+
+
+func _add_cylinder_collider(cylinder_radius: float, cylinder_height: float,
+		at := Vector3.ZERO) -> void:
+	var shape := CylinderShape3D.new()
+	shape.radius = cylinder_radius
+	shape.height = cylinder_height
+	var collision := CollisionShape3D.new()
+	collision.name = "Body"
+	collision.shape = shape
+	collision.position = at
+	add_child(collision)
+
+
+static func _sphere_mask(sphere_radius: float) -> SphereMesh:
+	var mesh := SphereMesh.new()
+	mesh.radius = sphere_radius
+	mesh.height = sphere_radius * 2.0
+	return mesh
+
+
+## The grunt: the horde. A tomato the size of a person that runs at you and
+## bumps you. `tier` is which burst it was dealt, which also sizes it.
+## Every tomato body is drawn at this fraction of its designed size: the
+## street reads better with more, smaller tomatoes than fewer big ones.
+const TOMATO_SCALE := 0.7
+
+
+func build_tomato_grunt(cell_size: float, brush_radius: float, tier := 0) -> void:
+	kind = EnemyKind.TOMATO_GRUNT
+	grade = Grade.MINION
+	flinch_thresholds = []
+	burst_tier = tier
+	var size := 1.3 if tier >= 2 else 1.0
+	radius = 1.0 * size * TOMATO_SCALE
+	height = radius * 2.0
+	_rest_radius = radius
+	max_health = 40.0
+	solo_health = max_health
+	health = max_health
+	sauce_damage_per_hit = 0.65
+	turn_speed = 8.0
+	contact_damage = 6.0
+	contact_interval = 0.9
+	contact_reach = 0.15
+	fall_duration = 0.5
+	sight_range = 30.0
+	give_up_range = 50.0
+	impact_push_speed = 6.0
+	impact_lift_speed = 1.5
+	shove_speed = 8.0
+	shove_needs_party = false
+	_add_sphere_collider(radius)
+	_finish_primitive_body(cell_size, brush_radius, _sphere_mask(radius),
+		TomatoVisualsScript.grunt(radius, tier), TomatoVisualsScript.TOMATO)
+
+
+## The brute: the tank. Twice the grunt, three hundred health, and a charge
+## that knocks a player flat -- see `_advance_special`.
+func build_tomato_brute(cell_size: float, brush_radius: float) -> void:
+	kind = EnemyKind.TOMATO_BRUTE
+	grade = Grade.HEAVY
+	flinch_thresholds = [0.25, 0.5, 0.75]
+	burst_tier = 2
+	radius = 1.8 * TOMATO_SCALE
+	height = radius * 2.0
+	_rest_radius = radius
+	max_health = 300.0
+	solo_health = max_health
+	health = max_health
+	sauce_damage_per_hit = 0.4
+	turn_speed = 3.0
+	contact_damage = 14.0
+	contact_interval = 1.6
+	contact_reach = 0.4
+	fall_duration = 1.1
+	sight_range = 28.0
+	give_up_range = 46.0
+	impact_push_speed = 12.0
+	impact_lift_speed = 4.0
+	shove_speed = 4.8
+	shove_needs_party = true
+	_add_sphere_collider(radius)
+	_finish_primitive_body(cell_size, brush_radius, _sphere_mask(radius),
+		TomatoVisualsScript.brute(radius), TomatoVisualsScript.OVERRIPE)
+
+
+## The bowler: stands at the end of a straight and rolls giant tomatoes down
+## it. Its balls are built by the world right after it -- `BALLS_PER_BOWLER`
+## of them -- and handed over through `ball_pool`.
+func build_bowling_tomato(cell_size: float, brush_radius: float) -> void:
+	kind = EnemyKind.BOWLING_TOMATO
+	grade = Grade.HEAVY
+	flinch_thresholds = [0.25, 0.5, 0.75]
+	radius = 1.2 * TOMATO_SCALE
+	height = 3.0 * TOMATO_SCALE
+	_rest_radius = radius
+	max_health = 160.0
+	solo_health = max_health
+	health = max_health
+	sauce_damage_per_hit = 0.4
+	turn_speed = 2.5
+	contact_damage = 8.0
+	contact_interval = 1.2
+	contact_reach = 0.3
+	sight_range = 36.0
+	give_up_range = 60.0
+	shove_speed = 2.0
+	shove_needs_party = true
+	_add_cylinder_collider(radius, height)
+	var mask := CylinderMesh.new()
+	mask.top_radius = radius
+	mask.bottom_radius = radius
+	mask.height = height
+	_finish_primitive_body(cell_size, brush_radius, mask,
+		TomatoVisualsScript.bowler(radius, height), TomatoVisualsScript.CRATE)
+
+
+## The ball: what the bowler rolls. A body so the packet carries it, but not a
+## fighter -- it never chases, cannot be killed, and counts for nothing.
+func build_tomato_ball(cell_size: float, brush_radius: float, owner: MayoEnemy) -> void:
+	kind = EnemyKind.TOMATO_BALL
+	grade = Grade.MINION
+	flinch_thresholds = []
+	ball_owner = owner
+	radius = 1.3 * TOMATO_SCALE
+	height = radius * 2.0
+	_rest_radius = radius
+	max_health = 1000.0
+	solo_health = max_health
+	health = max_health
+	sauce_alerts = false
+	sight_range = 0.0
+	give_up_range = 0.0
+	contact_damage = 0.0
+	shove_speed = 0.0
+	_add_sphere_collider(radius)
+	_finish_primitive_body(cell_size, brush_radius, _sphere_mask(radius),
+		TomatoVisualsScript.ball(radius), Color("c0281a"))
+
+
+## The spitter: the one that blinds you from range and leaves a puddle under
+## you. Slow, and it keeps its distance.
+func build_ketchup_spitter(cell_size: float, brush_radius: float) -> void:
+	kind = EnemyKind.KETCHUP_SPITTER
+	grade = Grade.HEAVY
+	flinch_thresholds = [0.25, 0.5, 0.75]
+	radius = 0.9
+	height = 3.2
+	_rest_radius = radius
+	max_health = 120.0
+	solo_health = max_health
+	health = max_health
+	sauce_damage_per_hit = 0.4
+	turn_speed = 4.0
+	contact_damage = 6.0
+	contact_interval = 1.2
+	contact_reach = 0.2
+	sight_range = 30.0
+	give_up_range = 50.0
+	shove_speed = 5.0
+	shove_needs_party = false
+	_add_cylinder_collider(radius, height)
+	var mask := CylinderMesh.new()
+	mask.top_radius = radius
+	mask.bottom_radius = radius
+	mask.height = height
+	_finish_primitive_body(cell_size, brush_radius, mask,
+		TomatoVisualsScript.spitter(radius, height), TomatoVisualsScript.BOTTLE)
+
+
+## The crawler: a caprese skewer that reels one player in on a thread of
+## mozzarella until somebody hits it.
+func build_caprese_crawler(cell_size: float, brush_radius: float) -> void:
+	kind = EnemyKind.CAPRESE_CRAWLER
+	grade = Grade.HEAVY
+	flinch_thresholds = [0.25, 0.5, 0.75]
+	radius = 0.6
+	height = 1.2
+	_rest_radius = radius
+	max_health = 140.0
+	solo_health = max_health
+	health = max_health
+	sauce_damage_per_hit = 0.4
+	turn_speed = 5.0
+	contact_damage = 7.0
+	contact_interval = 1.0
+	contact_reach = 0.3
+	fall_duration = 0.6
+	sight_range = 26.0
+	give_up_range = 44.0
+	shove_speed = 6.0
+	shove_needs_party = false
+	const SEGMENTS := 5
+	const SPACING := 0.95
+	var shape := CapsuleShape3D.new()
+	shape.radius = radius * 0.95
+	shape.height = SPACING * float(SEGMENTS - 1) + radius * 2.0
+	var collision := CollisionShape3D.new()
+	collision.name = "Body"
+	collision.shape = shape
+	# A capsule stands on y; the chain lies along z, so it is turned down flat.
+	collision.rotation.x = deg_to_rad(90.0)
+	add_child(collision)
+	var mask := CapsuleMesh.new()
+	mask.radius = radius
+	mask.height = height
+	_finish_primitive_body(cell_size, brush_radius, mask,
+		TomatoVisualsScript.caprese(radius, SEGMENTS, SPACING), TomatoVisualsScript.MOZZARELLA)
+
+
+# --- La Tomatina behaviour -----------------------------------------------------
+
+## The one trick each stage 2 body has, run once a tick on the authority after
+## the target is chosen and before the body moves. Returns overrides for the
+## walk: "flat", a direction to walk instead of the chase, and "pace", a factor
+## on the walking speed. Empty for the bodies that have no trick.
+func _advance_special(delta: float, target: MayoPlayer) -> Dictionary:
+	match kind:
+		EnemyKind.TOMATO_BRUTE:
+			return _advance_brute(delta, target)
+		EnemyKind.BOWLING_TOMATO:
+			return _advance_bowler(delta, target)
+		EnemyKind.KETCHUP_SPITTER:
+			return _advance_spitter(delta, target)
+		EnemyKind.CAPRESE_CRAWLER:
+			return _advance_crawler(delta, target)
+	return {}
+
+
+func _can_see_straight(target: MayoPlayer) -> bool:
+	return nav == null or nav.line_is_walkable(global_position, target.global_position)
+
+
+func is_charging() -> bool:
+	return _charge_left > 0.0
+
+
+func _advance_brute(delta: float, target: MayoPlayer) -> Dictionary:
+	_charge_cooldown = maxf(_charge_cooldown - delta, 0.0)
+	if _charge_left > 0.0:
+		_charge_left = maxf(_charge_left - delta, 0.0)
+		return {"flat": _charge_direction, "pace": BRUTE_CHARGE_SPEED_SCALE}
+	if target == null or _charge_cooldown > 0.0 or _attack_lock_left > 0.0:
+		return {}
+	var gap := Vector3(target.global_position.x - global_position.x, 0.0,
+		target.global_position.z - global_position.z)
+	if gap.length() > BRUTE_CHARGE_RANGE or gap.length() < 0.5 or not _can_see_straight(target):
+		return {}
+	_charge_direction = gap.normalized()
+	_charge_left = BRUTE_CHARGE_SECONDS
+	_charge_cooldown = BRUTE_CHARGE_COOLDOWN + BRUTE_CHARGE_SECONDS
+	return {"flat": _charge_direction, "pace": BRUTE_CHARGE_SPEED_SCALE}
+
+
+func _advance_bowler(delta: float, target: MayoPlayer) -> Dictionary:
+	_launch_cooldown = maxf(_launch_cooldown - delta, 0.0)
+	# It never walks: pace zero keeps it turning to face whoever it is bowling
+	# at without stepping towards them.
+	var hold := {"pace": 0.0}
+	if target == null or _launch_cooldown > 0.0:
+		return hold
+	var gap := Vector3(target.global_position.x - global_position.x, 0.0,
+		target.global_position.z - global_position.z)
+	if gap.length() > BOWLING_RANGE or gap.length() < radius * 2.0 or not _can_see_straight(target):
+		return hold
+	var ball := _free_ball()
+	if ball == null:
+		return hold
+	var direction := gap.normalized()
+	ball.launch(global_position + direction * (radius + ball.radius + 0.3), direction)
+	_launch_cooldown = BOWLING_INTERVAL
+	return hold
+
+
+func _free_ball() -> MayoEnemy:
+	for ball in ball_pool:
+		if is_instance_valid(ball) and not ball._ball_live:
+			return ball
+	return null
+
+
+func _advance_spitter(delta: float, target: MayoPlayer) -> Dictionary:
+	_spit_cooldown = maxf(_spit_cooldown - delta, 0.0)
+	if target == null:
+		return {}
+	var gap := Vector3(target.global_position.x - global_position.x, 0.0,
+		target.global_position.z - global_position.z).length()
+	var sees := _can_see_straight(target)
+	if _spit_cooldown <= 0.0 and gap <= SPIT_RANGE and sees:
+		_spit_request = target
+		_spit_cooldown = SPIT_INTERVAL
+	# Close enough and in sight: stand and spit rather than walk into reach.
+	if gap <= SPIT_HOLD_RANGE and sees:
+		return {"pace": 0.0}
+	return {}
+
+
+func _advance_crawler(delta: float, target: MayoPlayer) -> Dictionary:
+	_tether_break_left = maxf(_tether_break_left - delta, 0.0)
+	tether_target = null
+	if target == null or _tether_break_left > 0.0:
+		return {}
+	var gap := Vector3(target.global_position.x - global_position.x, 0.0,
+		target.global_position.z - global_position.z)
+	var reach := radius + _target_radius(target) + contact_reach
+	if gap.length() > TETHER_RANGE or gap.length() <= reach + 0.2 or not _can_see_straight(target):
+		return {}
+	if not _reaches_height(target) or target.is_incapacitated():
+		return {}
+	tether_target = target
+	# Reeled in by position, not by impulse: an impulse every tick outruns the
+	# player's own acceleration and sends them flying, while a steady pull is
+	# a thing to be dragged by. The mustard slow is the "tied up" half -- the
+	# same slow the floor uses, so nothing new is on the player.
+	target.splash_mustard()
+	var pull := -gap.normalized() * minf(TETHER_REEL_SPEED * delta, gap.length() - reach)
+	target.move_and_collide(pull)
+	return {"pace": 0.0}
+
+
+## The ball's own tick: it rolls where it was sent, knocks over whoever it
+## meets, and bursts on the first wall. Nothing of the chase applies to it.
+func _advance_ball(delta: float, _targets: Array) -> void:
+	if not _ball_live:
+		velocity = Vector3.ZERO
+		return
+	_ball_left -= delta
+	if _ball_left <= 0.0:
+		_retire_ball()
+		return
+	for id in _ball_hit_cooldown.keys():
+		_ball_hit_cooldown[id] = float(_ball_hit_cooldown[id]) - delta
+		if _ball_hit_cooldown[id] <= 0.0:
+			_ball_hit_cooldown.erase(id)
+	velocity.x = _ball_velocity.x
+	velocity.z = _ball_velocity.z
+	if is_on_floor():
+		velocity.y = 0.0
+	else:
+		velocity.y -= fall_gravity * delta
+	var before := global_position
+	move_and_slide()
+	# Rolled rather than slid: the visual turns about the axis across its travel
+	# by the ground it covered, which is what makes it read as a ball.
+	var step := global_position - before
+	var covered := Vector2(step.x, step.z).length()
+	if covered > 0.0001 and _visual_root != null:
+		var axis := Vector3.UP.cross(Vector3(step.x, 0.0, step.z).normalized())
+		_visual_root.rotate(axis.normalized(), covered / maxf(radius, 0.01))
+	facing_yaw = atan2(-_ball_velocity.x, -_ball_velocity.z)
+	for index in get_slide_collision_count():
+		var collision := get_slide_collision(index)
+		var collider := collision.get_collider()
+		if collider is MayoPlayer:
+			var player := collider as MayoPlayer
+			var id := player.get_instance_id()
+			if _ball_hit_cooldown.has(id):
+				continue
+			_ball_hit_cooldown[id] = 1.0
+			player.apply_enemy_impact(_ball_velocity, 9.0, 3.0)
+			if player.can_slip():
+				player.begin_slip()
+		elif collider is StaticBody3D and collision.get_normal().y < 0.5:
+			# A wall, a crate, a truck: not the floor. It bursts here.
+			_burst_request = global_position
+			_retire_ball()
+			return
+
+
+func _retire_ball() -> void:
+	_ball_live = false
+	_ball_velocity = Vector3.ZERO
+	velocity = Vector3.ZERO
+	global_position = BALL_PARK
+
+
+## Rolled from `from` along `direction`, on the ground. Authority only.
+func launch(from: Vector3, direction: Vector3) -> void:
+	if not authority:
+		return
+	var flat := Vector3(direction.x, 0.0, direction.z)
+	if flat.length_squared() < 0.000001:
+		return
+	global_position = Vector3(from.x, stand_height(), from.z)
+	_ball_velocity = flat.normalized() * BALL_SPEED
+	_ball_live = true
+	_ball_left = BALL_LIFETIME
+	_ball_hit_cooldown.clear()
+	fall_angle = 0.0
+	_apply_pose()
+
+
+func is_ball_live() -> bool:
+	return _ball_live
+
+
+## Where a ball asked to burst, or INF; cleared on being asked.
+func take_burst_request() -> Vector3:
+	var at := _burst_request
+	_burst_request = Vector3.INF
+	return at
+
+
+## Whom the spitter wants spat at, or null; cleared on being asked.
+func take_spit_request() -> MayoPlayer:
+	var target := _spit_request
+	_spit_request = null
+	return target if target != null and is_instance_valid(target) else null
+
+
 ## `required` is false for the rusher, whose rig has a different set of clips:
 ## a missing one there is a fallback, not a fault.
 func _find_animation(suffix: String, required := true) -> StringName:
@@ -921,6 +1434,14 @@ func health_fraction() -> float:
 func take_sauce_hit(from := Vector3.INF) -> bool:
 	if not is_alive():
 		return false
+	# A bowled tomato wears the sauce and is not hurt by it: it is a thing
+	# thrown at you, not a thing to fight.
+	if kind == EnemyKind.TOMATO_BALL:
+		return false
+	# A hit is what cuts the crawler's thread: the reeled-in player is pulled
+	# off whoever it had, for long enough to get clear.
+	if kind == EnemyKind.CAPRESE_CRAWLER:
+		_tether_break_left = TETHER_BREAK_SECONDS
 	health = maxf(health - sauce_damage_per_hit, 0.0)
 	# Being hit is being told where you are, whatever the range says.
 	if sauce_alerts:
@@ -1414,6 +1935,9 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		# Dead ones are not skipped -- they are still going over.
 		_advance_fall(delta)
 		return null
+	if kind == EnemyKind.TOMATO_BALL:
+		_advance_ball(delta, targets)
+		return null
 	if tutorial_trapped:
 		_trap_clock += delta
 		global_position = _trap_position
@@ -1453,6 +1977,11 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	if not _alerted:
 		target = null
 
+	# The stage 2 tricks: a charge, a throw, a spit, a pull. Run here, with the
+	# target decided and the body not yet moved, so a trick can redirect the
+	# walk below without a second movement pass.
+	var special := _advance_special(delta, target)
+
 	var flat := Vector3.ZERO
 	if baited:
 		# The bait is walked to the same way a player is -- same router, same
@@ -1462,12 +1991,16 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	elif target != null and _attack_lock_left <= 0.0:
 		flat = _step_toward(target.global_position, delta) - global_position
 		flat.y = 0.0
+	if special.has("flat"):
+		flat = special["flat"]
+		flat.y = 0.0
 
 	# A body that is more sauce than burger walks like it. Continuous, like the
 	# shove: what it reads as is the fight winding down rather than a state
 	# change at a percentage.
 	var soiled := 1.0 - health_fraction()
-	var pace := move_speed * (1.0 - soiled_slowdown * soiled) * mustard_factor()
+	var pace := move_speed * (1.0 - soiled_slowdown * soiled) * mustard_factor() \
+		* float(special.get("pace", 1.0))
 	if flat.length_squared() > 0.000001:
 		var direction := flat.normalized()
 		velocity.x = direction.x * pace
@@ -1504,6 +2037,13 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		velocity.y -= fall_gravity * delta
 	var stood_at := global_position
 	move_and_slide()
+	# A charge that meets a wall ends in it: the brute is stuck for a moment,
+	# which is the opening the charge pays for.
+	if _charge_left > 0.0 and is_on_wall():
+		_charge_left = 0.0
+		_charge_cooldown = BRUTE_CHARGE_COOLDOWN
+		_attack_lock_left = BRUTE_WALL_STUN
+		_contact_cooldown = maxf(_contact_cooldown, BRUTE_WALL_STUN)
 	var walking := Vector2(velocity.x, velocity.z).length_squared() > 0.000001
 	_set_locomotion_animation(walking)
 	_advance_gait(global_position - stood_at, walking, delta)
@@ -1545,6 +2085,12 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	# it is what stops a swarm of them being a stationary damage tick.
 	if impact_push_speed > 0.0 or impact_lift_speed > 0.0:
 		target.apply_enemy_impact(gap, impact_push_speed, impact_lift_speed)
+	# A charging brute does not bump you, it flattens you: the shove above and
+	# then the floor. The charge is spent on whoever it reached.
+	if _charge_left > 0.0:
+		_charge_left = 0.0
+		if target.can_slip():
+			target.begin_slip()
 	return target
 
 

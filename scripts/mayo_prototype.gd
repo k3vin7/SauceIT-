@@ -417,7 +417,7 @@ class MayoSpeck:
 @export_range(0.2, 4.0, 0.05) var burst_pressure_curve := 1.7
 
 @export_group("Tutorial")
-enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE }
+enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## The combat/player implementation is shared. Only this small map profile changes
 ## the floor, boundaries, spawn markers and tutorial obstacles.
 @export var map_kind: MapKind = MapKind.FESTIVAL_STREET
@@ -1044,6 +1044,36 @@ var _stage_roster_initialized := false
 var _stage_clear_emitted := false
 var _stage_objective: Label
 
+# --- La Tomatina (stage 2) ------------------------------------------------------
+## Tomatoes burst by the square metre: how many floor splats a burst lays per
+## m² of its disc, the most one burst may lay, and the most all bursts in one
+## tick may lay between them. Six grunts going off together in a horde would
+## otherwise be a thousand splats in a frame, and every one of them travels.
+const TOMATO_SPLATS_PER_M2 := 6.0
+const TOMATO_BURST_SPLAT_CAP := 240
+const TOMATO_BURST_TICK_CAP := 300
+## The horde: this many grunts for one player, scaled by `minion_spawn_count`.
+const TOMATINA_HORDE_BASE := 16
+## A player running through juice takes a drop on the glasses this often.
+const JUICE_SPLASH_INTERVAL := 0.35
+## The roster's kind names, as `TomatinaMap.ROSTER` writes them.
+const TOMATINA_KINDS := {
+	"TOMATO_GRUNT": MayoTutorial.KIND_TOMATO_GRUNT,
+	"TOMATO_BRUTE": MayoTutorial.KIND_TOMATO_BRUTE,
+	"BOWLING_TOMATO": MayoTutorial.KIND_BOWLING_TOMATO,
+	"KETCHUP_SPITTER": MayoTutorial.KIND_KETCHUP_SPITTER,
+	"CAPRESE_CRAWLER": MayoTutorial.KIND_CAPRESE_CRAWLER,
+}
+var _fire_truck_zone := Rect2()
+var _plaza_rect := Rect2()
+var _horde_spawned := false
+var _burst_ground_budget := TOMATO_BURST_TICK_CAP
+## peer id -> seconds until the next juice drop may land on their glasses.
+var _juice_splash_clock: Dictionary = {}
+## The stage's own dice: the burst scatter and the juice drops. Seeded from the
+## map so a headless check can replay a burst; only the cells it decides travel.
+var _tomato_rng := RandomNumberGenerator.new()
+
 # The single-player fields the checks and the rest of this file grew up with,
 # now views onto the local player's Shooter. Nothing assigns through them.
 var _points: Array[MayoPoint]:
@@ -1199,15 +1229,18 @@ func _physics_process(delta: float) -> void:
 			if not _tutorial.allows_firing(shooter.peer_id):
 				shooter.firing = false
 	if _is_authority():
+		_burst_ground_budget = TOMATO_BURST_TICK_CAP
 		_advance_player_respawns()
 		for shooter in _shooters.values():
 			_update_slip(shooter)
+			_update_juice_splash(shooter, delta)
 		# Before the enemies step, so a body wading into mustard is slowed on the
 		# frame it arrives rather than a frame after it.
 		_update_mustard_field()
 		# After the slip test and before the strand: an enemy that shoved a
 		# player this frame should be where the strand is aimed from.
 		_advance_enemies(delta)
+		_check_horde_trigger()
 	for shooter in _shooters.values():
 		_advance_strand(shooter, delta)
 	if debug_profile_enabled:
@@ -2093,6 +2126,12 @@ func _capture_mouse() -> void:
 
 
 func _build_world() -> void:
+	# Which design the lattice carries, before anything reads it: the floor
+	# plane, the walls and the router all ask `StreetMap`, and `StreetMap`
+	# answers for whichever map this is.
+	StreetMap.layout_override = TomatinaMap.new() if map_kind == MapKind.TOMATINA else null
+	if map_kind == MapKind.TOMATINA:
+		_tomato_rng.seed = TomatinaMap.SEED
 	_build_environment()
 
 	# One grid under the whole street. It has to be one: the slip test, the
@@ -2116,6 +2155,8 @@ func _build_world() -> void:
 	# which also stops a level change from moving a test's target.
 	if map_kind == MapKind.TUTORIAL_RECTANGLE:
 		_build_tutorial_space()
+	elif map_kind == MapKind.TOMATINA:
+		_build_tomatina()
 	else:
 		_build_street()
 
@@ -3059,6 +3100,54 @@ func _build_street() -> void:
 	_build_start_marker()
 
 
+## Stage 2: Buñol as a greybox, off `TomatinaMap`. The walls fall out of the
+## lattice exactly as the festival street's do; the rubble, the sauce trucks
+## and the fire truck are plain contaminable boxes; the juice is painted onto
+## the floor before anyone arrives.
+func _build_tomatina() -> void:
+	var wall_color := Color("8a6a5a")
+	var index := 0
+	for box in StreetMap.wall_boxes():
+		_create_wall("TomatinaWall%02d" % index, box["position"], box["size"], wall_color)
+		index += 1
+	index = 0
+	for box in TomatinaMap.debris_boxes():
+		_create_wall("Debris%02d_%s" % [index, box["name"]], box["position"], box["size"],
+			box["color"])
+		index += 1
+	index = 0
+	for box in TomatinaMap.refill_boxes():
+		_create_vending_machine("SauceTruck%02d" % index, box)
+		_add_refill_station(box)
+		index += 1
+	var truck: Dictionary = TomatinaMap.fire_truck_box()
+	_create_wall("FireTruck", truck["position"], truck["size"], truck["color"])
+	_fire_truck_zone = TomatinaMap.fire_truck_zone()
+	_plaza_rect = TomatinaMap.plaza_rect()
+	_build_zone_marker("FireTruckBay", _fire_truck_zone, Color(0.9, 0.15, 0.1, 0.22))
+	TomatinaMap.seed_floor(_floor)
+	_build_start_marker()
+
+
+## A flat tinted patch over a rectangle of ground: a sign, not a surface.
+## Meshes only -- a strand that crosses it has to reach the floor grid under it.
+func _build_zone_marker(marker_name: String, zone: Rect2, color: Color) -> void:
+	var marker := MeshInstance3D.new()
+	marker.name = marker_name
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(zone.size.x, 0.04, zone.size.y)
+	marker.mesh = mesh
+	marker.position = Vector3(zone.position.x + zone.size.x * 0.5, 0.02,
+		zone.position.y + zone.size.y * 0.5)
+	var material := StandardMaterial3D.new()
+	material.albedo_color = color
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	marker.material_override = material
+	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(marker)
+
+
 ## LAVA on the festival map: the stage in the square. A low platform you can
 ## walk up onto and spray off, built as a contaminable box like everything else,
 ## so it takes sauce and joins the splat protocol without a special case.
@@ -3405,7 +3494,7 @@ const TOAST_RUSHER_PAIR_OFFSETS := [-3.0, 3.0]
 func _build_enemies() -> void:
 	# Built here rather than with the street, because it has to read the props
 	# standing on the street as well as the street itself.
-	if map_kind == MapKind.FESTIVAL_STREET:
+	if map_kind == MapKind.FESTIVAL_STREET or map_kind == MapKind.TOMATINA:
 		_nav = StreetNav.new()
 		_nav.build()
 		if _tutorial_wreck != null and _tutorial_wreck.has_method("block_navigation"):
@@ -3421,6 +3510,12 @@ func _build_enemies() -> void:
 	# appends -- which is also why nothing here is ever removed.
 	if _tutorial != null and _tutorial.is_enabled():
 		_apply_enemy_sight_rings()
+		return
+	if map_kind == MapKind.TOMATINA:
+		for entry in TomatinaMap.ROSTER:
+			_add_tomatina_enemy(int(TOMATINA_KINDS[entry[0]]), TomatinaMap.at_cell(entry[1]))
+		_apply_enemy_sight_rings()
+		rescale_enemies()
 		return
 	for index in ENEMY_SPAWNS.size():
 		var spawn: Array = ENEMY_SPAWNS[index]
@@ -3532,6 +3627,18 @@ func tutorial_spawn_enemy(kind: int, at: Vector3) -> int:
 ## Everyone's side of that: build the body and append it. The same call on every
 ## peer in the same order, so index 3 is the same monster everywhere.
 func tutorial_add_enemy(kind: int, at: Vector3) -> int:
+	if kind >= MayoTutorial.KIND_TOMATO_GRUNT:
+		var tomato_index := _add_tomatina_enemy(kind, at)
+		if tomato_index >= 0:
+			# A body spawned at runtime was spawned *at* somebody: the horde
+			# comes in from the plaza's far edges, and a plaza is wider than a
+			# grunt's ordinary sight. Same figures the tutorial gives its spawns.
+			var spawned := _enemies[tomato_index]
+			spawned.sight_range = 90.0
+			spawned.give_up_range = 120.0
+			_apply_enemy_sight_rings()
+			rescale_enemies()
+		return tomato_index
 	var enemy := MayoEnemy.new()
 	enemy.authority = _is_authority()
 	add_child(enemy)
@@ -3567,6 +3674,275 @@ func tutorial_add_enemy(kind: int, at: Vector3) -> int:
 ## Everything the tutorial has spawned, for a peer that joined late.
 func tutorial_spawned() -> Array:
 	return _tutorial_spawned
+
+
+# ---------------------------------------------------------------------------
+# La Tomatina
+# ---------------------------------------------------------------------------
+
+## Which burst a grunt is dealt: mostly small, some medium, a few large -- the
+## large one is the overripe tomato, and it looks it. **A pure function of the
+## body's index and the map's seed**, so every peer deals the same card to
+## body N and a client can throw body N's fragments without being told how far.
+func _deal_grunt_burst(index: int) -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = TomatinaMap.SEED ^ (index * 0x9E3779B1)
+	var roll := rng.randf()
+	if roll < 0.70:
+		return {"tier": 0, "radius": rng.randf_range(1.2, 2.0)}
+	if roll < 0.95:
+		return {"tier": 1, "radius": rng.randf_range(2.5, 3.5)}
+	return {"tier": 2, "radius": rng.randf_range(5.0, 6.5)}
+
+
+## One stage 2 body, built and appended: the roster at build and the horde at
+## runtime come through here, so a body's index decides the same things on
+## every peer. A bowler brings its balls with it, appended straight after it.
+## Returns the body's index, or -1 for a kind this stage does not have.
+func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
+	var index := _enemies.size()
+	var enemy := MayoEnemy.new()
+	enemy.authority = _is_authority()
+	add_child(enemy)
+	var speed_fraction := 1.0
+	match kind:
+		MayoTutorial.KIND_TOMATO_GRUNT:
+			var deal := _deal_grunt_burst(index)
+			enemy.name = "Tomatina%02d_Grunt" % index
+			enemy.build_tomato_grunt(body_cell_size, contamination_brush_radius, int(deal["tier"]))
+			enemy.burst_radius = float(deal["radius"])
+			speed_fraction = 1.0
+		MayoTutorial.KIND_TOMATO_BRUTE:
+			enemy.name = "Tomatina%02d_Brute" % index
+			enemy.build_tomato_brute(body_cell_size, contamination_brush_radius)
+			enemy.burst_radius = 6.0
+			speed_fraction = 0.75
+		MayoTutorial.KIND_BOWLING_TOMATO:
+			enemy.name = "Tomatina%02d_Bowler" % index
+			enemy.build_bowling_tomato(body_cell_size, contamination_brush_radius)
+			speed_fraction = 0.0
+		MayoTutorial.KIND_KETCHUP_SPITTER:
+			enemy.name = "Tomatina%02d_Spitter" % index
+			enemy.build_ketchup_spitter(body_cell_size, contamination_brush_radius)
+			enemy.burst_radius = 3.0
+			speed_fraction = 0.6
+		MayoTutorial.KIND_CAPRESE_CRAWLER:
+			enemy.name = "Tomatina%02d_Crawler" % index
+			enemy.build_caprese_crawler(body_cell_size, contamination_brush_radius)
+			speed_fraction = 0.85
+		_:
+			enemy.queue_free()
+			return -1
+	if _local != null:
+		enemy.match_player_speed(_local.player.walk_speed, speed_fraction)
+	enemy.nav = _nav
+	enemy.position = Vector3(at.x, enemy.stand_height(), at.z)
+	_enemies.push_back(enemy)
+	if kind == MayoTutorial.KIND_BOWLING_TOMATO:
+		for ball_index in MayoEnemy.BALLS_PER_BOWLER:
+			var ball := MayoEnemy.new()
+			ball.name = "Tomatina%02d_Ball%d" % [index, ball_index]
+			ball.authority = _is_authority()
+			add_child(ball)
+			ball.build_tomato_ball(body_cell_size, contamination_brush_radius, enemy)
+			ball.burst_radius = 1.5
+			ball.position = MayoEnemy.BALL_PARK
+			enemy.ball_pool.push_back(ball)
+			_enemies.push_back(ball)
+	return index
+
+
+## A tomato going off. Authority only, and like the ketchup burst it rides
+## roads that exist: the floor splats and the body splats go down the splat
+## batch, and the fragments are thrown locally by whoever sees the death.
+##
+## **No damage.** A burst is mess, not a blast: juice on the floor, on the
+## bodies near it, and on the glasses of anyone close enough -- which is what
+## makes killing one at arm's length a mistake you can see yourself making.
+## Thin on the floor, because ketchup is never slippery; a burst in a crowd is
+## a stain you run through, not a trap you laid.
+func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF) -> void:
+	var radius := enemy.burst_radius
+	if radius <= 0.0:
+		return
+	if centre == Vector3.INF:
+		centre = enemy.global_position
+	var wanted := mini(int(round(TOMATO_SPLATS_PER_M2 * PI * radius * radius)),
+		TOMATO_BURST_SPLAT_CAP)
+	var count := mini(wanted, _burst_ground_budget)
+	_burst_ground_budget -= count
+	for _index in count:
+		var angle := _tomato_rng.randf_range(0.0, TAU)
+		var reach := sqrt(_tomato_rng.randf()) * radius
+		var at := centre + Vector3(cos(angle) * reach, 0.0, sin(angle) * reach)
+		var cell := _floor.paint_mayo(at, -1, ContaminationGrid.KIND_KETCHUP)
+		if cell.x >= 0:
+			_pending_splats.append_array(PackedInt32Array([
+				_splat_code(SPLAT_FLOOR, ContaminationGrid.KIND_KETCHUP), -1,
+				cell.x, cell.y]))
+	for other in _enemies:
+		if other == enemy or not is_instance_valid(other):
+			continue
+		if other.global_position.distance_to(centre) > radius:
+			continue
+		_stain_body_with_ketchup(other, centre)
+	for other_shooter in _shooters.values():
+		var player: MayoPlayer = other_shooter.player
+		if not is_instance_valid(player):
+			continue
+		if player.global_position.distance_to(centre) > radius:
+			continue
+		var cell := player.paint_mayo(player.global_position, Vector3.UP,
+			ContaminationGrid.KIND_KETCHUP)
+		if cell.x >= 0:
+			_pending_splats.append_array(PackedInt32Array([
+				_splat_code(SPLAT_BODY, ContaminationGrid.KIND_KETCHUP),
+				player.peer_id, cell.x, cell.y]))
+		_record_visor_splat(player, centre, ContaminationGrid.KIND_KETCHUP)
+	_tomato_fragments(centre, radius)
+
+
+## The pieces that fly, scaled to the burst. Decoration, thrown on every peer
+## from its own dice: the stains are already decided above and only they
+## travel, exactly as the ketchup burst's fragments do.
+func _tomato_fragments(centre: Vector3, radius: float) -> void:
+	if _speck_multimesh == null:
+		return
+	var now := Time.get_ticks_msec() * 0.001
+	var count := clampi(int(8.0 + radius * 4.0), 8, 40)
+	var speed := 3.0 + radius * 0.9
+	for _index in count:
+		var angle := _feel_rng.randf_range(0.0, TAU)
+		var lift := _feel_rng.randf_range(0.3, 1.0)
+		var out := Vector3(cos(angle), 0.0, sin(angle)) * _feel_rng.randf_range(0.5, 1.0)
+		var thrown := (out + Vector3.UP * lift).normalized()
+		_take_speck(now, centre + thrown * 0.3,
+			thrown * speed * _feel_rng.randf_range(0.7, 1.3),
+			_feel_rng.randf_range(ketchup_fragment_radius_min, ketchup_fragment_radius_max),
+			1, ContaminationGrid.KIND_KETCHUP)
+	_speck_buffer_dirty = true
+
+
+## The spitter's stream landing: on the glasses, on the body, and as a puddle
+## at the feet. A hitscan -- the body decided it could see its target -- so
+## what travels is the stains and nothing else. The puddle is several layers,
+## which the floor draws as the deep band; whether deep ketchup should also be
+## slippery is an open call and is left as it was: it is not.
+func _spit_ketchup(spitter: MayoEnemy, victim: MayoPlayer) -> void:
+	var origin := spitter.global_position + Vector3.UP * (spitter.height * 0.3)
+	_record_visor_splat(victim, origin, ContaminationGrid.KIND_KETCHUP)
+	var toward := (origin - victim.global_position)
+	toward.y = 0.0
+	if toward.length_squared() < 0.000001:
+		toward = Vector3.FORWARD
+	toward = toward.normalized()
+	var cell := victim.paint_mayo(victim.global_position + toward * MayoPlayer.CAPSULE_RADIUS,
+		toward, ContaminationGrid.KIND_KETCHUP)
+	if cell.x >= 0:
+		_pending_splats.append_array(PackedInt32Array([
+			_splat_code(SPLAT_BODY, ContaminationGrid.KIND_KETCHUP),
+			victim.peer_id, cell.x, cell.y]))
+	for index in 6:
+		var angle := TAU * float(index) / 6.0
+		var reach := 0.0 if index == 0 else 0.45
+		var at := victim.global_position + Vector3(cos(angle) * reach, 0.0, sin(angle) * reach)
+		var floor_cell := _floor.paint_mayo(at, -1, ContaminationGrid.KIND_KETCHUP)
+		if floor_cell.x >= 0:
+			_pending_splats.append_array(PackedInt32Array([
+				_splat_code(SPLAT_FLOOR, ContaminationGrid.KIND_KETCHUP), -1,
+				floor_cell.x, floor_cell.y]))
+	# The stream itself, as lumps along the line. Decoration, local dice.
+	if _speck_multimesh != null:
+		var now := Time.get_ticks_msec() * 0.001
+		var span := victim.global_position + Vector3.UP * 1.2 - origin
+		for index in 10:
+			var along := span * (float(index) / 10.0)
+			_take_speck(now, origin + along, span.normalized() * 9.0,
+				_feel_rng.randf_range(ketchup_fragment_radius_min, ketchup_fragment_radius_max),
+				1, ContaminationGrid.KIND_KETCHUP)
+		_speck_buffer_dirty = true
+
+
+## Running through juice flicks it up: a drop on the glasses every so often and
+## a mark low on the body. Authority only, through the splat batch. Only the
+## tomato stage has juice, and only running does it -- walking through a stain
+## is what the shallow floor is for.
+func _update_juice_splash(shooter: Shooter, delta: float) -> void:
+	if map_kind != MapKind.TOMATINA or _floor == null:
+		return
+	var player := shooter.player
+	var left := float(_juice_splash_clock.get(shooter.peer_id, 0.0)) - delta
+	if left > 0.0:
+		_juice_splash_clock[shooter.peer_id] = left
+		return
+	_juice_splash_clock[shooter.peer_id] = 0.0
+	if not is_instance_valid(player) or not player.is_running() or not player.is_on_floor():
+		return
+	var under := player.global_position
+	if _floor.thickness_at(under) <= 0 \
+			or _floor.sauce_kind_at(under) != ContaminationGrid.KIND_KETCHUP:
+		return
+	_juice_splash_clock[shooter.peer_id] = JUICE_SPLASH_INTERVAL
+	# A mark on the leg, which is where the juice came up from.
+	var angle := _tomato_rng.randf_range(0.0, TAU)
+	var on_leg := player.global_position + Vector3(cos(angle), 0.0, sin(angle)) \
+		* MayoPlayer.CAPSULE_RADIUS + Vector3.DOWN * 0.8
+	var cell := player.paint_mayo(on_leg, Vector3(cos(angle), 0.0, sin(angle)),
+		ContaminationGrid.KIND_KETCHUP)
+	if cell.x >= 0:
+		_pending_splats.append_array(PackedInt32Array([
+			_splat_code(SPLAT_BODY, ContaminationGrid.KIND_KETCHUP),
+			player.peer_id, cell.x, cell.y]))
+	# And, about half the time, a small drop low on the lens.
+	if player.visor == null or _tomato_rng.randf() > 0.5:
+		return
+	var on_lens := player.visor.to_global(Vector3(
+		_tomato_rng.randf_range(-0.5, 0.5), _tomato_rng.randf_range(-0.55, -0.15), -1.0))
+	_record_visor_splat(player, on_lens, ContaminationGrid.KIND_KETCHUP)
+
+
+## The plaza: the moment the party steps onto it the horde comes in from its
+## edges. Authority only; the bodies go out down the same road the tutorial's
+## do, so every peer builds them in the same order and a late joiner is caught
+## up. Once.
+func _check_horde_trigger() -> void:
+	if map_kind != MapKind.TOMATINA or _horde_spawned or not _plaza_rect.has_area():
+		return
+	var arrived := false
+	for shooter in _shooters.values():
+		var player: MayoPlayer = shooter.player
+		if is_instance_valid(player) and TomatinaMap.in_rect(_plaza_rect, player.global_position):
+			arrived = true
+			break
+	if not arrived:
+		return
+	_horde_spawned = true
+	var count := minion_spawn_count(TOMATINA_HORDE_BASE)
+	for index in count:
+		var edge: Vector2 = TomatinaMap.HORDE_EDGES[index % TomatinaMap.HORDE_EDGES.size()]
+		tutorial_spawn_enemy(MayoTutorial.KIND_TOMATO_GRUNT, TomatinaMap.at_cell(edge))
+
+
+func horde_spawned() -> bool:
+	return _horde_spawned
+
+
+## Stage 2's clear: the elites are down and somebody has made it to the fire
+## truck. The horde does not count -- it is there to be run through.
+func _tomatina_elites_alive() -> int:
+	var alive := 0
+	for enemy in _enemies:
+		if is_instance_valid(enemy) and enemy.is_alive() and enemy.grade == MayoEnemy.Grade.HEAVY:
+			alive += 1
+	return alive
+
+
+func _party_at_fire_truck() -> bool:
+	for shooter in _shooters.values():
+		var player: MayoPlayer = shooter.player
+		if is_instance_valid(player) and TomatinaMap.in_rect(_fire_truck_zone, player.global_position):
+			return true
+	return false
 
 
 ## The stalls that hand out sauce, as position and facing. The tutorial picks the
@@ -3652,6 +4028,13 @@ func apply_tutorial_effect(kind: int, at: Vector3) -> void:
 func _check_stage_clear() -> void:
 	if not stage_mode or not _stage_roster_initialized or _stage_clear_emitted:
 		return
+	if map_kind == MapKind.TOMATINA:
+		_update_stage_objective()
+		if _tomatina_elites_alive() == 0 and _party_at_fire_truck():
+			_stage_clear_emitted = true
+			set_gameplay_input_enabled(false)
+			stage_cleared.emit()
+		return
 	var alive := 0
 	for enemy in _enemies:
 		if is_instance_valid(enemy) and enemy.is_alive():
@@ -3665,6 +4048,11 @@ func _check_stage_clear() -> void:
 
 func _update_stage_objective(alive := -1) -> void:
 	if _stage_objective == null:
+		return
+	if map_kind == MapKind.TOMATINA:
+		var elites := _tomatina_elites_alive()
+		_stage_objective.text = "목표 · 엘리트 %d 남음" % elites if elites > 0 \
+			else "목표 · 소방차로 이동"
 		return
 	if alive < 0:
 		alive = 0
@@ -3751,6 +4139,13 @@ func _advance_enemies(delta: float) -> void:
 				and enemy.grade == MayoEnemy.Grade.HEAVY and not enemy.tutorial_trapped:
 			enemy.global_position = TutorialCourseScript.constrain_bruiser(
 				enemy.global_position, previous_position, enemy.radius)
+		if map_kind == MapKind.TOMATINA:
+			var burst_at: Vector3 = enemy.take_burst_request()
+			if burst_at != Vector3.INF:
+				_burst_tomato(enemy, burst_at)
+			var victim: MayoPlayer = enemy.take_spit_request()
+			if victim != null:
+				_spit_ketchup(enemy, victim)
 		if hit == null:
 			continue
 		# The swing landed. Whether it costs anything is the sequence's to say
@@ -3882,9 +4277,23 @@ func apply_enemy_state(data: PackedFloat32Array) -> void:
 		var at := index * ENEMY_STATE_STRIDE
 		if at + ENEMY_STATE_STRIDE > data.size():
 			return
-		_enemies[index].apply_network_state(
+		var enemy := _enemies[index]
+		var was_alive := enemy.is_alive()
+		var was_at := enemy.global_position
+		enemy.apply_network_state(
 			Vector3(data[at], data[at + 1], data[at + 2]),
 			data[at + 3], data[at + 4], data[at + 5], data[at + 6])
+		# A client throws its own fragments when the packet says a tomato died
+		# -- or a bowled one vanished under the floor, which is how it retires
+		# after a wall. The stains arrived down the splat batch already; the
+		# radius is the same on every peer by construction.
+		if enemy.burst_radius <= 0.0:
+			continue
+		if was_alive and not enemy.is_alive():
+			_tomato_fragments(enemy.global_position, enemy.burst_radius)
+		elif enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL \
+				and was_at.y > -10.0 and enemy.global_position.y < -40.0:
+			_tomato_fragments(was_at, enemy.burst_radius)
 
 
 func set_enemy_authority(authority: bool) -> void:
@@ -4336,6 +4745,7 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 			if was_alive:
 				if not enemy.is_alive():
 					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
+					_burst_tomato(enemy)
 				elif enemy._flinch_crossed > crossed_before:
 					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds, 1)
 			# Ketchup piles up on the body rather than on the floor, and the stack
@@ -4461,6 +4871,7 @@ func _burst_ketchup(enemy: MayoEnemy, shooter: Shooter) -> void:
 			killed = other.take_sauce_hit(centre)
 		if killed or not other.is_alive():
 			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
+			_burst_tomato(other)
 		elif other._flinch_crossed > crossed_before:
 			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
 		_stain_body_with_ketchup(other, centre)

@@ -13,6 +13,14 @@ enum Stage { IDLE, GET_SAUCE, FIRST_FIGHT, MONSTER_CUE, MONSTER_ARRIVES,
 const INTRO_DELAY := 0.6
 const KIND_RUSHER := 0
 const KIND_BRUISER := 1
+## Stage 2 bodies, spawned down the same road (`MayoPrototype.tutorial_add_enemy`)
+## so every peer appends them in the same order. The ball is not here: a bowler
+## brings its own.
+const KIND_TOMATO_GRUNT := 2
+const KIND_TOMATO_BRUTE := 3
+const KIND_BOWLING_TOMATO := 4
+const KIND_KETCHUP_SPITTER := 5
+const KIND_CAPRESE_CRAWLER := 6
 const MONSTER_BEHIND := 16.0
 const MONSTER_NEAREST := 6.0
 const MONSTER_CLEAR_STEP := 0.8

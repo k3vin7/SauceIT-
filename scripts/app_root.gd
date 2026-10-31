@@ -28,6 +28,9 @@ var _address_field: LineEdit
 var _port_field: LineEdit
 var _code_field: LineEdit
 var _open_room: CheckBox
+## The stage dropdown on the host panel. Read when the room is made, so the
+## selection travels with `begin_host_room` instead of a hard-coded id.
+var _stage_select: OptionButton
 var _volume_slider: HSlider
 var _sensitivity_slider: HSlider
 var _active_transition := 0
@@ -176,9 +179,11 @@ func _open_recruitment_panel() -> void:
 	title.add_theme_font_size_override("font_size", 30)
 	column.add_child(title)
 	var stage := OptionButton.new()
-	stage.add_item(StageRegistry.display_name("stage_1"))
-	stage.set_item_metadata(0, "stage_1")
-	stage.disabled = true
+	for stage_id in StageRegistry.available_ids():
+		stage.add_item(StageRegistry.display_name(stage_id))
+		stage.set_item_metadata(stage.item_count - 1, stage_id)
+	stage.select(0)
+	_stage_select = stage
 	column.add_child(_labeled("플레이 스테이지", stage))
 	_code_field = LineEdit.new()
 	_code_field.placeholder_text = "비우면 5자리 코드 자동 생성"
@@ -208,9 +213,18 @@ func _open_recruitment_panel() -> void:
 
 func _host_room() -> void:
 	if session.begin_host_room(_port(), _code_field.text.strip_edges(),
-			_open_room.button_pressed, "stage_1"):
+			_open_room.button_pressed, _selected_stage_id()):
 		return
 	_status_label.text = session.status()
+
+
+## The stage the host picked, falling back to stage 1 when the panel is not up.
+func _selected_stage_id() -> String:
+	if _stage_select == null or not is_instance_valid(_stage_select) \
+			or _stage_select.selected < 0:
+		return "stage_1"
+	var picked = _stage_select.get_item_metadata(_stage_select.selected)
+	return str(picked) if picked != null and StageRegistry.has_stage(str(picked)) else "stage_1"
 
 
 func _join_room() -> void:

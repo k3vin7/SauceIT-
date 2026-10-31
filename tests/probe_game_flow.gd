@@ -44,7 +44,9 @@ func _run() -> void:
 	completed.load_data()
 	_check(completed.tutorial_completed, "tutorial completion did not persist")
 
-	_check(StageRegistry.available_ids() == ["stage_1"], "unimplemented stages are exposed")
+	_check(StageRegistry.available_ids() == ["stage_1", "stage_2"], "stage list does not expose exactly the two implemented stages")
+	_check(StageRegistry.scene_path("stage_2") == "res://stage_2_tomatina.tscn",
+		"stage 2 registry path is wrong")
 	_check(StageRegistry.scene_path("stage_1") == "res://stage_1_festival.tscn",
 		"stage 1 registry path is wrong")
 

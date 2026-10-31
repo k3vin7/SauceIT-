@@ -104,6 +104,18 @@ Putting both ends on the same clock removes the spread instead of splitting it. 
 
 The coat is numbered by the server and rides along in the field a floor splat was not using, so the wire is the same size and every peer groups the same splats into the same layer. A coat's cells are a set, not a byte per cell — a byte per cell is 13.9 MB on this floor, and a coat only ever touches a few thousand.
 
+### La Tomatina (stage 2)
+
+`stage_2_tomatina.tscn` is Buñol's tomato festival as a greybox, selectable from the host panel's stage dropdown. It is the same world script on the same lattice: `scripts/tomatina_map.gd` holds a different set of street rectangles, and `StreetMap.layout_override` hands `floor_cells`, `bounds` and `blocked_cells` over to it while the stage is up, so the wall merger, the floor plane and the router work on it unchanged. The route is the real festival's: a start plaza at the village edge, Calle San Luis forking round a block (the short way is awash with tomato juice, the long way is clean but has a bowling lane), Calle del Cid rejoining under an overturned tomato truck that leaves one cell of gap with a tomato heap to jump, the Plaza del Pueblo, and the fire truck bay beyond it. Alleys are three or four cells across rather than eight. Rubble, the seven sauce trucks (the refill stations: one at the start, one on each straight and fork, one past the overturned truck and one on each side of the plaza) and the fire truck are plain contaminable boxes.
+
+**The juice is ketchup, thin.** The floor already draws ketchup and already refuses to call it slippery, so the awash fork is `KIND_KETCHUP` one layer deep, painted deterministically on every peer at build; running through it flicks a drop onto the glasses every third of a second and a mark on the leg. Deep ketchup -- the spitter's puddle -- is drawn in the deep band but is **not** slippery either; whether it should be is an open call, left as it was.
+
+**Six bodies, all primitives** (`scripts/tomato_visuals.gd`), built beside the hamburger, toast and fry stalker in `enemy.gd` and sharing everything but one trick each in `_advance_special`: the grunt (the horde, a rusher), the brute (a 14 m charge that knocks you flat and stuns it on a wall), the bowler (stands at the end of a straight and rolls `TOMATO_BALL` bodies that are built with it, parked under the floor and burst on the first wall), the ketchup spitter (holds its distance and hitscans your glasses, body and the floor under you) and the caprese crawler (reels one player in on a mozzarella thread until a hit cuts it). Elites are `Grade.HEAVY`; grunts and balls are minions. Every tomato body is drawn at `TOMATO_SCALE` (70%) of its designed size, and there are twenty-two grunts on the street rather than eleven: more, smaller tomatoes read better than fewer big ones.
+
+**Tomatoes burst, and the burst is dealt at build.** Each grunt's radius comes from its index and the map seed -- 70% small (1.2–2.0 m), 25% medium (2.5–3.5 m), 5% large (5.0–6.5 m, the overripe one, drawn bigger and darker) -- so every peer holds the same figure and a client throws the fragments itself when the state packet says the body died. A burst is mess, not damage: floor splats by the square metre (six per m², capped per burst and per tick), juice on nearby bodies, and a drop on the glasses of anyone inside it. The brute goes off at 6 m, the spitter at 3, a ball at 1.5, the crawler not at all.
+
+**Clear:** every elite down and one player in the fire truck bay. Stepping onto the plaza brings a horde of `minion_spawn_count(16)` grunts in from its edges, down the same append-only spawn road the tutorial uses, so a late joiner is caught up. The siren, the hoses and the floor wash are not built yet, nor is downed-and-rescue; see `reports/stage_2_tomatina_handoff_2026_10_31.md` for the design they come from and `tests/probe_tomatina.gd` for what is checked.
+
 ### Two branches, two answers
 
 The stream does not spread its sauce evenly — measured on a standing burst, of 111 splats the cell it sat over took **100** while the far end of the same trail took **one to three**. That is a real property of the weapon, and there are two honest things to do about it. Both are kept, so they can be played against each other:
@@ -407,6 +419,7 @@ Then:
 ```sh
 godot --headless --path . --script res://tests/smoke_test.gd
 godot --headless --path . --script res://tests/probe_game_flow.gd             # save/routing, maps, office screen, stage registry
+godot --headless --path . --script res://tests/probe_tomatina.gd              # stage 2: layout, roster, juice, bursts, horde, clear
 godot --headless --path . --script res://tests/probe_lobby_flow.gd            # real ENet: truck/loading/stage/result, 4-player cap, reconnect
 godot --headless --path . --script res://tests/probe_truck_walk.gd            # real ENet: walking the truck, the hull, hostile lobby input
 godot --headless --path . --script res://tests/probe_tutorial.gd              # complete the rectangular tutorial in solo paths

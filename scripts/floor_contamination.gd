@@ -164,6 +164,12 @@ func thickness_at(world_position: Vector3) -> int:
 	return grid.thickness_at(_to_grid(world_position))
 
 
+## Which sauce is under this position. Meaningless on a clean cell -- it reads
+## as mayo -- so ask `thickness_at` first.
+func sauce_kind_at(world_position: Vector3) -> int:
+	return grid.kind_at(_to_grid(world_position))
+
+
 ## Share of the painted floor that is thick enough to slip on, for the debug
 ## readout. Counted as cells cross the threshold rather than by scanning, so it
 ## is free to ask -- scanning fourteen million cells twice a second, which is

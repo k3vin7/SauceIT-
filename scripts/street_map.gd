@@ -65,6 +65,18 @@ const PX_PER_CELL := 10.0
 ## so the promenade runs away north from where the player appears.
 const ORIGIN_CELL := Vector2i(29, 93)
 
+## Another map's design standing in for this one's, or null for the festival
+## street. Set by the world before it builds (`MayoPrototype._build_world`) and
+## read by the three functions that *are* the design -- `floor_cells`,
+## `bounds` and `blocked_cells`. Everything built on top of them -- the wall
+## merger, `walkable_cells`, the floor plane, the router -- then works on the
+## other map unchanged, because none of it ever knew what the design was.
+##
+## Process-wide, like the lattice it swaps the design on. The world sets it on
+## every build, to the stage's layout or back to null, so a stage 1 built after
+## a stage 2 gets its own street back.
+static var layout_override = null
+
 ## Ground beyond the outermost wall, so the floor plane does not end in mid-air
 ## where a player can see the seam.
 const FLOOR_MARGIN_CELLS := 4
@@ -253,6 +265,8 @@ static func cell_of_pixels(px: float, py: float) -> Vector2i:
 
 ## Every cell a player can stand on, as a set.
 static func floor_cells() -> Dictionary:
+	if layout_override != null:
+		return layout_override.floor_cells()
 	var cells := {}
 	for rect in SEGMENTS:
 		for j in range(rect.position.y, rect.end.y):
@@ -272,6 +286,8 @@ static func floor_cells() -> Dictionary:
 
 
 static func bounds() -> Rect2i:
+	if layout_override != null:
+		return layout_override.bounds()
 	var rect := SEGMENTS[0]
 	for i in range(1, SEGMENTS.size()):
 		rect = rect.merge(SEGMENTS[i])
@@ -377,6 +393,8 @@ static func counter_box(stall: Dictionary) -> Dictionary:
 ## them as wall -- which is the whole reason an enemy needs a route rather than
 ## a direction.
 static func blocked_cells() -> Dictionary:
+	if layout_override != null:
+		return layout_override.blocked_cells()
 	var blocked := {}
 	# The stage and the tower stand on the street too. Leaving them out is how
 	# an enemy routed straight through the tower and then leaned on it: the

@@ -7,6 +7,11 @@ const STAGES := {
 		"scene": "res://stage_1_festival.tscn",
 		"clear_condition": "all_target_enemies_defeated",
 	},
+	"stage_2": {
+		"display_name": "스테이지 2 · 토마토 축제",
+		"scene": "res://stage_2_tomatina.tscn",
+		"clear_condition": "all_elite_enemies_defeated_and_party_at_fire_truck",
+	},
 }
 
 
@@ -23,4 +28,4 @@ static func display_name(stage_id: String) -> String:
 
 
 static func available_ids() -> Array[String]:
-	return ["stage_1"]
+	return ["stage_1", "stage_2"]
