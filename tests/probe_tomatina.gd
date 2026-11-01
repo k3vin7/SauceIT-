@@ -73,7 +73,7 @@ func _run() -> void:
 		var enemy: MayoEnemy = scene.enemy_at(index)
 		counts[enemy.kind] = int(counts.get(enemy.kind, 0)) + 1
 	print("roster: %s" % str(counts))
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) >= 20, "too few grunts on the street")
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) >= 40, "too few grunts on the street")
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BRUTE, 0)) == 1, "no brute")
 	_check(int(counts.get(MayoEnemy.EnemyKind.BOWLING_TOMATO, 0)) == 1, "no bowler")
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BALL, 0)) == MayoEnemy.BALLS_PER_BOWLER,

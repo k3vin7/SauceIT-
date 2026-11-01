@@ -11,7 +11,7 @@
 | C 즙 튀김 | 달리는 중 발밑이 케찹이면 0.35 s마다 다리에 얼룩, 50% 확률로 고글 아래쪽에 작은 점 | `_update_juice_splash` |
 | D 적 | grunt / brute / bowler(+ball 3개 풀) / spitter / crawler. `advance()` 안에 `_advance_special` 훅 하나 | `enemy.gd`, `tomato_visuals.gd` |
 | E 터짐 | `_burst_tomato`: 반경 면적 × 6개 바닥 스플랫(터짐당 240, 틱당 300 상한), 주변 몸 얼룩, 플레이어 몸+고글. 데미지 없음. 반경은 `_deal_grunt_burst(index)`로 결정적 배정, 클라이언트는 패킷의 alive→dead 전환에서 파편을 스스로 뿌림 | `mayo_prototype.gd` |
-| F 호드·클리어 | 광장 진입 시 `minion_spawn_count(16)` grunt를 가장자리에서 스폰(기존 spawn 경로, 늦은 피어 재생됨). 클리어 = HEAVY 전원 사망 + 소방차 구역에 1명 이상. 목표 라벨 분기 | `_check_horde_trigger`, `_check_stage_clear` |
+| F 호드·클리어 | 광장 진입 시 `minion_spawn_count(32)` grunt를 가장자리에서 스폰(기존 spawn 경로, 늦은 피어 재생됨). 클리어 = HEAVY 전원 사망 + 소방차 구역에 1명 이상. 목표 라벨 분기 | `_check_horde_trigger`, `_check_stage_clear` |
 | G 검증 | `tests/probe_tomatina.gd` 신설, 기존 프로브 전부 통과 | |
 
 ## 계획과 달라진 곳
@@ -33,12 +33,13 @@
 ```
 godot --headless --path . --script res://tests/probe_tomatina.gd
 ```
-레이아웃(시작→소방차 경로 103 웨이포인트, 트럭이 4칸 중 3칸 차단), 로스터(grunt 22, brute/bowler/spitter/crawler 각 1, ball 3), 400명 분포(소 287 / 중 95 / 대 18, 재현 가능), 즙(서쪽 골목 36 샘플 중 14 칠해짐·전부 케찹·안 미끄러움, 동쪽 골목 0), grunt 터짐(1.38 m → 바닥 스플랫 36개 큐잉, 미끄러운 셀 0), 공(2.8 m 굴러 벽에서 터지고 주차), 호드 16, 클리어 조건 양쪽 부정 케이스 + 긍정 케이스, 스테이지 1 복귀 시 `layout_override == null`.
+레이아웃(시작→소방차 경로 103 웨이포인트, 트럭이 4칸 중 3칸 차단), 로스터(grunt 44, brute/bowler/spitter/crawler 각 1, ball 3), 400명 분포(소 287 / 중 95 / 대 18, 재현 가능), 즙(서쪽 골목 36 샘플 중 14 칠해짐·전부 케찹·안 미끄러움, 동쪽 골목 0), grunt 터짐(1.38 m → 바닥 스플랫 36개 큐잉, 미끄러운 셀 0), 공(2.8 m 굴러 벽에서 터지고 주차), 호드 32, 클리어 조건 양쪽 부정 케이스 + 긍정 케이스, 스테이지 1 복귀 시 `layout_override == null`.
 
 `probe_game_flow.gd`는 `res://tmp/`가 없는 클론에서는 저장 관련 검사가 실패한다(이번 작업과 무관, 폴더만 만들면 통과).
 
 ## 사용자 피드백 반영 (10/31)
 
 - **충전 포장마차 부족** → 소스 트럭 3대에서 7대로. 시작 광장, Calle San Luis 중간(동쪽 벽), 서쪽 골목(바깥 벽, 쓰러진 부스 앞), 동쪽 골목(바깥 벽, 상자 앞), Cid 전복 트럭 지난 곳, 광장 양쪽 벽. 전부 `TomatinaMap.refill_boxes()`에서 벽에 붙여 세우고 `blocked_cells()`에 포함되므로 경로 탐색이 피해 간다. `_truck_against_wall`의 깊이는 3 m라 3칸(13.8 m) 골목도 막히지 않는다.
-- **토마토 수 2배, 크기 70%** → 상비 grunt 11 → 22(경로 전 구간에 고르게 추가), 호드 기본 8 → 16. `MayoEnemy.TOMATO_SCALE = 0.7`을 grunt/brute/bowler/ball 반지름(bowler는 높이도)에 곱한다. 스피터(케찹병)와 카프레제 크롤러는 토마토가 아니라 그대로 둠. 터짐 반경(`burst_radius`)은 몸 크기와 무관하게 유지.
-- `probe_tomatina`는 트럭 7대, grunt ≥ 20, 호드 16으로 통과.
+- **토마토 수 2배, 크기 70%** → 상비 grunt 11 → 23(경로 전 구간에 고르게 추가), 호드 기본 8 → 16. `MayoEnemy.TOMATO_SCALE = 0.7`을 grunt/brute/bowler/ball 반지름(bowler는 높이도)에 곱한다. 스피터(케찹병)와 카프레제 크롤러는 토마토가 아니라 그대로 둠. 터짐 반경(`burst_radius`)은 몸 크기와 무관하게 유지.
+- **몬스터 4배 (11/1)** → 상비 grunt 23 → 44(원래 11의 4배), 호드 기본 16 → 32. 엘리트 4종은 클리어 조건과 역할(볼링 레인 끝의 볼러 등)이 묶여 있어 각 1마리 유지.
+- `probe_tomatina`는 트럭 7대, grunt ≥ 40, 호드 32로 통과.

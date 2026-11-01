@@ -1053,7 +1053,7 @@ const TOMATO_SPLATS_PER_M2 := 6.0
 const TOMATO_BURST_SPLAT_CAP := 240
 const TOMATO_BURST_TICK_CAP := 300
 ## The horde: this many grunts for one player, scaled by `minion_spawn_count`.
-const TOMATINA_HORDE_BASE := 16
+const TOMATINA_HORDE_BASE := 32
 ## A player running through juice takes a drop on the glasses this often.
 const JUICE_SPLASH_INTERVAL := 0.35
 ## The roster's kind names, as `TomatinaMap.ROSTER` writes them.
