@@ -58,6 +58,24 @@ func _run() -> void:
 	var route: PackedVector3Array = scene._nav.route(scene.spawn_position_for(0), truck_centre)
 	print("route from the start to the fire truck: %d waypoints" % route.size())
 	_check(route.size() > 10, "there is no walkable route from the start to the fire truck bay")
+	# And nothing on the lattice is cut off: a truck a cell and a half deep
+	# parked opposite another in a three-cell alley closes it, and the router
+	# would quietly route round the whole fork.
+	var open := {}
+	for cell in StreetMap.floor_cells().keys():
+		if not StreetMap.blocked_cells().has(cell):
+			open[cell] = true
+	var reached := {Vector2i(29, 93): true}
+	var frontier := [Vector2i(29, 93)]
+	while not frontier.is_empty():
+		var cell: Vector2i = frontier.pop_front()
+		for step in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			var next: Vector2i = cell + step
+			if open.has(next) and not reached.has(next):
+				reached[next] = true
+				frontier.push_back(next)
+	print("lattice: %d of %d open cells reachable from the start" % [reached.size(), open.size()])
+	_check(reached.size() == open.size(), "%d open cells are cut off from the start" % (open.size() - reached.size()))
 	# The overturned truck is a chokepoint, not a wall: the route goes through
 	# its gap rather than round, and the gap is the one cell left of four.
 	var cid_blocked := 0
@@ -65,7 +83,7 @@ func _run() -> void:
 		if StreetMap.blocked_cells().has(Vector2i(i, int(TomatinaMap.TRUCK_ROW))):
 			cid_blocked += 1
 	_check(cid_blocked == 3, "the overturned truck blocks %d of 4 cells, not 3" % cid_blocked)
-	_check(scene.refill_stations().size() == 7, "stage 2 does not have its seven sauce trucks")
+	_check(scene.refill_stations().size() == 22, "stage 2 does not have its twenty-two sauce trucks")
 
 	# --- the roster ---
 	var counts := {}
@@ -73,14 +91,14 @@ func _run() -> void:
 		var enemy: MayoEnemy = scene.enemy_at(index)
 		counts[enemy.kind] = int(counts.get(enemy.kind, 0)) + 1
 	print("roster: %s" % str(counts))
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) >= 40, "too few grunts on the street")
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BRUTE, 0)) == 1, "no brute")
-	_check(int(counts.get(MayoEnemy.EnemyKind.BOWLING_TOMATO, 0)) == 1, "no bowler")
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BALL, 0)) == MayoEnemy.BALLS_PER_BOWLER,
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) >= 80, "too few grunts on the street")
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BRUTE, 0)) == 3, "not three brutes")
+	_check(int(counts.get(MayoEnemy.EnemyKind.BOWLING_TOMATO, 0)) == 2, "not two bowlers")
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BALL, 0)) == 2 * MayoEnemy.BALLS_PER_BOWLER,
 		"the bowler did not bring its balls")
-	_check(int(counts.get(MayoEnemy.EnemyKind.KETCHUP_SPITTER, 0)) == 1, "no spitter")
-	_check(int(counts.get(MayoEnemy.EnemyKind.CAPRESE_CRAWLER, 0)) == 1, "no crawler")
-	_check(scene._tomatina_elites_alive() == 4, "elite count is %d, not 4" % scene._tomatina_elites_alive())
+	_check(int(counts.get(MayoEnemy.EnemyKind.KETCHUP_SPITTER, 0)) == 3, "not three spitters")
+	_check(int(counts.get(MayoEnemy.EnemyKind.CAPRESE_CRAWLER, 0)) == 2, "not two crawlers")
+	_check(scene._tomatina_elites_alive() == 10, "elite count is %d, not 10" % scene._tomatina_elites_alive())
 	for index in scene.enemy_count():
 		var enemy: MayoEnemy = scene.enemy_at(index)
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:

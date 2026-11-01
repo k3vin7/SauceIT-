@@ -170,6 +170,16 @@ func sauce_kind_at(world_position: Vector3) -> int:
 	return grid.kind_at(_to_grid(world_position))
 
 
+## Floods the floor between two world corners to `thickness` of `kind`,
+## straight into the grid: no brush, no edge noise, no coat. The high corner
+## is exclusive, so two patches that share an edge do not overlap.
+func fill_rect(low: Vector3, high: Vector3, thickness: int, kind: int) -> void:
+	var a := grid.cell_of(_to_grid(low))
+	var b := grid.cell_of(_to_grid(high))
+	grid.fill_rect(Vector2i(mini(a.x, b.x), mini(a.y, b.y)),
+		Vector2i(maxi(a.x, b.x) - 1, maxi(a.y, b.y) - 1), thickness, kind)
+
+
 ## Share of the painted floor that is thick enough to slip on, for the debug
 ## readout. Counted as cells cross the threshold rather than by scanning, so it
 ## is free to ask -- scanning fourteen million cells twice a second, which is

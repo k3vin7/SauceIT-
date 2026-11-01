@@ -1053,10 +1053,10 @@ const TOMATO_SPLATS_PER_M2 := 6.0
 const TOMATO_BURST_SPLAT_CAP := 240
 const TOMATO_BURST_TICK_CAP := 300
 ## The horde: this many grunts for one player, scaled by `minion_spawn_count`.
-const TOMATINA_HORDE_BASE := 32
+const TOMATINA_HORDE_BASE := 64
 ## A player running through juice takes a drop on the glasses this often.
 const JUICE_SPLASH_INTERVAL := 0.35
-## The roster's kind names, as `TomatinaMap.ROSTER` writes them.
+## The roster's kind names, as `TomatinaMap.roster()` writes them.
 const TOMATINA_KINDS := {
 	"TOMATO_GRUNT": MayoTutorial.KIND_TOMATO_GRUNT,
 	"TOMATO_BRUTE": MayoTutorial.KIND_TOMATO_BRUTE,
@@ -2247,6 +2247,8 @@ func spawn_position_for(slot: int) -> Vector3:
 	# three walls, which a spawn inside leaves the player stuck.
 	if map_kind == MapKind.TUTORIAL_RECTANGLE:
 		return TutorialCourseScript.spawn_position(slot)
+	if map_kind == MapKind.TOMATINA:
+		return TomatinaMap.spawn_position(slot)
 	const SPAWNS := [
 		Vector3(0.0, 1.28, 1.55),
 		Vector3(-2.2, 1.28, 4.2),
@@ -3126,7 +3128,7 @@ func _build_tomatina() -> void:
 	_plaza_rect = TomatinaMap.plaza_rect()
 	_build_zone_marker("FireTruckBay", _fire_truck_zone, Color(0.9, 0.15, 0.1, 0.22))
 	TomatinaMap.seed_floor(_floor)
-	_build_start_marker()
+	_build_start_marker(TomatinaMap.START_ARROW)
 
 
 ## A flat tinted patch over a rectangle of ground: a sign, not a surface.
@@ -3512,7 +3514,7 @@ func _build_enemies() -> void:
 		_apply_enemy_sight_rings()
 		return
 	if map_kind == MapKind.TOMATINA:
-		for entry in TomatinaMap.ROSTER:
+		for entry in TomatinaMap.roster():
 			_add_tomatina_enemy(int(TOMATINA_KINDS[entry[0]]), TomatinaMap.at_cell(entry[1]))
 		_apply_enemy_sight_rings()
 		rescale_enemies()
@@ -4304,7 +4306,7 @@ func set_enemy_authority(authority: bool) -> void:
 ## The yellow arrow off the sketch, flat on the ground in the start plaza,
 ## pointing the way out. Meshes only, no collider: it is a sign, and a strand
 ## that crosses it has to reach the floor grid underneath.
-func _build_start_marker() -> void:
+func _build_start_marker(at := Vector3.ZERO) -> void:
 	var material := StandardMaterial3D.new()
 	material.albedo_color = Color("f0a500")
 	material.emission_enabled = true
@@ -4315,6 +4317,7 @@ func _build_start_marker() -> void:
 	var marker := Node3D.new()
 	marker.name = "StartArrow"
 	add_child(marker)
+	marker.position = at
 
 	# Painted on the road, so it is sized by the road rather than in metres.
 	var scale: float = StreetMap.SCALE

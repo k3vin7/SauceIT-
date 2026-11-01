@@ -392,6 +392,39 @@ func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
 
 ## Wipes the grid. Both halves of the mask go together -- clearing one and not
 ## the other is how a wiped surface keeps showing its old stain.
+## Sets every cell from `first` to `last` inclusive to `thickness` of `kind`,
+## clipped to the grid. No brush and no edge noise: for a floor that starts a
+## stage already under sauce, where the edge is the kerb, not a splat's rim.
+func fill_rect(first: Vector2i, last: Vector2i, thickness: int, kind: int) -> void:
+	var level := clampi(thickness, 0, MAX_THICKNESS)
+	var packed := (level << KIND_BITS) | (kind & KIND_MASK)
+	var top := maxi(first.y, 0)
+	var bottom := mini(last.y, height - 1)
+	var left := maxi(first.x, 0)
+	var right := mini(last.x, width - 1)
+	if top > bottom or left > right:
+		return
+	for row in range(top, bottom + 1):
+		var row_base := row * width
+		for column in range(left, right + 1):
+			var index := row_base + column
+			var was := int(cells[index]) >> KIND_BITS
+			cells[index] = packed
+			if was == 0 and level > 0:
+				painted_count += 1
+			elif was > 0 and level == 0:
+				painted_count -= 1
+			if was < deep_threshold and level >= deep_threshold:
+				deep_count += 1
+			elif was >= deep_threshold and level < deep_threshold:
+				deep_count -= 1
+	for row in range(top, bottom + 1, tile_cells):
+		for column in range(left, right + 1, tile_cells):
+			_touch_tile(column, row)
+	_touch_tile(right, bottom)
+	dirty = true
+
+
 func clear() -> void:
 	cells.fill(0)
 	_coats.clear()
