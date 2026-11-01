@@ -369,6 +369,8 @@ var burst_radius := 0.0
 ## 0 small, 1 medium, 2 large: which of the three a grunt was dealt. The large
 ## one is drawn bigger and darker so it can be told apart before it goes.
 var burst_tier := 0
+## Set by `vanish`: the body is out of the world, in pieces on the road.
+var vanished := false
 ## A bowled tomato that met a wall asks the world to burst it here; INF when
 ## nothing is pending. See `take_burst_request`.
 var _burst_request := Vector3.INF
@@ -1420,6 +1422,21 @@ func stand_height() -> float:
 
 func is_alive() -> bool:
 	return health > 0.0
+
+
+## Takes the body out of the world without freeing it. The index still
+## addresses it, the packet still carries it, the sauce on it is still
+## counted; but nothing is drawn, nothing walks into it and no stream finds
+## it. For a tomato that burst: what is left of it is drawn by the world as
+## `TomatoDebris`, in pieces, where it fell.
+func vanish() -> void:
+	collision_layer = 0
+	if _visual_root != null:
+		_visual_root.visible = false
+	var body := get_node_or_null("Body") as CollisionShape3D
+	if body != null:
+		body.set_deferred("disabled", true)
+	vanished = true
 
 
 func health_fraction() -> float:

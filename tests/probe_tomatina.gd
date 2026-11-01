@@ -180,6 +180,25 @@ func _run() -> void:
 		var expected := int(round(scene.TOMATO_SPLATS_PER_M2 * PI * grunt.burst_radius * grunt.burst_radius))
 		_check(floor_splats == mini(expected, scene.TOMATO_BURST_SPLAT_CAP),
 			"the burst laid %d splats, not the %d its radius is worth" % [floor_splats, expected])
+		# And the body is gone: nothing to walk into, nothing drawn, pieces on
+		# the road instead.
+		_check(grunt.vanished, "the burst grunt did not vanish")
+		_check(grunt.collision_layer == 0, "the burst grunt is still on a collision layer")
+		_check(not grunt._visual_root.visible, "the burst grunt is still drawn")
+		var debris: TomatoDebris = null
+		for child in scene.get_children():
+			if child is TomatoDebris:
+				debris = child
+		_check(debris != null, "the burst left no pieces")
+		if debris != null:
+			print("debris: %d pieces" % debris.piece_count())
+			_check(debris.piece_count() >= 5, "the burst left only %d pieces" % debris.piece_count())
+			scene.set_physics_process(true)
+			await _frames(240)
+			scene.set_physics_process(false)
+			_check(debris.settled(), "the pieces never came to rest")
+			for piece in debris.get_children():
+				_check((piece as Node3D).position.y >= 0.0, "a piece ended below the road")
 		var slippery := 0
 		for dx in range(-4, 5):
 			for dz in range(-4, 5):

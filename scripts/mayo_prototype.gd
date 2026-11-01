@@ -1054,6 +1054,10 @@ const TOMATO_BURST_SPLAT_CAP := 240
 const TOMATO_BURST_TICK_CAP := 300
 ## The horde: this many grunts for one player, scaled by `minion_spawn_count`.
 const TOMATINA_HORDE_BASE := 64
+## How many burst tomatoes' pieces stay on the road before the oldest are
+## swept: a cap on scenery, not on anything the fight reads.
+const TOMATO_DEBRIS_CAP := 120
+var _debris: Array[TomatoDebris] = []
 ## A player running through juice takes a drop on the glasses this often.
 const JUICE_SPLASH_INTERVAL := 0.35
 ## The roster's kind names, as `TomatinaMap.roster()` writes them.
@@ -3807,6 +3811,35 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF) -> void:
 ## The pieces that fly, scaled to the burst. Decoration, thrown on every peer
 ## from its own dice: the stains are already decided above and only they
 ## travel, exactly as the ketchup burst's fragments do.
+## A Tomatina body went down, on whichever peer noticed. A tomato has burst,
+## so it vanishes and leaves pieces; anything else lies where it fell, on the
+## corpse layer, so the road stays passable either way. Called once per body:
+## on the authority where the kill is dealt, on a client when the packet says
+## so.
+func _tomato_down(enemy: MayoEnemy) -> void:
+	if map_kind != MapKind.TOMATINA or enemy.vanished:
+		return
+	match enemy.kind:
+		MayoEnemy.EnemyKind.TOMATO_GRUNT, MayoEnemy.EnemyKind.TOMATO_BRUTE:
+			var skin := TomatoVisuals.OVERRIPE if enemy.burst_tier >= 2 else TomatoVisuals.TOMATO
+			_leave_debris(enemy.global_position, enemy.radius, skin)
+			enemy.vanish()
+		_:
+			enemy.collision_layer = CORPSE_LAYER
+
+
+func _leave_debris(centre: Vector3, radius: float, skin: Color) -> void:
+	var debris := TomatoDebris.new()
+	debris.name = "TomatoDebris%d" % _debris.size()
+	add_child(debris)
+	debris.setup(centre, radius, skin)
+	_debris.push_back(debris)
+	while _debris.size() > TOMATO_DEBRIS_CAP:
+		var oldest: TomatoDebris = _debris.pop_front()
+		if is_instance_valid(oldest):
+			oldest.queue_free()
+
+
 func _tomato_fragments(centre: Vector3, radius: float) -> void:
 	if _speck_multimesh == null:
 		return
@@ -4289,6 +4322,8 @@ func apply_enemy_state(data: PackedFloat32Array) -> void:
 		# -- or a bowled one vanished under the floor, which is how it retires
 		# after a wall. The stains arrived down the splat batch already; the
 		# radius is the same on every peer by construction.
+		if was_alive and not enemy.is_alive() and not _is_authority():
+			_tomato_down(enemy)
 		if enemy.burst_radius <= 0.0:
 			continue
 		if was_alive and not enemy.is_alive():
@@ -4749,6 +4784,7 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 				if not enemy.is_alive():
 					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
 					_burst_tomato(enemy)
+					_tomato_down(enemy)
 				elif enemy._flinch_crossed > crossed_before:
 					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds, 1)
 			# Ketchup piles up on the body rather than on the floor, and the stack
@@ -4875,6 +4911,7 @@ func _burst_ketchup(enemy: MayoEnemy, shooter: Shooter) -> void:
 		if killed or not other.is_alive():
 			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
 			_burst_tomato(other)
+			_tomato_down(other)
 		elif other._flinch_crossed > crossed_before:
 			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
 		_stain_body_with_ketchup(other, centre)

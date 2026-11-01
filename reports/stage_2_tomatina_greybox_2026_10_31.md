@@ -48,4 +48,5 @@ godot --headless --path . --script res://tests/probe_tomatina.gd
   - 소스 트럭 7 → 22. 트럭이 벽에서 1.5칸 튀어나오므로 3칸 골목에서 양쪽 벽에 엇갈려 세우면 길이 막힌다(실제로 두 골목 다 막혔었음). 좁은 골목은 한쪽 벽에만, 끝 벽에는 `end` 크기(6.4×3.2×3.0)로 눕혀 세운다. 전복 트럭 옆 동쪽 벽은 더미 통로의 유일한 진입 칸이라 비워 둠. `probe_tomatina`에 "열린 칸 전부 시작점에서 도달 가능" 검사를 추가.
   - grunt 44 → 88. 손 배치 대신 `grunt_cells()`가 경로 구간(시작 광장·소방차 베이 제외)의 빈 칸을 순서대로 모아 `GRUNT_COUNT`개를 균등 간격으로 고른다. 소품 칸(더미 포함)과 엘리트 칸은 제외, 칸 안 지터는 해시로 결정적. 호드 32 → 64.
   - 즙 구역을 스플랫 산포 대신 `ContaminationGrid.fill_rect` / `FloorContamination.fill_rect`로 벽에서 벽까지 두께 1로 채운다(점박이 → 빨간 거리). 서쪽 골목 36 샘플 중 36 칠해짐.
-- `probe_tomatina`는 트럭 22대, grunt ≥ 80, 엘리트 10, 호드 64, 열린 칸 677/677 도달로 통과.
+- **터진 토마토 몸체 (11/1)** → 죽은 grunt/brute는 `MayoEnemy.vanish()`로 충돌 레이어 0, 콜리전 셰이프 비활성, 비주얼 숨김(노드는 인덱스·패킷 슬롯 유지를 위해 남김). 그 자리에 `TomatoDebris`(`scripts/tomato_debris.gd`)가 조각 5~12개(반지름 비례, 납작한 껍질 조각)를 바깥으로 던져 중력으로 떨어뜨리고 길 위에 남긴다. 순수 연출이라 피어마다 각자 만들고(권한은 킬 시점, 클라이언트는 패킷의 alive→dead 전환) 네트워크로는 아무것도 안 보낸다. `TOMATO_DEBRIS_CAP`(120) 넘으면 오래된 것부터 정리. spitter/crawler/bowler 시체는 `CORPSE_LAYER`로 옮겨 통과 가능.
+- `probe_tomatina`는 트럭 22대, grunt ≥ 80, 엘리트 10, 호드 64, 열린 칸 677/677 도달, grunt 터짐 후 vanish + 조각 8개 정착으로 통과.
