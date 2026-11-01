@@ -66,14 +66,16 @@ const JUICE_ZONES: Array[Rect2i] = [
 ## the plaza.
 const START_ARROW := Vector3(0.0, 0.0, -7.2)
 
-## Where the party stands at the start: single file down the arrow's shaft,
-## the host at the front, everyone facing the way it points. Three metres
-## apart, so nobody stands in anybody.
+## Where the party stands at the start: single file down the arrow's shaft
+## from its tail, the host at the very end, everyone facing the way it
+## points -- so the whole arrow is in front of you, pointing up the street.
+## Three metres apart, so nobody stands in anybody. The shaft ends at
+## z = 11.2, so the host stands a metre and a half short of its tail.
 const SPAWNS := [
-	Vector3(0.0, 1.28, -2.0),
-	Vector3(0.0, 1.28, 1.0),
-	Vector3(0.0, 1.28, 4.0),
-	Vector3(0.0, 1.28, 7.0),
+	Vector3(0.0, 1.28, 9.5),
+	Vector3(0.0, 1.28, 6.5),
+	Vector3(0.0, 1.28, 3.5),
+	Vector3(0.0, 1.28, 0.5),
 ]
 
 
@@ -124,13 +126,16 @@ static func grunt_cells() -> Array[Vector2]:
 	for elite in ELITES:
 		var at: Vector2 = elite[1]
 		taken[Vector2i(int(floor(at.x)), int(floor(at.y)))] = true
+	# Nothing within two cells of the start plaza either: the first grunt is
+	# up the street, not on the point of the arrow.
+	var plaza_edge: int = SEGMENTS[START_SEGMENT].position.y - 2
 	var candidates: Array[Vector2i] = []
 	for index in range(START_SEGMENT + 1, FIRE_BAY_SEGMENT):
 		var rect: Rect2i = SEGMENTS[index]
 		for j in rect.size.y:
 			for i in rect.size.x:
 				var cell := rect.position + Vector2i(i, j)
-				if taken.has(cell):
+				if taken.has(cell) or cell.y >= plaza_edge:
 					continue
 				taken[cell] = true
 				candidates.push_back(cell)
