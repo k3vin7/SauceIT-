@@ -1722,6 +1722,16 @@ func _apply_pose() -> void:
 	# pivot below is the spot the feet were planted on when it *died* -- unset
 	# while it is still up. Branching on the angle sent a flinching body to the
 	# world origin, because that is where an unset pivot is.
+	# Recoil must not tilt grounded shapes into the floor: depenetration
+	# otherwise lifts the enemy on every hit. Restore the authored transforms
+	# when dead so the collision body still follows the death topple.
+	var counter_lean := Transform3D(Basis(Vector3.RIGHT, -fall_angle), Vector3.ZERO)
+	for child in get_children():
+		if child is CollisionShape3D:
+			if not child.has_meta("upright_transform"):
+				child.set_meta("upright_transform", child.transform)
+			var upright: Transform3D = child.get_meta("upright_transform")
+			child.transform = counter_lean * upright if is_alive() else upright
 	if is_alive():
 		global_transform = Transform3D(pose, global_position)
 		return
