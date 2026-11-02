@@ -101,7 +101,7 @@ const ELITES := [
 ]
 
 ## How many grunts stand on the street before the horde.
-const GRUNT_COUNT := 88
+const GRUNT_COUNT := 264
 
 
 ## The standing roster: the elites, then the grunts. Grunts are dealt onto the

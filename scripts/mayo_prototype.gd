@@ -533,6 +533,31 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## it was at 4 m, and the same count over it is a scatter rather than a mess.
 @export_range(0, 160, 1) var ketchup_ground_splats := 68
 
+## A jump out of juice kicks it up, and so does every stride of a run through
+## it, at a third of the count and half the height. This many pieces fly off a
+## jump, each thrown outward from the feet and upward at a speed drawn between
+## the two lifts, so they top out anywhere from the ankle to above the head.
+## None of it lands on the jumper: the ring starts outside the capsule and
+## travels away from it. Pure decoration, thrown on every peer from its own
+## dice off the jump or the run it can see in the player packet -- see
+## `_update_juice_kickup`.
+@export_group("Juice Jump")
+@export_range(0, 48, 1) var juice_jump_pieces := 18
+@export_range(0.0, 12.0, 0.1, "suffix:m/s") var juice_jump_lift_min := 2.0
+@export_range(0.0, 16.0, 0.1, "suffix:m/s") var juice_jump_lift_max := 6.5
+@export_range(0.0, 10.0, 0.1, "suffix:m/s") var juice_jump_spread := 2.4
+
+## What the spitter fires: a lump that crosses the street rather than a
+## hitscan, so it can be seen coming and stepped out of. A touch faster than
+## the player's own stream leaves the nozzle (`emission_speed`), so it still
+## wins a straight trade at range but is a dodge up close.
+@export_group("Ketchup Spit")
+@export_range(1.0, 40.0, 0.5, "suffix:m/s") var spit_speed := 16.0
+## What it takes off whoever it lands on. A grunt's bump is six, a brute's
+## fourteen; this is a ranged hit every three seconds, so it sits between.
+@export_range(0.0, 60.0, 0.5) var spit_damage := 10.0
+@export_range(0.05, 1.0, 0.01, "suffix:m") var spit_radius := 0.22
+
 @export_group("Sauce Reliability")
 ## Above this the bottle is dependable: the stream starts the instant the
 ## trigger does and does not break.
@@ -1053,7 +1078,7 @@ const TOMATO_SPLATS_PER_M2 := 6.0
 const TOMATO_BURST_SPLAT_CAP := 240
 const TOMATO_BURST_TICK_CAP := 300
 ## The horde: this many grunts for one player, scaled by `minion_spawn_count`.
-const TOMATINA_HORDE_BASE := 64
+const TOMATINA_HORDE_BASE := 192
 ## How many burst tomatoes' pieces stay on the road before the oldest are
 ## swept: a cap on scenery, not on anything the fight reads.
 const TOMATO_DEBRIS_CAP := 120
@@ -1074,6 +1099,24 @@ var _horde_spawned := false
 var _burst_ground_budget := TOMATO_BURST_TICK_CAP
 ## peer id -> seconds until the next juice drop may land on their glasses.
 var _juice_splash_clock: Dictionary = {}
+## Peer id -> the player's vertical speed last tick, so a jump is the edge
+## between not rising and rising. Read off the velocity rather than the key:
+## a client never sees the key, but the velocity is in every player packet.
+var _juice_jump_rise: Dictionary = {}
+## Peer id -> seconds until a running stride may kick juice up again. Every
+## peer keeps its own: this paces decoration, not the authority's stains.
+var _juice_kick_clock: Dictionary = {}
+
+## A spit in flight. `spitter` is who fired it, and is null on a client, where
+## the lump is drawn and lands on nothing -- see `_advance_spits`.
+class Spit:
+	var position := Vector3.ZERO
+	var velocity := Vector3.ZERO
+	var left := 0.0
+	var spitter: MayoEnemy
+	var mesh: MeshInstance3D
+var _spits: Array = []
+var _spit_material: StandardMaterial3D
 ## The stage's own dice: the burst scatter and the juice drops. Seeded from the
 ## map so a headless check can replay a burst; only the cells it decides travel.
 var _tomato_rng := RandomNumberGenerator.new()
@@ -1256,6 +1299,8 @@ func _physics_process(delta: float) -> void:
 		_update_connections(shooter)
 	_simulate_droplets(delta)
 	_simulate_specks(delta)
+	_update_juice_kickup(delta)
+	_advance_spits(delta)
 	_advance_impact_clocks(delta)
 	if _is_authority():
 		_advance_hit_credit(delta)
@@ -3735,6 +3780,7 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 		MayoTutorial.KIND_CAPRESE_CRAWLER:
 			enemy.name = "Tomatina%02d_Crawler" % index
 			enemy.build_caprese_crawler(body_cell_size, contamination_brush_radius)
+			enemy.burst_radius = 3.0
 			speed_fraction = 0.85
 		_:
 			enemy.queue_free()
@@ -3824,6 +3870,13 @@ func _tomato_down(enemy: MayoEnemy) -> void:
 			var skin := TomatoVisuals.OVERRIPE if enemy.burst_tier >= 2 else TomatoVisuals.TOMATO
 			_leave_debris(enemy.global_position, enemy.radius, skin)
 			enemy.vanish()
+		MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
+			# The skewer comes apart too. It used to be left to topple like the
+			# others, but it already lies flat: a four-metre chain turned ninety
+			# degrees about its middle is a post, and it stood up on dying like
+			# a cactus. Its pieces are the mozzarella, spread the chain's length.
+			_leave_debris(enemy.global_position, enemy.radius * 2.0, TomatoVisuals.MOZZARELLA)
+			enemy.vanish()
 		_:
 			enemy.collision_layer = CORPSE_LAYER
 
@@ -3858,15 +3911,104 @@ func _tomato_fragments(centre: Vector3, radius: float) -> void:
 	_speck_buffer_dirty = true
 
 
-## The spitter's stream landing: on the glasses, on the body, and as a puddle
-## at the feet. A hitscan -- the body decided it could see its target -- so
-## what travels is the stains and nothing else. The puddle is several layers,
-## which the floor draws as the deep band; whether deep ketchup should also be
-## slippery is an open call and is left as it was: it is not.
-func _spit_ketchup(spitter: MayoEnemy, victim: MayoPlayer) -> void:
+## The spitter fired. Authority only: the lump is launched here, aimed at
+## where the target will be about half-way through its flight, and the peers
+## are told the same launch so every screen draws the same lump -- see
+## `show_spit`. It used to be a hitscan: the stains arrived on the frame the
+## body decided to spit, so there was nothing to see coming and nothing to
+## step out of. Now there is a lump crossing the street at `spit_speed`.
+func _launch_spit(spitter: MayoEnemy, victim: MayoPlayer) -> void:
 	var origin := spitter.global_position + Vector3.UP * (spitter.height * 0.3)
-	_record_visor_splat(victim, origin, ContaminationGrid.KIND_KETCHUP)
-	var toward := (origin - victim.global_position)
+	var chest := victim.global_position + Vector3.UP * 0.4
+	var flight := origin.distance_to(chest) / maxf(spit_speed, 0.01)
+	var aim := chest + Vector3(victim.velocity.x, 0.0, victim.velocity.z) * flight * 0.5
+	var toward := aim - origin
+	if toward.length_squared() < 0.000001:
+		return
+	var velocity := toward.normalized() * spit_speed
+	var seconds := flight + 0.6
+	_add_spit(origin, velocity, seconds, spitter)
+	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
+		_net.broadcast_spit(origin, velocity, seconds)
+
+
+## A client's side of a launch: the same lump along the same line, drawn until
+## it meets something or runs out. It hurts nothing here; the stains and the
+## damage are the authority's and arrive as they always did.
+func show_spit(origin: Vector3, velocity: Vector3, seconds: float) -> void:
+	_add_spit(origin, velocity, seconds, null)
+
+
+func _add_spit(origin: Vector3, velocity: Vector3, seconds: float, spitter: MayoEnemy) -> void:
+	var spit := Spit.new()
+	spit.position = origin
+	spit.velocity = velocity
+	spit.left = clampf(seconds, 0.05, 5.0)
+	spit.spitter = spitter
+	if _spit_material == null:
+		_spit_material = StandardMaterial3D.new()
+		_spit_material.albedo_color = TomatoVisuals.BOTTLE
+		_spit_material.roughness = 0.35
+	var mesh := MeshInstance3D.new()
+	mesh.name = "Spit"
+	var sphere := SphereMesh.new()
+	sphere.radius = spit_radius
+	sphere.height = spit_radius * 2.0
+	sphere.material = _spit_material
+	mesh.mesh = sphere
+	add_child(mesh)
+	mesh.global_position = origin
+	spit.mesh = mesh
+	_spits.push_back(spit)
+
+
+## Every peer flies its lumps; only the authority's land on anything that
+## counts. One ray a tick along the step, so a lump at sixteen metres a second
+## cannot pass through a player between two ticks. The ray starts inside the
+## spitter and the spitter is excluded, so it never lands on its own thrower.
+func _advance_spits(delta: float) -> void:
+	if _spits.is_empty():
+		return
+	var space := get_world_3d().direct_space_state
+	for index in range(_spits.size() - 1, -1, -1):
+		var spit: Spit = _spits[index]
+		spit.left -= delta
+		var from := spit.position
+		var to := from + spit.velocity * delta
+		var query := PhysicsRayQueryParameters3D.create(from, to)
+		query.collide_with_areas = false
+		if spit.spitter != null and is_instance_valid(spit.spitter):
+			query.exclude = [spit.spitter.get_rid()]
+		var hit := space.intersect_ray(query)
+		var landed := not hit.is_empty()
+		spit.position = hit["position"] if landed else to
+		if is_instance_valid(spit.mesh):
+			spit.mesh.global_position = spit.position
+		if landed:
+			# The splash everyone sees, off their own dice like a burst's pieces.
+			_tomato_fragments(spit.position, 0.6)
+			if _is_authority() and spit.spitter != null and is_instance_valid(spit.spitter):
+				_spit_lands(spit.spitter, hit["collider"] as Node, spit.position)
+		if landed or spit.left <= 0.0:
+			if is_instance_valid(spit.mesh):
+				spit.mesh.queue_free()
+			_spits.remove_at(index)
+
+
+## Where a spit came down, on the authority. On a player: the glasses, the
+## body, a puddle at the feet and the damage. Anywhere else: the puddle where
+## it fell -- a lump of ketchup is ketchup on the road wherever it lands. The
+## stains go out through the splat batch as they always did. The puddle is
+## several layers, which the floor draws as the deep band; whether deep
+## ketchup should also be slippery is an open call and is left as it was: it
+## is not.
+func _spit_lands(spitter: MayoEnemy, collider: Node, at: Vector3) -> void:
+	var victim := collider as MayoPlayer
+	if victim == null:
+		_spit_puddle(at)
+		return
+	_record_visor_splat(victim, at, ContaminationGrid.KIND_KETCHUP)
+	var toward := at - victim.global_position
 	toward.y = 0.0
 	if toward.length_squared() < 0.000001:
 		toward = Vector3.FORWARD
@@ -3877,25 +4019,22 @@ func _spit_ketchup(spitter: MayoEnemy, victim: MayoPlayer) -> void:
 		_pending_splats.append_array(PackedInt32Array([
 			_splat_code(SPLAT_BODY, ContaminationGrid.KIND_KETCHUP),
 			victim.peer_id, cell.x, cell.y]))
+	_spit_puddle(victim.global_position)
+	if _tutorial != null and not _tutorial.allows_contact_damage(spitter, victim):
+		return
+	_damage_player(victim, spit_damage)
+
+
+func _spit_puddle(centre: Vector3) -> void:
 	for index in 6:
 		var angle := TAU * float(index) / 6.0
 		var reach := 0.0 if index == 0 else 0.45
-		var at := victim.global_position + Vector3(cos(angle) * reach, 0.0, sin(angle) * reach)
+		var at := centre + Vector3(cos(angle) * reach, 0.0, sin(angle) * reach)
 		var floor_cell := _floor.paint_mayo(at, -1, ContaminationGrid.KIND_KETCHUP)
 		if floor_cell.x >= 0:
 			_pending_splats.append_array(PackedInt32Array([
 				_splat_code(SPLAT_FLOOR, ContaminationGrid.KIND_KETCHUP), -1,
 				floor_cell.x, floor_cell.y]))
-	# The stream itself, as lumps along the line. Decoration, local dice.
-	if _speck_multimesh != null:
-		var now := Time.get_ticks_msec() * 0.001
-		var span := victim.global_position + Vector3.UP * 1.2 - origin
-		for index in 10:
-			var along := span * (float(index) / 10.0)
-			_take_speck(now, origin + along, span.normalized() * 9.0,
-				_feel_rng.randf_range(ketchup_fragment_radius_min, ketchup_fragment_radius_max),
-				1, ContaminationGrid.KIND_KETCHUP)
-		_speck_buffer_dirty = true
 
 
 ## Running through juice flicks it up: a drop on the glasses every so often and
@@ -3934,6 +4073,68 @@ func _update_juice_splash(shooter: Shooter, delta: float) -> void:
 	var on_lens := player.visor.to_global(Vector3(
 		_tomato_rng.randf_range(-0.5, 0.5), _tomato_rng.randf_range(-0.55, -0.15), -1.0))
 	_record_visor_splat(player, on_lens, ContaminationGrid.KIND_KETCHUP)
+
+
+## Juice kicked up by the feet: a jump out of it throws a ring of pieces up
+## around the jumper, and every stride of a run through it throws a smaller,
+## lower one. Every peer, decoration only, like a burst's fragments: the jump
+## and the run are what travel, as the velocity in the player packet, and each
+## peer throws its own pieces off what it sees in that. The pieces carry no
+## shooter, so a landing one marks nothing -- `_land_speck` would otherwise
+## paint whatever bottle the runner happens to hold, and this is juice off the
+## road, not sauce from a bottle. (The leg mark and the drop on the glasses a
+## run earns are the authority's, in `_update_juice_splash`, and travel as
+## stains as they always did.) None of it is thrown at the player: the ring
+## starts outside the capsule and travels away from it.
+func _update_juice_kickup(delta: float) -> void:
+	if map_kind != MapKind.TOMATINA or _floor == null or _speck_multimesh == null:
+		return
+	for shooter in _shooters.values():
+		var player: MayoPlayer = shooter.player
+		if not is_instance_valid(player):
+			continue
+		var rising := player.velocity.y
+		var before := float(_juice_jump_rise.get(shooter.peer_id, 0.0))
+		_juice_jump_rise[shooter.peer_id] = rising
+		var clock := float(_juice_kick_clock.get(shooter.peer_id, 0.0)) - delta
+		_juice_kick_clock[shooter.peer_id] = maxf(clock, 0.0)
+		if player.state != MayoPlayer.State.NORMAL:
+			continue
+		# A jump is the edge between not rising and rising at a jump's speed:
+		# an enemy's lift is a fraction of it, and a knock-down is not a jump.
+		var jumped := before <= 0.5 and rising >= player.jump_speed * 0.5
+		# A run is the feet going faster than a walk while on the ground, read
+		# the same way on every peer -- off the velocity rather than the key.
+		var pace := Vector2(player.velocity.x, player.velocity.z).length()
+		var running := not jumped and clock <= 0.0 and absf(rising) < 0.5 and pace > player.walk_speed * 1.15
+		if not jumped and not running:
+			continue
+		var feet := player.global_position + Vector3.DOWN * (MayoPlayer.CAPSULE_HEIGHT * 0.5 - 0.05)
+		var thickness := _floor.thickness_at(feet)
+		if thickness <= 0 or _floor.sauce_kind_at(feet) != ContaminationGrid.KIND_KETCHUP:
+			continue
+		if running:
+			_juice_kick_clock[shooter.peer_id] = JUICE_SPLASH_INTERVAL
+		# A stride kicks up a third of what a jump does, and half as high.
+		var share := 1.0 if jumped else 0.35
+		var height := 1.0 if jumped else 0.5
+		# Deeper juice throws more of itself, up to half as much again.
+		var deep := 1.0 + 0.25 * float(clampi(thickness, 1, 3) - 1)
+		var count := maxi(1, int(round(float(juice_jump_pieces) * share * deep)))
+		var now := Time.get_ticks_msec() * 0.001
+		for _index in count:
+			var angle := _feel_rng.randf_range(0.0, TAU)
+			var out := Vector3(cos(angle), 0.0, sin(angle))
+			var lift := _feel_rng.randf_range(juice_jump_lift_min, juice_jump_lift_max) * height
+			var thrown := out * juice_jump_spread * _feel_rng.randf_range(0.5, 1.4) + Vector3.UP * lift
+			_take_speck(now, feet + out * (MayoPlayer.CAPSULE_RADIUS + 0.15),
+				thrown,
+				_feel_rng.randf_range(ketchup_fragment_radius_min, ketchup_fragment_radius_max),
+				0, ContaminationGrid.KIND_KETCHUP)
+		_speck_buffer_dirty = true
+		if jumped and not splat_sounds.is_empty():
+			_play_contact_accent(splat_sounds[_feel_rng.randi() % splat_sounds.size()],
+				feet, _feel_rng.randf_range(0.8, 0.95), 0.0)
 
 
 ## The plaza: the moment the party steps onto it the horde comes in from its
@@ -4180,7 +4381,7 @@ func _advance_enemies(delta: float) -> void:
 				_burst_tomato(enemy, burst_at)
 			var victim: MayoPlayer = enemy.take_spit_request()
 			if victim != null:
-				_spit_ketchup(enemy, victim)
+				_launch_spit(enemy, victim)
 		if hit == null:
 			continue
 		# The swing landed. Whether it costs anything is the sequence's to say

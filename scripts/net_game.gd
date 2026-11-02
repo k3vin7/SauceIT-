@@ -1574,6 +1574,25 @@ func _apply_tutorial_effect(kind: int, at: Vector3) -> void:
 	world.apply_tutorial_effect(kind, at)
 
 
+## A spitter's lump leaving its mouth: from where, how fast, and for how long
+## at most. Everyone flies the same lump; what it does when it lands is the
+## server's, and arrives as stains and health exactly as it always did.
+func broadcast_spit(origin: Vector3, velocity: Vector3, seconds: float) -> void:
+	if _online and multiplayer.is_server() and not multiplayer.get_peers().is_empty():
+		_show_spit.rpc(origin, velocity, seconds)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _show_spit(origin: Vector3, velocity: Vector3, seconds: float) -> void:
+	if not _world_ready():
+		return
+	var sane := all_finite([origin.x, origin.y, origin.z, velocity.x, velocity.y, velocity.z, seconds])
+	if not sane or seconds < 0.0 or seconds > 5.0 or velocity.length() > 60.0:
+		rejected_packets += 1
+		return
+	world.show_spit(origin, velocity, seconds)
+
+
 ## One caption. The index of the line, not the line: both ends hold the same
 ## table, so the text cannot drift and a caption costs four bytes.
 func broadcast_tutorial_line(line_id: int, urgent := false, tag := 0) -> void:
