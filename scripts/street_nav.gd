@@ -87,9 +87,22 @@ func line_is_walkable(from: Vector3, to: Vector3) -> bool:
 		return true
 	var step := StreetMap.CELL / 3.0
 	var count := int(ceil(distance / step))
+	# The two ends are where the bodies are standing, so they are walkable
+	# whatever the lattice says about them. A cell is solid if a prop touches
+	# any part of it, and a sauce truck 3 m deep leaves most of its 4.6 m cell
+	# as open road: a player standing on that road was "unreachable", every
+	# chaser on the street fell back to the router, and the router -- which can
+	# only end a route on an open cell -- walked them to the middle of the
+	# nearest open cell instead. Seen from the street, a grunt three metres from
+	# the player turned and walked round them.
+	var from_cell := StreetMap.cell_at(from)
+	var to_cell := StreetMap.cell_at(to)
 	for i in count + 1:
 		var at: Vector3 = from + span * (float(i) / float(count))
-		if not is_walkable(StreetMap.cell_at(at)):
+		var cell := StreetMap.cell_at(at)
+		if cell == from_cell or cell == to_cell:
+			continue
+		if not is_walkable(cell):
 			return false
 	return true
 

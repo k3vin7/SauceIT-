@@ -210,6 +210,16 @@ func _run() -> void:
 	var notice: float = minf(16.0, enemy.sight_range * 0.45)
 	print("placed %.1f m either side of the square, inside its %.0f m notice range" % [
 		notice, enemy.sight_range])
+	# The rest of the roster is parked off the map first. These checks are about
+	# this one body's walk, and the sidestep below lands the player beside the
+	# tower -- where a rusher that can reach them bites them dead inside the
+	# nine-second window, the respawn puts them 190 m away, and the facing test
+	# then finds nothing in range to walk at. Nothing could reach a player on the
+	# tower's cells while the router counted the cell a body stands in as solid,
+	# which is the only reason this held without the parking.
+	for other in scene.enemy_count():
+		if scene.enemy_at(other) != enemy:
+			scene.enemy_at(other).global_position = square + Vector3(0.0, stand_y, 400.0)
 	enemy.global_position = square + Vector3(0.0, enemy.stand_height(), -notice)
 	player.global_position = square + Vector3(0.0, stand_y, notice)
 	await physics_frame

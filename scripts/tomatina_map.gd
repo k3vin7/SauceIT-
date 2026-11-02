@@ -343,8 +343,14 @@ static func _truck_against_wall(wall_cell: Vector2, facing: Vector3, size: Vecto
 	var depth: float = size.x if absf(facing.x) > 0.5 else size.z
 	var position := face + facing * (depth * 0.5)
 	position.y = size.y * 0.5
-	var footprint := Vector3(size.z, size.y, size.x) if absf(facing.x) > 0.5 else size
-	return {"position": position, "size": footprint, "facing": facing}
+	# `size` is already in world axes for the wall it is given for -- x across
+	# the street, z along it -- which is what `depth` above relies on. It used
+	# to be swapped here for side walls as well, which turned every side truck
+	# end-on: 6.4 m into the street from a centre 1.5 m off the wall, so 1.7 m
+	# of it was buried in the wall and its nose reached 9 cm into the next
+	# lane's cell -- enough to mark that whole cell solid for the router, and
+	# the grunts were seen walking round the players standing in it.
+	return {"position": position, "size": size, "facing": facing}
 
 
 ## The fire truck itself, parked at the back of its bay.

@@ -319,6 +319,12 @@ var _gait: Node
 ## sliding along it -- which is most of what paddling looks like.
 var _ground_covered := 0.0
 var _visual_root: Node3D
+## The visual's transform as its builder left it -- the hamburger's scale and
+## offset, the toast's turn -- so a flinch can tilt the visual and put it back
+## exactly. Taken the first time a tilt is asked for, see `_set_visual_pitch`.
+var _visual_rest := Transform3D.IDENTITY
+var _visual_rest_known := false
+var _visual_pitch := 0.0
 var _animation_player: AnimationPlayer
 var _idle_animation := &""
 var _walk_animation := &""
@@ -1477,7 +1483,9 @@ func take_sauce_hit(from := Vector3.INF) -> bool:
 	# The soles it is standing on, on the ground: the line it goes over.
 	_fall_pivot = global_position - Vector3.UP * (height * 0.5)
 	# A flinch under way is abandoned rather than finished: it is going over now.
+	# Its tilt comes off the visual too, before the body is measured below.
 	_flinch_left = 0.0
+	_set_visual_pitch(0.0)
 	_settled_for = 0.0
 	_rested = false
 	_play_death_animation()
@@ -1717,27 +1725,48 @@ func _advance_gait(step: Vector3, walking: bool, delta: float) -> void:
 
 
 func _apply_pose() -> void:
-	var pose := Basis(Vector3.UP, facing_yaw) * Basis(Vector3.RIGHT, fall_angle)
 	# **Alive, not `fall_angle <= 0`.** A flinch turns `fall_angle` too, and the
 	# pivot below is the spot the feet were planted on when it *died* -- unset
 	# while it is still up. Branching on the angle sent a flinching body to the
 	# world origin, because that is where an unset pivot is.
-	# Recoil must not tilt grounded shapes into the floor: depenetration
-	# otherwise lifts the enemy on every hit. Restore the authored transforms
-	# when dead so the collision body still follows the death topple.
-	var counter_lean := Transform3D(Basis(Vector3.RIGHT, -fall_angle), Vector3.ZERO)
-	for child in get_children():
-		if child is CollisionShape3D:
-			if not child.has_meta("upright_transform"):
-				child.set_meta("upright_transform", child.transform)
-			var upright: Transform3D = child.get_meta("upright_transform")
-			child.transform = counter_lean * upright if is_alive() else upright
 	if is_alive():
-		global_transform = Transform3D(pose, global_position)
+		# Standing, only the yaw goes on the body; the flinch's tilt goes on
+		# the visual alone. Tilting the node tilts its colliders with it, and a
+		# cylinder or a disc turned about its own middle puts its lower rim
+		# through the floor -- `move_and_slide` then shoves the body up out of
+		# it. That is how the bowler and the spitter came to hop 15 cm into the
+		# air on every flinch (and dip on every first contact of the stream),
+		# while the sphere-shaped grunts, which look the same from any angle,
+		# stayed put.
+		global_transform = Transform3D(Basis(Vector3.UP, facing_yaw), global_position)
+		_set_visual_pitch(fall_angle)
 		return
+	# Toppling, the whole body goes over, colliders and all: that is what makes
+	# a corpse a wall. The visual's own tilt is put back first so the angle is
+	# not applied twice.
+	_set_visual_pitch(0.0)
+	var pose := Basis(Vector3.UP, facing_yaw) * Basis(Vector3.RIGHT, fall_angle)
 	global_transform = Transform3D(pose, _fall_pivot
 		+ pose.y * (height * 0.5)
 		+ Vector3.UP * (_rest_radius * sin(fall_angle)))
+
+
+## Tilts the visual about the body's own origin by `angle` -- forwards and
+## back, the flinch's axis -- on top of whatever transform its builder gave it,
+## so the look is exactly what tilting the whole node used to give without the
+## colliders coming along. Nothing is touched while the angle stays at zero,
+## which is what leaves the bowled tomato alone: `_advance_ball` rolls its
+## visual itself, and it is never flinched.
+func _set_visual_pitch(angle: float) -> void:
+	if _visual_root == null or not is_instance_valid(_visual_root):
+		return
+	if absf(angle - _visual_pitch) < 0.000001:
+		return
+	if not _visual_rest_known:
+		_visual_rest = _visual_root.transform
+		_visual_rest_known = true
+	_visual_pitch = angle
+	_visual_root.transform = Transform3D(Basis(Vector3.RIGHT, angle), Vector3.ZERO) * _visual_rest
 
 
 ## Drops the settled body onto the ground: lifts it until nothing of it is
@@ -1933,9 +1962,16 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	fall_angle = new_fall_angle
 	health = new_health
 	# The position is the server's outright, so the pose is written around it
-	# rather than derived from a pivot this peer never saw.
-	global_transform = Transform3D(
-		Basis(Vector3.UP, facing_yaw) * Basis(Vector3.RIGHT, fall_angle), new_position)
+	# rather than derived from a pivot this peer never saw. Split the same way
+	# `_apply_pose` is: a standing body carries its flinch on the visual, a
+	# fallen one on the whole body.
+	if is_alive():
+		global_transform = Transform3D(Basis(Vector3.UP, facing_yaw), new_position)
+		_set_visual_pitch(fall_angle)
+	else:
+		_set_visual_pitch(0.0)
+		global_transform = Transform3D(
+			Basis(Vector3.UP, facing_yaw) * Basis(Vector3.RIGHT, fall_angle), new_position)
 	if was_alive and not is_alive():
 		_play_death_animation()
 	elif is_alive():
