@@ -1127,10 +1127,10 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 	# Enemies are the server's outright -- clients simulate none of them -- so
 	# they are sent, never asked for. Unreliable like the player state: a
 	# dropped frame is corrected by the next one.
-	var healing: PackedFloat32Array = world.healing_tomato_state()
+	var healing: PackedFloat64Array = world.healing_tomato_state()
 	_apply_healing_tomato_state.rpc(healing)
 	_apply_inventory_state.rpc(world.inventory_state())
-	state_bytes_sent += healing.size() * 4 * guests
+	state_bytes_sent += healing.size() * 8 * guests
 	var enemies: PackedFloat32Array = world.enemy_state()
 	if not enemies.is_empty():
 		_apply_enemy_state.rpc(enemies)
@@ -1732,7 +1732,7 @@ func _peer_can_receive(id: int) -> bool:
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
-func _apply_healing_tomato_state(data: PackedFloat32Array) -> void:
+func _apply_healing_tomato_state(data: PackedFloat64Array) -> void:
 	if _world_ready():
 		world.apply_healing_tomato_state(data)
 

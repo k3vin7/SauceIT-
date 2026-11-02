@@ -2011,8 +2011,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			var step := -1 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1
-			var slot := posmod(selected_item_slot(_local.peer_id) + step, 5)
-			_request_tomato_action(10 + slot)
+			_request_tomato_action(4 if step < 0 else 5)
 			get_viewport().set_input_as_handled()
 			return
 	if event is InputEventMouseButton and local_holds_tomato():
@@ -2496,6 +2495,18 @@ func set_avatar_authority(peer_id: int, authority: bool) -> void:
 
 
 func _free_shooter(shooter: Shooter) -> void:
+	var peer := shooter.peer_id
+	for book in [_held_tomatoes, _item_hands]:
+		if book.has(peer):
+			if is_instance_valid(book[peer]):
+				book[peer].queue_free()
+			book.erase(peer)
+	# Clients keep replicated held items in the active tomato set.
+	if _healing_tomatoes.has(-peer):
+		_healing_tomatoes[-peer].node.queue_free()
+		_healing_tomatoes.erase(-peer)
+	for book in [_item_slots, _item_selected, _item_throw_time, _tomato_charge_started]:
+		book.erase(peer)
 	for node in [shooter.player, shooter.air_visual,
 			shooter.landing_visual, shooter.shadow_visual, shooter.nozzle_visual]:
 		if is_instance_valid(node):
@@ -4289,6 +4300,7 @@ func _advance_player_respawns() -> void:
 		var player := shooter.player as MayoPlayer
 		if player.state != MayoPlayer.State.DEAD or player.state_time() < player.death_duration:
 			continue
+		_tomato_charge_started.erase(shooter.peer_id)
 		player.finish_respawn(spawn_position_for(shooter.spawn_slot))
 		shooter.sauce = 1.0
 		shooter.player_animation_name = StringName()
@@ -6184,21 +6196,21 @@ func _advance_healing_tomatoes(delta: float) -> void:
 
 
 
-func healing_tomato_state() -> PackedFloat32Array:
-	var data := PackedFloat32Array()
+func healing_tomato_state() -> PackedFloat64Array:
+	var data := PackedFloat64Array()
 	for id in _healing_tomatoes:
 		var at: Vector3 = _healing_tomatoes[id].node.global_position
-		data.append_array(PackedFloat32Array([id, at.x, at.y, at.z]))
+		data.append_array(PackedFloat64Array([id, at.x, at.y, at.z]))
 	for peer in _held_tomatoes:
 		var at: Vector3 = _held_tomatoes[peer].global_position
-		data.append_array(PackedFloat32Array([-peer,at.x,at.y,at.z]))
+		data.append_array(PackedFloat64Array([-peer,at.x,at.y,at.z]))
 	for id in _thrown_tomatoes:
 		var at: Vector3 = _thrown_tomatoes[id].node.global_position
-		data.append_array(PackedFloat32Array([id,at.x,at.y,at.z]))
+		data.append_array(PackedFloat64Array([id,at.x,at.y,at.z]))
 	return data
 
 
-func apply_healing_tomato_state(data: PackedFloat32Array) -> void:
+func apply_healing_tomato_state(data: PackedFloat64Array) -> void:
 	if _is_authority() or data.size() % 4 != 0:
 		return
 	var active := {}
@@ -6235,7 +6247,7 @@ func _request_tomato_action(action: int) -> void:
 		if action == 3:
 			if not _tomato_charge_started.has(_local.peer_id):
 				_tomato_charge_started[_local.peer_id] = Time.get_ticks_msec()
-		elif action == 1 or action == 2 or action >= 10:
+		elif action == 1 or action == 2 or action == 4 or action == 5 or action >= 10:
 			_tomato_charge_started.erase(_local.peer_id)
 	if _is_authority():
 		tomato_action(_local.peer_id, action)
@@ -6249,8 +6261,14 @@ func tomato_action(peer: int, action: int) -> void:
 	var shooter = _shooters[peer]
 	var player = shooter.player
 	if player.state != MayoPlayer.State.NORMAL:
+		_tomato_charge_started.erase(peer)
 		return
 	var slots := item_slots(peer)
+	# Resolve wheel steps against the latest authoritative slot, even when
+	# several reliable requests arrive before the next state update.
+	if action == 4 or action == 5:
+		var step := -1 if action == 4 else 1
+		action = 10 + posmod(selected_item_slot(peer) + step, 5)
 	if action >= 10 and action <= 14:
 		_tomato_charge_started.erase(peer)
 		_item_selected[peer] = action - 10
@@ -6266,6 +6284,13 @@ func tomato_action(peer: int, action: int) -> void:
 		for id in _healing_tomatoes:
 			var gap: float = player.global_position.distance_squared_to(_healing_tomatoes[id].node.global_position)
 			if gap < distance:
+				var at: Vector3 = _healing_tomatoes[id].node.global_position
+				var query := PhysicsRayQueryParameters3D.create(
+					player.global_position + Vector3.UP * 0.6, at, 1)
+				query.exclude = [player.get_rid()]
+				var hit := get_world_3d().direct_space_state.intersect_ray(query)
+				if not hit.is_empty() and hit.position.distance_to(at) > 0.5:
+					continue
 				distance = gap
 				nearest = id
 		if nearest >= 0:
@@ -6365,10 +6390,18 @@ func _update_item_views() -> void:
 		if selected != 0 and is_instance_valid(shooter.weapon):
 			shooter.weapon.hide()
 		elif is_instance_valid(shooter.weapon):
-			shooter.weapon.visible = shooter.is_local and _first_person and shooter.player.state != MayoPlayer.State.DEAD
+			shooter.weapon.visible = (not shooter.is_local or _first_person) \
+				and shooter.player.state != MayoPlayer.State.DEAD \
+				and (_tutorial == null or _tutorial.has_bottle(peer))
 		var node: MeshInstance3D = _held_tomatoes.get(peer)
 		if node == null and _healing_tomatoes.has(-peer):
 			node = _healing_tomatoes[-peer].node
+		var throw_left: float = maxf(0.0, float(_item_throw_time.get(peer,0.0)) - get_process_delta_time())
+		_item_throw_time[peer] = throw_left
+		if node == null:
+			if _item_hands.has(peer):
+				_item_hands[peer].hide()
+			continue
 		if node != null:
 			node.visible = equipped
 			var basis: Basis = _aim_basis(shooter)
@@ -6393,8 +6426,7 @@ func _update_item_views() -> void:
 					hand.add_child(mesh)
 					mesh.position = Vector3((finger-2)*0.075,-0.17,0.13)
 			var hand: Node3D = _item_hands[peer]
-			var throw_left: float = maxf(0.0, float(_item_throw_time.get(peer,0.0)) - get_process_delta_time())
-			_item_throw_time[peer] = throw_left
+
 			hand.visible = equipped or throw_left > 0
 			hand.global_transform = node.global_transform
 			if throw_left > 0:
@@ -6406,6 +6438,9 @@ const TOMATO_CHARGE_SECONDS := 1.2
 var _tomato_charge_started: Dictionary = {}
 
 func tomato_charge_fraction(peer: int) -> float:
+	if not _shooters.has(peer) or _shooters[peer].player.state != MayoPlayer.State.NORMAL:
+		_tomato_charge_started.erase(peer)
+		return 0.0
 	if not _tomato_charge_started.has(peer):
 		return 0.0
 	return clampf((Time.get_ticks_msec() - float(_tomato_charge_started[peer])) / (TOMATO_CHARGE_SECONDS * 1000.0), 0.0, 1.0)
