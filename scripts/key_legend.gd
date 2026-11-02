@@ -61,7 +61,9 @@ func _rows() -> Array:
 		["Shift", "run", ""],
 		["Space", "jump", ""],
 		["LMB", "spray", ""],
-		["1/2/3", "pick a fresh sauce bottle at a stall", ""],
+		["1~5 / Wheel", "select item slot", ""],
+		["E", "pick up tomato", ""],
+		["Shift+1~3", "refill sauce at stall", ""],
 		["R", "wipe your glasses", ""],
 		["C", "character", ""],
 	]

@@ -24,7 +24,7 @@ const ENEMY_BAR := Vector2(120.0, 10.0)
 const ENEMY_LIFT := 0.9
 ## Past this the bar would be a smear a few pixels wide, and a cluster of them
 ## reads as noise on the horizon.
-const ENEMY_DRAW_RANGE := 120.0
+const ENEMY_DRAW_RANGE := 20.0
 
 const BACKING := Color(0.04, 0.05, 0.06, 0.78)
 const EDGE := Color(0.86, 0.90, 0.94, 0.5)
@@ -46,16 +46,16 @@ const LOW_AT := 0.35
 ## The sauce in the bottle is marked, so the prompt also answers "what am I
 ## carrying", which nothing else on the HUD does.
 const PROMPT_LINES: Array[String] = [
-	"[1]  마요네즈",
-	"[2]  머스타드",
-	"[3]  케찹",
+	"[Shift+1]  마요네즈",
+	"[Shift+2]  머스타드",
+	"[Shift+3]  케찹",
 ]
 const PROMPT_LINE_GAP := 22.0
 ## What marks the line for the sauce already in the bottle.
 const PROMPT_HELD := "  ◀"
 const PROMPT_HELD_COLOR := Color("ffffff")
 const PROMPT_SIZE := 18
-const PROMPT_LIFT := 84.0
+const PROMPT_LIFT := 220.0
 const PROMPT_COLOR := Color("fff0a8")
 const PROMPT_SHADOW := Color(0.0, 0.0, 0.0, 0.7)
 
@@ -86,6 +86,27 @@ func _draw() -> void:
 	_draw_player()
 	_draw_enemies()
 	_draw_prompt()
+	if world._local != null:
+		var slots: Array = world.item_slots(world._local.peer_id)
+		var selected: int = world.selected_item_slot(world._local.peer_id)
+		for slot in 5:
+			var rect := Rect2(Vector2(frame.get_center().x - 160 + slot*65,frame.end.y-145),Vector2(60,48))
+			draw_rect(rect, Color(1,1,1,1.0 if selected == slot else 0.45), false, 3 if selected == slot else 1)
+			if slot == 0:
+				_draw_bottle_icon(rect.get_center())
+			elif slots[slot] == 1:
+				_draw_tomato_icon(rect.get_center())
+	_draw_pickup_hint()
+	var tomato_hint := "1~5 장비 선택"
+	if world.local_holds_tomato():
+		tomato_hint = "좌클릭 꾹: 힘 모으기 · 놓기: 던지기 / 우클릭: 먹기"
+		if world._tomato_charge_started.has(world._local.peer_id):
+			var charge: float = world.tomato_charge_fraction(world._local.peer_id)
+			var meter := Rect2(frame.get_center() + Vector2(-60,36),Vector2(120,7))
+			draw_rect(meter, Color(1,1,1,0.2))
+			draw_rect(Rect2(meter.position,Vector2(meter.size.x * charge,meter.size.y)),Color("fff0a8"))
+	draw_string(ThemeDB.fallback_font, Vector2(frame.get_center().x - 180, frame.end.y - 160),
+		tomato_hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color("fff0a8"))
 
 
 func _draw_player() -> void:
@@ -217,7 +238,10 @@ func enemy_bar_rect(enemy: MayoEnemy, camera: Camera3D) -> Rect2:
 	var head := enemy.global_position + Vector3.UP * (enemy.stand_height() + ENEMY_LIFT)
 	if camera.is_position_behind(head):
 		return Rect2()
-	if camera.global_position.distance_to(enemy.global_position) > ENEMY_DRAW_RANGE:
+	var player := world.get("_player") as MayoPlayer if is_instance_valid(world) else null
+	if not is_instance_valid(player):
+		return Rect2()
+	if player.global_position.distance_squared_to(enemy.global_position) > ENEMY_DRAW_RANGE * ENEMY_DRAW_RANGE:
 		return Rect2()
 	var at: Vector2 = camera.unproject_position(head)
 	if not frame.has_point(at):
@@ -235,3 +259,75 @@ func _draw_bar(rect: Rect2, fraction: float, full: Color, low: Color, border: fl
 		var fill := Rect2(inner.position, Vector2(inner.size.x * fraction, inner.size.y))
 		draw_rect(fill, low.lerp(full, clampf(fraction / LOW_AT, 0.0, 1.0)), true)
 	draw_rect(rect, EDGE, false, border)
+
+
+func _draw_tomato_icon(at: Vector2) -> void:
+	draw_circle(at + Vector2(0,3), 15, Color("8d271d"))
+	draw_circle(at, 14, Color("ec4931"))
+	draw_circle(at + Vector2(-5,-5), 4, Color("ff8762"))
+	for i in 5:
+		var angle := TAU * float(i) / 5.0
+		draw_line(at + Vector2(0,-10), at + Vector2(cos(angle)*8, -10+sin(angle)*5), Color("69bc43"), 3, true)
+	draw_line(at + Vector2(0,-10), at + Vector2(2,-19), Color("75cf4a"), 3, true)
+
+
+func _draw_bottle_icon(at: Vector2) -> void:
+	var fill := Color("fff0a8")
+	var kind: int = world.local_sauce_kind()
+	if kind == 1:
+		fill = Color("e5b939")
+	elif kind == 2:
+		fill = Color("e84b32")
+	var body := Rect2(at + Vector2(-10,-9),Vector2(20,27))
+	draw_style_box(_icon_box(Color(0.85,0.94,1,0.5)),body)
+	draw_style_box(_icon_box(fill),Rect2(at+Vector2(-7,0),Vector2(14,15)))
+	draw_rect(Rect2(at+Vector2(-7,-14),Vector2(14,6)), Color("f3d052"))
+	draw_colored_polygon(PackedVector2Array([at+Vector2(-3,-14),at+Vector2(3,-14),at+Vector2(1,-22)]),Color("fff3bf"))
+	draw_line(at+Vector2(-6,-6),at+Vector2(-6,12),Color(1,1,1,0.8),2,true)
+
+
+func _icon_box(color: Color) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = color
+	style.set_corner_radius_all(5)
+	return style
+
+
+func _draw_pickup_hint() -> void:
+	var player := world.get("_player") as MayoPlayer
+	var camera := world.get("_camera") as Camera3D
+	if not is_instance_valid(player) or not is_instance_valid(camera):
+		return
+	var nearest := 2.5 * 2.5
+	var chosen := Vector3.INF
+	for id in world._healing_tomatoes:
+		# Negative IDs are held items, large IDs are airborne tomatoes.
+		if id < 0 or id >= 1000000:
+			continue
+		var node = world._healing_tomatoes[id].node
+		var at: Vector3 = node.global_position
+		var distance := player.global_position.distance_squared_to(at)
+		if distance >= nearest or camera.is_position_behind(at):
+			continue
+		var screen := camera.unproject_position(at)
+		if not frame.has_point(screen):
+			continue
+		var query := PhysicsRayQueryParameters3D.create(camera.global_position,at,1)
+		query.exclude = [player.get_rid()]
+		var hit := player.get_world_3d().direct_space_state.intersect_ray(query)
+		if not hit.is_empty() and hit.position.distance_to(at) > 0.5:
+			continue
+		nearest = distance
+		chosen = at
+	if chosen == Vector3.INF:
+		return
+	var text := "[E] 토마토 줍기"
+	if world.item_slots(world._local.peer_id).find(0,1) < 0:
+		text = "인벤토리가 가득 찼어요"
+	var font := ThemeDB.fallback_font
+	var width := font.get_string_size(text,HORIZONTAL_ALIGNMENT_LEFT,-1,18).x
+	var screen := camera.unproject_position(chosen) + Vector2(-width*0.5,-30)
+	screen.x = clampf(screen.x,frame.position.x+8,frame.end.x-width-8)
+	screen.y = clampf(screen.y,frame.position.y+25,frame.end.y-190)
+	draw_string(font,screen+Vector2(1,2),text,HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color.BLACK)
+	draw_string(font,screen,text,HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color.WHITE)

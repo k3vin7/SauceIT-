@@ -22,19 +22,18 @@ const SEED := 0x70A7A70
 
 ## The streets, as lattice rectangles. Consecutive ones overlap by at least a
 ## cell: the router moves in four directions, so an overlap is what makes a
-## junction passable. Alleys are three or four cells across -- narrower than
-## the festival street's eight -- which is what makes a fork and a chokepoint
-## read as such at this scale.
+## junction passable. Ordinary alleys are five or six cells across so a party
+## can dodge and pass. The overturned-truck stretch stays a short chokepoint.
 const SEGMENTS: Array[Rect2i] = [
 	Rect2i(26, 90, 8, 6),    # 0 the village edge: start plaza, sauce truck
-	Rect2i(28, 70, 4, 21),   # 1 Calle San Luis, north out of the start
-	Rect2i(16, 70, 13, 3),   # 2 west fork, across
-	Rect2i(16, 56, 3, 15),   # 3 west fork, up
-	Rect2i(16, 54, 14, 3),   # 4 west fork, back to the Cid
-	Rect2i(31, 70, 12, 3),   # 5 east fork, across
-	Rect2i(40, 50, 3, 21),   # 6 east fork, up (the bowling lane)
-	Rect2i(30, 50, 13, 3),   # 7 east fork, back to the Cid
-	Rect2i(28, 48, 4, 8),    # 8 Calle del Cid, where the forks rejoin
+	Rect2i(27, 70, 6, 21),   # 1 Calle San Luis, north out of the start
+	Rect2i(15, 69, 14, 5),   # 2 west fork, across
+	Rect2i(15, 55, 5, 16),   # 3 west fork, up
+	Rect2i(15, 53, 15, 5),   # 4 west fork, back to the Cid
+	Rect2i(31, 69, 13, 5),   # 5 east fork, across
+	Rect2i(39, 49, 5, 22),   # 6 east fork, up (the bowling lane)
+	Rect2i(30, 49, 14, 5),   # 7 east fork, back to the Cid
+	Rect2i(25, 48, 10, 8),    # 8 Calle del Cid, where the forks rejoin
 	Rect2i(28, 36, 4, 13),   # 9 Calle del Cid, the overturned truck
 	Rect2i(20, 22, 20, 15),  # 10 Plaza del Pueblo
 	Rect2i(27, 16, 6, 7),    # 11 the fire truck bay
@@ -53,9 +52,9 @@ const TRUCK_ROW := 44.0
 ## middle of the plaza where the fight is going to be. Painted solid, wall to
 ## wall: the real street is a red river by noon, not a spatter.
 const JUICE_ZONES: Array[Rect2i] = [
-	Rect2i(16, 70, 13, 3),
-	Rect2i(16, 56, 3, 15),
-	Rect2i(16, 54, 14, 3),
+	Rect2i(15, 69, 14, 5),
+	Rect2i(15, 55, 5, 16),
+	Rect2i(15, 53, 15, 5),
 	Rect2i(28, 42, 4, 6),
 	Rect2i(26, 26, 8, 7),
 ]
@@ -92,8 +91,8 @@ const ELITES := [
 	["KETCHUP_SPITTER", Vector2(18.0, 55.5)],
 	["CAPRESE_CRAWLER", Vector2(22.5, 55.5)],
 	["BOWLING_TOMATO", Vector2(41.5, 51.5)],
-	["TOMATO_BRUTE", Vector2(30.5, 51.0)],
-	["CAPRESE_CRAWLER", Vector2(29.5, 47.0)],
+	["TOMATO_BRUTE", Vector2(30.5, 38.0)],
+	["CAPRESE_CRAWLER", Vector2(29.5, 40.0)],
 	["TOMATO_BRUTE", Vector2(30.0, 29.5)],
 	["TOMATO_BRUTE", Vector2(34.0, 30.0)],
 	["KETCHUP_SPITTER", Vector2(24.5, 28.5)],
@@ -101,7 +100,7 @@ const ELITES := [
 ]
 
 ## How many grunts stand on the street before the horde.
-const GRUNT_COUNT := 88
+const GRUNT_COUNT := 60
 
 
 ## The standing roster: the elites, then the grunts. Grunts are dealt onto the
@@ -114,7 +113,7 @@ static func roster() -> Array:
 	return out
 
 
-## `GRUNT_COUNT` positions spread evenly along the route from the foot of
+## `GRUNT_COUNT` positions in encounter packs along the route from the foot of
 ## Calle San Luis to the plaza: never in the start plaza or the fire bay,
 ## never in a cell a prop stands in (the tomato heap included), never in an
 ## elite's cell. A pure function of the constants, so every peer agrees.
@@ -139,12 +138,25 @@ static func grunt_cells() -> Array[Vector2]:
 					continue
 				taken[cell] = true
 				candidates.push_back(cell)
+	# Encounter packs leave the entry, connecting streets and regroup bay empty.
+	var packs := [
+		[Rect2i(27, 80, 6, 3), 6],
+		[Rect2i(25, 69, 8, 5), 8],
+		[Rect2i(15, 58, 5, 5), 8],
+		[Rect2i(39, 58, 5, 5), 8],
+		[Rect2i(28, 36, 4, 6), 10],
+		[Rect2i(20, 24, 20, 10), 20],
+	]
 	var out: Array[Vector2] = []
-	for k in GRUNT_COUNT:
-		var pick := int(floor((float(k) + 0.5) * float(candidates.size()) / float(GRUNT_COUNT)))
-		var cell := candidates[mini(pick, candidates.size() - 1)]
-		var jitter := Vector2(_hash(cell.x, cell.y, 5), _hash(cell.y, cell.x, 17)) - Vector2(0.5, 0.5)
-		out.push_back(Vector2(cell) + Vector2(0.5, 0.5) + jitter * 0.5)
+	for pack in packs:
+		var available: Array[Vector2i] = []
+		for cell in candidates:
+			if (pack[0] as Rect2i).has_point(cell):
+				available.push_back(cell)
+		for k in mini(int(pack[1]), available.size()):
+			var pick := int(floor((float(k) + 0.5) * available.size() / float(pack[1])))
+			var cell := available[mini(pick, available.size() - 1)]
+			out.push_back(Vector2(cell) + Vector2(0.5, 0.5))
 	return out
 
 
@@ -272,11 +284,34 @@ static func debris_boxes() -> Array[Dictionary]:
 	var booth := Color("7a5a3c")
 	var crate := Color("8c7a4a")
 	# West fork: short and awash. A fallen booth leaves half the alley.
-	boxes.push_back(cell_box(Vector2(16.75, 62.5), Vector2(1.5, 1.0), 2.4, "FallenBoothA", booth))
-	boxes.push_back(cell_box(Vector2(22.5, 70.75), Vector2(1.0, 1.5), 2.4, "FallenBoothB", booth))
+	boxes.push_back(metre_box(Vector2(16.75, 62.5), Vector3(2.8, 1.1, 0.7), "FallenBoothA", booth))
+	boxes.push_back(metre_box(Vector2(22.5, 70.75), Vector3(0.7, 1.1, 2.8), "FallenBoothB", booth))
 	# East fork: long and clean. Crates stagger the lane without closing it.
-	boxes.push_back(cell_box(Vector2(42.25, 60.5), Vector2(1.5, 1.0), 2.0, "CratesA", crate))
-	boxes.push_back(cell_box(Vector2(40.75, 55.5), Vector2(1.5, 1.0), 2.0, "CratesB", crate))
+	boxes.push_back(metre_box(Vector2(42.25, 60.5), Vector3(1.6, 1.2, 1.0), "CratesA", crate))
+	boxes.push_back(metre_box(Vector2(40.75, 55.5), Vector3(1.6, 1.2, 1.0), "CratesB", crate))
+	# Cover on the approach to each fork's ranged enemy; side routes stay open.
+	boxes.push_back(metre_box(Vector2(17.5, 64.5), Vector3(2.8, 1.25, 0.65), "WestRangedCover", booth))
+	boxes.push_back(metre_box(Vector2(41.0, 57.0), Vector3(1.8, 1.3, 1.0), "EastRangedCover", crate))
+	# Offset obstacles break straight pursuit without narrowing the full lane.
+	boxes.push_back(metre_box(Vector2(29.0, 78.0), Vector3(2.6, 1.0, 0.65), "OpeningBrokenStall", booth))
+	boxes.push_back(metre_box(Vector2(36.0, 71.5), Vector3(1.5, 1.1, 0.9), "ForkTomatoCrates", crate))
+	boxes.push_back(metre_box(Vector2(22.5, 32.0), Vector3(2.8, 1.1, 0.7), "PlazaBrokenStall", booth))
+	boxes.push_back(metre_box(Vector2(36.0, 33.0), Vector3(1.8, 1.3, 1.0), "PlazaTomatoCrates", crate))
+	# Staggered small props offer passing choices, not a wall across the street.
+	for entry in [
+		[Vector2(31.5, 85), Vector3(1.5, 1.1, 0.9), "EntryTomatoCrates"],
+		[Vector2(27.8, 74.5), Vector3(2.5, 1.0, 0.65), "ForkBrokenStall"],
+		[Vector2(20.5, 72.5), Vector3(1.5, 1.2, 0.9), "WestTomatoCrates"],
+		[Vector2(18.8, 66), Vector3(2.4, 1.0, 0.65), "WestBrokenStall"],
+		[Vector2(24.5, 56.5), Vector3(1.6, 1.2, 1.0), "WestExitCrates"],
+		[Vector2(40, 65), Vector3(1.5, 1.1, 0.9), "EastTomatoCrates"],
+		[Vector2(36, 52.5), Vector3(2.4, 1.1, 0.65), "EastExitStall"],
+		[Vector2(28.5, 40.5), Vector3(1.6, 1.2, 0.9), "TruckApproachCrates"],
+		[Vector2(26, 34.5), Vector3(2.6, 1.1, 0.65), "PlazaEntryStall"],
+		[Vector2(30, 27), Vector3(1.6, 1.2, 0.9), "PlazaCentreCrates"],
+		[Vector2(37.5, 25), Vector3(2.4, 1.1, 0.65), "PlazaSideStall"],
+	]:
+		boxes.push_back(metre_box(entry[0], entry[1], entry[2], crate))
 	# Calle del Cid: the overturned tomato truck. Three cells of four, and a
 	# tomato heap in the gap that is jumped rather than walked round.
 	boxes.push_back(cell_box(Vector2(29.5, TRUCK_ROW + 0.75), Vector2(3.0, 1.5), 3.2,
@@ -302,30 +337,30 @@ static func refill_boxes() -> Array[Dictionary]:
 	boxes.push_back(_truck_against_wall(Vector2(34.0, 92.5), Vector3.LEFT, side))
 	boxes.push_back(_truck_against_wall(Vector2(26.0, 92.5), Vector3.RIGHT, side))
 	# Calle San Luis, three up its length, alternating walls.
-	boxes.push_back(_truck_against_wall(Vector2(28.0, 86.0), Vector3.RIGHT, side))
-	boxes.push_back(_truck_against_wall(Vector2(32.0, 80.0), Vector3.LEFT, side))
-	boxes.push_back(_truck_against_wall(Vector2(28.0, 75.0), Vector3.RIGHT, side))
+	boxes.push_back(_truck_against_wall(Vector2(27.0, 86.0), Vector3.RIGHT, side))
+	boxes.push_back(_truck_against_wall(Vector2(33.0, 80.0), Vector3.LEFT, side))
+	boxes.push_back(_truck_against_wall(Vector2(27.0, 75.0), Vector3.RIGHT, side))
 	# A truck is a cell and a half deep, so in a three-cell alley every truck
 	# goes on the same wall as the rubble: two on opposite walls at the same
 	# height would close the alley.
 	# The west fork: three on the outer wall going up, the north wall of the
 	# way back.
-	boxes.push_back(_truck_against_wall(Vector2(16.0, 67.0), Vector3.RIGHT, side))
-	boxes.push_back(_truck_against_wall(Vector2(16.0, 60.0), Vector3.RIGHT, side))
-	boxes.push_back(_truck_against_wall(Vector2(16.0, 57.0), Vector3.RIGHT, side))
-	boxes.push_back(_truck_against_wall(Vector2(22.0, 54.0), Vector3.BACK, end))
+	boxes.push_back(_truck_against_wall(Vector2(15.0, 67.0), Vector3.RIGHT, side))
+	boxes.push_back(_truck_against_wall(Vector2(15.0, 60.0), Vector3.RIGHT, side))
+	boxes.push_back(_truck_against_wall(Vector2(15.0, 57.0), Vector3.RIGHT, side))
+	boxes.push_back(_truck_against_wall(Vector2(22.0, 53.0), Vector3.BACK, end))
 	# The east fork: both end walls going across, two on the outer wall going
 	# up (the crates' wall), the north wall of the way back.
-	boxes.push_back(_truck_against_wall(Vector2(35.0, 70.0), Vector3.BACK, end))
-	boxes.push_back(_truck_against_wall(Vector2(38.5, 73.0), Vector3.FORWARD, end))
-	boxes.push_back(_truck_against_wall(Vector2(43.0, 66.0), Vector3.LEFT, side))
-	boxes.push_back(_truck_against_wall(Vector2(43.0, 62.0), Vector3.LEFT, side))
-	boxes.push_back(_truck_against_wall(Vector2(36.0, 50.0), Vector3.BACK, end))
+	boxes.push_back(_truck_against_wall(Vector2(35.0, 69.0), Vector3.BACK, end))
+	boxes.push_back(_truck_against_wall(Vector2(38.5, 74.0), Vector3.FORWARD, end))
+	boxes.push_back(_truck_against_wall(Vector2(44.0, 66.0), Vector3.LEFT, side))
+	boxes.push_back(_truck_against_wall(Vector2(44.0, 62.0), Vector3.LEFT, side))
+	boxes.push_back(_truck_against_wall(Vector2(36.0, 49.0), Vector3.BACK, end))
 	# Calle del Cid: both walls where the forks rejoin, then past the
 	# overturned truck. Nothing on the east wall beside the truck: the heap
 	# gap is one cell wide and a truck there would close its only approach.
-	boxes.push_back(_truck_against_wall(Vector2(32.0, 54.5), Vector3.LEFT, side))
-	boxes.push_back(_truck_against_wall(Vector2(28.0, 50.5), Vector3.RIGHT, side))
+	boxes.push_back(_truck_against_wall(Vector2(35.0, 54.5), Vector3.LEFT, side))
+	boxes.push_back(_truck_against_wall(Vector2(25.0, 50.5), Vector3.RIGHT, side))
 	boxes.push_back(_truck_against_wall(Vector2(28.0, 39.5), Vector3.RIGHT, side))
 	# The plaza: two on each side wall, one on the north wall beside the bay.
 	boxes.push_back(_truck_against_wall(Vector2(20.0, 24.5), Vector3.RIGHT, side))

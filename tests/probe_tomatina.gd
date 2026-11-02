@@ -85,13 +85,26 @@ func _run() -> void:
 	_check(cid_blocked == 3, "the overturned truck blocks %d of 4 cells, not 3" % cid_blocked)
 	_check(scene.refill_stations().size() == 22, "stage 2 does not have its twenty-two sauce trucks")
 
+	# Encounter pacing: no standing grunts in the entry or regroup bay.
+	for cell in TomatinaMap.grunt_cells():
+		_check(cell.y < 84.0, "a grunt occupies the quiet entry")
+		_check(cell.y < 46.0 or cell.y >= 56.0, "a grunt occupies the regroup approach")
+	var cover_names: Array[String] = []
+	for box in TomatinaMap.debris_boxes():
+		cover_names.push_back(str(box["name"]))
+	_check(cover_names.has("WestRangedCover") and cover_names.has("EastRangedCover"),
+		"a fork is missing its ranged-attack cover")
+	for enemy in scene._enemies:
+		if enemy.has_meta("after_regroup"):
+			_check(enemy.global_position.z < TomatinaMap.at_cell(Vector2(30, 46)).z,
+				"an opening enemy was gated behind regroup")
 	# --- the roster ---
 	var counts := {}
 	for index in scene.enemy_count():
 		var enemy: MayoEnemy = scene.enemy_at(index)
 		counts[enemy.kind] = int(counts.get(enemy.kind, 0)) + 1
 	print("roster: %s" % str(counts))
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) >= 80, "too few grunts on the street")
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) == TomatinaMap.GRUNT_COUNT, "encounter pack grunt count differs from plan")
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BRUTE, 0)) == 3, "not three brutes")
 	_check(int(counts.get(MayoEnemy.EnemyKind.BOWLING_TOMATO, 0)) == 2, "not two bowlers")
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BALL, 0)) == 2 * MayoEnemy.BALLS_PER_BOWLER,
