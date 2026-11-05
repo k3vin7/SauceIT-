@@ -312,6 +312,7 @@ static func debris_boxes() -> Array[Dictionary]:
 		[Vector2(37.5, 25), Vector3(2.4, 1.1, 0.65), "PlazaSideStall"],
 	]:
 		boxes.push_back(metre_box(entry[0], entry[1], entry[2], crate))
+	boxes.append_array(wreck_boxes())
 	# Calle del Cid: the overturned tomato truck. Three cells of four, and a
 	# tomato heap in the gap that is jumped rather than walked round.
 	boxes.push_back(cell_box(Vector2(29.5, TRUCK_ROW + 0.75), Vector2(3.0, 1.5), 3.2,
@@ -321,6 +322,82 @@ static func debris_boxes() -> Array[Dictionary]:
 	heap["jumpable"] = true
 	boxes.push_back(heap)
 	return boxes
+
+
+## The bigger wreckage: what a street looks like after a lorry of tomatoes
+## and a crowd have been through it. Two kinds, both plain boxes, placed
+## where a wall or a corner would collect them and never across a whole
+## alley. **Rubble** is a building's corner come down: a couple of masonry
+## chunks, a piece of facade standing on its edge, and a slab lying flat,
+## low enough to be jumped and left out of the router's blocked cells.
+## **A wrecked food truck** is a body, its cab, the canopy that came off it
+## lying flat beside it (jumped, like the slab), and a crate or two that
+## fell out. Sizes in metres; the body is the sauce trucks' 2.6 m by 5.6 m.
+static func wreck_boxes() -> Array[Dictionary]:
+	var boxes: Array[Dictionary] = []
+	# Calle San Luis: the east wall's corner down near the top of the start,
+	# and a truck wrecked mid-street further up.
+	_rubble(boxes, "SanLuis", Vector2(32.5, 89.0), Vector2(31.9, 89.3), Vector2(32.5, 89.9))
+	_wrecked_truck(boxes, "SanLuis", Vector2(30.5, 82.5), Vector2(30.5, 81.1),
+		Vector2(31.6, 83.0), Vector2(29.4, 83.4))
+	# The west fork: rubble under the north wall going across, a wreck on the
+	# inner wall going up.
+	_rubble(boxes, "WestFork", Vector2(25.0, 69.4), Vector2(26.0, 69.3), Vector2(24.2, 70.0))
+	_wrecked_truck(boxes, "WestFork", Vector2(18.6, 61.5), Vector2(18.6, 60.1),
+		Vector2(17.9, 60.5), Vector2(18.0, 62.6))
+	# The east fork: a wreck going across, rubble where the way back meets
+	# the Cid.
+	_wrecked_truck(boxes, "EastFork", Vector2(33.5, 71.5), Vector2(34.9, 71.5),
+		Vector2(33.5, 72.5), Vector2(32.5, 70.6))
+	_rubble(boxes, "EastFork", Vector2(32.0, 49.4), Vector2(33.0, 49.3), Vector2(31.4, 50.0))
+	# Calle del Cid: a wreck where the forks rejoin, a chunk off the east
+	# wall before the overturned truck.
+	_wrecked_truck(boxes, "Cid", Vector2(29.0, 53.0), Vector2(29.0, 51.5),
+		Vector2(30.2, 53.0), Vector2(27.9, 54.0))
+	boxes.push_back(metre_box(Vector2(31.5, 37.0), Vector3(1.8, 1.3, 1.6), "CidRubble", RUBBLE))
+	# The plaza: a corner of the north-west block down, a wreck on the
+	# south-east side, a piece of the east facade between its trucks.
+	_rubble(boxes, "PlazaNW", Vector2(24.0, 23.3), Vector2(23.6, 22.7), Vector2(24.7, 24.1))
+	_wrecked_truck(boxes, "Plaza", Vector2(34.5, 34.5), Vector2(35.9, 34.5),
+		Vector2(34.5, 33.5), Vector2(33.2, 33.9))
+	boxes.push_back(metre_box(Vector2(39.4, 31.5), Vector3(0.7, 3.0, 4.0), "PlazaFacade", RUBBLE))
+	boxes.push_back(metre_box(Vector2(38.8, 31.5), Vector3(1.6, 1.1, 1.4), "PlazaFacadeChunk", RUBBLE))
+	return boxes
+
+
+const RUBBLE := Color("7d7368")
+const STEEL := Color("5c6470")
+const CANOPY := Color("c8b08a")
+
+
+## A building's corner down: a big chunk at `heap`, a piece of facade on its
+## edge at `facade`, a flat slab at `slab` that is jumped, and a small chunk
+## beside the big one.
+static func _rubble(boxes: Array[Dictionary], label: String, heap: Vector2,
+		facade: Vector2, slab: Vector2) -> void:
+	boxes.push_back(metre_box(heap, Vector3(3.0, 2.0, 2.4), label + "RubbleHeap", RUBBLE))
+	boxes.push_back(metre_box(heap + Vector2(0.45, 0.35), Vector3(1.4, 0.9, 1.2),
+		label + "RubbleChunk", RUBBLE))
+	boxes.push_back(metre_box(facade, Vector3(0.6, 2.6, 3.4), label + "Facade", RUBBLE))
+	var low := metre_box(slab, Vector3(3.4, 0.4, 2.0), label + "Slab", RUBBLE)
+	low["jumpable"] = true
+	boxes.push_back(low)
+
+
+## A food truck that will not be serving again: the body, the cab, the
+## canopy lying flat beside it (jumped), and a crate that fell out. The body
+## runs north-south unless the cab is beside it rather than ahead of it.
+static func _wrecked_truck(boxes: Array[Dictionary], label: String, body: Vector2,
+		cab: Vector2, canopy: Vector2, crate: Vector2) -> void:
+	var along_x := absf(cab.x - body.x) > absf(cab.y - body.y)
+	var body_size := Vector3(5.6, 2.4, 2.6) if along_x else Vector3(2.6, 2.4, 5.6)
+	var cab_size := Vector3(1.6, 1.8, 2.6) if along_x else Vector3(2.6, 1.8, 1.6)
+	boxes.push_back(metre_box(body, body_size, label + "WreckBody", STEEL))
+	boxes.push_back(metre_box(cab, cab_size, label + "WreckCab", STEEL))
+	var cloth := metre_box(canopy, Vector3(3.0, 0.35, 2.4), label + "WreckCanopy", CANOPY)
+	cloth["jumpable"] = true
+	boxes.push_back(cloth)
+	boxes.push_back(metre_box(crate, Vector3(1.0, 0.9, 1.0), label + "WreckCrate", Color("8c7a4a")))
 
 
 ## Where the sauce is topped up: trucks parked against the walls, which stand

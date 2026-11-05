@@ -76,6 +76,17 @@ func _run() -> void:
 				frontier.push_back(next)
 	print("lattice: %d of %d open cells reachable from the start" % [reached.size(), open.size()])
 	_check(reached.size() == open.size(), "%d open cells are cut off from the start" % (open.size() - reached.size()))
+	# And nobody is built inside a prop: the grunts are dealt round them, the
+	# elites are placed by hand, and the wreckage is placed by hand too.
+	var buried := 0
+	for index in scene.enemy_count():
+		var body: MayoEnemy = scene.enemy_at(index)
+		if body.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			continue
+		if StreetMap.blocked_cells().has(StreetMap.cell_at(body.global_position)):
+			buried += 1
+			push_error("%s stands in a prop's cell" % body.name)
+	_check(buried == 0, "%d bodies are built inside props" % buried)
 	# The overturned truck is a chokepoint, not a wall: the route goes through
 	# its gap rather than round, and the gap is the one cell left of four.
 	var cid_blocked := 0
