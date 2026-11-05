@@ -50,3 +50,4 @@ godot --headless --path . --script res://tests/probe_tomatina.gd
   - 즙 구역을 스플랫 산포 대신 `ContaminationGrid.fill_rect` / `FloorContamination.fill_rect`로 벽에서 벽까지 두께 1로 채운다(점박이 → 빨간 거리). 서쪽 골목 36 샘플 중 36 칠해짐.
 - **터진 토마토 몸체 (11/1)** → 죽은 grunt/brute는 `MayoEnemy.vanish()`로 충돌 레이어 0, 콜리전 셰이프 비활성, 비주얼 숨김(노드는 인덱스·패킷 슬롯 유지를 위해 남김). 그 자리에 `TomatoDebris`(`scripts/tomato_debris.gd`)가 조각 5~12개(반지름 비례, 납작한 껍질 조각)를 바깥으로 던져 중력으로 떨어뜨리고 길 위에 남긴다. 순수 연출이라 피어마다 각자 만들고(권한은 킬 시점, 클라이언트는 패킷의 alive→dead 전환) 네트워크로는 아무것도 안 보낸다. `TOMATO_DEBRIS_CAP`(120) 넘으면 오래된 것부터 정리. spitter/crawler/bowler 시체는 `CORPSE_LAYER`로 옮겨 통과 가능.
 - `probe_tomatina`는 트럭 22대, grunt ≥ 80, 엘리트 10, 호드 64, 열린 칸 677/677 도달, grunt 터짐 후 vanish + 조각 8개 정착으로 통과.
+- **볼링 공이 적을 통과 (11/5)** → 모든 적은 `_register_enemy`를 거쳐 `_enemies`에 들어가고, 공과 다른 적 몸체는 서로 `add_collision_exception_with`로 묶는다(양방향: 예외는 한쪽에만 걸리므로). 공은 레인의 grunt를 밀지도 멈추지도 않고 벽까지 굴러간다. `probe_tomatina`에 레인에 grunt를 세워 두고 공이 벽까지 가는지, grunt가 밀리지 않는지 검사 추가.

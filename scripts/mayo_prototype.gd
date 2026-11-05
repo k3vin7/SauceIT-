@@ -3607,7 +3607,7 @@ func _build_enemies() -> void:
 			enemy.match_player_speed(_local.player.walk_speed, enemy_speed_fraction)
 		enemy.position = StreetMap.from_pixels(spawn[0], spawn[1]) \
 			+ Vector3(0.0, enemy.stand_height(), 0.0)
-		_enemies.push_back(enemy)
+		_register_enemy(enemy)
 		for pair_index in TOAST_RUSHER_PAIR_OFFSETS.size():
 			var rusher := MayoEnemy.new()
 			rusher.name = "Enemy%02d_ToastRusher%d" % [index, pair_index + 1]
@@ -3622,7 +3622,7 @@ func _build_enemies() -> void:
 			rusher.position = enemy.position \
 				+ Vector3(TOAST_RUSHER_PAIR_OFFSETS[pair_index], 0.0, 0.0)
 			rusher.position.y = rusher.stand_height()
-			_enemies.push_back(rusher)
+			_register_enemy(rusher)
 	var fry_stalker := MayoEnemy.new()
 	fry_stalker.name = "Enemy_FryStalker"
 	fry_stalker.authority = _is_authority()
@@ -3635,7 +3635,7 @@ func _build_enemies() -> void:
 	fry_stalker.position = StreetMap.from_pixels(
 		FRY_STALKER_SPAWN[0], FRY_STALKER_SPAWN[1]) \
 		+ Vector3(0.0, fry_stalker.stand_height(), 0.0)
-	_enemies.push_back(fry_stalker)
+	_register_enemy(fry_stalker)
 	_apply_enemy_sight_rings()
 	# Scale them to the party that exists now. Offline that is one player and
 	# the multiplier is 1, so a solo game is untouched.
@@ -3741,7 +3741,7 @@ func tutorial_add_enemy(kind: int, at: Vector3) -> int:
 		enemy.give_up_range = 120.0
 	enemy.nav = _nav
 	enemy.position = Vector3(at.x, enemy.stand_height(), at.z)
-	_enemies.push_back(enemy)
+	_register_enemy(enemy)
 	_apply_enemy_sight_rings()
 	# A heavy arriving is scaled to the party that is here to meet it, by the same
 	# pass a joining player triggers.
@@ -3777,6 +3777,24 @@ func _deal_grunt_burst(index: int) -> Dictionary:
 ## runtime come through here, so a body's index decides the same things on
 ## every peer. A bowler brings its balls with it, appended straight after it.
 ## Returns the body's index, or -1 for a kind this stage does not have.
+## Every body joins `_enemies` through here, so what has to hold across all
+## of them is kept in one place. Today that is one thing: a bowled tomato
+## rolls *through* the other bodies, not into them. The ball and every other
+## enemy are collision exceptions to each other, both ways, so a grunt in the
+## lane neither stops the ball nor is shoved by it, and the ball is not a
+## wall a grunt walks into. Both ways, because an exception is one-sided: a
+## ball that ignores the grunt is still a thing the grunt's own step hits.
+func _register_enemy(enemy: MayoEnemy) -> void:
+	for other in _enemies:
+		if not is_instance_valid(other):
+			continue
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL \
+				or other.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			enemy.add_collision_exception_with(other)
+			other.add_collision_exception_with(enemy)
+	_enemies.push_back(enemy)
+
+
 func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 	var index := _enemies.size()
 	var enemy := MayoEnemy.new()
@@ -3815,7 +3833,7 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 		enemy.match_player_speed(_local.player.walk_speed, speed_fraction)
 	enemy.nav = _nav
 	enemy.position = Vector3(at.x, enemy.stand_height(), at.z)
-	_enemies.push_back(enemy)
+	_register_enemy(enemy)
 	if kind == MayoTutorial.KIND_BOWLING_TOMATO:
 		for ball_index in MayoEnemy.BALLS_PER_BOWLER:
 			var ball := MayoEnemy.new()
@@ -3826,7 +3844,7 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 			ball.burst_radius = 1.5
 			ball.position = MayoEnemy.BALL_PARK
 			enemy.ball_pool.push_back(ball)
-			_enemies.push_back(ball)
+			_register_enemy(ball)
 	return index
 
 

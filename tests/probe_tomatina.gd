@@ -237,6 +237,16 @@ func _run() -> void:
 			Vector3.RIGHT)
 		var launched_at := ball.global_position
 		_check(ball.is_ball_live(), "the ball did not go live")
+		# A grunt stood in the lane: the ball rolls through it to the wall.
+		var blocker: MayoEnemy = null
+		for index in scene.enemy_count():
+			var candidate: MayoEnemy = scene.enemy_at(index)
+			if candidate.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and candidate.is_alive():
+				blocker = candidate
+				break
+		_check(blocker != null, "no live grunt to stand in the lane")
+		if blocker != null:
+			blocker.global_position = launched_at + Vector3.RIGHT * 2.5
 		var burst_at := Vector3.INF
 		for _tick in 240:
 			ball.advance(1.0 / 60.0, [])
@@ -250,6 +260,11 @@ func _run() -> void:
 			"the ball left the ground on its way to the wall")
 		_check(burst_at != Vector3.INF and burst_at.x > launched_at.x + 2.0,
 			"the ball burst before it had rolled anywhere")
+		if blocker != null:
+			_check(burst_at != Vector3.INF and burst_at.x > blocker.global_position.x + blocker.radius,
+				"the ball stopped at the grunt in the lane instead of rolling through it")
+			_check(blocker.global_position.distance_to(launched_at + Vector3.RIGHT * 2.5) < 0.1,
+				"the ball shoved the grunt in the lane")
 		_check(not ball.is_ball_live() and ball.global_position.y < -40.0,
 			"the ball did not park after bursting")
 		_check(ball.burst_radius > 0.0, "the ball has nothing to burst with")
