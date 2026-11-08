@@ -355,7 +355,13 @@ func _run() -> void:
 	scene._local.aim_yaw = 0.0
 	scene._local.sauce = 0.0
 	var health := shoved.health
-	scene.tomato_action(peer, scene.ESCAPE_SHOVE_ACTION)
+	var shove_key := InputEventKey.new()
+	shove_key.pressed = true
+	shove_key.physical_keycode = KEY_Q
+	scene._unhandled_input(shove_key)
+	_check(scene._escape_shove_times.is_empty(), "the old Q binding still triggers shove")
+	shove_key.physical_keycode = KEY_V
+	scene._unhandled_input(shove_key)
 	_check(shoved._escape_left > 0.0 and shoved.health == health, "empty-tank shove did not open a non-damaging escape")
 	_check(shoved.get_collision_exceptions().has(player), "shove did not open player clearance")
 	for _frame in 30:
@@ -404,6 +410,8 @@ func _run() -> void:
 		"stage 1's street changed after stage 2 was built")
 	_check(festival.enemy_count() > 0 and festival.enemy_at(0).kind == MayoEnemy.EnemyKind.BRUISER,
 		"stage 1's roster is not its own")
+	festival.tomato_action(festival._local.peer_id, festival.ESCAPE_SHOVE_ACTION)
+	_check(festival._escape_shove_times.is_empty(), "stage 1 accepted a shove request")
 	festival.free()
 	await process_frame
 

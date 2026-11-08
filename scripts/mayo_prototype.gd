@@ -2095,7 +2095,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 	if event is InputEventKey and event.pressed and not event.echo:
-		if event.physical_keycode == KEY_Q:
+		if event.physical_keycode == KEY_V and stage_mode and map_kind == MapKind.TOMATINA:
 			_request_tomato_action(ESCAPE_SHOVE_ACTION)
 			get_viewport().set_input_as_handled()
 			return
@@ -4540,9 +4540,9 @@ func _update_stage_objective(alive := -1) -> void:
 		return
 	if map_kind == MapKind.TOMATINA:
 		if not _horde_spawned:
-			_stage_objective.text = "목표 · 광장에서 사이렌 작동 [E] · 밀치기 [Q]"
+			_stage_objective.text = "목표 · 광장에서 사이렌 작동 [E] · 밀치기 [V]"
 		elif _finale_elapsed < FINALE_DURATION:
-			_stage_objective.text = "소방차 도착까지 %d초 · 밀치기 [Q]" % ceili(FINALE_DURATION - _finale_elapsed)
+			_stage_objective.text = "소방차 도착까지 %d초 · 밀치기 [V]" % ceili(FINALE_DURATION - _finale_elapsed)
 		else:
 			_stage_objective.text = "목표 · 생존 팀원과 소방차로 이동 · 호스 [E]"
 		if _local != null:
@@ -6789,7 +6789,7 @@ func _use_fire_hose(shooter: Shooter) -> void:
 
 
 func _escape_shove(shooter: Shooter) -> void:
-	if not _input_enabled or not stage_mode:
+	if not _input_enabled or not stage_mode or map_kind != MapKind.TOMATINA:
 		return
 	var now := Time.get_ticks_msec()
 	if now < int(_escape_shove_times.get(shooter.peer_id, 0)):
