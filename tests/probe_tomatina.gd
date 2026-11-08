@@ -50,6 +50,47 @@ func _run() -> void:
 	await _frames(2)
 	scene.set_process_unhandled_input(false)
 
+	var village: Node3D = scene.get_node_or_null("TomatinaVillageArt")
+	_check(village != null and village.get_child_count() > 30, "the Blender village kit was not placed")
+	if village != null:
+		var placed := {}
+		for batch: MultiMeshInstance3D in village.get_children():
+			_check(batch.multimesh.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] != null,
+				"%s lost the Blender vertex colors" % batch.name)
+			var model := str(batch.name).get_slice("_", 0)
+			placed[model] = int(placed.get(model, 0)) + batch.multimesh.instance_count
+		_check(int(placed.get("TomatoTruck", 0)) == 4, "loaded tomato trucks are missing")
+		_check(int(placed.get("OverturnedTomatoTruck", 0)) == 2, "overturned tomato trucks are missing")
+		_check(int(placed.get("TomatoCrateStack", 0)) == 18, "tomato crate stacks are missing")
+		for prop in TomatinaMap.AFTERMATH_MODELS:
+			_check(int(placed.get(prop[0], 0)) >= 6,
+				"festival aftermath is missing %s obstacles" % prop[0])
+		_check(int(placed.get("CrushedTomatoes", 0)) > 40, "crushed tomatoes are missing from the streets")
+		_check(int(placed.get("BrokenBoards", 0)) > 25, "broken boards are missing from the streets")
+		_check(int(placed.get("Brazier", 0)) == TomatinaMap.SAFE_ROOMS.size(),
+			"a refuge is missing its central campfire")
+		_check(not placed.has("RefugeFireplace"), "a refuge still has a wall fireplace")
+
+	var bunting := scene.get_node_or_null("FestivalBunting") as MeshInstance3D
+	_check(bunting != null and bunting.mesh.get_aabb().size.z > 700.0,
+		"festival decorations are missing from the length of the village")
+
+	var fires := get_nodes_in_group("tomatina_fire")
+	_check(fires.size() == TomatinaMap.SAFE_ROOMS.size(),
+		"the fires are missing from the refuges")
+	for fire: Node3D in fires:
+		var index := TomatinaMap.safe_room_at(StreetMap.cell_at(fire.position))
+		_check(index >= 0, "a campfire is outside a refuge")
+		if index >= 0:
+			var room: Rect2i = TomatinaMap.SAFE_ROOMS[index]
+			var centre := TomatinaMap.at_cell(Vector2(room.position) + Vector2(room.size) * 0.5)
+			_check(centre.is_equal_approx(Vector3(fire.position.x, 0.0, fire.position.z)),
+				"a campfire is not centred in its refuge")
+		_check(fire.get_node_or_null("FlameVolume") is MeshInstance3D,
+			"a fire is missing its flame volume")
+		_check(fire.get_node_or_null("Embers") is GPUParticles3D,
+			"a fire is missing its ember emitter")
+
 	# --- the map ---
 	_check(scene.map_kind == scene.MapKind.TOMATINA, "stage 2 scene did not select the Tomatina map")
 	_check(StreetMap.layout_override is TomatinaMap, "the lattice is not carrying the Tomatina design")
@@ -63,7 +104,16 @@ func _run() -> void:
 	_check(scene._nav != null, "stage 2 built no router")
 	var route: PackedVector3Array = scene._nav.route(scene.spawn_position_for(0), truck_centre)
 	print("route from the start to the fire truck: %d waypoints" % route.size())
-	_check(route.size() > 10, "there is no walkable route from the start to the fire truck bay")
+	_check(absi(route.size() - 365) <= 18, "the route is outside the expanded length target")
+	for room in TomatinaMap.SAFE_ROOMS:
+		for y in range(room.position.y, room.end.y):
+			for x in range(room.position.x, room.end.x):
+				var cell := Vector2i(x, y)
+				if scene._nav.is_walkable(cell):
+					scene._nav.grid.set_point_solid(cell, true)
+		_check(scene._nav.route(scene.spawn_position_for(0), truck_centre).is_empty(),
+			"the main route can bypass a refuge")
+		scene._nav.build()
 	# And nothing on the lattice is cut off: a truck a cell and a half deep
 	# parked opposite another in a three-cell alley closes it, and the router
 	# would quietly route round the whole fork.
@@ -71,8 +121,9 @@ func _run() -> void:
 	for cell in StreetMap.floor_cells().keys():
 		if not StreetMap.blocked_cells().has(cell):
 			open[cell] = true
-	var reached := {Vector2i(29, 93): true}
-	var frontier := [Vector2i(29, 93)]
+	var start := StreetMap.cell_at(scene.spawn_position_for(0))
+	var reached := {start: true}
+	var frontier := [start]
 	while not frontier.is_empty():
 		var cell: Vector2i = frontier.pop_front()
 		for step in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
@@ -99,34 +150,56 @@ func _run() -> void:
 		if StreetMap.blocked_cells().has(Vector2i(i, int(TomatinaMap.TRUCK_ROW))):
 			cid_blocked += 1
 	_check(cid_blocked > 0 and cid_blocked < 4, "truck gap blocks %d of 4 cells" % cid_blocked)
-	_check(scene.refill_stations().size() == 22, "stage 2 does not have its twenty-two sauce trucks")
-
-	# Encounter pacing: no standing grunts in the entry or regroup bay.
-	for cell in TomatinaMap.grunt_cells():
-		_check(cell.y < 84.0, "a grunt occupies the quiet entry")
-		_check(cell.y < 46.0 or cell.y >= 56.0, "a grunt occupies the regroup approach")
-	var cover_names: Array[String] = []
-	for box in TomatinaMap.debris_boxes():
-		cover_names.push_back(str(box["name"]))
-	_check(cover_names.has("WestRangedCover") and cover_names.has("EastRangedCover"),
-		"a fork is missing its ranged-attack cover")
+	var stations: Array = scene.refill_stations()
+	var crates := stations.filter(func(station: Dictionary) -> bool:
+		return station.has("half_footprint"))
+	_check(crates.size() == 53 and stations.size() - crates.size() == 32,
+		"stage 2 is missing tomato crates or sauce trucks")
+	var refill_player: MayoPlayer = scene._local.player
+	var original_position := refill_player.global_position
+	var truck: Dictionary = stations[crates.size()]
+	refill_player.global_position = truck["position"] + (truck["facing"] as Vector3)
+	scene._local.sauce = 0.1
+	_check(scene.local_at_station(), "the sauce truck did not show the proximity prompt")
+	_check(not scene.can_select_refill_sauce(0) and not scene.can_select_refill_sauce(1)
+		and scene.can_select_refill_sauce(2), "the proximity prompt offers the wrong sauces")
+	_check(not scene.refill_for(refill_player.peer_id, 0)
+		and not scene.refill_for(refill_player.peer_id, 1) and scene._local.sauce == 0.1,
+		"a sauce truck accepted mayo or mustard")
+	_check(scene.refill_for(refill_player.peer_id, 2) and scene._local.sauce == 1.0
+		and scene.local_sauce_kind() == 2, "a sauce truck did not refill with ketchup")
+	var crate_centre := TomatinaMap.at_cell(Vector2(28.0, 227.8))
+	for side in [-1.0, 1.0]:
+		refill_player.global_position = crate_centre + Vector3(1.95 * side, 1.28, 0.0)
+		var station: int = scene.station_in_reach(refill_player)
+		_check(station >= 0 and stations[station].has("half_footprint"),
+			"the tomato crate cannot be reached from both sides")
+		scene._local.sauce = 0.1
+		_check(not scene.refill_for(refill_player.peer_id, 0) and scene._local.sauce == 0.1,
+			"the tomato crate accepted mayo")
+		_check(scene.refill_for(refill_player.peer_id, 2) and scene._local.sauce == 1.0
+			and scene.local_sauce_kind() == 2, "the tomato crate did not refill with ketchup")
+	refill_player.global_position = original_position
+	_check(not scene.local_at_station(), "the supply prompt is visible away from a station")
+	_check(scene.find_children("SauceSupply*", "Label3D", true, false).is_empty(),
+		"a world-space supply label was left in the map")
 	for enemy in scene._enemies:
-		if enemy.has_meta("after_regroup"):
-			_check(enemy.global_position.z < TomatinaMap.at_cell(Vector2(30, 46)).z,
-				"an opening enemy was gated behind regroup")
+		if enemy.kind != MayoEnemy.EnemyKind.TOMATO_BALL:
+			_check(TomatinaMap.safe_room_at(StreetMap.cell_at(enemy.global_position)) < 0,
+				"an enemy spawned inside a refuge")
 	# --- the roster ---
 	var counts := {}
 	for index in scene.enemy_count():
 		var enemy: MayoEnemy = scene.enemy_at(index)
 		counts[enemy.kind] = int(counts.get(enemy.kind, 0)) + 1
 	print("roster: %s" % str(counts))
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) == TomatinaMap.GRUNT_COUNT, "encounter pack grunt count differs from plan")
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BRUTE, 0)) == 3, "not three brutes")
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) == TomatinaMap.grunt_cells().size(), "encounter pack grunt count differs from plan")
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BRUTE, 0)) == 4, "not four brutes")
 	_check(int(counts.get(MayoEnemy.EnemyKind.BOWLING_TOMATO, 0)) == 2, "not two bowlers")
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BALL, 0)) == 2 * MayoEnemy.BALLS_PER_BOWLER,
 		"the bowler did not bring its balls")
 	_check(int(counts.get(MayoEnemy.EnemyKind.KETCHUP_SPITTER, 0)) == 3, "not three spitters")
-	_check(int(counts.get(MayoEnemy.EnemyKind.CAPRESE_CRAWLER, 0)) == 2, "not two crawlers")
+	_check(int(counts.get(MayoEnemy.EnemyKind.CAPRESE_CRAWLER, 0)) == 3, "not three crawlers")
 	for index in scene.enemy_count():
 		var enemy: MayoEnemy = scene.enemy_at(index)
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
@@ -157,8 +230,8 @@ func _run() -> void:
 
 	# --- the floor ---
 	var floor_body: FloorContamination = scene._floor
-	var juicy := TomatinaMap.at_cell(Vector2(17.5, 63.0))
-	var clean := TomatinaMap.at_cell(Vector2(41.5, 66.0))
+	var juicy := TomatinaMap.at_cell(Vector2(4.2, 174.2))
+	var clean := TomatinaMap.at_cell(Vector2(29.2, 222.2))
 	var juicy_hits := 0
 	for dx in 6:
 		for dz in 6:
@@ -166,16 +239,16 @@ func _run() -> void:
 			if floor_body.thickness_at(at) > 0:
 				juicy_hits += 1
 				_check(floor_body.sauce_kind_at(at) == ContaminationGrid.KIND_KETCHUP,
-					"the juice in the west fork is not ketchup")
-				_check(not floor_body.is_slippery_at(at), "the juice in the west fork is slippery")
-	print("juice under 36 samples in the west fork: %d painted" % juicy_hits)
-	_check(juicy_hits > 10, "the west fork is not awash")
+					"the juice in the first juice alley is not ketchup")
+				_check(not floor_body.is_slippery_at(at), "the juice in the first juice alley is slippery")
+	print("juice under 36 samples in the first juice alley: %d painted" % juicy_hits)
+	_check(juicy_hits > 10, "the juice alley is not awash")
 	var clean_hits := 0
 	for dx in 6:
 		for dz in 6:
 			if floor_body.thickness_at(clean + Vector3(float(dx) * 0.3, 0.0, float(dz) * 0.3)) > 0:
 				clean_hits += 1
-	_check(clean_hits == 0, "the east fork has juice on it")
+	_check(clean_hits == 0, "the dry entry has juice on it")
 
 	# --- a grunt bursts ---
 	scene.set_physics_process(false)
@@ -277,12 +350,13 @@ func _run() -> void:
 		"the bowler has no pool")
 	if bowler != null and not bowler.ball_pool.is_empty():
 		var ball: MayoEnemy = bowler.ball_pool[0]
-		# Rolled east from just clear of the bowler, into the lane's east wall
+		# Rolled north from inside the lane into its side wall
 		# a cell and a half away. Clear of it, as the bowler itself throws:
 		# a ball started inside another body is pushed out of it first, and
 		# the way out is as likely to be down through the floor as anywhere.
-		ball.launch(bowler.global_position + Vector3.RIGHT * (bowler.radius + ball.radius + 0.3),
-			Vector3.RIGHT)
+		var launch := TomatinaMap.at_cell(Vector2(23.4, 22.8))
+		launch.y = bowler.global_position.y
+		ball.launch(launch, Vector3.FORWARD)
 		var launched_at := ball.global_position
 		_check(ball.is_ball_live(), "the ball did not go live")
 		# A grunt stood in the lane: the ball rolls through it to the wall.
@@ -294,7 +368,7 @@ func _run() -> void:
 				break
 		_check(blocker != null, "no live grunt to stand in the lane")
 		if blocker != null:
-			blocker.global_position = launched_at + Vector3.RIGHT * 2.5
+			blocker.global_position = launched_at + Vector3.FORWARD * 2.5
 		var burst_at := Vector3.INF
 		for _tick in 240:
 			ball.advance(1.0 / 60.0, [])
@@ -306,12 +380,12 @@ func _run() -> void:
 		_check(burst_at != Vector3.INF, "the bowled tomato never met a wall")
 		_check(burst_at != Vector3.INF and absf(burst_at.y - launched_at.y) < 0.2,
 			"the ball left the ground on its way to the wall")
-		_check(burst_at != Vector3.INF and burst_at.x > launched_at.x + 2.0,
+		_check(burst_at != Vector3.INF and burst_at.z < launched_at.z - 2.0,
 			"the ball burst before it had rolled anywhere")
 		if blocker != null:
-			_check(burst_at != Vector3.INF and burst_at.x > blocker.global_position.x + blocker.radius,
+			_check(burst_at != Vector3.INF and burst_at.z < blocker.global_position.z,
 				"the ball stopped at the grunt in the lane instead of rolling through it")
-			_check(blocker.global_position.distance_to(launched_at + Vector3.RIGHT * 2.5) < 0.1,
+			_check(blocker.global_position.distance_to(launched_at + Vector3.FORWARD * 2.5) < 0.1,
 				"the ball shoved the grunt in the lane")
 		_check(not ball.is_ball_live() and ball.global_position.y < -40.0,
 			"the ball did not park after bursting")
@@ -369,6 +443,22 @@ func _run() -> void:
 	_check(not shoved.get_collision_exceptions().has(player), "shove left a permanent collision exception")
 
 	var teammate: MayoPlayer = scene.create_avatar(2, 1, false).player
+	var refuge := TomatinaMap.at_cell(Vector2(TomatinaMap.SAFE_ROOMS[0].get_center())) \
+		+ Vector3.UP * 1.28
+	player.global_position = refuge
+	teammate.global_position = scene.spawn_position_for(1)
+	player.health = 30.0
+	scene._update_tomatina_checkpoint([player, teammate])
+	_check(scene._tomatina_checkpoint == -1 and player.health == 30.0,
+		"the refuge activated before the party regrouped")
+	teammate.global_position = refuge + Vector3.RIGHT * 2.0
+	teammate.health = 45.0
+	scene._update_tomatina_checkpoint([player, teammate])
+	_check(scene._tomatina_checkpoint == 0 and player.health == player.max_health \
+		and teammate.health == teammate.max_health and scene._local.sauce == 1.0,
+		"the refuge failed to record the checkpoint and refill the party")
+	scene._damage_player(player, player.max_health * 2.0)
+	_check(player.state == MayoPlayer.State.NORMAL, "the refuge did not protect the player")
 	shoved.global_position = nearby
 	player.global_position = nearby + Vector3.RIGHT * 3.0
 	teammate.global_position = nearby + Vector3.BACK * 4.0
@@ -389,7 +479,8 @@ func _run() -> void:
 	_check(shoved._choose_pursuit_target([player, teammate], 30.0, {peer: 6}) == teammate,
 		"a horde grunt ignored a nearby teammate when its first target was crowded")
 	shoved.horde_alert = false
-	player.global_position = nearby
+	shoved.global_position = nearby + Vector3.LEFT * 8.0
+	player.finish_respawn(nearby + Vector3.UP * 0.08)
 	teammate.global_position = nearby + Vector3.RIGHT * 1.6
 	# --- down: the body crawls at 40% of a walk, and is then picked up ---
 	scene._damage_player(teammate, teammate.max_health * 2.0)
@@ -411,6 +502,8 @@ func _run() -> void:
 			crawled, teammate.walk_speed * 0.5])
 	_check(teammate.state == MayoPlayer.State.DEAD, "crawling stood the teammate up")
 	await _frames(5)
+	player.finish_respawn(teammate.global_position + Vector3.LEFT * 1.6)
+	_check(scene._rescue_in_reach(player, teammate), "the rescuer is outside interaction range")
 	var hud: Dictionary = scene.rescue_hud_state()
 	_check(not hud.get("downed", true) and hud.get("downed_teammates", []).size() == 1
 		and hud.get("in_reach", false),

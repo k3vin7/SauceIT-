@@ -10,56 +10,92 @@ extends RefCounted
 ## merger, the router and the floor plane all keep working without a line
 ## changed in any of them.
 ##
-## The route follows the real festival: in at the village edge, up Calle San
-## Luis, which forks around a block (the short way is awash with juice, the
-## long way is clean), back together on Calle del Cid under an overturned
-## tomato truck, out into the Plaza del Pueblo, and finally the fire truck bay
-## on its far side. y runs south, so the start is at the bottom and the finale
-## is at the top, the way `StreetMap` reads its own drawing.
-
-## Which stage this is, for anything that keys a seed off the map.
+## Trace the village from the reference: an irregular south-to-north spine
+## with the refuge courts staggered east, west and east.
 const SEED := 0x70A7A70
-
-## The streets, as lattice rectangles. Consecutive ones overlap by at least a
-## cell: the router moves in four directions, so an overlap is what makes a
-## junction passable. Ordinary alleys are five or six cells across so a party
-## can dodge and pass. The overturned-truck stretch stays a short chokepoint.
-const SEGMENTS: Array[Rect2i] = [
-	Rect2i(26, 90, 8, 6),    # 0 the village edge: start plaza, sauce truck
-	Rect2i(27, 70, 6, 21),   # 1 Calle San Luis, north out of the start
-	Rect2i(15, 69, 14, 5),   # 2 west fork, across
-	Rect2i(15, 55, 5, 16),   # 3 west fork, up
-	Rect2i(15, 53, 15, 5),   # 4 west fork, back to the Cid
-	Rect2i(31, 69, 13, 5),   # 5 east fork, across
-	Rect2i(39, 49, 5, 22),   # 6 east fork, up (the bowling lane)
-	Rect2i(30, 49, 14, 5),   # 7 east fork, back to the Cid
-	Rect2i(25, 48, 10, 8),    # 8 Calle del Cid, where the forks rejoin
-	Rect2i(28, 36, 4, 13),   # 9 Calle del Cid, the overturned truck
-	Rect2i(20, 22, 20, 15),  # 10 Plaza del Pueblo
-	Rect2i(27, 16, 6, 7),    # 11 the fire truck bay
-	Rect2i(26, 36, 8, 6),    # 12 room to dodge and cover teammates beyond the wreck
+const START_PLAZA := Rect2i(26, 224, 8, 6)
+const FINISH_APPROACH := Rect2i(28, 36, 4, 9)
+const PLAZA := Rect2i(20, 22, 20, 15)
+const FIRE_BAY := Rect2i(27, 16, 6, 7)
+const PLAZA_CORNERS := [
+	Vector2i(20, 22), Vector2i(21, 22), Vector2i(20, 23),
+	Vector2i(38, 22), Vector2i(39, 22), Vector2i(39, 23),
+	Vector2i(20, 35), Vector2i(20, 36), Vector2i(21, 36),
+	Vector2i(39, 35), Vector2i(39, 36), Vector2i(38, 36),
 ]
+const SAFE_ROOMS: Array[Rect2i] = [
+	Rect2i(31, 187, 12, 10),
+	Rect2i(9, 117, 12, 12),
+	Rect2i(35, 62, 12, 10),
+]
+const SAFE_ROOM_NAMES := ["급수 마당", "시장 피난처", "축제 본부"]
 
-const START_SEGMENT := 0
-const PLAZA_SEGMENT := 10
-const FIRE_BAY_SEGMENT := 11
-
-## Where the overturned truck lies across Calle del Cid: three of the four
-## cells, leaving one cell of gap on the east side with a tomato heap in it.
+const ROUTE_POINTS := [
+	[
+		Vector2(29.2, 225.1), Vector2(29.2, 221.1), Vector2(26, 214.7), Vector2(29.2, 206.8),
+		Vector2(28.4, 199.6), Vector2(35.2, 199.1), Vector2(36.4, 192.5),
+	],
+	[
+		Vector2(36.4, 192.5), Vector2(30, 190.9), Vector2(17.3, 190.9), Vector2(8.5, 186.9),
+		Vector2(4.6, 178.9), Vector2(3.8, 171), Vector2(10.1, 166.2), Vector2(20.5, 163),
+		Vector2(25.2, 157.5), Vector2(28.4, 149.5), Vector2(38, 146.4), Vector2(45.1, 142.4),
+		Vector2(46.7, 135.2), Vector2(45.1, 128.9), Vector2(38.7, 124.9), Vector2(32.4, 122.5),
+		Vector2(16.5, 122.5),
+	],
+	[
+		Vector2(16.5, 122.5), Vector2(10.9, 114.6), Vector2(6.9, 108.2), Vector2(10.9, 102.6),
+		Vector2(15.7, 97.1), Vector2(17.3, 89.9), Vector2(21.3, 84.3), Vector2(28.4, 82),
+		Vector2(33.2, 77.2), Vector2(33.2, 70.8), Vector2(29.2, 66.1), Vector2(41.1, 66.1),
+	],
+	[
+		Vector2(41.1, 66.1), Vector2(38, 60.5), Vector2(31.6, 58.1), Vector2(21.3, 56.5),
+		Vector2(16.5, 52.5), Vector2(18.9, 47), Vector2(25.2, 44.6), Vector2(29.8, 43),
+		Vector2(30, 39),
+	],
+]
+## Distance along each leg and its half-width in cells. The profiles alternate
+## short pinches with wider markets so the bends reveal distinct spaces.
+const ROAD_WIDTHS := [
+	[Vector2(0, 2.45), Vector2(0.13, 1.75), Vector2(0.23, 1.63), Vector2(0.32, 2.48),
+		Vector2(0.40, 2.88), Vector2(0.54, 3.88), Vector2(0.65, 3.28), Vector2(0.76, 2.32),
+		Vector2(0.87, 1.72), Vector2(0.94, 2.28), Vector2(1, 2.45)],
+	[Vector2(0, 2.45), Vector2(0.12, 1.76), Vector2(0.21, 2.53), Vector2(0.30, 3.70),
+		Vector2(0.37, 3.48), Vector2(0.44, 1.82), Vector2(0.53, 3.10), Vector2(0.63, 3.44),
+		Vector2(0.73, 1.72), Vector2(0.81, 2.20), Vector2(0.91, 3.28), Vector2(1, 2.45)],
+	[Vector2(0, 2.45), Vector2(0.12, 2.10), Vector2(0.23, 1.68), Vector2(0.30, 2.83),
+		Vector2(0.37, 3.65), Vector2(0.47, 2.40), Vector2(0.55, 1.68), Vector2(0.63, 2.66),
+		Vector2(0.69, 3.33), Vector2(0.76, 3.77), Vector2(0.85, 1.76), Vector2(1, 2.45)],
+	[Vector2(0, 2.45), Vector2(0.14, 1.85), Vector2(0.24, 2.45), Vector2(0.36, 3.43),
+		Vector2(0.43, 3.35), Vector2(0.51, 2.72), Vector2(0.60, 1.75), Vector2(0.71, 2.90),
+		Vector2(0.78, 2.75), Vector2(0.87, 1.78), Vector2(0.96, 2.23), Vector2(1, 2.45)],
+]
+const ROAD_POCKETS := [
+	[1, Rect2i(0, 168, 5, 4)],
+	[1, Rect2i(46, 137, 5, 4)],
+	[2, Rect2i(11, 95, 5, 4)],
+]
+# Smaller side passages end at houses and never bypass a refuge.
+const SIDE_ALLEYS := [
+	[0, [Vector2(29.2, 206.8), Vector2(24, 203.9), Vector2(20, 199.4), Vector2(17, 196.2)]],
+	[1, [Vector2(10.1, 166.2), Vector2(10, 159), Vector2(6.8, 155.2), Vector2(7.8, 149.4)]],
+	[1, [Vector2(40.5, 126), Vector2(43.2, 120.4), Vector2(41.5, 114.2), Vector2(36.7, 111.8)]],
+	[2, [Vector2(16.1, 95.4), Vector2(21.7, 96.3), Vector2(27.1, 97.8), Vector2(31.1, 95.1)]],
+	[3, [Vector2(32.2, 58.4), Vector2(36.2, 54.3), Vector2(40.7, 53), Vector2(43.5, 48.6)]],
+]
 const TRUCK_ROW := 44.0
 const SIREN_CELL := Vector2(25.5, 27.5)
-
-## Where the street is already under tomato juice before anyone arrives: the
-## short fork end to end, the chokepoint under the overturned truck, and the
-## middle of the plaza where the fight is going to be. Painted solid, wall to
-## wall: the real street is a red river by noon, not a spatter.
 const JUICE_ZONES: Array[Rect2i] = [
-	Rect2i(15, 69, 14, 5),
-	Rect2i(15, 55, 5, 16),
-	Rect2i(15, 53, 15, 5),
+	Rect2i(1, 168, 16, 21),
+	Rect2i(23, 145, 22, 14),
+	Rect2i(8, 90, 13, 20),
+	Rect2i(15, 47, 15, 12),
 	Rect2i(28, 42, 4, 6),
-	Rect2i(26, 26, 8, 7),
 ]
+
+static var _floor_legs: Dictionary
+static var _floor_bounds := Rect2i()
+static var _routes: Array[PackedVector2Array] = []
+
 
 ## Where the start arrow is drawn, in metres from the lattice origin, which is
 ## the middle of the start plaza. The arrow is 22 m nose to tail, so drawn at
@@ -80,19 +116,19 @@ const SPAWNS := [
 ]
 
 
+static func start_arrow() -> Vector3:
+	return START_ARROW + _start_offset()
+
+
 static func spawn_position(slot: int) -> Vector3:
-	return SPAWNS[slot % SPAWNS.size()]
+	return SPAWNS[slot % SPAWNS.size()] + _start_offset()
 
 
-## The elites, as `[kind, cell]` with the kind named as `MayoEnemy.EnemyKind`
-## reads it. A cell may be fractional: it is a position, not an index. Placed
-## by hand because each is a set piece: a bowler at the top of a straight, a
-## brute where the forks rejoin, a spitter covering a crowd.
-const ELITES := [
-	["BOWLING_TOMATO", Vector2(30.0, 70.5)],
-	["KETCHUP_SPITTER", Vector2(16.5, 54.5)],
-	["CAPRESE_CRAWLER", Vector2(22.5, 54.5)],
-	["BOWLING_TOMATO", Vector2(41.5, 51.5)],
+static func _start_offset() -> Vector3:
+	return Vector3.BACK * ((START_PLAZA.position.y - 90) * StreetMap.CELL)
+
+
+const PLAZA_ELITES := [
 	["TOMATO_BRUTE", Vector2(30.5, 37.5)],
 	["CAPRESE_CRAWLER", Vector2(23.5, 33.5)],
 	["TOMATO_BRUTE", Vector2(30.0, 29.5)],
@@ -100,68 +136,97 @@ const ELITES := [
 	["KETCHUP_SPITTER", Vector2(24.5, 28.5)],
 	["KETCHUP_SPITTER", Vector2(36.0, 26.5)],
 ]
+const ALLEY_ELITES := [
+	["KETCHUP_SPITTER", 0, 0.61], ["CAPRESE_CRAWLER", 0, 0.83],
+	["BOWLING_TOMATO", 1, 0.29], ["BOWLING_TOMATO", 1, 0.81],
+	["TOMATO_BRUTE", 2, 0.45], ["CAPRESE_CRAWLER", 2, 0.83],
+]
+# Each group is centred on a distance along its leg.
+const GRUNT_PACKS := [
+	[0, 0.19, 8], [0, 0.46, 10], [0, 0.77, 12],
+	[1, 0.18, 9], [1, 0.36, 10], [1, 0.57, 10], [1, 0.83, 10],
+	[2, 0.21, 10], [2, 0.51, 12], [2, 0.81, 10],
+	[3, 0.36, 10], [3, 0.73, 10],
+]
 
-## How many grunts stand on the street before the horde.
-const GRUNT_COUNT := 60
+
+static func safe_room_at(cell: Vector2i) -> int:
+	for index in SAFE_ROOMS.size():
+		if SAFE_ROOMS[index].has_point(cell):
+			return index
+	return -1
 
 
-## The standing roster: the elites, then the grunts. Grunts are dealt onto the
-## street rather than listed (see `grunt_cells`), so the count is one number
-## and none of them is ever inside a truck.
+## Pursuit stays within the curved leg where an enemy spawned.
+static func encounter_at(cell: Vector2i) -> int:
+	_ensure_layout()
+	return int(_floor_legs.get(cell, -1))
+
+
 static func roster() -> Array:
-	var out := ELITES.duplicate()
-	for cell in grunt_cells():
+	var props := debris_boxes()
+	props.append_array(refill_boxes())
+	props.push_back(fire_truck_box())
+	var taken := _box_cells(props)
+	var out := PLAZA_ELITES.duplicate()
+	for elite in PLAZA_ELITES:
+		taken[Vector2i((elite[1] as Vector2).floor())] = true
+	for entry in ALLEY_ELITES:
+		var pose := _route_pose(int(entry[1]), float(entry[2]))
+		var cells := _nearby_open_cells(int(entry[1]), pose[0], taken, 14.0)
+		if not cells.is_empty():
+			var cell: Vector2i = cells[0]
+			taken[cell] = true
+			out.push_back([entry[0], Vector2(cell) + Vector2(0.5, 0.5)])
+	for cell in _grunt_cells(taken):
 		out.push_back(["TOMATO_GRUNT", cell])
 	return out
 
 
-## `GRUNT_COUNT` positions in encounter packs along the route from the foot of
-## Calle San Luis to the plaza: never in the start plaza or the fire bay,
-## never in a cell a prop stands in (the tomato heap included), never in an
-## elite's cell. A pure function of the constants, so every peer agrees.
 static func grunt_cells() -> Array[Vector2]:
-	var props: Array[Dictionary] = debris_boxes()
-	props.append_array(refill_boxes())
-	props.push_back(fire_truck_box())
-	var taken := _box_cells(props)
-	for elite in ELITES:
-		var at: Vector2 = elite[1]
-		taken[Vector2i(int(floor(at.x)), int(floor(at.y)))] = true
-	# Nothing within two cells of the start plaza either: the first grunt is
-	# up the street, not on the point of the arrow.
-	var plaza_edge: int = SEGMENTS[START_SEGMENT].position.y - 2
-	var candidates: Array[Vector2i] = []
-	for index in range(START_SEGMENT + 1, SEGMENTS.size()):
-		if index == FIRE_BAY_SEGMENT:
-			continue
-		var rect: Rect2i = SEGMENTS[index]
-		for j in rect.size.y:
-			for i in rect.size.x:
-				var cell := rect.position + Vector2i(i, j)
-				if taken.has(cell) or cell.y >= plaza_edge:
-					continue
-				taken[cell] = true
-				candidates.push_back(cell)
-	# Encounter packs leave the entry, connecting streets and regroup bay empty.
-	var packs := [
-		[Rect2i(27, 80, 6, 3), 6],
-		[Rect2i(25, 69, 8, 5), 8],
-		[Rect2i(15, 58, 5, 5), 8],
-		[Rect2i(39, 58, 5, 5), 8],
-		[Rect2i(26, 37, 2, 5), 5],
-		[Rect2i(32, 37, 2, 5), 5],
-		[Rect2i(20, 24, 20, 10), 20],
-	]
+	var cells: Array[Vector2] = []
+	for entry in roster():
+		if entry[0] == "TOMATO_GRUNT":
+			cells.push_back(entry[1])
+	return cells
+
+
+static func _grunt_cells(taken: Dictionary) -> Array[Vector2]:
 	var out: Array[Vector2] = []
-	for pack in packs:
-		var available: Array[Vector2i] = []
-		for cell in candidates:
-			if (pack[0] as Rect2i).has_point(cell):
-				available.push_back(cell)
-		for k in mini(int(pack[1]), available.size()):
-			var pick := int(floor((float(k) + 0.5) * available.size() / float(pack[1])))
-			var cell := available[mini(pick, available.size() - 1)]
-			out.push_back(Vector2(cell) + Vector2(0.5, 0.5))
+	for pack in GRUNT_PACKS:
+		var leg: int = pack[0]
+		var pose := _route_pose(leg, float(pack[1]))
+		var nearby := _nearby_open_cells(leg, pose[0], taken, 13.0)
+		_add_grunt_pack(out, nearby, int(pack[2]), taken)
+	var plaza := _nearby_open_cells(3, Vector2(30, 29), taken, 11.0)
+	plaza = plaza.filter(func(cell: Vector2i) -> bool:
+		return PLAZA.has_point(cell) and cell.y >= 24 and cell.y < 34)
+	_add_grunt_pack(out, plaza, 20, taken)
+	return out
+
+
+static func _add_grunt_pack(out: Array[Vector2], cells: Array[Vector2i],
+		count: int, taken: Dictionary) -> void:
+	var span := mini(cells.size(), count * 3)
+	count = mini(count, span)
+	for index in count:
+		var pick := int((float(index) + 0.5) * span / count)
+		var cell := cells[pick]
+		taken[cell] = true
+		out.push_back(Vector2(cell) + Vector2(0.5, 0.5))
+
+
+static func _nearby_open_cells(leg: int, at: Vector2, taken: Dictionary,
+		reach: float) -> Array[Vector2i]:
+	_ensure_layout()
+	var out: Array[Vector2i] = []
+	for cell: Vector2i in _floor_legs:
+		if _floor_legs[cell] == leg and not taken.has(cell) \
+				and (Vector2(cell) + Vector2(0.5, 0.5)).distance_squared_to(at) < reach * reach:
+			out.push_back(cell)
+	out.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		return (Vector2(a) + Vector2(0.5, 0.5)).distance_squared_to(at) \
+			< (Vector2(b) + Vector2(0.5, 0.5)).distance_squared_to(at))
 	return out
 
 
@@ -180,19 +245,107 @@ const HORDE_EDGES := [
 # --- the three calls StreetMap forwards ---------------------------------------
 
 static func floor_cells() -> Dictionary:
-	var cells := {}
-	for rect in SEGMENTS:
-		for j in range(rect.position.y, rect.end.y):
-			for i in range(rect.position.x, rect.end.x):
-				cells[Vector2i(i, j)] = true
-	return cells
+	_ensure_layout()
+	return _floor_legs.duplicate()
 
 
 static func bounds() -> Rect2i:
-	var rect := SEGMENTS[0]
-	for i in range(1, SEGMENTS.size()):
-		rect = rect.merge(SEGMENTS[i])
-	return rect
+	_ensure_layout()
+	return _floor_bounds
+
+
+static func _ensure_layout() -> void:
+	if not _routes.is_empty():
+		return
+	for leg in ROUTE_POINTS.size():
+		var points: Array = ROUTE_POINTS[leg]
+		var curve := PackedVector2Array([points[0]])
+		for index in range(1, points.size()):
+			var a: Vector2 = points[index - 1]
+			var b: Vector2 = points[index]
+			curve.push_back(a.lerp(b, 0.22))
+			curve.push_back(a.lerp(b, 0.78))
+		curve.push_back(points.back())
+		_routes.push_back(curve)
+		var total := _curve_length(curve)
+		var traveled := 0.0
+		for index in range(1, curve.size()):
+			var a := curve[index - 1]
+			var b := curve[index]
+			var next := traveled + a.distance_to(b)
+			_raster_segment(a, b, leg, 4.0, Vector2(traveled / total, next / total))
+			traveled = next
+	for alley in SIDE_ALLEYS:
+		var points: Array = alley[1]
+		for index in range(1, points.size()):
+			_raster_segment(points[index - 1], points[index], int(alley[0]), 1.23)
+	for pocket in ROAD_POCKETS:
+		_add_floor_rect(pocket[1], pocket[0])
+	_add_floor_rect(START_PLAZA, 0)
+	for rect in [FINISH_APPROACH, Rect2i(26, 44, 7, 3), Rect2i(26, 36, 8, 6), PLAZA, FIRE_BAY]:
+		_add_floor_rect(rect, 3)
+	for corner in PLAZA_CORNERS:
+		_floor_legs.erase(corner)
+	for room in SAFE_ROOMS:
+		_add_floor_rect(room, -1)
+	for cell: Vector2i in _floor_legs:
+		var pixel := Rect2i(cell, Vector2i.ONE)
+		_floor_bounds = pixel if not _floor_bounds.has_area() else _floor_bounds.merge(pixel)
+
+
+static func _raster_segment(a: Vector2, b: Vector2, leg: int,
+		radius: float, progress := Vector2(-1.0, -1.0)) -> void:
+	var span := b - a
+	var span_squared := span.length_squared()
+	if span_squared <= 0.0:
+		return
+	var low := Vector2i((a.min(b) - Vector2.ONE * radius).floor())
+	var high := Vector2i((a.max(b) + Vector2.ONE * radius).ceil())
+	for y in range(low.y, high.y):
+		for x in range(low.x, high.x):
+			var point := Vector2(x + 0.5, y + 0.5)
+			var fraction := clampf((point - a).dot(span) / span_squared, 0.0, 1.0)
+			var width := _road_radius(leg, lerpf(progress.x, progress.y, fraction)) \
+				if progress.x >= 0.0 else radius
+			if point.distance_squared_to(a + span * fraction) <= width * width:
+				_floor_legs[Vector2i(x, y)] = leg
+
+
+static func _add_floor_rect(rect: Rect2i, leg: int) -> void:
+	for y in range(rect.position.y, rect.end.y):
+		for x in range(rect.position.x, rect.end.x):
+			_floor_legs[Vector2i(x, y)] = leg
+
+
+static func _road_radius(leg: int, fraction: float) -> float:
+	var profile: Array = ROAD_WIDTHS[leg]
+	for index in range(1, profile.size()):
+		var next: Vector2 = profile[index]
+		if fraction <= next.x:
+			var previous: Vector2 = profile[index - 1]
+			var blend := inverse_lerp(previous.x, next.x, fraction)
+			return lerpf(previous.y, next.y, smoothstep(0.0, 1.0, blend))
+	return (profile.back() as Vector2).y
+
+
+static func _curve_length(curve: PackedVector2Array) -> float:
+	var length := 0.0
+	for index in range(1, curve.size()):
+		length += curve[index - 1].distance_to(curve[index])
+	return length
+
+
+static func _route_pose(leg: int, fraction: float) -> Array[Vector2]:
+	_ensure_layout()
+	var curve := _routes[leg]
+	var remaining := fraction * _curve_length(curve)
+	for index in range(1, curve.size()):
+		var segment := curve[index] - curve[index - 1]
+		var span := segment.length()
+		if remaining <= span and span > 0.0:
+			return [curve[index - 1] + segment * (remaining / span), segment / span]
+		remaining -= span
+	return [curve[-1], (curve[-1] - curve[-2]).normalized()]
 
 
 ## Street cells something is standing on. Every box a body cannot walk through
@@ -263,19 +416,18 @@ static func metre_box(centre: Vector2, size: Vector3, name := "",
 	}
 
 
-static func segment_rect_world(index: int) -> Rect2:
-	var rect: Rect2i = SEGMENTS[index]
+static func rect_world(rect: Rect2i) -> Rect2:
 	var corner := at_cell(Vector2(rect.position))
 	return Rect2(Vector2(corner.x, corner.z),
 		Vector2(float(rect.size.x), float(rect.size.y)) * StreetMap.CELL)
 
 
 static func plaza_rect() -> Rect2:
-	return segment_rect_world(PLAZA_SEGMENT)
+	return rect_world(PLAZA)
 
 
 static func fire_truck_zone() -> Rect2:
-	return segment_rect_world(FIRE_BAY_SEGMENT)
+	return rect_world(FIRE_BAY)
 
 
 static func in_rect(rect: Rect2, at: Vector3) -> bool:
@@ -284,86 +436,218 @@ static func in_rect(rect: Rect2, at: Vector3) -> bool:
 
 # --- props --------------------------------------------------------------------
 
-## The rubble in the alleys: what makes a fork a choice and a street a
-## chokepoint. Axis-aligned boxes, which is all a greybox needs.
+const AFTERMATH_MODELS := [
+	["CollapsedStall", Vector3(4.6, 1.85, 3.05)],
+	["OverturnedHandcart", Vector3(2.7, 1.6, 3.55)],
+	["CollapsedStoneWall", Vector3(4.1, 1.45, 1.9)],
+	["BrokenFestivalBarrier", Vector3(3.8, 1.6, 1.6)],
+]
+const AFTERMATH_STOPS := [
+	[0.12, 0.23, 0.38, 0.50, 0.56, 0.63, 0.72, 0.86],
+	[0.08, 0.18, 0.27, 0.36, 0.48, 0.59, 0.68, 0.80, 0.88, 0.96],
+	[0.10, 0.24, 0.35, 0.44, 0.55, 0.63, 0.73, 0.83, 0.94],
+	[0.12, 0.22, 0.34, 0.43, 0.54, 0.65, 0.76, 0.88],
+]
+
+
+static func is_aftermath_prop(box: Dictionary) -> bool:
+	return box.has("aftermath")
+
+
 static func debris_boxes() -> Array[Dictionary]:
 	var boxes: Array[Dictionary] = []
-	var booth := Color("7a5a3c")
-	var crate := Color("8c7a4a")
-	# West fork: short and awash. A fallen booth leaves half the alley.
-	boxes.push_back(metre_box(Vector2(16.75, 62.5), Vector3(2.8, 1.1, 0.7), "FallenBoothA", booth))
-	boxes.push_back(metre_box(Vector2(22.5, 70.75), Vector3(0.7, 1.1, 2.8), "FallenBoothB", booth))
-	# East fork: long and clean. Crates stagger the lane without closing it.
-	boxes.push_back(metre_box(Vector2(42.25, 60.5), Vector3(1.6, 1.2, 1.0), "CratesA", crate))
-	boxes.push_back(metre_box(Vector2(40.75, 55.5), Vector3(1.6, 1.2, 1.0), "CratesB", crate))
-	# Cover on the approach to each fork's ranged enemy; side routes stay open.
-	boxes.push_back(metre_box(Vector2(17.5, 64.5), Vector3(2.8, 1.25, 0.65), "WestRangedCover", booth))
-	boxes.push_back(metre_box(Vector2(41.0, 57.0), Vector3(1.8, 1.3, 1.0), "EastRangedCover", crate))
-	# Offset obstacles break straight pursuit without narrowing the full lane.
-	boxes.push_back(metre_box(Vector2(29.0, 78.0), Vector3(2.6, 1.0, 0.65), "OpeningBrokenStall", booth))
-	boxes.push_back(metre_box(Vector2(36.0, 71.5), Vector3(1.5, 1.1, 0.9), "ForkTomatoCrates", crate))
-	boxes.push_back(metre_box(Vector2(22.5, 32.0), Vector3(2.8, 1.1, 0.7), "PlazaBrokenStall", booth))
-	boxes.push_back(metre_box(Vector2(36.0, 33.0), Vector3(1.8, 1.3, 1.0), "PlazaTomatoCrates", crate))
-	# Staggered small props offer passing choices, not a wall across the street.
-	for entry in [
-		[Vector2(31.5, 85), Vector3(1.5, 1.1, 0.9), "EntryTomatoCrates"],
-		[Vector2(27.8, 74.5), Vector3(2.5, 1.0, 0.65), "ForkBrokenStall"],
-		[Vector2(20.5, 72.5), Vector3(1.5, 1.2, 0.9), "WestTomatoCrates"],
-		[Vector2(18.8, 66), Vector3(2.4, 1.0, 0.65), "WestBrokenStall"],
-		[Vector2(24.5, 56.5), Vector3(1.6, 1.2, 1.0), "WestExitCrates"],
-		[Vector2(40, 65), Vector3(1.5, 1.1, 0.9), "EastTomatoCrates"],
-		[Vector2(36, 52.5), Vector3(2.4, 1.1, 0.65), "EastExitStall"],
-		[Vector2(28.5, 40.5), Vector3(1.6, 1.2, 0.9), "TruckApproachCrates"],
-		[Vector2(26, 34.5), Vector3(2.6, 1.1, 0.65), "PlazaEntryStall"],
-		[Vector2(30, 27), Vector3(1.6, 1.2, 0.9), "PlazaCentreCrates"],
-		[Vector2(37.5, 25), Vector3(2.4, 1.1, 0.65), "PlazaSideStall"],
+	for leg in ROUTE_POINTS.size():
+		var count: int = [5, 8, 8, 6][leg]
+		for i in count:
+			var fraction := lerpf(0.13, 0.88, float(i) / (count - 1))
+			if leg == 3 and i == 1:
+				fraction = 0.36
+			elif leg == 3 and i == 2:
+				fraction = 0.45
+			var side := 1.0 if (i + leg) % 2 == 0 else -1.0
+			if (leg == 1 and i == 4) or (leg == 3 and i == 2):
+				side = 1.0
+			var at := _alley_side(leg, fraction, side * 1.66)
+			var stacked := i % 3 != 0
+			var label := "TomatoCrateStack" if stacked else "TomatoCrates"
+			var size := Vector3(2.7, 1.55, 1.45) if stacked else Vector3(2.6, 1.2, 1.1)
+			boxes.push_back(metre_box(at, size, "%s%02d" % [label, boxes.size()], Color("8c7a4a")))
+		for fraction in [0.25, 0.72]:
+			var offset := 1.84 if fraction < 0.5 else -1.84
+			if leg == 3 and fraction < 0.5:
+				fraction = 0.21
+			var at := _alley_side(leg, fraction, offset)
+			boxes.push_back(metre_box(at, Vector3(2.1, 1.25, 1.4), "MarketBarrels", Color("8c7a4a")))
+	# Smaller caches fill gaps between the larger trucks, beside the street.
+	for leg in ROUTE_POINTS.size():
+		var caches: Array = [
+			[Vector2(0.27, -1.76), Vector2(0.55, 1.72), Vector2(0.69, -1.77)],
+			[Vector2(0.15, 1.75), Vector2(0.37, 1.70), Vector2(0.57, -1.77), Vector2(0.93, 1.70)],
+			[Vector2(0.18, -1.72), Vector2(0.41, 1.76), Vector2(0.72, -1.76), Vector2(0.90, 1.70)],
+			[Vector2(0.26, 1.69), Vector2(0.46, -1.76), Vector2(0.73, -1.74)],
+		][leg]
+		for cache: Vector2 in caches:
+			_add_supply_crate(boxes, _alley_side(leg, cache.x, cache.y))
+	_add_supply_crate(boxes, Vector2(28.0, 227.8))
+	_add_supply_crate(boxes, Vector2(33.5, 30.5))
+	_add_supply_crate(boxes, Vector2(27.0, 34.2))
+	for leg in ROUTE_POINTS.size():
+		var fraction: float = [0.40, 0.53, 0.30, 0.51][leg]
+		var pose := _route_pose(leg, fraction)
+		var shoulder: float = [1.49, -1.93, 1.49, -1.49][leg]
+		var at := _alley_side(leg, fraction, shoulder)
+		boxes.push_back(_cargo_truck(at, pose[1], false))
+	for entry in [[0, 0.54, -1.68], [1, 0.32, 1.76], [2, 0.75, 1.66]]:
+		var at := _alley_side(int(entry[0]), float(entry[1]), float(entry[2]))
+		boxes.push_back(metre_box(at, Vector3(4.4, 3.4, 3.0), "PlazaStallAlley"))
+	for entry in [[1, 0.61, -1.73], [2, 0.37, 1.74], [3, 0.41, -1.77]]:
+		var at := _alley_side(int(entry[0]), float(entry[1]), float(entry[2]))
+		boxes.push_back(metre_box(at, Vector3(2.5, 1.0, 2.5), "PlazaTreeAlley"))
+	var wreck_pose := _route_pose(2, 0.67)
+	var wreck_at := _alley_side(2, 0.67, -1.28)
+	boxes.push_back(_cargo_truck(wreck_at, wreck_pose[1], true))
+	boxes.push_back(_cargo_truck(Vector2(28.9, TRUCK_ROW), Vector2.RIGHT, true))
+	for at in [
+		wreck_at + Vector2(0.58, -0.60), wreck_at + Vector2(0.37, 0.59),
+		wreck_at + Vector2(-0.51, -0.43),
+		Vector2(30.45, TRUCK_ROW + 0.46), Vector2(30.95, TRUCK_ROW - 0.04),
+		Vector2(30.4, TRUCK_ROW - 0.7), Vector2(29.4, TRUCK_ROW + 0.72),
 	]:
-		boxes.push_back(metre_box(entry[0], entry[1], entry[2], crate))
-	boxes.append_array(wreck_boxes())
-	_wrecked_truck(boxes, "Choke", Vector2(28.55, TRUCK_ROW), Vector2(29.8, TRUCK_ROW),
-		Vector2(28.8, TRUCK_ROW + 0.8), Vector2(29.5, TRUCK_ROW - 0.7))
-	return boxes
-
-
-## The bigger wreckage: what a street looks like after a lorry of tomatoes
-## and a crowd have been through it. Two kinds, both plain boxes, placed
-## where a wall or a corner would collect them and never across a whole
-## alley. **Rubble** is a building's corner come down: a couple of masonry
-## chunks, a piece of facade standing on its edge, and a slab lying flat,
-## low enough to be jumped and left out of the router's blocked cells.
-## **A wrecked food truck** is a body, its cab, the canopy that came off it
-## lying flat beside it (jumped, like the slab), and a crate or two that
-## fell out. Sizes in metres; the body is the sauce trucks' 2.6 m by 5.6 m.
-static func wreck_boxes() -> Array[Dictionary]:
-	var boxes: Array[Dictionary] = []
-	# Calle San Luis: the east wall's corner down near the top of the start,
-	# and a truck wrecked mid-street further up.
-	_rubble(boxes, "SanLuis", Vector2(32.5, 89.0), Vector2(31.9, 89.3), Vector2(32.5, 89.9))
-	_wrecked_truck(boxes, "SanLuis", Vector2(30.5, 82.5), Vector2(30.5, 81.1),
-		Vector2(31.6, 83.0), Vector2(29.4, 83.4))
-	# The west fork: rubble under the north wall going across, a wreck on the
-	# inner wall going up.
-	_rubble(boxes, "WestFork", Vector2(25.0, 69.4), Vector2(26.0, 69.3), Vector2(24.2, 70.0))
-	_wrecked_truck(boxes, "WestFork", Vector2(18.6, 61.5), Vector2(18.6, 60.1),
-		Vector2(17.9, 60.5), Vector2(18.0, 62.6))
-	# The east fork: a wreck going across, rubble where the way back meets
-	# the Cid.
-	_wrecked_truck(boxes, "EastFork", Vector2(33.5, 71.5), Vector2(34.9, 71.5),
-		Vector2(33.5, 72.5), Vector2(32.5, 70.6))
-	_rubble(boxes, "EastFork", Vector2(32.0, 49.4), Vector2(33.0, 49.3), Vector2(31.4, 50.0))
-	# Calle del Cid: a wreck where the forks rejoin, a chunk off the east
-	# wall before the overturned truck.
-	_wrecked_truck(boxes, "Cid", Vector2(29.0, 53.0), Vector2(29.0, 51.5),
-		Vector2(30.2, 53.0), Vector2(27.9, 54.0))
-	boxes.push_back(metre_box(Vector2(31.5, 37.0), Vector3(1.8, 1.3, 1.6), "CidRubble", RUBBLE))
-	# The plaza: a corner of the north-west block down, a wreck on the
-	# south-east side, a piece of the east facade between its trucks.
-	_rubble(boxes, "PlazaNW", Vector2(24.0, 23.3), Vector2(23.6, 22.7), Vector2(24.7, 24.1))
+		var spill := metre_box(at, Vector3(2.1, 0.09, 1.15), "CrushedTomatoes", Color("c54d2d"))
+		spill["jumpable"] = true
+		boxes.push_back(spill)
+	for room in SAFE_ROOMS:
+		for x in [room.position.x + 2.5, room.end.x - 2.5]:
+			boxes.push_back(metre_box(Vector2(x, room.position.y + 0.7),
+				Vector3(5.0, 2.4, 3.2), "RefugeTent", CANOPY))
+		for side in [-1.0, 1.0]:
+			_add_supply_crate(boxes, Vector2(float(room.get_center().x) + 4.0 * side, room.end.y - 0.76))
+		var centre := Vector2(room.position) + Vector2(room.size) * 0.5
+		boxes.push_back(metre_box(centre, Vector3(1.8, 0.6, 1.8), "RefugeBrazier", Color("b85b28")))
+	boxes.push_back(metre_box(Vector2(25.5, 26.5), Vector3(3.5, 4.8, 3.5), "SirenColumn"))
+	boxes.push_back(metre_box(Vector2(23.0, 34.5), Vector3(3, 1.1, 3), "PlazaTreeWest"))
+	boxes.push_back(metre_box(Vector2(37.0, 34.5), Vector3(3, 1.1, 3), "PlazaTreeEast"))
+	boxes.push_back(metre_box(Vector2(22.7, 25.0), Vector3(5, 3.4, 3.4), "PlazaStallWest"))
+	boxes.push_back(metre_box(Vector2(38.5, 27.7), Vector3(4, 3.4, 3.4), "PlazaStallEast"))
+	_rubble(boxes, "Entry", Vector2(31.4, 223.8), Vector2(31.7, 224.1), Vector2(31.2, 224.5))
+	boxes.push_back(metre_box(Vector2(22.5, 32.0), Vector3(2.6, 1.2, 1.1), "TomatoCrateStackPlazaWest"))
+	boxes.push_back(metre_box(Vector2(36.0, 33.0), Vector3(2.6, 1.2, 1.1), "TomatoCratesPlazaEast"))
+	boxes.push_back(metre_box(Vector2(30.0, 27.0), Vector3(2.6, 1.2, 1.1), "TomatoCratesPlazaCentre"))
 	_wrecked_truck(boxes, "Plaza", Vector2(34.5, 34.5), Vector2(35.9, 34.5),
 		Vector2(34.5, 33.5), Vector2(33.2, 33.9))
-	boxes.push_back(metre_box(Vector2(39.4, 31.5), Vector3(0.7, 3.0, 4.0), "PlazaFacade", RUBBLE))
-	boxes.push_back(metre_box(Vector2(38.8, 31.5), Vector3(1.6, 1.1, 1.4), "PlazaFacadeChunk", RUBBLE))
+	_add_festival_aftermath(boxes)
 	return boxes
+
+
+static func _add_festival_aftermath(boxes: Array[Dictionary]) -> void:
+	var occupied := boxes.duplicate()
+	occupied.append_array(refill_boxes())
+	occupied.push_back(fire_truck_box())
+	var taken := _box_cells(occupied)
+	_ensure_layout()
+	for leg in AFTERMATH_STOPS.size():
+		var stops: Array = AFTERMATH_STOPS[leg]
+		for index in stops.size():
+			var fraction: float = stops[index]
+			var pose := _route_pose(leg, fraction)
+			var kind := (index + leg * 3) % AFTERMATH_MODELS.size()
+			var side := 1.0 if (index + leg) % 2 == 0 else -1.0
+			var tangent := pose[1]
+			var shoulder := 1.55 if _road_radius(leg, fraction) >= 2.4 else 1.32
+			for offset: float in [side * shoulder, -side * shoulder, side * 0.96, -side * 0.96]:
+				var centre := pose[0] + tangent.orthogonal() * offset * (_road_radius(leg, fraction) / 2.45)
+				var facing := _aftermath_facing(tangent, kind)
+				if _try_add_aftermath(boxes, taken, centre, facing, leg, kind):
+					break
+	for entry in [[Vector2(24.3, 35.0), 0], [Vector2(37.1, 31.0), 1], [Vector2(34.7, 25.9), 2]]:
+		_try_add_aftermath(boxes, taken, entry[0], Vector3.BACK, 3, int(entry[1]))
+
+
+static func _aftermath_facing(tangent: Vector2, kind: int) -> Vector3:
+	# Carts run lengthwise with the street. The other meshes are wider along X.
+	var heading := tangent if kind == 1 else tangent.orthogonal()
+	if absf(heading.x) > absf(heading.y):
+		return Vector3.RIGHT * signf(heading.x)
+	return Vector3.BACK * signf(heading.y)
+
+
+static func _try_add_aftermath(boxes: Array[Dictionary], taken: Dictionary,
+		centre: Vector2, facing: Vector3, leg: int, kind: int) -> bool:
+	var model: Array = AFTERMATH_MODELS[kind]
+	var size: Vector3 = model[1]
+	if absf(facing.x) > 0.5:
+		size = Vector3(size.z, size.y, size.x)
+	var box := metre_box(centre, size, model[0], RUBBLE)
+	var footprint := _box_cells([box] as Array[Dictionary])
+	for cell: Vector2i in footprint:
+		if taken.has(cell) or _floor_legs.get(cell, -1) != leg or START_PLAZA.has_point(cell):
+			return false
+	if not _leaves_aftermath_passage(footprint, taken):
+		return false
+	for cell: Vector2i in footprint:
+		taken[cell] = true
+	box["aftermath"] = true
+	box["facing"] = facing
+	boxes.push_back(box)
+	return true
+
+
+## Reject a piece if it isolates even a pocket behind it. A short walk
+## around its footprint must connect every neighbouring street tile.
+static func _leaves_aftermath_passage(footprint: Dictionary, taken: Dictionary) -> bool:
+	const STEPS := [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]
+	var neighbours := {}
+	var area := Rect2i()
+	for cell: Vector2i in footprint:
+		var tile := Rect2i(cell, Vector2i.ONE)
+		area = area.merge(tile) if area.has_area() else tile
+		for step: Vector2i in STEPS:
+			var next := cell + step
+			if _floor_legs.has(next) and not footprint.has(next) and not taken.has(next):
+				neighbours[next] = true
+	if neighbours.is_empty():
+		return false
+	area = area.grow(4)
+	var first: Vector2i = neighbours.keys()[0]
+	var frontier: Array[Vector2i] = [first]
+	var visited := {first: true}
+	while not frontier.is_empty():
+		var cell: Vector2i = frontier.pop_back()
+		neighbours.erase(cell)
+		if neighbours.is_empty():
+			return true
+		for step: Vector2i in STEPS:
+			var next := cell + step
+			if area.has_point(next) and _floor_legs.has(next) and not footprint.has(next) \
+					and not taken.has(next) and not visited.has(next):
+				visited[next] = true
+				frontier.push_back(next)
+	return false
+
+
+static func is_refill_crate(box: Dictionary) -> bool:
+	return String(box.get("name", "")).begins_with("TomatoCrate")
+
+
+static func _add_supply_crate(boxes: Array[Dictionary], at: Vector2) -> void:
+	boxes.push_back(metre_box(at, Vector3(2.2, 1.2, 1.15),
+		"TomatoCratesSupply%02d" % boxes.size(), Color("8c7a4a")))
+
+
+static func _alley_side(leg: int, fraction: float, offset: float) -> Vector2:
+	var pose := _route_pose(leg, fraction)
+	return pose[0] + pose[1].orthogonal() * offset * (_road_radius(leg, fraction) / 2.45)
+
+
+static func _cargo_truck(at: Vector2, direction: Vector2, overturned: bool) -> Dictionary:
+	var along_x := absf(direction.x) > absf(direction.y)
+	var length := 7.7 if overturned else 7.3
+	var width := 3.5 if overturned else 3.0
+	var size := Vector3(length, 2.9, width) if along_x else Vector3(width, 2.9, length)
+	var name := "OverturnedTomatoTruck" if overturned else "LoadedTomatoTruck"
+	var box := metre_box(at, size, name, STEEL)
+	box["facing"] = Vector3.RIGHT * signf(direction.x) if along_x else Vector3.BACK * signf(direction.y)
+	return box
 
 
 const RUBBLE := Color("7d7368")
@@ -401,48 +685,38 @@ static func _wrecked_truck(boxes: Array[Dictionary], label: String, body: Vector
 	boxes.push_back(metre_box(crate, Vector3(1.0, 0.9, 1.0), label + "WreckCrate", Color("8c7a4a")))
 
 
-## Where the sauce is topped up: trucks parked against the walls, which stand
-## in for the festival street's stalls. Built like the tutorial's stations --
-## a vending-machine box with a facing -- so the reach test is unchanged. One
-## every forty metres or so, so a bottle is never far from being filled.
 static func refill_boxes() -> Array[Dictionary]:
-	# Backed onto a side wall: 3 m deep into the street, 6.4 m along the wall.
 	var side := Vector3(3.0, 3.2, 6.4)
-	# Backed onto an end wall: the same truck turned to lie along it.
 	var end := Vector3(6.4, 3.2, 3.0)
 	var boxes: Array[Dictionary] = []
-	# The start plaza, one against each side wall.
-	boxes.push_back(_truck_against_wall(Vector2(34.0, 92.5), Vector3.LEFT, side))
-	boxes.push_back(_truck_against_wall(Vector2(26.0, 92.5), Vector3.RIGHT, side))
-	# Calle San Luis, three up its length, alternating walls.
-	boxes.push_back(_truck_against_wall(Vector2(27.0, 86.0), Vector3.RIGHT, side))
-	boxes.push_back(_truck_against_wall(Vector2(33.0, 80.0), Vector3.LEFT, side))
-	boxes.push_back(_truck_against_wall(Vector2(27.0, 75.0), Vector3.RIGHT, side))
-	# A truck is a cell and a half deep, so in a three-cell alley every truck
-	# goes on the same wall as the rubble: two on opposite walls at the same
-	# height would close the alley.
-	# The west fork: three on the outer wall going up, the north wall of the
-	# way back.
-	boxes.push_back(_truck_against_wall(Vector2(15.0, 67.0), Vector3.RIGHT, side))
-	boxes.push_back(_truck_against_wall(Vector2(15.0, 60.0), Vector3.RIGHT, side))
-	boxes.push_back(_truck_against_wall(Vector2(15.0, 57.0), Vector3.RIGHT, side))
-	boxes.push_back(_truck_against_wall(Vector2(22.0, 53.0), Vector3.BACK, end))
-	# The east fork: both end walls going across, two on the outer wall going
-	# up (the crates' wall), the north wall of the way back.
-	boxes.push_back(_truck_against_wall(Vector2(35.0, 69.0), Vector3.BACK, end))
-	boxes.push_back(_truck_against_wall(Vector2(38.5, 74.0), Vector3.FORWARD, end))
-	boxes.push_back(_truck_against_wall(Vector2(44.0, 66.0), Vector3.LEFT, side))
-	boxes.push_back(_truck_against_wall(Vector2(44.0, 62.0), Vector3.LEFT, side))
-	boxes.push_back(_truck_against_wall(Vector2(36.0, 49.0), Vector3.BACK, end))
-	# Calle del Cid: both walls where the forks rejoin, then past the
-	# overturned truck. Nothing on the east wall beside the truck: the heap
-	# gap is one cell wide and a truck there would close its only approach.
-	boxes.push_back(_truck_against_wall(Vector2(35.0, 54.5), Vector3.LEFT, side))
-	boxes.push_back(_truck_against_wall(Vector2(25.0, 50.5), Vector3.RIGHT, side))
+	var start_row := float(START_PLAZA.position.y) + 2.5
+	boxes.push_back(_truck_against_wall(Vector2(34.0, start_row), Vector3.LEFT, side))
+	boxes.push_back(_truck_against_wall(Vector2(26.0, start_row), Vector3.RIGHT, side))
+	for room in SAFE_ROOMS:
+		var x := float(room.get_center().x)
+		boxes.push_back(_truck_against_wall(Vector2(x - 2.0, room.end.y), Vector3.FORWARD, end))
+		boxes.push_back(_truck_against_wall(Vector2(x + 2.0, room.end.y), Vector3.FORWARD, end))
+	var stops := [
+		[Vector2(0.32, 1), Vector2(0.54, 1), Vector2(0.65, -1)],
+		[Vector2(0.23, -1), Vector2(0.32, 1), Vector2(0.56, 1), Vector2(0.65, -1), Vector2(0.91, -1)],
+		[Vector2(0.32, 1), Vector2(0.42, -1), Vector2(0.65, -1), Vector2(0.77, -1)],
+		[Vector2(0.32, 1), Vector2(0.48, 1), Vector2(0.65, -1), Vector2(0.78, 1)],
+	]
+	for leg in stops.size():
+		for stop: Vector2 in stops[leg]:
+			var pose := _route_pose(leg, stop.x)
+			var normal := pose[1].orthogonal() * stop.y
+			var edge := pose[0] + normal * (_road_radius(leg, stop.x) - 0.37)
+			if absf(normal.x) > absf(normal.y):
+				boxes.push_back(_truck_against_wall(edge, Vector3.LEFT * signf(normal.x), side))
+			else:
+				boxes.push_back(_truck_against_wall(edge, Vector3.FORWARD * signf(normal.y), end))
 	boxes.push_back(_truck_against_wall(Vector2(26.0, 39.5), Vector3.RIGHT, side))
-	# The plaza: two on each side wall, one on the north wall beside the bay.
+	# Spread the plaza supply trucks around its perimeter.
 	boxes.push_back(_truck_against_wall(Vector2(20.0, 24.5), Vector3.RIGHT, side))
 	boxes.push_back(_truck_against_wall(Vector2(20.0, 29.0), Vector3.RIGHT, side))
+	boxes.push_back(_truck_against_wall(Vector2(20.0, 31.5), Vector3.RIGHT, side))
+	boxes.push_back(_truck_against_wall(Vector2(40.0, 27.15), Vector3.LEFT, side))
 	boxes.push_back(_truck_against_wall(Vector2(40.0, 29.0), Vector3.LEFT, side))
 	boxes.push_back(_truck_against_wall(Vector2(40.0, 34.0), Vector3.LEFT, side))
 	boxes.push_back(_truck_against_wall(Vector2(36.0, 22.0), Vector3.BACK, end))
@@ -467,21 +741,22 @@ static func fire_truck_box() -> Dictionary:
 
 # --- the floor ----------------------------------------------------------------
 
-## Floods the juice zones before anyone arrives: every cell of every zone,
-## wall to wall, one layer deep. Written straight into the grid rather than
-## splatted, so the edge is the kerb and there are no holes: a street that has
-## had a lorry of tomatoes thrown along it is red, not spotted. Every peer
-## makes exactly these calls, so nothing goes over the wire; a peer joining
-## later takes the grid snapshot. One layer, because ketchup is never
-## slippery: it is a stain to run through and nothing more.
+## Clip the starting juice to the curved streets. Ragged tile edges and an
+## oval plaza stain keep the old straight-sided blocks out of the artwork.
 static func seed_floor(floor_body: FloorContamination) -> void:
-	for rect in JUICE_ZONES:
-		var low := at_cell(Vector2(rect.position))
-		var high := at_cell(Vector2(rect.position + rect.size))
-		floor_body.fill_rect(low, high, 1, ContaminationGrid.KIND_KETCHUP)
-
-
-## 0..1, a pure function of its inputs.
-static func _hash(x: int, y: int, salt: int) -> float:
-	var value := sin(float(x * 127 + y * 311 + salt * 17 + 5) * 0.173) * 43758.5453
-	return value - floor(value)
+	_ensure_layout()
+	for cell: Vector2i in _floor_legs:
+		if _floor_legs[cell] < 0:
+			continue
+		var point := Vector2(cell) + Vector2(0.5, 0.5)
+		var dirt := posmod((cell.x * 31) ^ (cell.y * 73), 17)
+		var oval := (point - Vector2(30.0, 29.5)) / Vector2(5.9, 4.7)
+		var juicy := oval.length_squared() < 0.84 + float(dirt) * 0.018
+		for zone in JUICE_ZONES:
+			if zone.has_point(cell) and (dirt > 2):
+				juicy = true
+				break
+		if juicy:
+			var low := at_cell(Vector2(cell))
+			var high := at_cell(Vector2(cell + Vector2i.ONE))
+			floor_body.fill_rect(low, high, 1, ContaminationGrid.KIND_KETCHUP)

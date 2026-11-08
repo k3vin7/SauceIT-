@@ -63,7 +63,7 @@ func _rows() -> Array:
 		["LMB", "spray", ""],
 		["1~5 / Wheel", "select item slot", ""],
 		["E", "pick up tomato", ""],
-		["Shift+1~3", "refill sauce at stall", ""],
+		["Shift+1~3", "refill sauce at supply point", ""],
 		["R", "wipe your glasses", ""],
 		["C", "character", ""],
 	]

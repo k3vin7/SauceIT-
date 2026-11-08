@@ -39,12 +39,8 @@ const ENEMY_LOW := Color("7a2a20")
 const LOW_AT := 0.35
 
 ## What a stall says when you are close enough to be served.
-## **Every stall offers the same three fresh bottles.** The list is
-## the prompt now rather than one line, because a key that does nothing visible
-## until you press it is how the stalls read before they said anything at all --
-## and a player who never learns 2 exists never finds out mustard is in the game.
-## The sauce in the bottle is marked, so the prompt also answers "what am I
-## carrying", which nothing else on the HUD does.
+## Keep the usual key list visible and mark unavailable sauces for this stage.
+## The arrow marks the sauce currently in the bottle.
 const PROMPT_LINES: Array[String] = [
 	"[Shift+1]  마요네즈",
 	"[Shift+2]  머스타드",
@@ -57,6 +53,7 @@ const PROMPT_HELD_COLOR := Color("ffffff")
 const PROMPT_SIZE := 18
 const PROMPT_LIFT := 220.0
 const PROMPT_COLOR := Color("fff0a8")
+const PROMPT_UNAVAILABLE := Color("a5a29c")
 const PROMPT_SHADOW := Color(0.0, 0.0, 0.0, 0.7)
 
 var world: Node3D
@@ -206,6 +203,9 @@ func _draw_prompt() -> void:
 	# Every line is laid out against the widest of them, so the block is a block
 	# rather than a ragged edge that shifts as the marker moves down it.
 	var lines := PROMPT_LINES.duplicate()
+	for index in lines.size():
+		if not world.can_select_refill_sauce(index):
+			lines[index] += "  ·  보급 불가"
 	var widest := 0.0
 	for line in lines:
 		widest = maxf(widest,
@@ -215,10 +215,12 @@ func _draw_prompt() -> void:
 		- PROMPT_LINE_GAP * float(lines.size() - 1)
 	for index in lines.size():
 		var line: String = lines[index]
-		var colour := PROMPT_COLOR
-		if index < PROMPT_LINES.size() and index == held:
+		var available: bool = world.can_select_refill_sauce(index)
+		var colour := PROMPT_COLOR if available else PROMPT_UNAVAILABLE
+		if index == held:
 			line += PROMPT_HELD
-			colour = PROMPT_HELD_COLOR
+			if available:
+				colour = PROMPT_HELD_COLOR
 		var at := Vector2(
 			frame.position.x + (frame.size.x - widest) * 0.5,
 			top + PROMPT_LINE_GAP * float(index))

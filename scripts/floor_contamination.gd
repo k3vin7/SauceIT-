@@ -10,6 +10,8 @@ extends StaticBody3D
 @export_range(0.05, 1.5, 0.01, "suffix:m") var brush_radius := 0.4
 @export var floor_size := Vector2(12.0, 12.0)
 @export var clean_color := Color("53616d")
+var pavement_mask: Texture2D
+var pavement_bounds := Rect2()
 @export var mayo_color := Color("fff0a8")
 ## How much thicker a cell gets per **pass** -- one trigger pull -- rather than
 ## per splat that lands on it. A burst lays one layer down over everything it
@@ -312,6 +314,11 @@ func _rebuild_tiles() -> void:
 func _push_shader_values() -> void:
 	for index in grid.tile_count():
 		var tile := grid.tile_material(index)
+		if pavement_mask != null:
+			tile.set_shader_parameter("paved", true)
+			tile.set_shader_parameter("pavement_mask", pavement_mask)
+			tile.set_shader_parameter("pavement_origin", pavement_bounds.position)
+			tile.set_shader_parameter("pavement_size", pavement_bounds.size)
 		tile.set_shader_parameter("deep_color", deep_color)
 		tile.set_shader_parameter("mayo_color_mid", mayo_color_mid)
 		tile.set_shader_parameter("mayo_color_thick", mayo_color_thick)

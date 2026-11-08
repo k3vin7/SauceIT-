@@ -62,9 +62,25 @@ uniform float slip_threshold = 0.04706;
 uniform vec4 mustard_tint : source_color = vec4(1.00, 0.86, 0.26, 1.0);
 uniform vec4 ketchup_tint : source_color = vec4(1.00, 0.34, 0.24, 1.0);
 
+uniform bool paint_only = false;
+uniform bool paved = false;
+uniform sampler2D pavement_mask : filter_nearest, repeat_disable, hint_default_black;
+uniform vec2 pavement_origin;
+uniform vec2 pavement_size = vec2(1.0);
+varying vec2 pavement_position;
+
+#include "res://assets/props/Stage2_TomatinaVillage/tomatina_splatter.gdshaderinc"
+
+void vertex() {
+	pavement_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xz;
+}
+
 void fragment() {
 	float coverage = texture(mask_texture, UV).r;
 	float painted = step(paint_threshold, coverage);
+	if (paint_only && painted < 0.5) {
+		discard;
+	}
 
 	ivec2 mask_size = textureSize(mask_texture, 0);
 	ivec2 texel = clamp(ivec2(UV * vec2(mask_size)), ivec2(0), mask_size - ivec2(1));
@@ -116,14 +132,51 @@ void fragment() {
 	float thick = painted * step(thick_threshold, thickness);
 	float deep = painted * step(slip_threshold, thickness);
 
-	vec3 stained = mix(clean_color.rgb, mayo_color.rgb * tint, painted);
+	vec3 clean = clean_color.rgb;
+	float tomato_marks = 0.0;
+	if (paved) {
+		vec2 brick = pavement_position / vec2(1.22, 0.81);
+		brick.x += mod(floor(brick.y), 2.0) * 0.5;
+		vec2 cell = floor(brick);
+		vec2 edge = min(fract(brick), 1.0 - fract(brick));
+		vec2 aa = fwidth(brick);
+		vec2 seam = 1.0 - smoothstep(vec2(0.012), vec2(0.032) + aa, edge);
+		float detail = 1.0 - smoothstep(0.08, 0.42, max(aa.x, aa.y));
+		float grain = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
+		vec2 mask_uv = (pavement_position - pavement_origin) / pavement_size;
+		float on_street = texture(pavement_mask, mask_uv).r;
+		if (any(lessThan(mask_uv, vec2(0.0))) || any(greaterThanEqual(mask_uv, vec2(1.0)))) {
+			on_street = 0.0;
+		}
+		vec3 stone = clean * mix(1.0, mix(0.92, 1.08, grain)
+			* (1.0 - 0.23 * max(seam.x, seam.y)), detail);
+		float large = tomato_splat(pavement_position, 2.7, 0.69);
+		float small = tomato_splat(pavement_position + vec2(3.7, 1.1), 1.12, 0.46);
+		tomato_marks = max(large, small * 0.81) * on_street;
+		vec3 ketchup = mix(vec3(0.43, 0.037, 0.021), vec3(0.68, 0.082, 0.035), grain);
+		stone = mix(stone, ketchup, tomato_marks * 0.94);
+		clean = mix(vec3(0.18, 0.135, 0.102), stone, on_street);
+	}
+	vec3 stained = mix(clean, mayo_color.rgb * tint, painted);
 	stained = mix(stained, mayo_color_mid.rgb * tint, mid);
 	stained = mix(stained, mayo_color_thick.rgb * tint, thick);
-	ALBEDO = mix(stained, deep_color.rgb * tint, deep);
+	vec3 base_albedo = mix(stained, deep_color.rgb * tint, deep);
+	if (paved && kind > 1.5 && kind < 2.5) {
+		// Let grey pavers show through the old juice while fresh drops sit on top.
+		float wave = sin(pavement_position.x * 1.48 + sin(pavement_position.y * 1.15))
+			* cos(pavement_position.y * 2.07) * 0.5 + 0.5;
+		vec3 juice = mix(vec3(0.56, 0.055, 0.026), vec3(0.79, 0.16, 0.058), wave);
+		juice = mix(juice, vec3(0.39, 0.023, 0.013), tomato_marks * 0.8);
+		base_albedo = mix(clean, juice, painted * mix(0.46, 0.86, wave));
+	}
+	ALBEDO = base_albedo;
 
 	float rough = mix(clean_roughness, mayo_roughness, painted);
 	rough = mix(rough, mix(mayo_roughness, deep_roughness, 0.3), mid);
 	rough = mix(rough, mix(mayo_roughness, deep_roughness, 0.6), thick);
 	ROUGHNESS = mix(rough, deep_roughness, deep);
+	if (paved && kind > 1.5 && kind < 2.5) {
+		ROUGHNESS = max(ROUGHNESS, 0.66);
+	}
 	METALLIC = 0.0;
 }

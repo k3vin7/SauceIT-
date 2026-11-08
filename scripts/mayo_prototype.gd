@@ -1106,7 +1106,6 @@ const TOMATINA_HOSES := [Vector2(28.5, 24.0), Vector2(31.5, 24.0)]
 const HOSE_RANGE := 22.0
 const HOSE_HALF_WIDTH := 2.2
 const HOSE_JET_RADIUS := 0.45
-const TOMATINA_CHECKPOINT := Vector2(29.5, 46.5)
 ## And how many of them are built in one physics tick. A body is a mesh, its
 ## colliders and a contamination grid; the whole horde in one frame was a
 ## fifth of a second with nothing drawn. Eight a tick has it all in within
@@ -2303,6 +2302,9 @@ func _build_world() -> void:
 	_floor.position = plane["centre"]
 	_floor.cell_size = grid_cell_size
 	_floor.brush_radius = contamination_brush_radius
+	if map_kind == MapKind.TOMATINA:
+		_floor.clean_color = Color("5c5c5c")
+		TomatinaVillageArt.configure_pavement(_floor)
 	add_child(_floor)
 
 	# The three sandbox slabs that used to stand here are gone: the start plaza
@@ -2797,6 +2799,10 @@ func _build_environment() -> void:
 	environment.ambient_light_color = Color("b5c5d4")
 	environment.ambient_light_energy = 0.72
 	environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	if map_kind == MapKind.TOMATINA:
+		environment.background_color = Color("b5cdd2")
+		environment.ambient_light_color = Color("e0e4ec")
+		environment.ambient_light_energy = 0.7
 	world_environment.environment = environment
 	add_child(world_environment)
 
@@ -2806,6 +2812,9 @@ func _build_environment() -> void:
 	sun.light_color = Color("fff1d1")
 	sun.light_energy = 1.15
 	sun.shadow_enabled = true
+	if map_kind == MapKind.TOMATINA:
+		sun.light_color = Color("fff5e6")
+		sun.light_energy = 0.98
 	add_child(sun)
 
 
@@ -3147,12 +3156,15 @@ func _update_bottle_gauge(shooter: Shooter) -> void:
 		tint = Color("c0392b")
 	if shooter.bottle_material != null:
 		shooter.bottle_material.albedo_color = tint
-func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3, color: Color) -> void:
+func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3, color: Color,
+		visible_surface := true, paint_only := false) -> void:
 	var wall := WallScript.new()
 	wall.name = wall_name
 	wall.position = wall_position
 	wall.size = wall_size
 	wall.body_color = color
+	wall.visible_surface = visible_surface
+	wall.paint_only = paint_only
 	wall.cell_size = grid_cell_size
 	wall.brush_radius = contamination_brush_radius
 	add_child(wall)
@@ -3287,43 +3299,41 @@ func _build_street() -> void:
 ## lattice exactly as the festival street's do; the rubble, the sauce trucks
 ## and the fire truck are plain contaminable boxes; the juice is painted onto
 ## the floor before anyone arrives.
-var _tomatina_next_encounter_released := false
+var _tomatina_checkpoint := -1
 
 
 func _build_tomatina() -> void:
-	var wall_color := Color("8a6a5a")
-	var index := 0
+	var art := TomatinaVillageArt.new()
+	var has_art := art.load_kit()
+	var debris := TomatinaMap.debris_boxes()
+	var refills := TomatinaMap.refill_boxes()
+	var truck := TomatinaMap.fire_truck_box()
 	for box in StreetMap.wall_boxes():
-		_create_wall("TomatinaWall%02d" % index, box["position"], box["size"], wall_color)
-		index += 1
-	index = 0
-	for box in TomatinaMap.debris_boxes():
-		_create_wall("Debris%02d_%s" % [index, box["name"]], box["position"], box["size"],
-			box["color"])
-		# Tomato contents distinguish small produce crates from solid cover blocks.
-		if "Crates" in str(box["name"]) or box["name"] == "EastRangedCover":
-			for tomato_index in 6:
-				var tomato := MeshInstance3D.new()
-				var sphere := SphereMesh.new()
-				sphere.radius = 0.17
-				sphere.height = 0.30
-				tomato.mesh = sphere
-				var material := StandardMaterial3D.new()
-				material.albedo_color = Color("ce3d27")
-				tomato.material_override = material
-				add_child(tomato)
-				tomato.position = box["position"] + Vector3(
-					(float(tomato_index % 3) - 1.0) * 0.38,
-					box["size"].y * 0.5 + 0.06,
-					(float(tomato_index / 3) - 0.5) * 0.35)
-		index += 1
-	index = 0
-	for box in TomatinaMap.refill_boxes():
-		_create_vending_machine("SauceTruck%02d" % index, box)
-		_add_refill_station(box)
-		index += 1
-	var truck: Dictionary = TomatinaMap.fire_truck_box()
-	_create_wall("FireTruck", truck["position"], truck["size"], truck["color"])
+		_create_wall("TomatinaWall%02d" % _walls.size(), box["position"], box["size"],
+			Color("c9ad90"), true, has_art)
+	for box in debris:
+		_create_wall("Debris%02d_%s" % [_walls.size(), box["name"]], box["position"],
+			box["size"], box["color"], not has_art)
+		if TomatinaMap.is_refill_crate(box):
+			_add_refill_crate(box)
+	for index in refills.size():
+		_create_vending_machine("SauceTruck%02d" % index, refills[index], not has_art)
+		_add_refill_station(refills[index])
+	if has_art:
+		art.build(self, debris, refills, truck)
+	for room in TomatinaMap.SAFE_ROOMS.size():
+		var zone := TomatinaMap.rect_world(TomatinaMap.SAFE_ROOMS[room])
+		_build_zone_marker("Refuge%d" % room, zone, Color(0.2, 0.55, 0.43, 0.26))
+		var sign := Label3D.new()
+		sign.text = "피난처 %d · %s" % [room + 1, TomatinaMap.SAFE_ROOM_NAMES[room]]
+		var courtyard: Rect2i = TomatinaMap.SAFE_ROOMS[room]
+		var sign_cell := Vector2(float(courtyard.get_center().x) + 0.5, float(courtyard.position.y) + 1.5)
+		sign.position = TomatinaMap.at_cell(sign_cell) + Vector3.UP * 4.4
+		sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		sign.font_size = 96
+		sign.pixel_size = 0.018
+		add_child(sign)
+	_create_wall("FireTruck", truck["position"], truck["size"], truck["color"], not has_art)
 	_fire_truck_zone = TomatinaMap.fire_truck_zone()
 	_plaza_rect = TomatinaMap.plaza_rect()
 	var siren := TomatinaMap.at_cell(TomatinaMap.SIREN_CELL)
@@ -3346,7 +3356,16 @@ func _build_tomatina() -> void:
 		hose_label.pixel_size = 0.009
 		add_child(hose_label)
 	TomatinaMap.seed_floor(_floor)
-	_build_start_marker(TomatinaMap.START_ARROW)
+	_build_start_marker(TomatinaMap.start_arrow())
+
+
+func _add_refill_crate(box: Dictionary) -> void:
+	var size: Vector3 = box["size"]
+	_refill_stations.push_back({
+		"position": box["position"],
+		"facing": Vector3.ZERO,
+		"half_footprint": Vector2(size.x, size.z) * 0.5,
+	})
 
 
 ## A flat tinted patch over a rectangle of ground: a sign, not a surface.
@@ -3624,7 +3643,7 @@ func _add_refill_station(box: Dictionary) -> void:
 ## obvious from across the street. It dispenses nothing: the sauce is topped up
 ## at the stalls, and these are scenery until there is something else worth
 ## handing out.
-func _create_vending_machine(machine_name: String, box: Dictionary) -> void:
+func _create_vending_machine(machine_name: String, box: Dictionary, visible_surface := true) -> void:
 	var holder := Node3D.new()
 	holder.name = machine_name
 	add_child(holder)
@@ -3637,6 +3656,7 @@ func _create_vending_machine(machine_name: String, box: Dictionary) -> void:
 	chassis.position = box["position"]
 	chassis.size = size
 	chassis.body_color = Color("23282e")
+	chassis.visible_surface = visible_surface
 	chassis.cell_size = grid_cell_size
 	chassis.brush_radius = contamination_brush_radius
 	holder.add_child(chassis)
@@ -3644,6 +3664,8 @@ func _create_vending_machine(machine_name: String, box: Dictionary) -> void:
 	# index here, and nesting it under the holder changes nothing, because
 	# `paint_mayo` works in the object's own local space.
 	_walls.push_back(chassis)
+	if not visible_surface:
+		return
 
 	# Depth along the facing axis, so the panel can be laid just proud of the
 	# front face whichever way the machine is turned.
@@ -3734,8 +3756,11 @@ func _build_enemies() -> void:
 	if map_kind == MapKind.TOMATINA:
 		for entry in TomatinaMap.roster():
 			var index := _add_tomatina_enemy(int(TOMATINA_KINDS[entry[0]]), TomatinaMap.at_cell(entry[1]))
-			if entry[1].y < 46.0:
-				_enemies[index].set_meta("after_regroup", true)
+			var enemy := _enemies[index]
+			var leg := TomatinaMap.encounter_at(StreetMap.cell_at(enemy.position))
+			enemy.set_meta("encounter", leg)
+			for ball in enemy.ball_pool:
+				ball.set_meta("encounter", leg)
 		_apply_enemy_sight_rings()
 		rescale_enemies()
 		return
@@ -3957,7 +3982,7 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 			enemy.name = "Tomatina%02d_Grunt" % index
 			enemy.build_tomato_grunt(body_cell_size, contamination_brush_radius, int(deal["tier"]))
 			enemy.burst_radius = float(deal["radius"])
-			speed_fraction = 1.0
+			speed_fraction = 1.15
 		MayoTutorial.KIND_TOMATO_BRUTE:
 			enemy.name = "Tomatina%02d_Brute" % index
 			enemy.build_tomato_brute(body_cell_size, contamination_brush_radius)
@@ -4388,7 +4413,7 @@ func _reset_tomatina_finale() -> void:
 	_finale_elapsed = 0.0
 	_finale_wave = -1
 	_horde_spawn_wait = 0.0
-	_tomatina_next_encounter_released = false
+	_tomatina_checkpoint = -1
 	if is_instance_valid(_siren_label):
 		_siren_label.show()
 
@@ -4654,10 +4679,13 @@ func _advance_enemies(delta: float) -> void:
 	var targets: Array = []
 	for shooter in _shooters.values():
 		targets.push_back(shooter.player)
-	if map_kind == MapKind.TOMATINA and not _tomatina_next_encounter_released:
-		for player in targets:
-			if is_instance_valid(player) and player.global_position.z < TomatinaMap.at_cell(Vector2(30, 46)).z:
-				_tomatina_next_encounter_released = true
+	var encounter_targets := [[], [], [], []]
+	if map_kind == MapKind.TOMATINA:
+		_update_tomatina_checkpoint(targets)
+		for player: MayoPlayer in targets:
+			var leg := TomatinaMap.encounter_at(StreetMap.cell_at(player.global_position))
+			if leg >= 0:
+				encounter_targets[leg].push_back(player)
 	# Who each body has to steer round, bucketed once a tick rather than every
 	# body reading every other. With the horde in that was 270 bodies squared
 	# a tick, and it was the whole of the lag -- see `_crowd_neighbours`.
@@ -4671,16 +4699,14 @@ func _advance_enemies(delta: float) -> void:
 	var frame := Engine.get_physics_frames()
 	for index in _enemies.size():
 		var enemy: MayoEnemy = _enemies[index]
-		# The next encounter waits until the team leaves the regroup bay.
-		if map_kind == MapKind.TOMATINA and not _tomatina_next_encounter_released \
-				and enemy.has_meta("after_regroup") and enemy.is_alive():
-			continue
 		# Which of the party this one is coming for. Normally all of them, and the
 		# body picks the nearest; the tutorial narrows it for the opening fight so
 		# a party of two is not both rushers' problem while the other player
 		# watches. The rule lives there, not here.
 		var chasing: Array = targets
-		if _tutorial != null:
+		if map_kind == MapKind.TOMATINA:
+			chasing = encounter_targets[int(enemy.get_meta("encounter", 3))]
+		elif _tutorial != null:
 			chasing = _tutorial.targets_for(enemy, targets)
 		# Dead ones are advanced too: they are still toppling.
 		var previous_position: Vector3 = enemy.global_position
@@ -4749,6 +4775,25 @@ func _crowd_neighbours(buckets: Dictionary, enemy: MayoEnemy) -> Array:
 	return out
 
 
+## Record a checkpoint once all surviving players regroup in the same courtyard.
+func _update_tomatina_checkpoint(players: Array) -> void:
+	var room := -1
+	for player: MayoPlayer in players:
+		if player.state == MayoPlayer.State.DEAD:
+			continue
+		var current := TomatinaMap.safe_room_at(StreetMap.cell_at(player.global_position))
+		if current <= _tomatina_checkpoint or (room >= 0 and room != current):
+			return
+		room = current
+	if room < 0:
+		return
+	_tomatina_checkpoint = room
+	for player: MayoPlayer in players:
+		if player.state != MayoPlayer.State.DEAD:
+			player.heal_to_full()
+			_shooter_of(player).sauce = 1.0
+
+
 ## The authority runs the death clock. Tomatina allows teammate rescues
 ## before checkpoint fallback; other maps return the player to the start.
 ## Clients see the DEAD state and timer in the normal player-state packet.
@@ -4758,6 +4803,9 @@ func _crowd_neighbours(buckets: Dictionary, enemy: MayoEnemy) -> Array:
 ## nothing cleans the body. Handing back a spotless body on death would make
 ## dying the fastest way to clean your glasses.
 func _damage_player(player: MayoPlayer, amount: float) -> void:
+	if map_kind == MapKind.TOMATINA \
+			and TomatinaMap.safe_room_at(StreetMap.cell_at(player.global_position)) >= 0:
+		return
 	if not player.take_damage(amount):
 		return
 	player.begin_death()
@@ -4782,8 +4830,9 @@ func _advance_player_respawns() -> void:
 			continue
 		_tomato_charge_started.erase(shooter.peer_id)
 		var spawn := spawn_position_for(shooter.spawn_slot)
-		if tomatina and _tomatina_next_encounter_released:
-			spawn = TomatinaMap.at_cell(TOMATINA_CHECKPOINT) + Vector3(
+		if tomatina and _tomatina_checkpoint >= 0:
+			var room: Rect2i = TomatinaMap.SAFE_ROOMS[_tomatina_checkpoint]
+			spawn = TomatinaMap.at_cell(Vector2(room.get_center()) + Vector2(0.5, 0.5)) + Vector3(
 				float(shooter.spawn_slot) * 1.35, 1.28, 0.0)
 		player.finish_respawn(spawn)
 		shooter.sauce = 0.55 if tomatina else 1.0
@@ -5599,10 +5648,8 @@ func _record_visor_splat(player: MayoPlayer, hit_position: Vector3,
 		_splat_code(SPLAT_VISOR, sauce), player.peer_id, cell.x, cell.y]))
 
 
-## Which stall this player could be served at, or -1 for none. Flat distance,
-## because a counter at the foot of a ramp is still the counter you are at, and
-## then a front test -- otherwise you could be served through the back of the
-## stall by standing behind it.
+## Which supply point the player can reach, or -1. Trucks and counters
+## are front-facing. Crates can be reached from any side of their footprint.
 func station_in_reach(player: MayoPlayer) -> int:
 	if player == null or not is_instance_valid(player):
 		return -1
@@ -5612,19 +5659,31 @@ func station_in_reach(player: MayoPlayer) -> int:
 		var station: Dictionary = _refill_stations[index]
 		var to_player: Vector3 = player.global_position - station["position"]
 		to_player.y = 0.0
-		var distance := to_player.length()
+		var distance: float
+		if station.has("half_footprint"):
+			var half: Vector2 = station["half_footprint"]
+			var offset := Vector2(absf(to_player.x), absf(to_player.z)) - half
+			distance = offset.max(Vector2.ZERO).length()
+		else:
+			distance = to_player.length()
+			if distance <= 0.001 or to_player.dot(station["facing"]) < distance * 0.25:
+				continue
 		if distance > best_distance or distance <= 0.001:
-			continue
-		if to_player.normalized().dot(station["facing"]) < 0.25:
 			continue
 		best_distance = distance
 		best = index
 	return best
 
 
+## Shared by the proximity prompt and the authority's refill checks.
+func can_select_refill_sauce(sauce: int) -> bool:
+	return sauce >= 0 and sauce < STATION_SAUCES.size() \
+		and (map_kind != MapKind.TOMATINA or STATION_SAUCES[sauce] == ContaminationGrid.KIND_KETCHUP)
+
+
 ## A number key selects a fresh bottle. The server checks the stall's reach.
 func _request_refill(sauce: int) -> void:
-	if _local == null:
+	if _local == null or not can_select_refill_sauce(sauce):
 		return
 	if _is_authority():
 		refill_for(_local.peer_id, sauce)
@@ -5637,7 +5696,7 @@ func _request_refill(sauce: int) -> void:
 ## against the body the server is simulating.
 ## `sauce` must explicitly select one of `STATION_SAUCES`.
 func refill_for(peer_id: int, sauce: int) -> bool:
-	if sauce < 0 or sauce >= STATION_SAUCES.size():
+	if not can_select_refill_sauce(sauce):
 		return false
 	var shooter: Shooter = _shooters.get(peer_id)
 	if shooter == null:
@@ -5662,7 +5721,7 @@ func refill_for(peer_id: int, sauce: int) -> bool:
 ## from the firing flag it already has -- a refill is not something a peer can
 ## see coming.
 func apply_refill(peer_id: int, sauce: int) -> void:
-	if sauce < 0 or sauce >= STATION_SAUCES.size():
+	if not can_select_refill_sauce(sauce):
 		return
 	var shooter: Shooter = _shooters.get(peer_id)
 	if shooter == null:

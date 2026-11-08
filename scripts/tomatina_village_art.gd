@@ -1,0 +1,327 @@
+class_name TomatinaVillageArt
+extends RefCounted
+
+const KIT_PATH := "res://assets/props/Stage2_TomatinaVillage/Stage2_TomatinaVillage.glb"
+const TOON_SHADER := preload("res://assets/props/Stage2_TomatinaVillage/tomatina_toon.gdshader")
+const PARTICLE_FIRE := preload("res://assets/props/Stage2_TomatinaVillage/tomatina_particle_fire.gdshader")
+const FLAME_VOLUME := preload("res://assets/props/Stage2_TomatinaVillage/tomatina_flame_volume.gdshader")
+const FESTIVAL_DECOR := preload("res://scripts/tomatina_festival_decor.gd")
+const HOUSES := ["HouseCream", "HousePeach", "HouseLime"]
+const BANNERS := ["BannerWater", "BannerMarket", "BannerFestival"]
+const CARDINAL := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
+const CHUNK_SIZE := 70.0
+
+var _meshes: Dictionary = {}
+var _batches: Dictionary = {}
+var _facades: Array[Transform3D] = []
+
+
+static func configure_pavement(floor_body: FloorContamination) -> void:
+	var bounds := TomatinaMap.bounds()
+	var mask := Image.create_empty(bounds.size.x, bounds.size.y, false, Image.FORMAT_R8)
+	for cell: Vector2i in TomatinaMap.floor_cells():
+		var pixel := cell - bounds.position
+		mask.set_pixel(pixel.x, pixel.y, Color.WHITE)
+	var corner := TomatinaMap.at_cell(Vector2(bounds.position))
+	floor_body.pavement_mask = ImageTexture.create_from_image(mask)
+	floor_body.pavement_bounds = Rect2(Vector2(corner.x, corner.z), Vector2(bounds.size) * StreetMap.CELL)
+
+
+func load_kit() -> bool:
+	var kit := load(KIT_PATH) as PackedScene
+	if kit == null:
+		return false
+	var scene := kit.instantiate()
+	for model in scene.find_children("*", "MeshInstance3D", true, false):
+		_meshes[model.name] = model.mesh
+	scene.free()
+	return _meshes.has("HouseCream")
+
+
+func build(parent: Node3D, debris: Array[Dictionary], refills: Array[Dictionary], fire_truck: Dictionary) -> void:
+	_build_frontages()
+	FESTIVAL_DECOR.build(parent, _facades)
+	var ember_mesh := _make_ember_mesh()
+	var ember_process := _make_ember_process()
+	for box in debris:
+		_add_debris(box)
+		if box["name"] == "RefugeBrazier":
+			var centre: Vector3 = box["position"]
+			_add_fire(parent, Vector3(centre.x, 0.38, centre.z),
+				Vector3(1.24, 1.63, 1.21), ember_mesh, ember_process)
+	for box in refills:
+		var facing: Vector3 = box["facing"]
+		var size: Vector3 = box["size"]
+		_add_box_model("SauceVan", box, facing,
+			Vector3(size.z, size.y, size.x) if absf(facing.x) > 0.5 else size)
+	_add_box_model("FireEngine", fire_truck, Vector3.BACK)
+	for index in TomatinaMap.SAFE_ROOMS.size():
+		var room: Rect2i = TomatinaMap.SAFE_ROOMS[index]
+		var centre := Vector2(float(room.get_center().x) + 0.5, float(room.position.y) + 1.5)
+		_place(BANNERS[index], TomatinaMap.at_cell(centre))
+	_place("Church", TomatinaMap.at_cell(Vector2(36.5, 20.6)), Vector3.BACK, Vector3(17, 15, 9))
+	var root := Node3D.new()
+	root.name = "TomatinaVillageArt"
+	parent.add_child(root)
+	var material := ShaderMaterial.new()
+	material.shader = TOON_SHADER
+	var stained_walls := ShaderMaterial.new()
+	stained_walls.shader = TOON_SHADER
+	stained_walls.set_shader_parameter("tomato_wall", true)
+	for name: String in _batches:
+		var is_wall := name == "LowWall" or name == "Church" or name in HOUSES
+		for chunk: Vector2i in _batches[name]:
+			var transforms: Array = _batches[name][chunk]
+			var multimesh := MultiMesh.new()
+			multimesh.transform_format = MultiMesh.TRANSFORM_3D
+			multimesh.mesh = _meshes[name]
+			multimesh.instance_count = transforms.size()
+			for index in transforms.size():
+				multimesh.set_instance_transform(index, transforms[index])
+			var batch := MultiMeshInstance3D.new()
+			batch.name = "%s_%d_%d" % [name, chunk.x, chunk.y]
+			batch.multimesh = multimesh
+			batch.material_override = stained_walls if is_wall else material
+			root.add_child(batch)
+
+
+## Use the actual curb of the gameplay floor. Every other cell gets a house
+## and the low stone footing marks the full boundary, including outside turns.
+func _build_frontages() -> void:
+	var floor := TomatinaMap.floor_cells()
+	var blocked := TomatinaMap.blocked_cells()
+	for cell: Vector2i in floor:
+		var open := not blocked.has(cell)
+		var patch := posmod((cell.x * 73) ^ (cell.y * 157), 83)
+		if open and patch < 4 and TomatinaMap.safe_room_at(cell) < 0:
+			var at := TomatinaMap.at_cell(Vector2(cell) + Vector2(0.38, 0.62))
+			_place_litter(at, cell, patch < 2, 1.38)
+		for step: Vector2i in CARDINAL:
+			if floor.has(cell + step):
+				continue
+			var tangent := Vector2i(-step.y, step.x)
+			var facing := Vector3(-step.x, 0.0, -step.y)
+			var curb := Vector2(cell) + Vector2(0.5, 0.5) + Vector2(step) * 0.5
+			var base := TomatinaMap.at_cell(curb)
+			_place("LowWall", base - facing * 0.47, facing, Vector3(StreetMap.CELL, 1.27, 0.9))
+			var scatter := posmod(cell.x * 31 + cell.y * 47 + step.x * 13 + step.y * 7, 19)
+			if scatter < 3 and open:
+				var at := base + facing * (0.82 + float(scatter) * 0.68)
+				at += Vector3(tangent.x, 0.0, tangent.y) * 0.44
+				_place_litter(at, cell, scatter == 2, 1.50 + float(scatter) * 0.29)
+			var outside := cell + step
+			var across := cell.x if step.y != 0 else cell.y
+			var paired := floor.has(cell + tangent) and not floor.has(outside + tangent)
+			var previous_edge := floor.has(cell - tangent) and not floor.has(outside - tangent)
+			if paired and posmod(across, 2) != 0:
+				continue
+			if not paired and (previous_edge or posmod(cell.x * 37 + cell.y * 19, 3) == 0):
+				continue
+			# Leave a clear backdrop for the extraction bay and the bell tower.
+			if outside.y < 22 and outside.x >= 25 and outside.x <= 39:
+				continue
+			var depth := 7.8
+			if floor.has(outside + step) or floor.has(outside + step + tangent):
+				depth = StreetMap.CELL * 0.45
+			var shift := StreetMap.CELL * 0.5 if paired else 0.0
+			var behind := base + Vector3(tangent.x, 0.0, tangent.y) * shift
+			behind -= facing * (depth * 0.5 + 0.18)
+			var variant := posmod(cell.x * 71 + cell.y * 29, HOUSES.size())
+			var height := 7.2 + 0.6 * float(posmod(cell.x * 17 + cell.y * 31, 6))
+			var width := StreetMap.CELL * (1.92 if paired else 0.94)
+			_place(HOUSES[variant], behind, facing, Vector3(width, height, depth))
+			var anchor := behind + facing * (depth * 0.46 + 0.07) + Vector3.UP * (height * 0.72)
+			_facades.push_back(Transform3D(Basis.looking_at(-facing), anchor))
+
+	_build_backlots(floor)
+
+
+## A second row of homes makes the winding roads read as lanes within a village.
+## These homes live behind the street boundary and never obstruct a route.
+func _build_backlots(floor: Dictionary) -> void:
+	var candidates := {}
+	for cell: Vector2i in floor:
+		for step: Vector2i in CARDINAL:
+			for distance: int in [3, 4]:
+				var site: Vector2i = cell + step * distance
+				if posmod(site.x, 3) == 0 and posmod(site.y, 3) == 0:
+					candidates[site] = true
+	for site: Vector2i in candidates:
+		if site.y < 19 or site.y > 221 or posmod(site.x * 31 + site.y * 19, 5) == 0:
+			continue
+		var near_road := false
+		for dy in range(-2, 3):
+			for dx in range(-2, 3):
+				if floor.has(site + Vector2i(dx, dy)):
+					near_road = true
+					break
+			if near_road:
+				break
+		if near_road:
+			continue
+		var variant := posmod(site.x * 71 + site.y * 29, HOUSES.size())
+		var turn := float(posmod(site.x * 47 + site.y * 17, 37)) * 0.17
+		var at := TomatinaMap.at_cell(Vector2(site) + Vector2(0.5, 0.5))
+		var size := Vector3(8.8, 7.6 + float(variant) * 1.2, 8.1)
+		_place(HOUSES[variant], at, Vector3(sin(turn), 0.0, cos(turn)), size)
+
+
+func _place_litter(at: Vector3, cell: Vector2i, boards: bool, spread: float) -> void:
+	var angle := float(posmod(cell.x * 9 + cell.y * 17, 37)) * 0.17
+	var facing := Vector3(sin(angle), 0.0, cos(angle))
+	var model := "BrokenBoards" if boards else "CrushedTomatoes"
+	_place(model, at, facing, Vector3(spread, 0.09 if boards else 0.07, spread * 0.72))
+
+
+func _add_debris(box: Dictionary) -> void:
+	var name: String = box["name"]
+	var size: Vector3 = box["size"]
+	var key := "Rubble"
+	var facing := Vector3.BACK
+	if TomatinaMap.is_aftermath_prop(box):
+		key = name
+		facing = box["facing"]
+		if absf(facing.x) > 0.5:
+			size = Vector3(size.z, size.y, size.x)
+	elif name.begins_with("TomatoCrateStack"):
+		key = "TomatoCrateStack"
+	elif "Crate" in name:
+		key = "TomatoCrate"
+	elif name == "MarketBarrels" or name == "CrushedTomatoes":
+		key = name
+	elif name.ends_with("WreckCanopy"):
+		key = "BrokenBoards"
+	elif name == "LoadedTomatoTruck" or name == "OverturnedTomatoTruck":
+		key = "TomatoTruck" if name == "LoadedTomatoTruck" else name
+		if name == "OverturnedTomatoTruck":
+			var at: Vector3 = box["position"]
+			at.y = 0.0
+			_place("BrokenBoards", at + Vector3(4.7, 0.0, 1.9), Vector3.BACK, Vector3(2.8, 0.10, 1.7))
+		facing = box["facing"]
+		if absf(facing.x) > 0.5:
+			size = Vector3(size.z, size.y, size.x)
+	elif name == "RefugeTent":
+		key = "RefugeTent"
+	elif name == "RefugeBrazier":
+		key = "Brazier"
+	elif name.begins_with("PlazaTree"):
+		key = "PlanterTree"
+		size.y = 4.6
+	elif name.begins_with("PlazaStall"):
+		key = "MarketStall"
+	elif name == "SirenColumn":
+		key = "FestivalColumn"
+	elif name.ends_with("WreckBody"):
+		key = "WreckBody"
+		if size.x > size.z:
+			facing = Vector3.RIGHT
+			size = Vector3(size.z, size.y, size.x)
+	_add_box_model(key, box, facing, size)
+
+
+func _make_ember_mesh() -> SphereMesh:
+	var mesh := SphereMesh.new()
+	mesh.radius = 0.045
+	mesh.height = 0.09
+	mesh.radial_segments = 8
+	mesh.rings = 4
+	var material := ShaderMaterial.new()
+	material.shader = PARTICLE_FIRE
+	mesh.material = material
+	return mesh
+
+
+func _make_ember_process() -> ParticleProcessMaterial:
+	var process := ParticleProcessMaterial.new()
+	process.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	process.emission_sphere_radius = 0.19
+	process.direction = Vector3.UP
+	process.spread = 16.0
+	process.initial_velocity_min = 0.95
+	process.initial_velocity_max = 1.45
+	process.gravity = Vector3.UP * 0.28
+	process.scale_min = 0.38
+	process.scale_max = 1.0
+
+	var scale_curve := Curve.new()
+	scale_curve.add_point(Vector2(0.0, 0.65))
+	scale_curve.add_point(Vector2(0.24, 1.0))
+	scale_curve.add_point(Vector2(1.0, 0.03))
+	var scale_texture := CurveTexture.new()
+	scale_texture.curve = scale_curve
+	process.scale_curve = scale_texture
+
+	var colors := Gradient.new()
+	colors.colors = PackedColorArray([Color("ffe487"), Color("ed4b18")])
+	var color_texture := GradientTexture1D.new()
+	color_texture.gradient = colors
+	process.color_ramp = color_texture
+	return process
+
+
+func _add_fire(parent: Node3D, base: Vector3, size: Vector3, ember_mesh: Mesh,
+		ember_process: ParticleProcessMaterial) -> void:
+	var fire := Node3D.new()
+	fire.position = base
+	fire.add_to_group("tomatina_fire")
+	parent.add_child(fire)
+
+	var volume := MeshInstance3D.new()
+	volume.name = "FlameVolume"
+	volume.mesh = BoxMesh.new()
+	volume.scale = size
+	volume.position.y = size.y * 0.5
+	volume.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var material := ShaderMaterial.new()
+	material.shader = FLAME_VOLUME
+	material.set_shader_parameter("phase", fposmod(base.x + base.z, 19.0))
+	volume.material_override = material
+	fire.add_child(volume)
+
+	var embers := GPUParticles3D.new()
+	embers.name = "Embers"
+	embers.amount = 4
+	embers.lifetime = 0.91
+	embers.preprocess = 1.0
+	embers.randomness = 0.62
+	embers.local_coords = true
+	embers.position.y = size.y * 0.27
+	embers.visibility_aabb = AABB(Vector3(-0.8, -0.3, -0.8), Vector3(1.6, 2.7, 1.6))
+	embers.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	embers.draw_pass_1 = ember_mesh
+	embers.process_material = ember_process
+	fire.add_child(embers)
+
+	var light := OmniLight3D.new()
+	light.name = "CampfireGlow"
+	light.position.y = 0.72
+	light.light_color = Color("ff9352")
+	light.light_energy = 1.35
+	light.omni_range = 7.5
+	light.omni_attenuation = 1.45
+	fire.add_child(light)
+
+
+func _add_box_model(key: String, box: Dictionary, facing: Vector3, size := Vector3.ZERO) -> void:
+	var at: Vector3 = box["position"]
+	var footprint: Vector3 = box["size"]
+	at.y -= footprint.y * 0.5
+	_place(key, at, facing, footprint if size == Vector3.ZERO else size)
+
+
+func _place(key: String, at: Vector3, facing := Vector3.BACK, size := Vector3.ZERO) -> void:
+	var mesh: Mesh = _meshes.get(key)
+	if mesh == null:
+		return
+	var bounds := mesh.get_aabb()
+	var offset := bounds.get_center()
+	offset.y = bounds.position.y
+	var scale := size / bounds.size if size != Vector3.ZERO else Vector3.ONE
+	var basis := Basis(Vector3.UP, atan2(facing.x, facing.z))
+	basis = basis.scaled_local(scale)
+	var chunk := Vector2i(floori(at.x / CHUNK_SIZE), floori(at.z / CHUNK_SIZE))
+	if not _batches.has(key):
+		_batches[key] = {}
+	if not _batches[key].has(chunk):
+		_batches[key][chunk] = []
+	_batches[key][chunk].push_back(Transform3D(basis, at - basis * offset))

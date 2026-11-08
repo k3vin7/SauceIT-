@@ -20,6 +20,7 @@ const FACE_BASIS := [
 ## Collision/paint can stay active behind an authored prop whose own mesh is
 ## the visible surface.  Ordinary walls keep rendering their generated quads.
 @export var visible_surface := true
+var paint_only := false
 
 @export_group("Contamination Grid")
 @export_range(0.05, 0.5, 0.01, "suffix:m") var cell_size := 0.1
@@ -156,6 +157,7 @@ func _rebuild() -> void:
 		var face_extent := Vector2(_extent_along(u_axis), _extent_along(v_axis))
 		var grid := ContaminationGrid.new()
 		grid.configure(face_extent, cell_size, body_color, mayo_color)
+		grid.material.set_shader_parameter("paint_only", paint_only)
 		grids.push_back(grid)
 
 		var face := MeshInstance3D.new()
