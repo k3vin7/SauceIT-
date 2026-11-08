@@ -400,13 +400,45 @@ func _run() -> void:
 	_check(teammate.state == MayoPlayer.State.NORMAL and is_equal_approx(teammate.health, 40.0),
 		"a teammate was not rescued in place with partial health")
 
+	# --- the fire hose: a toggle, a long wide jet, and a sweep ---
+	_check(scene.TOMATINA_RESCUE_WINDOW >= 20.0, "a downed player waits less than 20 s for a rescue")
 	var hose := TomatinaMap.at_cell(scene.TOMATINA_HOSES[0]) + Vector3.UP * 1.28
 	player.global_position = hose
 	scene._local.aim_yaw = PI
 	var wet := hose + Vector3.BACK * 2.0
+	var wet_far := hose + Vector3.BACK * 16.0 + Vector3.RIGHT * 1.0
 	floor_body.paint_mayo(wet)
+	floor_body.paint_mayo(wet_far)
+	var swept: MayoEnemy = null
+	var bystander: MayoEnemy = null
+	for enemy in scene._enemies:
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive():
+			if swept == null:
+				swept = enemy
+			elif bystander == null:
+				bystander = enemy
+				break
+	_check(swept != null and bystander != null, "no two grunts left to hose")
+	if swept != null and bystander != null:
+		swept.global_position = hose + Vector3.BACK * 15.0 + Vector3.DOWN * 1.0
+		bystander.global_position = hose + Vector3.BACK * 6.0 + Vector3.RIGHT * 5.0 + Vector3.DOWN * 1.0
+		swept._shove = Vector3.ZERO
+		bystander._shove = Vector3.ZERO
 	scene.tomato_action(peer, 0)
+	_check(scene._hose_slot_of(peer) == 0, "[E] at the hose stand did not open the hose")
+	scene._advance_fire_hoses(0.016)
 	_check(floor_body.thickness_at(wet) == 0, "the hose did not clear the aimed path")
+	_check(floor_body.thickness_at(wet_far) == 0, "the hose did not reach 16 m down the aimed path")
+	if swept != null and bystander != null:
+		_check(swept._shove.length() > 5.0 and swept._shove.dot(Vector3.BACK) > 0.0,
+			"a grunt 15 m down the jet was not swept along it (shove %.1f m/s)" % swept._shove.length())
+		_check(bystander._shove.is_zero_approx(), "a grunt beside the jet was swept by it")
+	scene.tomato_action(peer, 0)
+	_check(scene._hose_slot_of(peer) < 0, "[E] again did not close the hose")
+	scene.tomato_action(peer, 0)
+	player.global_position = hose + Vector3.RIGHT * 6.0
+	scene._advance_fire_hoses(0.016)
+	_check(scene._hose_slot_of(peer) < 0, "the hose stayed open after the player left the stand")
 
 	var cleared := [false]
 	scene.stage_cleared.connect(func() -> void: cleared[0] = true)

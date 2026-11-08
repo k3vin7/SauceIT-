@@ -1090,9 +1090,19 @@ const FINALE_DURATION := 30.0
 const FINALE_WAVES := [0.0, 9.0, 19.0]
 const ESCAPE_SHOVE_ACTION := 6
 const ESCAPE_SHOVE_COOLDOWN_MS := 2000
-const TOMATINA_RESCUE_WINDOW := 10.0
+const TOMATINA_RESCUE_WINDOW := 20.0
 const TOMATINA_RESCUE_TIME := 1.0
 const TOMATINA_HOSES := [Vector2(28.5, 24.0), Vector2(31.5, 24.0)]
+## The fire hose, once the truck is in. A toggle rather than a trigger: one
+## press opens it and it runs until the player closes it, steps off the stand
+## or goes down. The jet reaches more than twice as far as the old squirt did
+## and carries every body it crosses along with it instead of nudging it back
+## a step -- see `_advance_fire_hoses`.
+const HOSE_RANGE := 22.0
+const HOSE_HALF_WIDTH := 2.2
+const HOSE_SWEEP_SPEED := 9.0
+const HOSE_HEAVY_SWEEP_SCALE := 0.45
+const HOSE_JET_RADIUS := 0.45
 const TOMATINA_CHECKPOINT := Vector2(29.5, 46.5)
 ## And how many of them are built in one physics tick. A body is a mesh, its
 ## colliders and a contamination grid; the whole horde in one frame was a
@@ -1131,7 +1141,11 @@ var _horde_spawn_wait := 0.0
 var _siren_zone := Rect2()
 var _escape_shove_times := {}
 var _rescue_attempts := {}
-var _hose_ready_times := {}
+## Hose stand index -> peer id of whoever has it open. Authority state,
+## carried to clients in the Tomatina status packet for the jet to draw.
+var _hose_users := {}
+## Hose stand index -> [jet mesh, splash mesh].
+var _hose_visuals := {}
 var _tether_visuals := {}
 var _warning_sound: AudioStreamWAV
 var _siren_label: Label3D
@@ -1332,6 +1346,7 @@ func _physics_process(delta: float) -> void:
 		# player this frame should be where the strand is aimed from.
 		_advance_enemies(delta)
 		_advance_horde_spawn(delta)
+		_advance_fire_hoses(delta)
 	for shooter in _shooters.values():
 		_advance_strand(shooter, delta)
 	if debug_profile_enabled:
@@ -1857,6 +1872,7 @@ func _is_authority() -> bool:
 func _process(_delta: float) -> void:
 	if map_kind == MapKind.TOMATINA:
 		_update_tether_visuals()
+		_update_hose_visuals()
 	if _local == null:
 		return
 	# The bottle is put where the camera is *before* the camera is placed, and
@@ -2444,7 +2460,7 @@ func reset_for_join() -> void:
 	_local = null
 	_escape_shove_times.clear()
 	_rescue_attempts.clear()
-	_hose_ready_times.clear()
+	_hose_users.clear()
 	if map_kind == MapKind.TOMATINA:
 		_reset_tomatina_finale()
 	# A tutorial roster is appended by the host. Discard offline spawns before
@@ -3313,7 +3329,7 @@ func _build_tomatina() -> void:
 	for cell in TOMATINA_HOSES:
 		var hose := TomatinaMap.at_cell(cell)
 		var hose_label := Label3D.new()
-		hose_label.text = "[E] 물 호스"
+		hose_label.text = "[E] 물 호스 켜기/끄기"
 		hose_label.position = hose + Vector3.UP * 1.5
 		hose_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		hose_label.pixel_size = 0.009
@@ -4346,6 +4362,11 @@ func _reset_tomatina_finale() -> void:
 	for beam in _tether_visuals.values():
 		beam.queue_free()
 	_tether_visuals.clear()
+	for parts in _hose_visuals.values():
+		for part in parts:
+			part.queue_free()
+	_hose_visuals.clear()
+	_hose_users.clear()
 	while not _enemies.is_empty() and _enemies.back().has_meta("horde"):
 		var enemy: MayoEnemy = _enemies.pop_back()
 		enemy.free()
@@ -4543,8 +4564,10 @@ func _update_stage_objective(alive := -1) -> void:
 			_stage_objective.text = "목표 · 광장에서 사이렌 작동 [E] · 밀치기 [V]"
 		elif _finale_elapsed < FINALE_DURATION:
 			_stage_objective.text = "소방차 도착까지 %d초 · 밀치기 [V]" % ceili(FINALE_DURATION - _finale_elapsed)
+		elif _local != null and _hose_slot_of(_local.peer_id) >= 0:
+			_stage_objective.text = "호스 분사 중 · 끄기 [E] · 생존 팀원과 소방차로 이동"
 		else:
-			_stage_objective.text = "목표 · 생존 팀원과 소방차로 이동 · 호스 [E]"
+			_stage_objective.text = "목표 · 생존 팀원과 소방차로 이동 · 호스 켜기/끄기 [E]"
 		if _local != null:
 			for teammate: Shooter in _shooters.values():
 				if teammate != _local and teammate.player.state == MayoPlayer.State.DEAD:
@@ -6761,37 +6784,161 @@ func _hose_slot(at: Vector3) -> int:
 	return -1
 
 
-func _use_fire_hose(shooter: Shooter) -> void:
+## Which hose stand this peer is holding, or -1.
+func _hose_slot_of(peer: int) -> int:
+	for slot in _hose_users:
+		if int(_hose_users[slot]) == peer:
+			return slot
+	return -1
+
+
+## [E] at a hose stand. A toggle: the hose opens and stays open until the same
+## key closes it. It also closes by itself when the player steps off the stand
+## or goes down -- see `_advance_fire_hoses`. One player per stand.
+func _toggle_fire_hose(shooter: Shooter) -> void:
 	if not _input_enabled or map_kind != MapKind.TOMATINA or _finale_elapsed < FINALE_DURATION:
 		return
-	var slot := _hose_slot(shooter.player.global_position)
-	var now := Time.get_ticks_msec()
-	if slot < 0 or now < int(_hose_ready_times.get(slot, 0)):
+	var held := _hose_slot_of(shooter.peer_id)
+	if held >= 0:
+		_hose_users.erase(held)
+		_play_combat_warning(shooter.player.global_position, 260.0, 0.15)
+		_update_stage_objective()
 		return
-	_hose_ready_times[slot] = now + 700
-	var from := shooter.player.global_position
-	var direction := -Basis(Vector3.UP, shooter.aim_yaw).z
-	var length := 10.0
-	for step in range(1, 21):
-		var at := from + direction * float(step) * 0.5
-		if not _nav.is_walkable(StreetMap.cell_at(at)):
-			length = float(step - 1) * 0.5
-			break
-		var side := direction.cross(Vector3.UP)
-		for offset in [-0.75, 0.0, 0.75]:
-			var cell := _floor.wash_at(at + side * float(offset))
-			if cell.x >= 0:
-				_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR_CLEAR, -1, cell.x, cell.y]))
-	for enemy in _enemies:
-		if not enemy.is_alive() or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+	var slot := _hose_slot(shooter.player.global_position)
+	if slot < 0 or _hose_users.has(slot):
+		return
+	_hose_users[slot] = shooter.peer_id
+	_play_combat_warning(shooter.player.global_position, 420.0, 0.2)
+	_update_stage_objective()
+
+
+## The jet runs flat along the player's yaw. Pitch is left out: the hose is on
+## the ground and so is what it is for.
+func _hose_direction(shooter: Shooter) -> Vector3:
+	return -Basis(Vector3.UP, shooter.aim_yaw).z
+
+
+## How far the jet gets before the street stops it, in half-metre steps.
+func _hose_reach(from: Vector3, direction: Vector3) -> float:
+	var steps := int(HOSE_RANGE / 0.5)
+	for step in range(1, steps + 1):
+		if not _nav.is_walkable(StreetMap.cell_at(from + direction * float(step) * 0.5)):
+			return float(step - 1) * 0.5
+	return HOSE_RANGE
+
+
+## Authority, once a tick. Every open hose washes the floor along its jet and
+## carries every body in it the way the water goes, for as long as it is open.
+##
+## **The floor is washed where it is dirty and nowhere else.** The clear is a
+## splat packet to every peer, and a 22 m jet sampled every half metre across
+## five columns is 220 cells a tick; sending the clean ones too was most of a
+## horde's worth of packets for nothing.
+##
+## **The sweep is `take_sweep`, not `take_shove`.** A shove pushes a body away
+## from the shooter at the body's own shove speed and dies out in a sixth of a
+## second -- a nudge, which is what a squirt of sauce is worth. Water out of a
+## fire main moves a body the way the water goes, and keeps moving it while it
+## is in the jet; a heavy goes at a fraction of the pace, a ball not at all.
+func _advance_fire_hoses(delta: float) -> void:
+	if map_kind != MapKind.TOMATINA or _hose_users.is_empty():
+		return
+	for slot in _hose_users.keys():
+		var shooter: Shooter = _shooters.get(int(_hose_users[slot]))
+		if shooter == null or shooter.player.is_incapacitated() or not _input_enabled \
+				or _hose_slot(shooter.player.global_position) != slot:
+			_hose_users.erase(slot)
+			_update_stage_objective()
 			continue
-		var gap := enemy.global_position - from
-		var along := gap.dot(direction)
-		if along > 0.0 and along <= length and (gap - direction * along).length_squared() < 3.24:
-			enemy.take_shove(from)
-	show_combat_warning(from, direction, 0.35, 6)
-	if is_instance_valid(_net) and _net.is_online():
-		_net.broadcast_combat_warning(from, direction, 0.35, 6)
+		var from := shooter.player.global_position
+		var direction := _hose_direction(shooter)
+		var length := _hose_reach(from, direction)
+		var side := direction.cross(Vector3.UP)
+		for step in range(1, int(length / 0.5) + 1):
+			var at := from + direction * float(step) * 0.5
+			for offset in [-1.2, -0.6, 0.0, 0.6, 1.2]:
+				var sample := at + side * float(offset)
+				if _floor.thickness_at(sample) <= 0:
+					continue
+				var cell := _floor.wash_at(sample)
+				if cell.x >= 0:
+					_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR_CLEAR, -1, cell.x, cell.y]))
+		for enemy in _enemies:
+			if not enemy.is_alive() or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+				continue
+			var gap := enemy.global_position - from
+			gap.y = 0.0
+			var along := gap.dot(direction)
+			if along <= 0.0 or along > length + enemy.radius:
+				continue
+			if (gap - direction * along).length() > HOSE_HALF_WIDTH + enemy.radius:
+				continue
+			var speed := HOSE_SWEEP_SPEED
+			if enemy.grade == MayoEnemy.Grade.HEAVY:
+				speed *= HOSE_HEAVY_SWEEP_SCALE
+			enemy.take_sweep(direction, speed)
+
+
+## Every peer, once a frame: a jet from each open hose, from the nozzle to
+## where the street stops it, and a splash on the ground there. The hose list
+## reaches clients in the Tomatina status packet.
+func _update_hose_visuals() -> void:
+	for slot in TOMATINA_HOSES.size():
+		var parts: Array = _hose_visuals.get(slot, [])
+		var shooter: Shooter = _shooters.get(int(_hose_users.get(slot, -1)))
+		if shooter == null:
+			for part in parts:
+				part.hide()
+			continue
+		if parts.is_empty():
+			var jet := MeshInstance3D.new()
+			var jet_mesh := CylinderMesh.new()
+			jet_mesh.top_radius = HOSE_JET_RADIUS
+			jet_mesh.bottom_radius = HOSE_JET_RADIUS * 0.5
+			jet_mesh.height = 1.0
+			jet.mesh = jet_mesh
+			var water := StandardMaterial3D.new()
+			water.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			water.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			water.albedo_color = Color(0.62, 0.86, 1.0, 0.78)
+			jet.material_override = water
+			jet.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(jet)
+			var splash := MeshInstance3D.new()
+			var splash_mesh := SphereMesh.new()
+			splash_mesh.radius = 1.0
+			splash_mesh.height = 2.0
+			splash.mesh = splash_mesh
+			var foam := StandardMaterial3D.new()
+			foam.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			foam.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			foam.albedo_color = Color(0.86, 0.96, 1.0, 0.6)
+			splash.material_override = foam
+			splash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(splash)
+			parts = [jet, splash]
+			_hose_visuals[slot] = parts
+		var from := shooter.player.global_position + Vector3.UP * 0.9
+		var direction := _hose_direction(shooter)
+		var length := _hose_reach(shooter.player.global_position, direction)
+		var to := shooter.player.global_position + direction * length
+		to.y = 0.12
+		var span := to - from
+		if span.length_squared() < 0.01:
+			for part in parts:
+				part.hide()
+			continue
+		# `CylinderMesh` stands on Y; `looking_at` puts the span on -Z. A quarter
+		# turn about X lays the cylinder's +Y along -Z, so the top (the wide end)
+		# is at the far end of the jet.
+		var jet_basis := (Basis.looking_at(span) * Basis(Vector3.RIGHT, -PI * 0.5)) \
+			.scaled_local(Vector3(1.0, span.length(), 1.0))
+		parts[0].global_transform = Transform3D(jet_basis, (from + to) * 0.5)
+		parts[0].show()
+		var pulse := 1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.02)
+		parts[1].global_transform = Transform3D(Basis.from_scale(
+			Vector3(1.4 * pulse, 0.35, 1.4 * pulse)), to)
+		parts[1].show()
 
 
 func _escape_shove(shooter: Shooter) -> void:
@@ -6936,6 +7083,11 @@ func tomatina_status() -> PackedFloat64Array:
 		if enemy.is_alive() and is_instance_valid(enemy.tether_target):
 			data.append(index)
 			data.append(enemy.tether_target.peer_id)
+	# Open hoses ride in the same pair list, told apart by a negative first
+	# entry: -(slot + 1), then the peer holding it.
+	for slot in _hose_users:
+		data.append(-(int(slot) + 1))
+		data.append(int(_hose_users[slot]))
 	return data
 
 
@@ -6949,7 +7101,11 @@ func apply_tomatina_status(data: PackedFloat64Array) -> void:
 	for enemy in _enemies:
 		if enemy.kind == MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
 			enemy.tether_target = null
+	_hose_users.clear()
 	for at in range(1, data.size() - 1, 2):
+		if data[at] < 0.0:
+			_hose_users[-int(data[at]) - 1] = int(data[at + 1])
+			continue
 		var enemy := enemy_at(int(data[at]))
 		var shooter: Shooter = _shooters.get(int(data[at + 1]))
 		if enemy != null and shooter != null:
@@ -6987,8 +7143,9 @@ func tomato_action(peer: int, action: int) -> void:
 		if not _horde_spawned and TomatinaMap.in_rect(_siren_zone, player.global_position):
 			_start_finale(player)
 			return
-		if _finale_elapsed >= FINALE_DURATION and _hose_slot(player.global_position) >= 0:
-			_use_fire_hose(shooter)
+		if _finale_elapsed >= FINALE_DURATION \
+				and (_hose_slot_of(peer) >= 0 or _hose_slot(player.global_position) >= 0):
+			_toggle_fire_hose(shooter)
 			return
 	var slots := item_slots(peer)
 	# Resolve wheel steps against the latest authoritative slot, even when
