@@ -87,13 +87,13 @@ func _run() -> void:
 			buried += 1
 			push_error("%s stands in a prop's cell" % body.name)
 	_check(buried == 0, "%d bodies are built inside props" % buried)
-	# The overturned truck is a chokepoint, not a wall: the route goes through
-	# its gap rather than round, and the gap is the one cell left of four.
+	# Calle del Cid is open: the overturned truck that closed three cells of
+	# four is gone, and nothing else has been parked in the row.
 	var cid_blocked := 0
 	for i in range(28, 32):
 		if StreetMap.blocked_cells().has(Vector2i(i, int(TomatinaMap.TRUCK_ROW))):
 			cid_blocked += 1
-	_check(cid_blocked == 3, "the overturned truck blocks %d of 4 cells, not 3" % cid_blocked)
+	_check(cid_blocked == 0, "Calle del Cid is blocked in %d of 4 cells" % cid_blocked)
 	_check(scene.refill_stations().size() == 22, "stage 2 does not have its twenty-two sauce trucks")
 
 	# Encounter pacing: no standing grunts in the entry or regroup bay.
@@ -322,6 +322,14 @@ func _run() -> void:
 	await _frames(3)
 	_check(scene.horde_spawned(), "stepping onto the plaza did not bring the horde")
 	var expected_horde: int = scene.minion_spawn_count(scene.TOMATINA_HORDE_BASE)
+	# It comes in over a run of ticks rather than in one frame; wait it in,
+	# and fail below if it never all arrives.
+	var arrival_ticks := 3
+	while scene.enemy_count() - before_horde < expected_horde and arrival_ticks < 180:
+		await _frames(1)
+		arrival_ticks += 1
+	print("horde: all in after %d ticks" % arrival_ticks)
+	_check(arrival_ticks > 4, "the horde arrived in one frame, so the stagger is not working")
 	print("horde: %d bodies for a party of %d" % [scene.enemy_count() - before_horde, scene.party_size()])
 	_check(scene.enemy_count() - before_horde == expected_horde,
 		"the horde is %d bodies, not %d" % [scene.enemy_count() - before_horde, expected_horde])

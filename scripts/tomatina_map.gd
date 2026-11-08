@@ -313,14 +313,10 @@ static func debris_boxes() -> Array[Dictionary]:
 	]:
 		boxes.push_back(metre_box(entry[0], entry[1], entry[2], crate))
 	boxes.append_array(wreck_boxes())
-	# Calle del Cid: the overturned tomato truck. Three cells of four, and a
-	# tomato heap in the gap that is jumped rather than walked round.
-	boxes.push_back(cell_box(Vector2(29.5, TRUCK_ROW + 0.75), Vector2(3.0, 1.5), 3.2,
-		"OverturnedTruck", Color("b8302a")))
-	var heap := metre_box(Vector2(31.5, TRUCK_ROW + 0.75), Vector3(2.4, 1.0, 1.6),
-		"TomatoHeap", Color("c9402f"))
-	heap["jumpable"] = true
-	boxes.push_back(heap)
+	# Calle del Cid used to be closed by an overturned tomato truck, three cells
+	# of four with a heap to jump in the fourth. Taken out: a three-metre red
+	# box across the road read as a wall, not a wreck. `TRUCK_ROW` stays as the
+	# name of the row, which the probe checks is open.
 	return boxes
 
 

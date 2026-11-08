@@ -1085,6 +1085,15 @@ const TOMATO_BURST_SPLAT_CAP := 240
 const TOMATO_BURST_TICK_CAP := 300
 ## The horde: this many grunts for one player, scaled by `minion_spawn_count`.
 const TOMATINA_HORDE_BASE := 192
+## And how many of them are built in one physics tick. A body is a mesh, its
+## colliders and a contamination grid; the whole horde in one frame was a
+## fifth of a second with nothing drawn. Eight a tick has it all in within
+## a second, which is still a wave coming in rather than a trickle.
+const HORDE_SPAWN_PER_TICK := 8
+## The coarse cell the crowd steering buckets bodies by, in metres. A body
+## looks at the nine cells round its own, which reaches the two and a half
+## spacings `_crowd_direction` cares about for anything up to a brute.
+const CROWD_CELL := 6.0
 ## How many burst tomatoes' pieces stay on the road before the oldest are
 ## swept: a cap on scenery, not on anything the fight reads.
 const TOMATO_DEBRIS_CAP := 120
@@ -1102,6 +1111,11 @@ const TOMATINA_KINDS := {
 var _fire_truck_zone := Rect2()
 var _plaza_rect := Rect2()
 var _horde_spawned := false
+## Bodies of the horde still to be built, and how many have been: the edge a
+## body comes in from is decided by its number, so the stagger changes when
+## each arrives and nothing about where.
+var _horde_pending := 0
+var _horde_spawned_count := 0
 var _burst_ground_budget := TOMATO_BURST_TICK_CAP
 ## peer id -> seconds until the next juice drop may land on their glasses.
 var _juice_splash_clock: Dictionary = {}
@@ -1296,6 +1310,7 @@ func _physics_process(delta: float) -> void:
 		# player this frame should be where the strand is aimed from.
 		_advance_enemies(delta)
 		_check_horde_trigger()
+		_advance_horde_spawn()
 	for shooter in _shooters.values():
 		_advance_strand(shooter, delta)
 	if debug_profile_enabled:
@@ -3765,8 +3780,12 @@ func tutorial_add_enemy(kind: int, at: Vector3) -> int:
 			var spawned := _enemies[tomato_index]
 			spawned.sight_range = 90.0
 			spawned.give_up_range = 120.0
-			_apply_enemy_sight_rings()
-			rescale_enemies()
+			# This body only: walking every body for each one spawned was a
+			# square's worth of work across a horde, for a flag and a rescale
+			# that only ever touch heavies.
+			spawned.show_sight_rings = show_enemy_sight
+			if spawned.grade == MayoEnemy.Grade.HEAVY:
+				rescale_enemies()
 		return tomato_index
 	var enemy := MayoEnemy.new()
 	enemy.authority = _is_authority()
@@ -3933,32 +3952,7 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 			_pending_splats.append_array(PackedInt32Array([
 				_splat_code(SPLAT_FLOOR, ContaminationGrid.KIND_KETCHUP), -1,
 				cell.x, cell.y]))
-	for other in _enemies:
-		if other == enemy or not is_instance_valid(other):
-			continue
-		if other.global_position.distance_to(centre) > radius:
-			continue
-		_stain_body_with_ketchup(other, centre)
-		if tomato_burst_damage <= 0.0 or not other.is_alive():
-			continue
-		# Dealt the way the ketchup blast deals it: through the strand's door,
-		# one notional hit at a time, so a body the splash kills flinches, turns
-		# and topples like one the stream killed. A bowled tomato shrugs it off
-		# in there, as it shrugs off the stream.
-		var hits := maxi(1, int(round(tomato_burst_damage / maxf(other.sauce_damage_per_hit, 0.001))))
-		var crossed_before := other._flinch_crossed
-		if shooter != null:
-			_credit_hit(other, shooter)
-		for _hit in hits:
-			if not other.is_alive():
-				break
-			other.take_sauce_hit(centre)
-		if not other.is_alive():
-			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
-			_burst_tomato(other, Vector3.INF, shooter)
-			_tomato_down(other)
-		elif other._flinch_crossed > crossed_before:
-			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
+	_splash_enemies(centre, radius, tomato_burst_damage, shooter, enemy)
 	for other_shooter in _shooters.values():
 		var player: MayoPlayer = other_shooter.player
 		if not is_instance_valid(player):
@@ -3973,6 +3967,39 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 				player.peer_id, cell.x, cell.y]))
 		_record_visor_splat(player, centre, ContaminationGrid.KIND_KETCHUP)
 	_tomato_fragments(centre, radius)
+
+
+## Juice landing on bodies: every tomato inside `radius` of `centre`, `source`
+## excepted, is stained and takes `damage`, flat to the rim. Dealt the way the
+## ketchup blast deals it: through the strand's door, one notional hit at a
+## time, so a body the splash kills flinches, turns and topples like one the
+## stream killed, and then bursts in turn. A bowled tomato shrugs it off in
+## there, as it shrugs off the stream. `shooter` is credited for the kills;
+## null for a splash nobody owns.
+func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Shooter,
+		source: MayoEnemy = null) -> void:
+	for other in _enemies:
+		if other == source or not is_instance_valid(other):
+			continue
+		if other.global_position.distance_to(centre) > radius:
+			continue
+		_stain_body_with_ketchup(other, centre)
+		if damage <= 0.0 or not other.is_alive():
+			continue
+		var hits := maxi(1, int(round(damage / maxf(other.sauce_damage_per_hit, 0.001))))
+		var crossed_before := other._flinch_crossed
+		if shooter != null:
+			_credit_hit(other, shooter)
+		for _hit in hits:
+			if not other.is_alive():
+				break
+			other.take_sauce_hit(centre)
+		if not other.is_alive():
+			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
+			_burst_tomato(other, Vector3.INF, shooter)
+			_tomato_down(other)
+		elif other._flinch_crossed > crossed_before:
+			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
 
 
 ## The pieces that fly, scaled to the burst. Decoration, thrown on every peer
@@ -4274,10 +4301,21 @@ func _check_horde_trigger() -> void:
 	if not arrived:
 		return
 	_horde_spawned = true
-	var count := minion_spawn_count(TOMATINA_HORDE_BASE)
-	for index in count:
-		var edge: Vector2 = TomatinaMap.HORDE_EDGES[index % TomatinaMap.HORDE_EDGES.size()]
+	_horde_pending = minion_spawn_count(TOMATINA_HORDE_BASE)
+	_horde_spawned_count = 0
+
+
+## The horde coming in: `HORDE_SPAWN_PER_TICK` bodies a tick until it is all
+## here, each from the edge its number says. Every tick, so a horde triggered
+## this tick starts arriving this tick.
+func _advance_horde_spawn() -> void:
+	var batch := mini(_horde_pending, HORDE_SPAWN_PER_TICK)
+	for _index in batch:
+		var edge: Vector2 = TomatinaMap.HORDE_EDGES[
+			_horde_spawned_count % TomatinaMap.HORDE_EDGES.size()]
 		tutorial_spawn_enemy(MayoTutorial.KIND_TOMATO_GRUNT, TomatinaMap.at_cell(edge))
+		_horde_spawned_count += 1
+	_horde_pending -= batch
 
 
 func horde_spawned() -> bool:
@@ -4484,7 +4522,13 @@ func _advance_enemies(delta: float) -> void:
 		for player in targets:
 			if is_instance_valid(player) and player.global_position.z < TomatinaMap.at_cell(Vector2(30, 46)).z:
 				_tomatina_next_encounter_released = true
-	for enemy in _enemies:
+	# Who each body has to steer round, bucketed once a tick rather than every
+	# body reading every other. With the horde in that was 270 bodies squared
+	# a tick, and it was the whole of the lag -- see `_crowd_neighbours`.
+	var buckets := _crowd_buckets()
+	var frame := Engine.get_physics_frames()
+	for index in _enemies.size():
+		var enemy: MayoEnemy = _enemies[index]
 		# The next encounter waits until the team leaves the regroup bay.
 		if map_kind == MapKind.TOMATINA and not _tomatina_next_encounter_released \
 				and enemy.has_meta("after_regroup") and enemy.is_alive():
@@ -4498,8 +4542,12 @@ func _advance_enemies(delta: float) -> void:
 			chasing = _tutorial.targets_for(enemy, targets)
 		# Dead ones are advanced too: they are still toppling.
 		var previous_position: Vector3 = enemy.global_position
-		enemy.crowd_peers = _enemies
-		enemy._crowd_side = 1.0 if _enemies.find(enemy) % 2 == 0 else -1.0
+		enemy.crowd_peers = _crowd_neighbours(buckets, enemy)
+		enemy._crowd_side = 1.0 if index % 2 == 0 else -1.0
+		# Half the bodies re-steer each tick and the other half hold last tick's
+		# smoothed answer. The steering is smoothed over a fifth of a second
+		# anyway, so a tick of age is nothing it can see.
+		enemy.crowd_hold = (frame + index) % 2 == 1
 		var hit := enemy.advance(delta, chasing)
 		if map_kind == MapKind.TUTORIAL_RECTANGLE \
 				and _tutorial != null and _tutorial.stage == MayoTutorial.Stage.RUN \
@@ -4522,6 +4570,40 @@ func _advance_enemies(delta: float) -> void:
 		if _tutorial != null and not _tutorial.allows_contact_damage(enemy, hit):
 			continue
 		_damage_player(hit, enemy.contact_damage)
+
+
+## The live bodies, by the coarse `CROWD_CELL` they stand in. Bowled tomatoes
+## are left out here as they are in `_crowd_direction`: nothing steers round
+## a thing that rolls through it.
+func _crowd_buckets() -> Dictionary:
+	var buckets := {}
+	for other in _enemies:
+		if not is_instance_valid(other) or not other.is_alive() \
+				or other.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			continue
+		var key := _crowd_cell(other.global_position)
+		if not buckets.has(key):
+			buckets[key] = []
+		buckets[key].push_back(other)
+	return buckets
+
+
+func _crowd_cell(at: Vector3) -> Vector2i:
+	return Vector2i(int(floor(at.x / CROWD_CELL)), int(floor(at.z / CROWD_CELL)))
+
+
+## The bodies within a cell of this one in every direction: everything the
+## steering could be pushed by, and nothing it could not. It includes the body
+## itself, which `_crowd_direction` already skips.
+func _crowd_neighbours(buckets: Dictionary, enemy: MayoEnemy) -> Array:
+	var centre := _crowd_cell(enemy.global_position)
+	var out: Array = []
+	for dz in range(-1, 2):
+		for dx in range(-1, 2):
+			var bucket = buckets.get(centre + Vector2i(dx, dz))
+			if bucket != null:
+				out.append_array(bucket)
+	return out
 
 
 ## An empty bar holds the body in the world for the character's death clip --
@@ -4866,7 +4948,13 @@ func _emit_point(shooter: Shooter = null) -> void:
 	var convergence := shooter.aim_pivot.global_position + shooter.attack_direction * aim_convergence_distance
 	var angle := shooter.rng.randf_range(-yaw_angle_jitter, yaw_angle_jitter)
 	var direction := (convergence - point.position).normalized().rotated(aim_basis.y, angle).normalized()
-	point.last_collision_position = point.position
+	# The first cast runs from the eyes, not from the nozzle. The nozzle is the
+	# better part of a metre ahead of the aim pivot, so a body pressed up
+	# against the player has the point born *inside* it, where a ray finds no
+	# surface: too close to hurt, and the stream went through it. Starting the
+	# sweep at the pivot covers that gap; the player's own capsule is excluded
+	# by `self_hit_distance`, and the point is still drawn from the nozzle.
+	point.last_collision_position = shooter.aim_pivot.global_position
 	# Speed jitter is independent of the yaw jitter above: it spreads where a
 	# point runs out of pressure, and so spreads the landing point along the
 	# strand axis rather than across it.
@@ -6379,6 +6467,12 @@ func debug_reset_profile() -> void:
 # Server owns rolls and consumption; clients receive the full active set.
 @export_range(0.0, 1.0) var healing_tomato_chance := 0.3
 @export var healing_tomato_amount := 25.0
+## A thrown tomato is a grenade with a stem: what it takes off every tomato
+## inside this radius of where it lands, through the same splash a burst
+## deals, credited to whoever threw it. Dearer than a burst's splash, because
+## it costs the heal the tomato was worth.
+@export var thrown_tomato_damage := 15.0
+@export var thrown_tomato_splash_radius := 2.0
 var _healing_deaths: Dictionary = {}
 var _healing_tomatoes: Dictionary = {}
 var _healing_rng := RandomNumberGenerator.new()
@@ -6595,8 +6689,11 @@ func _advance_thrown_tomatoes(delta: float) -> void:
 					_record_visor_splat(victim, victim.visor.to_global(Vector3(
 						_healing_rng.randf_range(-0.5,0.5), _healing_rng.randf_range(-0.4,0.4), -1)), ContaminationGrid.KIND_KETCHUP)
 		if not hit.is_empty() or entry.age > 5.0:
-			_tomato_fragments(hit.position if not hit.is_empty() else end, 1.5)
-			_leave_debris(hit.position if not hit.is_empty() else end, 0.35, TomatoVisuals.TOMATO)
+			var landed: Vector3 = hit.position if not hit.is_empty() else end
+			_tomato_fragments(landed, 1.5)
+			_leave_debris(landed, 0.35, TomatoVisuals.TOMATO)
+			_splash_enemies(landed, thrown_tomato_splash_radius, thrown_tomato_damage,
+				_shooters.get(entry.owner))
 			entry.node.queue_free()
 			_thrown_tomatoes.erase(id)
 		else:

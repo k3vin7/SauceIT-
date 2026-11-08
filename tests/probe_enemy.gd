@@ -395,6 +395,29 @@ func _run() -> void:
 			"the monster has no cap charts, so its crown cannot hold a stain")
 	enemy.contamination.grid.clear()
 
+	# --- point blank: a body against the player is still hit ---
+	# The nozzle is the better part of a metre ahead of the eyes, so a body
+	# pressed up against the player had the stream born *inside* it, where no
+	# ray finds a surface: too close to hurt. The first cast runs from the aim
+	# pivot now, so the gap between the eyes and the nozzle is swept too.
+	var touching_health: float = enemy.health
+	player.global_position = enemy.global_position + Vector3(0.0, 0.0, enemy.radius + 0.64 + 0.05)
+	player.global_position.y = stand_y
+	scene.debug_aim_at(enemy.global_position + Vector3(0.0, 0.4, 0.0))
+	await physics_frame
+	Input.action_press("fire_mayo")
+	for _f in 60:
+		scene.debug_aim_at(enemy.global_position + Vector3(0.0, 0.4, 0.0))
+		await physics_frame
+	Input.action_release("fire_mayo")
+	await process_frame
+	print("point blank: %.1f health gone with the body against the player" % (
+		touching_health - enemy.health))
+	_check(enemy.health < touching_health,
+		"a body pressed against the player was not hurt by the stream")
+	scene._points.clear()
+	enemy.contamination.grid.clear()
+
 	# --- sauce marks it and hurts it, off the same hit ---
 	var full: float = enemy.health
 	var clean: int = enemy.contamination.painted_cell_count()

@@ -65,5 +65,21 @@ func run():
 	assert(not scene.local_holds_tomato() and scene._thrown_tomatoes.size() == 1, "throw failed")
 	scene._advance_thrown_tomatoes(0.02)
 	assert(player.health == before, "throw damaged owner")
+	# Where it lands is a splash: a grunt beside the landing is hurt by it.
+	var target = null
+	for candidate in scene._enemies:
+		if candidate.is_alive() and candidate.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT:
+			target = candidate
+			break
+	var flying = scene._thrown_tomatoes.values()[0]
+	target.global_position = flying.node.global_position + Vector3(1.0, 0.0, 0.0)
+	target.global_position.y = target.stand_height()
+	var target_health: float = target.health
+	flying.velocity = Vector3.DOWN * 200.0
+	scene._advance_thrown_tomatoes(0.02)
+	assert(scene._thrown_tomatoes.is_empty(), "the tomato did not land")
+	print("splash: the grunt beside the landing lost %.2f health" % (target_health - target.health))
+	assert(target.health < target_health, "a grunt beside the landing was not hurt by the splash")
+	assert(player.health == before, "the splash hurt the thrower")
 	print("HEALING_TOMATO_OK")
 	quit()

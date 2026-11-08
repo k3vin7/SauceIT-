@@ -2175,6 +2175,9 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 ## ever read off a target was its position, and the drone is not a player.
 ## Peers are supplied by this world, never by tree-wide groups (multiplayer).
 var crowd_peers: Array = []
+## Set by the world on the ticks this body keeps last tick's steering rather
+## than working it out again. See `_advance_enemies`.
+var crowd_hold := false
 var _crowd_side := 1.0
 var _passing_side := 1.0
 var _passing_left := 0.0
@@ -2186,6 +2189,8 @@ func _crowd_direction(forward: Vector3, delta := 1.0 / 60.0) -> Vector3:
 	if forward.length_squared() < 0.000001:
 		return forward
 	_passing_left = maxf(0.0, _passing_left - delta)
+	if crowd_hold and _crowd_smoothed.length_squared() >= 0.001:
+		return _crowd_smoothed
 	_crowd_speed = 1.0
 	var direction := forward.normalized()
 	var right := direction.cross(Vector3.UP)
