@@ -128,6 +128,11 @@ var _network_previous_position := Vector3.ZERO
 ## next physics step and then cleared. Accumulated rather than assigned so two
 ## rushers arriving on the same frame both count.
 var _pending_enemy_impact := Vector3.ZERO
+## A steady shove on the body, in m/s, added to where the feet want to go
+## rather than to the velocity: the fire hose's thrust is a drift the player
+## can walk against, not a knock. Authority only; set each tick by whatever
+## is pushing, zero when nothing is.
+var external_drift := Vector3.ZERO
 ## The jump is taken on the press, not while the key is down, and the press is
 ## found here rather than with Input.is_action_just_pressed: a client's jump
 ## arrives as a held flag in a packet, and the server has to see the edge in it.
@@ -313,6 +318,8 @@ func _physics_process(delta: float) -> void:
 			top = maxf(top, Vector2(velocity.x, velocity.z).length())
 		desired *= top
 		desired *= mustard_factor()
+		if state == State.NORMAL:
+			desired += Vector3(external_drift.x, 0.0, external_drift.z)
 
 	# Going down keeps whatever speed the player slipped at and scrubs it off,
 	# so they skid forward instead of stopping dead where they tripped.

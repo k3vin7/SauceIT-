@@ -293,6 +293,12 @@ class Shooter:
 	var bottle_pressure := 0.0
 	var bottle_pickup_left := 0.0
 	var recoil_pitch := 0.0
+	## The fire main opening: a pitch the nozzle and (for the local player)
+	## the view are thrown up by, fed in over `HOSE_KICK_ATTACK` and settled
+	## by `_update_hose_visuals`. `hose_was_open` is the edge it fires on.
+	var hose_kick_pitch := 0.0
+	var hose_kick_pending := 0.0
+	var hose_was_open := false
 	## The part of the kick that has not been let into the view yet. A squirt's
 	## kick is fed in over `recoil_attack_seconds` rather than applied whole on
 	## the frame the trigger goes down: the same 4 degrees arriving in one frame
@@ -1106,6 +1112,33 @@ const TOMATINA_HOSES := [Vector2(28.5, 24.0), Vector2(31.5, 24.0)]
 const HOSE_RANGE := 22.0
 const HOSE_HALF_WIDTH := 2.2
 const HOSE_JET_RADIUS := 0.45
+## How far the hose line pays out from its reel before the hose is dropped.
+## Opening needs the player at the stand (`_hose_slot`); keeping it open only
+## needs the hose to reach -- see `_advance_fire_hoses`.
+const HOSE_TETHER := 5.0
+## The jet's thrust on whoever holds it, as a steady backward speed fed into
+## the body's desired velocity. Just under half a walk: standing still on the
+## hose means being walked off the end of it, holding it means leaning in.
+const HOSE_RECOIL_SPEED := 2.4
+## The jet is a parabola, not a ray: it leaves the nozzle at this speed along
+## the full aim (pitch included, like the bottle) and drops under this gravity,
+## so a jet aimed up comes down somewhere and the floor there gets the water.
+const HOSE_JET_SPEED := 30.0
+const HOSE_JET_GRAVITY := 9.8
+const HOSE_STEP := 0.5
+const HOSE_GROUND_Y := 0.1
+## The lurch when the main opens: the nozzle and the view are thrown up
+## together over the attack, and settle while the hose runs. The rumble is
+## what the view does for as long as it is open.
+const HOSE_KICK_DEGREES := 10.0
+const HOSE_KICK_ATTACK := 0.07
+const HOSE_KICK_SETTLE := 0.45
+const HOSE_RUMBLE_DEGREES := 0.35
+## Tomatoes called in from the plaza edges when a hose opens, so there is
+## something to put the water on, and how long before another opening calls
+## more -- see `_queue_hose_wave`.
+const HOSE_WAVE_COUNT := 14
+const HOSE_WAVE_COOLDOWN := 18.0
 ## And how many of them are built in one physics tick. A body is a mesh, its
 ## colliders and a contamination grid; the whole horde in one frame was a
 ## fifth of a second with nothing drawn. Eight a tick has it all in within
@@ -1146,8 +1179,16 @@ var _rescue_attempts := {}
 ## Hose stand index -> peer id of whoever has it open. Authority state,
 ## carried to clients in the Tomatina status packet for the jet to draw.
 var _hose_users := {}
-## Hose stand index -> [jet mesh, splash mesh].
+## Hose stand index -> {"jet": [segment meshes], "splash": mesh, "line": [segment meshes]}.
 var _hose_visuals := {}
+## Hose stand index -> {"anchor": where the line leaves the reel, "nozzle": the
+## nozzle resting on the stand while nobody holds it}.
+var _hose_stands := {}
+## Peer id -> the nozzle held under that player's aim pivot. Built on first use.
+var _hose_nozzles := {}
+var _hose_wave_pending := 0
+var _hose_wave_wait := 0.0
+var _hose_wave_cooldown := 0.0
 var _tether_visuals := {}
 var _warning_sound: AudioStreamWAV
 var _siren_label: Label3D
@@ -1349,6 +1390,7 @@ func _physics_process(delta: float) -> void:
 		_advance_enemies(delta)
 		_advance_horde_spawn(delta)
 		_advance_fire_hoses(delta)
+		_advance_hose_wave(delta)
 	for shooter in _shooters.values():
 		_advance_strand(shooter, delta)
 	if debug_profile_enabled:
@@ -3347,14 +3389,8 @@ func _build_tomatina() -> void:
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	label.pixel_size = 0.013
 	add_child(label)
-	for cell in TOMATINA_HOSES:
-		var hose := TomatinaMap.at_cell(cell)
-		var hose_label := Label3D.new()
-		hose_label.text = "[E] 물 호스 켜기/끄기"
-		hose_label.position = hose + Vector3.UP * 1.5
-		hose_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		hose_label.pixel_size = 0.009
-		add_child(hose_label)
+	for slot in TOMATINA_HOSES.size():
+		_build_hose_stand(slot, TomatinaMap.at_cell(TOMATINA_HOSES[slot]))
 	TomatinaMap.seed_floor(_floor)
 	_build_start_marker(TomatinaMap.start_arrow())
 
@@ -4398,11 +4434,13 @@ func _reset_tomatina_finale() -> void:
 	for beam in _tether_visuals.values():
 		beam.queue_free()
 	_tether_visuals.clear()
-	for parts in _hose_visuals.values():
-		for part in parts:
-			part.queue_free()
-	_hose_visuals.clear()
+	_free_hose_visuals()
 	_hose_users.clear()
+	_hose_wave_pending = 0
+	_hose_wave_cooldown = 0.0
+	for shooter: Shooter in _shooters.values():
+		if is_instance_valid(shooter.player):
+			shooter.player.external_drift = Vector3.ZERO
 	while not _enemies.is_empty() and _enemies.back().has_meta("horde"):
 		var enemy: MayoEnemy = _enemies.pop_back()
 		enemy.free()
@@ -5077,7 +5115,8 @@ func _update_camera() -> void:
 	# neither is touched here -- the view moves off the aim, the aim does not
 	# move. Both camera modes get it, since both are built from this basis.
 	var shake := _shake_offset(_local)
-	var kick := _local.recoil_pitch + _local.sway_pitch * camera_sway_fraction + shake.x
+	var kick := _local.recoil_pitch + _local.sway_pitch * camera_sway_fraction + shake.x \
+		+ _local.hose_kick_pitch + _hose_rumble(_local)
 	if kick != 0.0:
 		aim_basis = aim_basis.rotated(aim_basis.x, kick)
 	var drift := _local.sway_yaw * camera_sway_fraction + shake.y
@@ -6912,86 +6951,164 @@ func _hose_slot_of(peer: int) -> int:
 
 
 ## [E] at a hose stand. A toggle: the hose opens and stays open until the same
-## key closes it. It also closes by itself when the player steps off the stand
-## or goes down -- see `_advance_fire_hoses`. One player per stand.
+## key closes it. It also closes by itself when the hose line runs out, or the
+## player goes down -- see `_advance_fire_hoses`. One player per stand. Opening
+## a hose also calls tomatoes in off the plaza edges (`_queue_hose_wave`), so
+## the water has something to land on. The sounds and the lurch are not here:
+## they fire on every peer off the open/close edge in `_update_hose_visuals`,
+## since this runs on the authority alone.
 func _toggle_fire_hose(shooter: Shooter) -> void:
 	if not _input_enabled or map_kind != MapKind.TOMATINA or _finale_elapsed < FINALE_DURATION:
 		return
 	var held := _hose_slot_of(shooter.peer_id)
 	if held >= 0:
 		_hose_users.erase(held)
-		_play_combat_warning(shooter.player.global_position, 260.0, 0.15)
+		shooter.player.external_drift = Vector3.ZERO
 		_update_stage_objective()
 		return
 	var slot := _hose_slot(shooter.player.global_position)
 	if slot < 0 or _hose_users.has(slot):
 		return
 	_hose_users[slot] = shooter.peer_id
-	_play_combat_warning(shooter.player.global_position, 420.0, 0.2)
+	_queue_hose_wave()
 	_update_stage_objective()
 
 
-## The jet runs flat along the player's yaw. Pitch is left out: the hose is on
-## the ground and so is what it is for.
+## The jet leaves along the full aim, pitch and all, the way the bottle's
+## strand does: the hose is aimed with the mouse, not laid along the ground.
 func _hose_direction(shooter: Shooter) -> Vector3:
-	return -Basis(Vector3.UP, shooter.aim_yaw).z
+	return -_aim_basis(shooter).z
 
 
-## How far the jet gets before the street stops it, in half-metre steps.
-func _hose_reach(from: Vector3, direction: Vector3) -> float:
-	var steps := int(HOSE_RANGE / 0.5)
+## Where the jet is, sampled every `HOSE_STEP` metres of travel along the aim
+## from the nozzle until the street, the ground or its range stops it. A
+## parabola under `HOSE_JET_GRAVITY` at `HOSE_JET_SPEED`, so a flat jet droops
+## a couple of metres over its length and a raised one comes back down. The
+## last point is where the water lands when it met the ground; a jet that ran
+## out in the air ends in the air.
+func _hose_arc(from: Vector3, direction: Vector3) -> PackedVector3Array:
+	var points := PackedVector3Array()
+	var previous := from
+	var steps := int(HOSE_RANGE / HOSE_STEP)
 	for step in range(1, steps + 1):
-		if not _nav.is_walkable(StreetMap.cell_at(from + direction * float(step) * 0.5)):
-			return float(step - 1) * 0.5
-	return HOSE_RANGE
+		var travel := float(step) * HOSE_STEP
+		var fall := HOSE_JET_GRAVITY * 0.5 * pow(travel / HOSE_JET_SPEED, 2.0)
+		var at := from + direction * travel - Vector3.UP * fall
+		if not _nav.is_walkable(StreetMap.cell_at(at)):
+			break
+		if at.y <= HOSE_GROUND_Y:
+			var span := previous.y - at.y
+			var landing := at if span <= 0.000001 \
+				else previous.lerp(at, clampf((previous.y - HOSE_GROUND_Y) / span, 0.0, 1.0))
+			landing.y = HOSE_GROUND_Y
+			points.append(landing)
+			break
+		points.append(at)
+		previous = at
+	return points
 
 
-## Authority, once a tick. Every open hose washes the floor along its jet and
-## bursts every body in it, for as long as it is open.
+## How far along the aim the jet gets before something stops it, in metres.
+func _hose_reach(from: Vector3, direction: Vector3) -> float:
+	return float(_hose_arc(from, direction).size()) * HOSE_STEP
+
+
+## Whether the water came down on the street: the arc's last point sits on the
+## ground rather than in the air.
+func _hose_landed(points: PackedVector3Array) -> bool:
+	return not points.is_empty() and points[points.size() - 1].y <= HOSE_GROUND_Y + 0.001
+
+
+func _wash_floor_at(sample: Vector3) -> void:
+	if _floor.thickness_at(sample) <= 0:
+		return
+	var cell := _floor.wash_at(sample)
+	if cell.x >= 0:
+		_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR_CLEAR, -1, cell.x, cell.y]))
+
+
+## Authority, once a tick. Every open hose shoves whoever holds it, washes the
+## floor under its jet and bursts every body in it, for as long as it is open.
 ##
-## **The floor is washed where it is dirty and nowhere else.** The clear is a
-## splat packet to every peer, and a 22 m jet sampled every half metre across
-## five columns is 220 cells a tick; sending the clean ones too was most of a
-## horde's worth of packets for nothing.
+## **The hose line, not the stand, is the leash.** Opening needs the player at
+## the stand; staying open needs the player within `HOSE_TETHER` of the reel.
+## The thrust walks a player off the end of it if they do nothing, which is
+## the point of the thrust: a fire main is held, not stood next to.
+##
+## **The floor is washed where the water is, and where it is dirty.** A jet
+## aimed flat drags its five columns along the whole run, like it always did;
+## one aimed up washes only where it comes down, in a wider patch. The clear
+## is a splat packet to every peer, so clean cells are never sent.
 ##
 ## **Water out of a fire main kills.** A squirt of sauce is a nudge and a few
 ## points off; the jet puts any body it touches down on the spot, through the
 ## same door every other kill goes through -- `take_sauce_hit` on its last
 ## point of health, so it turns, topples and bursts the way a hosed grunt
-## would -- with the kill credited to whoever holds the hose. A bowled ball
-## is a thing thrown at you, not a thing to fight, and is left alone.
+## would -- with the kill credited to whoever holds the hose. "Touches" now
+## has a height to it: a body is in the jet when the jet, at that body's
+## distance, is within a body's reach of its feet, so a hose pointed at the
+## sky sails over the horde the way a bottle pointed there would. A bowled
+## ball is a thing thrown at you, not a thing to fight, and is left alone.
 func _advance_fire_hoses(delta: float) -> void:
-	if map_kind != MapKind.TOMATINA or _hose_users.is_empty():
+	if map_kind != MapKind.TOMATINA:
+		return
+	for pushed: Shooter in _shooters.values():
+		if is_instance_valid(pushed.player):
+			pushed.player.external_drift = Vector3.ZERO
+	if _hose_users.is_empty():
 		return
 	for slot in _hose_users.keys():
 		var shooter: Shooter = _shooters.get(int(_hose_users[slot]))
+		var reel := TomatinaMap.at_cell(TOMATINA_HOSES[slot])
 		if shooter == null or shooter.player.is_incapacitated() or not _input_enabled \
-				or _hose_slot(shooter.player.global_position) != slot:
+				or reel.distance_squared_to(shooter.player.global_position) > HOSE_TETHER * HOSE_TETHER:
 			_hose_users.erase(slot)
 			_update_stage_objective()
 			continue
-		var from := shooter.player.global_position
+		var origin := shooter.player.global_position
+		var from := origin + Vector3.UP * 0.9
 		var direction := _hose_direction(shooter)
-		var length := _hose_reach(from, direction)
-		var side := direction.cross(Vector3.UP)
-		for step in range(1, int(length / 0.5) + 1):
-			var at := from + direction * float(step) * 0.5
+		var flat := Vector3(direction.x, 0.0, direction.z)
+		var flat_length := flat.length()
+		var forward := flat / flat_length if flat_length > 0.01 else -Basis(Vector3.UP, shooter.aim_yaw).z
+		# The thrust: back along the aim, flat, whatever the pitch -- the body
+		# is on the ground and that is where it is pushed along.
+		shooter.player.external_drift = -forward * HOSE_RECOIL_SPEED
+		var points := _hose_arc(from, direction)
+		if points.is_empty():
+			continue
+		var side := forward.cross(Vector3.UP)
+		for at in points:
+			if at.y > origin.y + 1.0:
+				continue
 			for offset in [-1.2, -0.6, 0.0, 0.6, 1.2]:
-				var sample := at + side * float(offset)
-				if _floor.thickness_at(sample) <= 0:
-					continue
-				var cell := _floor.wash_at(sample)
-				if cell.x >= 0:
-					_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR_CLEAR, -1, cell.x, cell.y]))
+				_wash_floor_at(at + side * float(offset))
+		var landing := points[points.size() - 1]
+		var landed := _hose_landed(points)
+		if landed:
+			for dx in [-1.5, -0.75, 0.0, 0.75, 1.5]:
+				for dz in [-1.5, -0.75, 0.0, 0.75, 1.5]:
+					_wash_floor_at(landing + Vector3(float(dx), 0.0, float(dz)))
+		var reach := float(points.size()) * HOSE_STEP
+		var reach_flat := reach * maxf(flat_length, 0.01)
 		for enemy in _enemies:
 			if not enemy.is_alive() or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
 				continue
 			var gap := enemy.global_position - from
-			gap.y = 0.0
-			var along := gap.dot(direction)
-			if along <= 0.0 or along > length + enemy.radius:
-				continue
-			if (gap - direction * along).length() > HOSE_HALF_WIDTH + enemy.radius:
+			var gap_flat := Vector3(gap.x, 0.0, gap.z)
+			var in_jet := false
+			var along := gap_flat.dot(forward)
+			if along > 0.0 and along <= reach_flat + enemy.radius \
+					and (gap_flat - forward * along).length() <= HOSE_HALF_WIDTH + enemy.radius:
+				var travel := along / maxf(flat_length, 0.05)
+				var jet_y := from.y + direction.y * travel \
+					- HOSE_JET_GRAVITY * 0.5 * pow(travel / HOSE_JET_SPEED, 2.0)
+				in_jet = jet_y <= enemy.global_position.y + 2.4 and jet_y >= enemy.global_position.y - 2.0
+			if not in_jet and landed:
+				var splash_gap := enemy.global_position - landing
+				splash_gap.y = 0.0
+				in_jet = splash_gap.length() <= 1.5 + enemy.radius
+			if not in_jet:
 				continue
 			_credit_hit(enemy, shooter)
 			enemy.health = minf(enemy.health, enemy.sauce_damage_per_hit)
@@ -7003,31 +7120,319 @@ func _advance_fire_hoses(delta: float) -> void:
 			_tomato_down(enemy)
 
 
-## Every peer, once a frame: a jet from each open hose, from the nozzle to
-## where the street stops it, and a splash on the ground there. The hose list
-## reaches clients in the Tomatina status packet.
-func _update_hose_visuals() -> void:
-	for slot in TOMATINA_HOSES.size():
-		var parts: Array = _hose_visuals.get(slot, [])
-		var shooter: Shooter = _shooters.get(int(_hose_users.get(slot, -1)))
-		if shooter == null:
-			for part in parts:
-				part.hide()
+## A hose opening calls the tomatoes in. Authority only; once per
+## `HOSE_WAVE_COOLDOWN`, so flicking the hose on and off is not a horde
+## generator. The bodies arrive over `_advance_hose_wave`, a beat after the
+## main opens, from the same plaza edges the finale's waves used.
+func _queue_hose_wave() -> void:
+	if _hose_wave_cooldown > 0.0 or not _is_authority():
+		return
+	_hose_wave_cooldown = HOSE_WAVE_COOLDOWN
+	_hose_wave_pending += HOSE_WAVE_COUNT
+	_hose_wave_wait = 1.2
+	var entry := TomatinaMap.at_cell(TomatinaMap.HORDE_EDGES[0][0])
+	show_combat_warning(entry, Vector3.ZERO, 0.6, 1)
+	if is_instance_valid(_net) and _net.is_online():
+		_net.broadcast_combat_warning(entry, Vector3.ZERO, 0.6, 1)
+
+
+## Authority, once a tick: the tomatoes a hose called in, built a couple at a
+## time round every plaza edge in turn, under the same active cap and the same
+## clearances as the finale's horde.
+func _advance_hose_wave(delta: float) -> void:
+	if map_kind != MapKind.TOMATINA:
+		return
+	_hose_wave_cooldown = maxf(_hose_wave_cooldown - delta, 0.0)
+	if _hose_wave_pending <= 0:
+		return
+	_hose_wave_wait -= delta
+	if _hose_wave_wait > 0.0:
+		return
+	_hose_wave_wait = 0.22
+	var active := 0
+	for enemy in _enemies:
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() \
+				and (enemy.has_meta("horde") or TomatinaMap.in_rect(_plaza_rect, enemy.global_position)):
+			active += 1
+	var remaining := mini(HORDE_SPAWN_PER_TICK, mini(_hose_wave_pending, tomatina_active_grunt_cap - active))
+	var edges: Array = []
+	for wave in TomatinaMap.HORDE_EDGES:
+		edges.append_array(wave)
+	for attempt in edges.size():
+		if remaining <= 0:
+			break
+		var at := TomatinaMap.at_cell(edges[_horde_spawned_count % edges.size()])
+		_horde_spawned_count += 1
+		if not _nav.is_walkable(StreetMap.cell_at(at)) or not _horde_spawn_clear(at):
 			continue
-		if parts.is_empty():
-			var jet := MeshInstance3D.new()
-			var jet_mesh := CylinderMesh.new()
-			jet_mesh.top_radius = HOSE_JET_RADIUS
-			jet_mesh.bottom_radius = HOSE_JET_RADIUS * 0.5
-			jet_mesh.height = 1.0
-			jet.mesh = jet_mesh
+		if tutorial_spawn_enemy(MayoTutorial.KIND_TOMATO_GRUNT, at) >= 0:
+			_hose_wave_pending -= 1
+			remaining -= 1
+
+
+## The view's shudder while this player holds an open hose, as a pitch in
+## radians. Two sines rather than noise so it is the same every frame it is
+## asked for, and zero the frame the hose closes.
+func _hose_rumble(shooter: Shooter) -> float:
+	if shooter == null or _hose_slot_of(shooter.peer_id) < 0:
+		return 0.0
+	var t := Time.get_ticks_msec() * 0.001
+	return deg_to_rad(HOSE_RUMBLE_DEGREES) * (sin(t * 47.0) * 0.6 + sin(t * 31.0 + 1.7) * 0.4)
+
+
+func _hose_material(color: Color, metallic := 0.0, roughness := 0.6) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.albedo_color = color
+	material.metallic = metallic
+	material.roughness = roughness
+	return material
+
+
+func _hose_part(parent: Node3D, mesh: Mesh, material: Material, at: Vector3,
+		rotation_degrees := Vector3.ZERO) -> MeshInstance3D:
+	var part := MeshInstance3D.new()
+	part.mesh = mesh
+	part.material_override = material
+	part.position = at
+	part.rotation_degrees = rotation_degrees
+	parent.add_child(part)
+	return part
+
+
+## A brass nozzle with a black grip and a short red coupling, built pointing
+## down -Z with its mouth at `Tip` and the hose coming in at `Rear`. The same
+## model sits on the stand while nobody holds the hose and hangs under a
+## player's aim pivot while somebody does.
+func _build_hose_nozzle(nozzle_name: String) -> Node3D:
+	var nozzle := Node3D.new()
+	nozzle.name = nozzle_name
+	var brass := _hose_material(Color(0.82, 0.62, 0.24), 0.8, 0.35)
+	var dark_brass := _hose_material(Color(0.5, 0.38, 0.16), 0.8, 0.4)
+	var rubber := _hose_material(Color(0.09, 0.09, 0.1), 0.0, 0.9)
+	var red := _hose_material(Color(0.78, 0.14, 0.1), 0.0, 0.7)
+	var coupling := CylinderMesh.new()
+	coupling.top_radius = 0.085
+	coupling.bottom_radius = 0.085
+	coupling.height = 0.14
+	_hose_part(nozzle, coupling, red, Vector3(0.0, 0.0, 0.16), Vector3(-90.0, 0.0, 0.0))
+	var grip := CylinderMesh.new()
+	grip.top_radius = 0.07
+	grip.bottom_radius = 0.075
+	grip.height = 0.3
+	_hose_part(nozzle, grip, rubber, Vector3(0.0, 0.0, -0.06), Vector3(-90.0, 0.0, 0.0))
+	var lever := BoxMesh.new()
+	lever.size = Vector3(0.035, 0.14, 0.05)
+	_hose_part(nozzle, lever, red, Vector3(0.0, 0.12, -0.1), Vector3(-25.0, 0.0, 0.0))
+	var barrel := CylinderMesh.new()
+	barrel.top_radius = 0.052
+	barrel.bottom_radius = 0.07
+	barrel.height = 0.3
+	_hose_part(nozzle, barrel, brass, Vector3(0.0, 0.0, -0.36), Vector3(-90.0, 0.0, 0.0))
+	var mouth := CylinderMesh.new()
+	mouth.top_radius = 0.085
+	mouth.bottom_radius = 0.085
+	mouth.height = 0.07
+	_hose_part(nozzle, mouth, dark_brass, Vector3(0.0, 0.0, -0.53), Vector3(-90.0, 0.0, 0.0))
+	var tip := Marker3D.new()
+	tip.name = "Tip"
+	tip.position = Vector3(0.0, 0.0, -0.57)
+	nozzle.add_child(tip)
+	var rear := Marker3D.new()
+	rear.name = "Rear"
+	rear.position = Vector3(0.0, 0.0, 0.23)
+	nozzle.add_child(rear)
+	return nozzle
+
+
+## A hose stand: a red post on a plate with the hose coiled round it, a brass
+## cap, the nozzle hooked on the side, and the sign above. Built once with the
+## map; `_update_hose_visuals` takes the nozzle off it while it is held.
+func _build_hose_stand(slot: int, at: Vector3) -> void:
+	var stand := Node3D.new()
+	stand.name = "HoseStand%d" % slot
+	stand.position = at
+	add_child(stand)
+	var steel := _hose_material(Color(0.22, 0.23, 0.25), 0.6, 0.5)
+	var red := _hose_material(Color(0.8, 0.12, 0.1), 0.1, 0.55)
+	var hose := _hose_material(Color(0.86, 0.22, 0.1), 0.0, 0.75)
+	var brass := _hose_material(Color(0.82, 0.62, 0.24), 0.8, 0.35)
+	var plate := CylinderMesh.new()
+	plate.top_radius = 0.46
+	plate.bottom_radius = 0.5
+	plate.height = 0.08
+	_hose_part(stand, plate, steel, Vector3(0.0, 0.04, 0.0))
+	var post := CylinderMesh.new()
+	post.top_radius = 0.15
+	post.bottom_radius = 0.17
+	post.height = 1.0
+	_hose_part(stand, post, red, Vector3(0.0, 0.58, 0.0))
+	for coil in 4:
+		var torus := TorusMesh.new()
+		torus.inner_radius = 0.17
+		torus.outer_radius = 0.42
+		_hose_part(stand, torus, hose, Vector3(0.0, 0.42 + float(coil) * 0.17, 0.0))
+	var cap := CylinderMesh.new()
+	cap.top_radius = 0.17
+	cap.bottom_radius = 0.2
+	cap.height = 0.1
+	_hose_part(stand, cap, brass, Vector3(0.0, 1.12, 0.0))
+	var anchor := Marker3D.new()
+	anchor.name = "Anchor"
+	anchor.position = Vector3(0.0, 1.0, 0.0)
+	stand.add_child(anchor)
+	var resting := _build_hose_nozzle("RestingNozzle")
+	resting.position = Vector3(0.36, 0.95, 0.0)
+	resting.rotation_degrees = Vector3(-55.0, 0.0, 0.0)
+	stand.add_child(resting)
+	_hose_stands[slot] = {"anchor": anchor, "nozzle": resting}
+	var hose_label := Label3D.new()
+	hose_label.text = "[E] 물 호스 켜기/끄기"
+	hose_label.position = Vector3.UP * 1.6
+	hose_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	hose_label.pixel_size = 0.009
+	stand.add_child(hose_label)
+
+
+## The nozzle a player holds, under their aim pivot so it yaws and pitches with
+## the aim the jet is fired along, held to the lower right like the bottle and
+## pointed at the crosshair. The `Kick` node between is what the opening lurch
+## and the rumble turn. Built on first use, hidden the rest of the time.
+func _hose_nozzle_for(shooter: Shooter) -> Node3D:
+	var nozzle: Node3D = _hose_nozzles.get(shooter.peer_id)
+	if is_instance_valid(nozzle) and nozzle.get_parent() == shooter.aim_pivot:
+		return nozzle
+	var hold := Vector3(0.3, -0.3, -0.3)
+	nozzle = Node3D.new()
+	nozzle.name = "HoseHold"
+	var to_crosshair := Vector3(0.0, 0.0, -aim_convergence_distance) - hold
+	nozzle.transform = Transform3D(Basis.looking_at(to_crosshair, Vector3.UP), hold)
+	shooter.aim_pivot.add_child(nozzle)
+	var kick := Node3D.new()
+	kick.name = "Kick"
+	nozzle.add_child(kick)
+	kick.add_child(_build_hose_nozzle("HoseNozzle"))
+	nozzle.hide()
+	_hose_nozzles[shooter.peer_id] = nozzle
+	return nozzle
+
+
+func _hose_nozzle_marker(nozzle: Node3D, marker_name: String) -> Node3D:
+	return nozzle.get_node("Kick/HoseNozzle/" + marker_name) as Node3D
+
+
+## A run of cylinders laid end to end through `points`, from a pool that grows
+## to the longest run asked for and hides what a shorter one leaves over. The
+## radius is per segment so the jet can widen along its length.
+func _lay_segments(pool: Array, points: PackedVector3Array, material: Material,
+		radius_at: Callable) -> void:
+	var needed := maxi(points.size() - 1, 0)
+	while pool.size() < needed:
+		var segment := MeshInstance3D.new()
+		var mesh := CylinderMesh.new()
+		mesh.height = 1.0
+		mesh.radial_segments = 10
+		mesh.rings = 1
+		var radius: float = radius_at.call(pool.size(), needed)
+		mesh.top_radius = radius
+		mesh.bottom_radius = radius
+		segment.mesh = mesh
+		segment.material_override = material
+		segment.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(segment)
+		pool.append(segment)
+	for index in pool.size():
+		var segment: MeshInstance3D = pool[index]
+		if index >= needed:
+			segment.hide()
+			continue
+		var span: Vector3 = points[index + 1] - points[index]
+		if span.length_squared() < 0.0001:
+			segment.hide()
+			continue
+		# `CylinderMesh` stands on Y; `looking_at` puts the span on -Z. A quarter
+		# turn about X lays the cylinder's +Y along -Z. Stretched a little past
+		# its share so the joints between segments do not show on a curve.
+		var basis := (Basis.looking_at(span) * Basis(Vector3.RIGHT, -PI * 0.5)) \
+			.scaled_local(Vector3(1.0, span.length() * 1.08, 1.0))
+		segment.global_transform = Transform3D(basis, (points[index] + points[index + 1]) * 0.5)
+		segment.show()
+
+
+func _free_hose_visuals() -> void:
+	for visual in _hose_visuals.values():
+		for segment in visual["jet"]:
+			segment.queue_free()
+		for segment in visual["line"]:
+			segment.queue_free()
+		visual["splash"].queue_free()
+	_hose_visuals.clear()
+	for slot in _hose_stands:
+		var stand: Dictionary = _hose_stands[slot]
+		if is_instance_valid(stand["nozzle"]):
+			stand["nozzle"].show()
+	for nozzle in _hose_nozzles.values():
+		if is_instance_valid(nozzle):
+			nozzle.hide()
+	for shooter: Shooter in _shooters.values():
+		shooter.hose_was_open = false
+		shooter.hose_kick_pitch = 0.0
+		shooter.hose_kick_pending = 0.0
+
+
+## Every peer, once a frame: everything you can see of the hoses.
+##
+## For each player, the nozzle in their hands while they hold one and the kick
+## it takes when the main opens -- the edge is read off `_hose_users`, which
+## the status packet keeps current on clients, so the thump and the lurch
+## happen on every machine, not just the host's. For each open hose, the line
+## from its reel to that nozzle, sagging by however much is not paid out; the
+## jet, as a chain of cylinders down the same arc the authority kills along,
+## widening toward the far end; and a splash where the water comes down.
+func _update_hose_visuals() -> void:
+	var delta := get_process_delta_time()
+	for shooter: Shooter in _shooters.values():
+		if not is_instance_valid(shooter.player) or shooter.aim_pivot == null:
+			continue
+		var open := _hose_slot_of(shooter.peer_id) >= 0
+		if open and not shooter.hose_was_open:
+			shooter.hose_kick_pending = deg_to_rad(HOSE_KICK_DEGREES)
+			_play_combat_warning(shooter.player.global_position, 70.0, 0.4)
+			_play_combat_warning(shooter.player.global_position, 420.0, 0.2)
+		elif not open and shooter.hose_was_open:
+			_play_combat_warning(shooter.player.global_position, 260.0, 0.15)
+		shooter.hose_was_open = open
+		if shooter.hose_kick_pending > 0.0:
+			var arriving := minf(deg_to_rad(HOSE_KICK_DEGREES) * delta / HOSE_KICK_ATTACK,
+				shooter.hose_kick_pending)
+			shooter.hose_kick_pitch += arriving
+			shooter.hose_kick_pending -= arriving
+		shooter.hose_kick_pitch *= exp(-delta / HOSE_KICK_SETTLE)
+		var nozzle := _hose_nozzle_for(shooter)
+		nozzle.visible = open and (shooter != _local or _first_person) \
+			and shooter.player.state != MayoPlayer.State.DEAD
+		# The nozzle is thrown further than the view, so the lurch reads as the
+		# hose jumping in the hands and the head following it.
+		(nozzle.get_node("Kick") as Node3D).rotation.x = shooter.hose_kick_pitch * 1.8 \
+			+ _hose_rumble(shooter) * 2.0
+	for slot in TOMATINA_HOSES.size():
+		var visual: Dictionary = _hose_visuals.get(slot, {})
+		var shooter: Shooter = _shooters.get(int(_hose_users.get(slot, -1)))
+		var stand: Dictionary = _hose_stands.get(slot, {})
+		if not stand.is_empty() and is_instance_valid(stand["nozzle"]):
+			stand["nozzle"].visible = shooter == null
+		if shooter == null or not is_instance_valid(shooter.player):
+			if not visual.is_empty():
+				for segment in visual["jet"]:
+					segment.hide()
+				for segment in visual["line"]:
+					segment.hide()
+				visual["splash"].hide()
+			continue
+		if visual.is_empty():
 			var water := StandardMaterial3D.new()
 			water.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 			water.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 			water.albedo_color = Color(0.62, 0.86, 1.0, 0.78)
-			jet.material_override = water
-			jet.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			add_child(jet)
 			var splash := MeshInstance3D.new()
 			var splash_mesh := SphereMesh.new()
 			splash_mesh.radius = 1.0
@@ -7040,29 +7445,42 @@ func _update_hose_visuals() -> void:
 			splash.material_override = foam
 			splash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			add_child(splash)
-			parts = [jet, splash]
-			_hose_visuals[slot] = parts
-		var from := shooter.player.global_position + Vector3.UP * 0.9
+			visual = {"jet": [], "line": [], "splash": splash,
+				"water": water, "rubber": _hose_material(Color(0.72, 0.16, 0.1), 0.0, 0.8)}
+			_hose_visuals[slot] = visual
+		var nozzle := _hose_nozzle_for(shooter)
 		var direction := _hose_direction(shooter)
-		var length := _hose_reach(shooter.player.global_position, direction)
-		var to := shooter.player.global_position + direction * length
-		to.y = 0.12
-		var span := to - from
-		if span.length_squared() < 0.01:
-			for part in parts:
-				part.hide()
+		var tip := _hose_nozzle_marker(nozzle, "Tip").global_position
+		var arc := _hose_arc(tip, direction)
+		var jet_points := PackedVector3Array([tip])
+		jet_points.append_array(arc)
+		_lay_segments(visual["jet"], jet_points, visual["water"],
+			func(index: int, _count: int) -> float:
+				return lerpf(HOSE_JET_RADIUS * 0.3, HOSE_JET_RADIUS, clampf(float(index) / 12.0, 0.0, 1.0)))
+		if _hose_landed(arc):
+			var pulse := 1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.02)
+			visual["splash"].global_transform = Transform3D(Basis.from_scale(
+				Vector3(1.4 * pulse, 0.35, 1.4 * pulse)), arc[arc.size() - 1])
+			visual["splash"].show()
+		else:
+			visual["splash"].hide()
+		# The line: a quadratic curve from the reel to the back of the nozzle,
+		# hanging by whatever length is not paid out, held off the ground.
+		if stand.is_empty() or not is_instance_valid(stand["anchor"]):
 			continue
-		# `CylinderMesh` stands on Y; `looking_at` puts the span on -Z. A quarter
-		# turn about X lays the cylinder's +Y along -Z, so the top (the wide end)
-		# is at the far end of the jet.
-		var jet_basis := (Basis.looking_at(span) * Basis(Vector3.RIGHT, -PI * 0.5)) \
-			.scaled_local(Vector3(1.0, span.length(), 1.0))
-		parts[0].global_transform = Transform3D(jet_basis, (from + to) * 0.5)
-		parts[0].show()
-		var pulse := 1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.02)
-		parts[1].global_transform = Transform3D(Basis.from_scale(
-			Vector3(1.4 * pulse, 0.35, 1.4 * pulse)), to)
-		parts[1].show()
+		var start: Vector3 = stand["anchor"].global_position
+		var finish := _hose_nozzle_marker(nozzle, "Rear").global_position
+		var slack := clampf(HOSE_TETHER - start.distance_to(finish), 0.4, 3.0)
+		var control := (start + finish) * 0.5 - Vector3.UP * slack * 0.7
+		control.y = maxf(control.y, HOSE_GROUND_Y - 0.6)
+		var line_points := PackedVector3Array()
+		for index in 9:
+			var t := float(index) / 8.0
+			var at := start.lerp(control, t).lerp(control.lerp(finish, t), t)
+			at.y = maxf(at.y, HOSE_GROUND_Y + 0.08)
+			line_points.append(at)
+		_lay_segments(visual["line"], line_points, visual["rubber"],
+			func(_index: int, _count: int) -> float: return 0.075)
 
 
 func _escape_shove(shooter: Shooter) -> void:
@@ -7416,7 +7834,9 @@ func _update_item_views() -> void:
 		var shooter = _shooters[peer]
 		var selected := selected_item_slot(peer)
 		var equipped: bool = selected > 0 and item_slots(peer)[selected] == 1
-		if selected != 0 and is_instance_valid(shooter.weapon):
+		# A hand on the hose is not a hand on the bottle: the nozzle viewmodel
+		# stands in for it while the hose is held -- see `_update_hose_visuals`.
+		if (selected != 0 or _hose_slot_of(peer) >= 0) and is_instance_valid(shooter.weapon):
 			shooter.weapon.hide()
 		elif is_instance_valid(shooter.weapon):
 			shooter.weapon.visible = (not shooter.is_local or _first_person) \
