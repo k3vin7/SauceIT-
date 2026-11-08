@@ -67,6 +67,7 @@ const SPLAT_VISOR_CLEAR := 4
 const SPLAT_ENEMY := 5
 ## Addressed by the roof's index in `_roofs`, built in the same order everywhere.
 const SPLAT_ROOF := 6
+const SPLAT_FLOOR_CLEAR := 7
 
 ## What the nozzle is doing this frame. The **authority decides it and it
 ## travels in the state packet**, because it is the one part of firing that
@@ -1083,13 +1084,21 @@ var _stage_objective: Label
 const TOMATO_SPLATS_PER_M2 := 6.0
 const TOMATO_BURST_SPLAT_CAP := 240
 const TOMATO_BURST_TICK_CAP := 300
-## The horde: this many grunts for one player, scaled by `minion_spawn_count`.
-const TOMATINA_HORDE_BASE := 192
+## Solo reinforcement budget across the three finale approaches.
+const TOMATINA_HORDE_BASE := 48
+const FINALE_DURATION := 30.0
+const FINALE_WAVES := [0.0, 9.0, 19.0]
+const ESCAPE_SHOVE_ACTION := 6
+const ESCAPE_SHOVE_COOLDOWN_MS := 2000
+const TOMATINA_RESCUE_WINDOW := 10.0
+const TOMATINA_RESCUE_TIME := 1.0
+const TOMATINA_HOSES := [Vector2(28.5, 24.0), Vector2(31.5, 24.0)]
+const TOMATINA_CHECKPOINT := Vector2(29.5, 46.5)
 ## And how many of them are built in one physics tick. A body is a mesh, its
 ## colliders and a contamination grid; the whole horde in one frame was a
 ## fifth of a second with nothing drawn. Eight a tick has it all in within
 ## a second, which is still a wave coming in rather than a trickle.
-const HORDE_SPAWN_PER_TICK := 8
+const HORDE_SPAWN_PER_TICK := 2
 ## The coarse cell the crowd steering buckets bodies by, in metres. A body
 ## looks at the nine cells round its own, which reaches the two and a half
 ## spacings `_crowd_direction` cares about for anything up to a brute.
@@ -1116,6 +1125,17 @@ var _horde_spawned := false
 ## each arrives and nothing about where.
 var _horde_pending := 0
 var _horde_spawned_count := 0
+var _finale_elapsed := 0.0
+var _finale_wave := -1
+var _horde_spawn_wait := 0.0
+var _siren_zone := Rect2()
+var _escape_shove_times := {}
+var _rescue_attempts := {}
+var _hose_ready_times := {}
+var _tether_visuals := {}
+var _warning_sound: AudioStreamWAV
+var _siren_label: Label3D
+@export_range(12, 96, 1) var tomatina_active_grunt_cap := 32
 var _burst_ground_budget := TOMATO_BURST_TICK_CAP
 ## peer id -> seconds until the next juice drop may land on their glasses.
 var _juice_splash_clock: Dictionary = {}
@@ -1298,6 +1318,8 @@ func _physics_process(delta: float) -> void:
 				shooter.firing = false
 	if _is_authority():
 		_burst_ground_budget = TOMATO_BURST_TICK_CAP
+		if map_kind == MapKind.TOMATINA:
+			_advance_tomatina_rescues(delta)
 		_advance_player_respawns()
 		_advance_healing_tomatoes(delta)
 		for shooter in _shooters.values():
@@ -1309,8 +1331,7 @@ func _physics_process(delta: float) -> void:
 		# After the slip test and before the strand: an enemy that shoved a
 		# player this frame should be where the strand is aimed from.
 		_advance_enemies(delta)
-		_check_horde_trigger()
-		_advance_horde_spawn()
+		_advance_horde_spawn(delta)
 	for shooter in _shooters.values():
 		_advance_strand(shooter, delta)
 	if debug_profile_enabled:
@@ -1834,6 +1855,8 @@ func _is_authority() -> bool:
 
 
 func _process(_delta: float) -> void:
+	if map_kind == MapKind.TOMATINA:
+		_update_tether_visuals()
 	if _local == null:
 		return
 	# The bottle is put where the camera is *before* the camera is placed, and
@@ -2071,9 +2094,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				_request_tomato_action(10 + number - KEY_1)
 			get_viewport().set_input_as_handled()
 			return
-	if event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_E:
-		_request_tomato_action(0)
-		return
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.physical_keycode == KEY_Q:
+			_request_tomato_action(ESCAPE_SHOVE_ACTION)
+			get_viewport().set_input_as_handled()
+			return
+		if event.physical_keycode == KEY_E:
+			_request_tomato_action(0)
+			return
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			var step := -1 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1
@@ -2414,6 +2442,11 @@ func reset_for_join() -> void:
 		_free_shooter(_shooters[peer_id])
 	_shooters.clear()
 	_local = null
+	_escape_shove_times.clear()
+	_rescue_attempts.clear()
+	_hose_ready_times.clear()
+	if map_kind == MapKind.TOMATINA:
+		_reset_tomatina_finale()
 	# A tutorial roster is appended by the host. Discard offline spawns before
 	# receiving that roster, otherwise late joining duplicates enemy indices.
 	if _tutorial != null:
@@ -3266,7 +3299,25 @@ func _build_tomatina() -> void:
 	_create_wall("FireTruck", truck["position"], truck["size"], truck["color"])
 	_fire_truck_zone = TomatinaMap.fire_truck_zone()
 	_plaza_rect = TomatinaMap.plaza_rect()
+	var siren := TomatinaMap.at_cell(TomatinaMap.SIREN_CELL)
+	_siren_zone = Rect2(Vector2(siren.x, siren.z) - Vector2.ONE * 1.7, Vector2.ONE * 3.4)
+	_build_zone_marker("Siren", _siren_zone, Color(1.0, 0.74, 0.18, 0.55))
 	_build_zone_marker("FireTruckBay", _fire_truck_zone, Color(0.9, 0.15, 0.1, 0.22))
+	var label := Label3D.new()
+	label.text = "[E] 사이렌"
+	_siren_label = label
+	label.position = siren + Vector3.UP * 2.0
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.pixel_size = 0.013
+	add_child(label)
+	for cell in TOMATINA_HOSES:
+		var hose := TomatinaMap.at_cell(cell)
+		var hose_label := Label3D.new()
+		hose_label.text = "[E] 물 호스"
+		hose_label.position = hose + Vector3.UP * 1.5
+		hose_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		hose_label.pixel_size = 0.009
+		add_child(hose_label)
 	TomatinaMap.seed_floor(_floor)
 	_build_start_marker(TomatinaMap.START_ARROW)
 
@@ -3780,6 +3831,8 @@ func tutorial_add_enemy(kind: int, at: Vector3) -> int:
 			var spawned := _enemies[tomato_index]
 			spawned.sight_range = 90.0
 			spawned.give_up_range = 120.0
+			spawned.horde_alert = true
+			spawned.set_meta("horde", true)
 			# This body only: walking every body for each one spawned was a
 			# square's worth of work across a horde, for a flag and a rescale
 			# that only ever touch heavies.
@@ -3903,6 +3956,10 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 	if _local != null:
 		enemy.match_player_speed(_local.player.walk_speed, speed_fraction)
 	enemy.nav = _nav
+	enemy.staged_senses = true
+	enemy.sense_left = float(index % 6) / 60.0
+	enemy.repath_interval += float(index % 7) * 0.022
+	enemy.special_warning.connect(_on_special_warning)
 	enemy.position = Vector3(at.x, enemy.stand_height(), at.z)
 	_register_enemy(enemy)
 	if kind == MayoTutorial.KIND_BOWLING_TOMATO:
@@ -4174,9 +4231,9 @@ func _spit_lands(spitter: MayoEnemy, collider: Node, at: Vector3) -> void:
 
 
 func _spit_puddle(centre: Vector3) -> void:
-	for index in 6:
-		var angle := TAU * float(index) / 6.0
-		var reach := 0.0 if index == 0 else 0.45
+	for index in 37:
+		var angle := float(index) * 2.399963
+		var reach := 2.2 * sqrt(float(index) / 36.0)
 		var at := centre + Vector3(cos(angle) * reach, 0.0, sin(angle) * reach)
 		var floor_cell := _floor.paint_mayo(at, -1, ContaminationGrid.KIND_KETCHUP)
 		if floor_cell.x >= 0:
@@ -4285,59 +4342,96 @@ func _update_juice_kickup(delta: float) -> void:
 				feet, _feel_rng.randf_range(0.8, 0.95), 0.0)
 
 
-## The plaza: the moment the party steps onto it the horde comes in from its
-## edges. Authority only; the bodies go out down the same road the tutorial's
-## do, so every peer builds them in the same order and a late joiner is caught
-## up. Once.
-func _check_horde_trigger() -> void:
-	if map_kind != MapKind.TOMATINA or _horde_spawned or not _plaza_rect.has_area():
-		return
-	var arrived := false
-	for shooter in _shooters.values():
-		var player: MayoPlayer = shooter.player
-		if is_instance_valid(player) and TomatinaMap.in_rect(_plaza_rect, player.global_position):
-			arrived = true
-			break
-	if not arrived:
+func _reset_tomatina_finale() -> void:
+	for beam in _tether_visuals.values():
+		beam.queue_free()
+	_tether_visuals.clear()
+	while not _enemies.is_empty() and _enemies.back().has_meta("horde"):
+		var enemy: MayoEnemy = _enemies.pop_back()
+		enemy.free()
+	_tutorial_spawned.clear()
+	_horde_spawned = false
+	_horde_pending = 0
+	_horde_spawned_count = 0
+	_finale_elapsed = 0.0
+	_finale_wave = -1
+	_horde_spawn_wait = 0.0
+	_tomatina_next_encounter_released = false
+	if is_instance_valid(_siren_label):
+		_siren_label.show()
+
+
+func _start_finale(player: MayoPlayer) -> void:
+	if not _input_enabled or map_kind != MapKind.TOMATINA or _horde_spawned \
+			or not TomatinaMap.in_rect(_siren_zone, player.global_position):
 		return
 	_horde_spawned = true
-	_horde_pending = minion_spawn_count(TOMATINA_HORDE_BASE)
-	_horde_spawned_count = 0
+	_siren_label.hide()
+	show_combat_warning(player.global_position, Vector3.ZERO, 0.9, 0)
+	if is_instance_valid(_net) and _net.is_online():
+		_net.broadcast_combat_warning(player.global_position, Vector3.ZERO, 0.9, 0)
 
 
-## The horde coming in: `HORDE_SPAWN_PER_TICK` bodies a tick until it is all
-## here, each from the edge its number says. Every tick, so a horde triggered
-## this tick starts arriving this tick.
-func _advance_horde_spawn() -> void:
-	var batch := mini(_horde_pending, HORDE_SPAWN_PER_TICK)
-	for _index in batch:
-		var edge: Vector2 = TomatinaMap.HORDE_EDGES[
-			_horde_spawned_count % TomatinaMap.HORDE_EDGES.size()]
-		tutorial_spawn_enemy(MayoTutorial.KIND_TOMATO_GRUNT, TomatinaMap.at_cell(edge))
+func _advance_horde_spawn(delta: float) -> void:
+	if not _horde_spawned or _finale_elapsed >= FINALE_DURATION:
+		return
+	_finale_elapsed = minf(_finale_elapsed + delta, FINALE_DURATION)
+	var next_wave := _finale_wave + 1
+	if next_wave < FINALE_WAVES.size() and _finale_elapsed >= FINALE_WAVES[next_wave]:
+		_finale_wave = next_wave
+		_horde_pending = minion_spawn_count(TOMATINA_HORDE_BASE) / FINALE_WAVES.size()
+		_horde_spawn_wait = 0.0
+		var entry := TomatinaMap.at_cell(TomatinaMap.HORDE_EDGES[_finale_wave][0])
+		show_combat_warning(entry, Vector3.ZERO, 0.6, 1)
+		if is_instance_valid(_net) and _net.is_online():
+			_net.broadcast_combat_warning(entry, Vector3.ZERO, 0.6, 1)
+	_horde_spawn_wait -= delta
+	if _horde_pending <= 0 or _horde_spawn_wait > 0.0:
+		return
+	_horde_spawn_wait = 0.22
+	var active := 0
+	for enemy in _enemies:
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() \
+				and (enemy.has_meta("horde") or TomatinaMap.in_rect(_plaza_rect, enemy.global_position)):
+			active += 1
+	var remaining := mini(HORDE_SPAWN_PER_TICK, mini(_horde_pending, tomatina_active_grunt_cap - active))
+	var edges: Array = TomatinaMap.HORDE_EDGES[_finale_wave]
+	for attempt in edges.size():
+		if remaining <= 0:
+			break
+		var at := TomatinaMap.at_cell(edges[_horde_spawned_count % edges.size()])
 		_horde_spawned_count += 1
-	_horde_pending -= batch
+		if not _nav.is_walkable(StreetMap.cell_at(at)) or not _horde_spawn_clear(at):
+			continue
+		if tutorial_spawn_enemy(MayoTutorial.KIND_TOMATO_GRUNT, at) >= 0:
+			_horde_pending -= 1
+			remaining -= 1
+
+
+func _horde_spawn_clear(at: Vector3) -> bool:
+	for shooter: Shooter in _shooters.values():
+		if shooter.player.global_position.distance_squared_to(at) < 49.0:
+			return false
+	for enemy in _enemies:
+		if enemy.kind != MayoEnemy.EnemyKind.TOMATO_BALL and enemy.is_alive() \
+				and enemy.global_position.distance_squared_to(at) < 5.0:
+			return false
+	return true
 
 
 func horde_spawned() -> bool:
 	return _horde_spawned
 
 
-## Stage 2's clear: the elites are down and somebody has made it to the fire
-## truck. The horde does not count -- it is there to be run through.
-func _tomatina_elites_alive() -> int:
-	var alive := 0
-	for enemy in _enemies:
-		if is_instance_valid(enemy) and enemy.is_alive() and enemy.grade == MayoEnemy.Grade.HEAVY:
-			alive += 1
-	return alive
-
-
 func _party_at_fire_truck() -> bool:
-	for shooter in _shooters.values():
-		var player: MayoPlayer = shooter.player
-		if is_instance_valid(player) and TomatinaMap.in_rect(_fire_truck_zone, player.global_position):
-			return true
-	return false
+	var arrived := false
+	for shooter: Shooter in _shooters.values():
+		if shooter.player.state == MayoPlayer.State.DEAD:
+			continue
+		if not TomatinaMap.in_rect(_fire_truck_zone, shooter.player.global_position):
+			return false
+		arrived = true
+	return arrived
 
 
 ## The stalls that hand out sauce, as position and facing. The tutorial picks the
@@ -4425,7 +4519,7 @@ func _check_stage_clear() -> void:
 		return
 	if map_kind == MapKind.TOMATINA:
 		_update_stage_objective()
-		if _tomatina_elites_alive() == 0 and _party_at_fire_truck():
+		if _horde_spawned and _finale_elapsed >= FINALE_DURATION and _party_at_fire_truck():
 			_stage_clear_emitted = true
 			set_gameplay_input_enabled(false)
 			stage_cleared.emit()
@@ -4445,9 +4539,17 @@ func _update_stage_objective(alive := -1) -> void:
 	if _stage_objective == null:
 		return
 	if map_kind == MapKind.TOMATINA:
-		var elites := _tomatina_elites_alive()
-		_stage_objective.text = "목표 · 엘리트 %d 남음" % elites if elites > 0 \
-			else "목표 · 소방차로 이동"
+		if not _horde_spawned:
+			_stage_objective.text = "목표 · 광장에서 사이렌 작동 [E] · 밀치기 [Q]"
+		elif _finale_elapsed < FINALE_DURATION:
+			_stage_objective.text = "소방차 도착까지 %d초 · 밀치기 [Q]" % ceili(FINALE_DURATION - _finale_elapsed)
+		else:
+			_stage_objective.text = "목표 · 생존 팀원과 소방차로 이동 · 호스 [E]"
+		if _local != null:
+			for teammate: Shooter in _shooters.values():
+				if teammate != _local and teammate.player.state == MayoPlayer.State.DEAD:
+					_stage_objective.text += " · 쓰러진 팀원 구조 [E]"
+					break
 		return
 	if alive < 0:
 		alive = 0
@@ -4542,12 +4644,13 @@ func _advance_enemies(delta: float) -> void:
 			chasing = _tutorial.targets_for(enemy, targets)
 		# Dead ones are advanced too: they are still toppling.
 		var previous_position: Vector3 = enemy.global_position
-		enemy.crowd_peers = _crowd_neighbours(buckets, enemy)
 		enemy._crowd_side = 1.0 if index % 2 == 0 else -1.0
 		# Half the bodies re-steer each tick and the other half hold last tick's
 		# smoothed answer. The steering is smoothed over a fifth of a second
 		# anyway, so a tick of age is nothing it can see.
 		enemy.crowd_hold = (frame + index) % 2 == 1
+		if not enemy.crowd_hold and enemy.is_alive():
+			enemy.crowd_peers = _crowd_neighbours(buckets, enemy)
 		var hit := enemy.advance(delta, chasing)
 		if map_kind == MapKind.TUTORIAL_RECTANGLE \
 				and _tutorial != null and _tutorial.stage == MayoTutorial.Stage.RUN \
@@ -4606,10 +4709,9 @@ func _crowd_neighbours(buckets: Dictionary, enemy: MayoEnemy) -> Array:
 	return out
 
 
-## An empty bar holds the body in the world for the character's death clip --
-## `death_duration` -- and then puts the player back at the start, whole, topped
-## up and upright. The authority runs the clock; clients see the same DEAD state
-## and timer in the normal player-state packet.
+## The authority runs the death clock. Tomatina allows teammate rescues
+## before checkpoint fallback; other maps return the player to the start.
+## Clients see the DEAD state and timer in the normal player-state packet.
 ##
 ## What it does not do is wash them. The sauce on the body and on the glasses is
 ## the player's to deal with: the glasses come clean when they wipe them, and
@@ -4632,9 +4734,16 @@ func _advance_player_respawns() -> void:
 		var player := shooter.player as MayoPlayer
 		if player.state != MayoPlayer.State.DEAD or player.state_time() < player.death_duration:
 			continue
+		var tomatina := map_kind == MapKind.TOMATINA and stage_mode
+		if tomatina and player.state_time() < TOMATINA_RESCUE_WINDOW and _has_standing_teammate(player):
+			continue
 		_tomato_charge_started.erase(shooter.peer_id)
-		player.finish_respawn(spawn_position_for(shooter.spawn_slot))
-		shooter.sauce = 1.0
+		var spawn := spawn_position_for(shooter.spawn_slot)
+		if tomatina and _tomatina_next_encounter_released:
+			spawn = TomatinaMap.at_cell(TOMATINA_CHECKPOINT) + Vector3(
+				float(shooter.spawn_slot) * 1.35, 1.28, 0.0)
+		player.finish_respawn(spawn)
+		shooter.sauce = 0.55 if tomatina else 1.0
 		shooter.player_animation_name = StringName()
 		if shooter.player_animation != null:
 			shooter.player_animation.stop()
@@ -4711,10 +4820,11 @@ func enemy_at(index: int) -> MayoEnemy:
 ## the order every peer built them in. The ceiling is in here because the party
 ## scaling moves it and only the server knows the party -- see
 ## `MayoEnemy.network_state`.
-func enemy_state() -> PackedFloat32Array:
+func enemy_state(start := 0, count := -1) -> PackedFloat32Array:
 	var data := PackedFloat32Array()
-	for enemy in _enemies:
-		var state: Array = enemy.network_state()
+	var end := _enemies.size() if count < 0 else mini(_enemies.size(), start + count)
+	for index in range(start, end):
+		var state: Array = _enemies[index].network_state()
 		var position: Vector3 = state[0]
 		data.append_array(PackedFloat32Array([
 			position.x, position.y, position.z, state[1], state[2], state[3],
@@ -4722,17 +4832,18 @@ func enemy_state() -> PackedFloat32Array:
 	return data
 
 
-func apply_enemy_state(data: PackedFloat32Array) -> void:
-	for index in _enemies.size():
-		var at := index * ENEMY_STATE_STRIDE
-		if at + ENEMY_STATE_STRIDE > data.size():
-			return
+func apply_enemy_state(data: PackedFloat32Array, interpolate := false, start := 0) -> void:
+	if start < 0:
+		return
+	var end := mini(_enemies.size(), start + data.size() / ENEMY_STATE_STRIDE)
+	for index in range(start, end):
+		var at := (index - start) * ENEMY_STATE_STRIDE
 		var enemy := _enemies[index]
 		var was_alive := enemy.is_alive()
 		var was_at := enemy.global_position
 		enemy.apply_network_state(
 			Vector3(data[at], data[at + 1], data[at + 2]),
-			data[at + 3], data[at + 4], data[at + 5], data[at + 6])
+			data[at + 3], data[at + 4], data[at + 5], data[at + 6], interpolate)
 		# A client throws its own fragments when the packet says a tomato died
 		# -- or a bowled one vanished under the floor, which is how it retires
 		# after a wall. The stains arrived down the splat batch already; the
@@ -5239,6 +5350,9 @@ func apply_splats(data: PackedInt32Array) -> void:
 		index += 4
 		if kind == SPLAT_FLOOR:
 			_floor.paint_mayo_cell(cell, target, sauce)
+			continue
+		if kind == SPLAT_FLOOR_CLEAR:
+			_floor.wash_cell(cell)
 			continue
 		if kind == SPLAT_BODY:
 			var body_shooter: Shooter = _shooters.get(target)
@@ -6586,6 +6700,257 @@ func local_holds_tomato() -> bool:
 	return selected_item_slot(_local.peer_id) > 0 and item_slots(_local.peer_id)[selected_item_slot(_local.peer_id)] == 1
 
 
+func _has_standing_teammate(player: MayoPlayer) -> bool:
+	for shooter: Shooter in _shooters.values():
+		if shooter.player != player and shooter.player.state != MayoPlayer.State.DEAD:
+			return true
+	return false
+
+
+func _start_tomatina_rescue(shooter: Shooter) -> bool:
+	if not _input_enabled:
+		return false
+	for teammate: Shooter in _shooters.values():
+		if teammate.player.state == MayoPlayer.State.DEAD \
+				and teammate.player.state_time() <= TOMATINA_RESCUE_WINDOW - TOMATINA_RESCUE_TIME \
+				and _rescue_in_reach(shooter.player, teammate.player):
+			if not _rescue_attempts.has(shooter.peer_id):
+				_rescue_attempts[shooter.peer_id] = {
+					"peer": teammate.peer_id, "left": TOMATINA_RESCUE_TIME,
+					"health": shooter.player.health,
+				}
+				_play_combat_warning(teammate.player.global_position, 370.0, 0.3)
+			return true
+	return false
+
+
+func _rescue_in_reach(rescuer: MayoPlayer, target: MayoPlayer) -> bool:
+	return rescuer.global_position.distance_squared_to(target.global_position) <= 6.25 \
+		and _nav.line_is_walkable(rescuer.global_position, target.global_position)
+
+
+func _advance_tomatina_rescues(delta: float) -> void:
+	for peer in _rescue_attempts.keys():
+		var attempt: Dictionary = _rescue_attempts[peer]
+		var rescuer: Shooter = _shooters.get(peer)
+		var target: Shooter = _shooters.get(attempt.peer)
+		if rescuer == null or target == null or rescuer.player.is_incapacitated() \
+				or rescuer.player.health < float(attempt.health) or rescuer.firing \
+				or target.player.state != MayoPlayer.State.DEAD \
+				or not _rescue_in_reach(rescuer.player, target.player):
+			_rescue_attempts.erase(peer)
+			continue
+		attempt.left -= delta
+		if attempt.left <= 0.0:
+			target.player.finish_respawn(target.player.global_position)
+			target.player.health = target.player.max_health * 0.40
+			_wiping.erase(target.peer_id)
+			_rescue_attempts.erase(peer)
+
+
+func _hose_slot(at: Vector3) -> int:
+	for index in TOMATINA_HOSES.size():
+		if TomatinaMap.at_cell(TOMATINA_HOSES[index]).distance_squared_to(at) <= 8.0:
+			return index
+	return -1
+
+
+func _use_fire_hose(shooter: Shooter) -> void:
+	if not _input_enabled or map_kind != MapKind.TOMATINA or _finale_elapsed < FINALE_DURATION:
+		return
+	var slot := _hose_slot(shooter.player.global_position)
+	var now := Time.get_ticks_msec()
+	if slot < 0 or now < int(_hose_ready_times.get(slot, 0)):
+		return
+	_hose_ready_times[slot] = now + 700
+	var from := shooter.player.global_position
+	var direction := -Basis(Vector3.UP, shooter.aim_yaw).z
+	var length := 10.0
+	for step in range(1, 21):
+		var at := from + direction * float(step) * 0.5
+		if not _nav.is_walkable(StreetMap.cell_at(at)):
+			length = float(step - 1) * 0.5
+			break
+		var side := direction.cross(Vector3.UP)
+		for offset in [-0.75, 0.0, 0.75]:
+			var cell := _floor.wash_at(at + side * float(offset))
+			if cell.x >= 0:
+				_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR_CLEAR, -1, cell.x, cell.y]))
+	for enemy in _enemies:
+		if not enemy.is_alive() or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			continue
+		var gap := enemy.global_position - from
+		var along := gap.dot(direction)
+		if along > 0.0 and along <= length and (gap - direction * along).length_squared() < 3.24:
+			enemy.take_shove(from)
+	show_combat_warning(from, direction, 0.35, 6)
+	if is_instance_valid(_net) and _net.is_online():
+		_net.broadcast_combat_warning(from, direction, 0.35, 6)
+
+
+func _escape_shove(shooter: Shooter) -> void:
+	if not _input_enabled or not stage_mode:
+		return
+	var now := Time.get_ticks_msec()
+	if now < int(_escape_shove_times.get(shooter.peer_id, 0)):
+		return
+	_escape_shove_times[shooter.peer_id] = now + ESCAPE_SHOVE_COOLDOWN_MS
+	var origin := shooter.player.global_position
+	var forward := -Basis(Vector3.UP, shooter.aim_yaw).z
+	var candidates: Array[MayoEnemy] = []
+	for enemy in _enemies:
+		if enemy.grade != MayoEnemy.Grade.MINION or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL \
+				or not enemy.is_alive():
+			continue
+		var gap := enemy.global_position - origin
+		if absf(gap.y) > 1.8:
+			continue
+		gap.y = 0.0
+		if gap.length() <= 2.3 + enemy.radius and forward.dot(gap.normalized()) >= 0.35 \
+				and enemy._has_clear_shot(shooter.player, enemy.global_position + Vector3.UP * 0.3):
+			candidates.append(enemy)
+	candidates.sort_custom(func(a: MayoEnemy, b: MayoEnemy) -> bool:
+		return a.global_position.distance_squared_to(origin) < b.global_position.distance_squared_to(origin))
+	var pushed := PackedInt32Array()
+	for index in mini(3, candidates.size()):
+		var enemy := candidates[index]
+		var right := forward.cross(Vector3.UP)
+		var side := signf(right.dot(enemy.global_position - origin))
+		var direction := (forward + right * side * 0.8).normalized()
+		enemy.push_for_escape(shooter.player, direction)
+		pushed.append(_enemies.find(enemy))
+	if not pushed.is_empty() and is_instance_valid(_net) and _net.is_online():
+		_net.broadcast_shove_clearance(shooter.peer_id, pushed)
+	_play_combat_warning(origin, 110.0, 0.12)
+	if is_instance_valid(_net) and _net.is_online():
+		_net.broadcast_combat_warning(origin, Vector3.ZERO, 0.12, 2)
+
+
+func apply_shove_clearance(peer: int, indices: PackedInt32Array) -> void:
+	var shooter: Shooter = _shooters.get(peer)
+	if shooter == null:
+		return
+	for index in indices:
+		var enemy := enemy_at(index)
+		if enemy != null and enemy.is_alive():
+			enemy.open_escape_clearance(shooter.player)
+
+
+func _on_special_warning(enemy: MayoEnemy, direction: Vector3, duration: float) -> void:
+	var cue := 3
+	if enemy.kind == MayoEnemy.EnemyKind.BOWLING_TOMATO:
+		cue = 4
+	elif enemy.kind == MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
+		cue = 5
+	show_combat_warning(enemy.global_position, direction, duration, cue)
+	if is_instance_valid(_net) and _net.is_online():
+		_net.broadcast_combat_warning(enemy.global_position, direction, duration, cue)
+
+
+func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: int) -> void:
+	_play_combat_warning(at, [180.0, 230.0, 110.0, 150.0, 310.0, 420.0, 500.0][cue], duration)
+	if direction.is_zero_approx():
+		return
+	var length: float = [0.0, 0.0, 0.0, 9.0, 12.0, 5.0, 10.0][cue]
+	var marker := MeshInstance3D.new()
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(0.48, 0.035, length)
+	marker.mesh = mesh
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.albedo_color = Color("fff1ac") if cue == 5 else Color("ff823f")
+	if cue == 6:
+		material.albedo_color = Color("9be5ff")
+	marker.material_override = material
+	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(marker)
+	marker.global_position = Vector3(at.x, 0.07, at.z) + direction * length * 0.5
+	marker.rotation.y = atan2(-direction.x, -direction.z)
+	get_tree().create_timer(duration).timeout.connect(marker.queue_free)
+
+
+func _play_combat_warning(at: Vector3, pitch: float, duration: float) -> void:
+	if muted:
+		return
+	if _warning_sound == null:
+		_warning_sound = _placeholder_tone(220.0, 0.50)
+	var voice := AudioStreamPlayer3D.new()
+	voice.stream = _warning_sound
+	voice.pitch_scale = pitch / 220.0
+	voice.max_distance = 48.0
+	voice.volume_db = -9.0
+	add_child(voice)
+	voice.global_position = at
+	voice.finished.connect(voice.queue_free)
+	voice.play()
+	if duration <= 0.15:
+		get_tree().create_timer(duration).timeout.connect(voice.queue_free)
+
+
+func _update_tether_visuals() -> void:
+	for enemy in _enemies:
+		if enemy.kind != MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
+			continue
+		var beam: MeshInstance3D = _tether_visuals.get(enemy)
+		var target := enemy.tether_target
+		if not is_instance_valid(target) or not enemy.is_alive():
+			if is_instance_valid(beam):
+				beam.hide()
+			continue
+		if beam == null:
+			beam = MeshInstance3D.new()
+			var mesh := BoxMesh.new()
+			mesh.size = Vector3(0.065, 0.065, 1.0)
+			beam.mesh = mesh
+			var material := StandardMaterial3D.new()
+			material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			material.albedo_color = Color("fff2bb")
+			beam.material_override = material
+			beam.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(beam)
+			_tether_visuals[enemy] = beam
+		var from := enemy.global_position + Vector3.UP * 0.25
+		var to := target.global_position + Vector3.UP * 0.3
+		var span := to - from
+		if span.length_squared() < 0.001:
+			beam.hide()
+			continue
+		beam.global_transform = Transform3D(Basis.looking_at(span).scaled_local(
+			Vector3(1.0, 1.0, span.length())), (from + to) * 0.5)
+		beam.show()
+
+
+func tomatina_status() -> PackedFloat64Array:
+	var data := PackedFloat64Array()
+	if map_kind != MapKind.TOMATINA:
+		return data
+	data.append(_finale_elapsed if _horde_spawned else -1.0)
+	for index in _enemies.size():
+		var enemy := _enemies[index]
+		if enemy.is_alive() and is_instance_valid(enemy.tether_target):
+			data.append(index)
+			data.append(enemy.tether_target.peer_id)
+	return data
+
+
+func apply_tomatina_status(data: PackedFloat64Array) -> void:
+	if data.is_empty():
+		return
+	_horde_spawned = data[0] >= 0.0
+	if is_instance_valid(_siren_label):
+		_siren_label.visible = not _horde_spawned
+	_finale_elapsed = maxf(0.0, data[0])
+	for enemy in _enemies:
+		if enemy.kind == MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
+			enemy.tether_target = null
+	for at in range(1, data.size() - 1, 2):
+		var enemy := enemy_at(int(data[at]))
+		var shooter: Shooter = _shooters.get(int(data[at + 1]))
+		if enemy != null and shooter != null:
+			enemy.tether_target = shooter.player
+	_update_stage_objective()
+
+
 func _request_tomato_action(action: int) -> void:
 	if not _is_authority() and _local != null:
 		if action == 3:
@@ -6602,11 +6967,23 @@ func _request_tomato_action(action: int) -> void:
 func tomato_action(peer: int, action: int) -> void:
 	if not _is_authority() or not _shooters.has(peer):
 		return
-	var shooter = _shooters[peer]
-	var player = shooter.player
+	var shooter: Shooter = _shooters[peer]
+	var player := shooter.player
 	if player.state != MayoPlayer.State.NORMAL:
 		_tomato_charge_started.erase(peer)
 		return
+	if action == ESCAPE_SHOVE_ACTION:
+		_escape_shove(shooter)
+		return
+	if action == 0 and map_kind == MapKind.TOMATINA:
+		if _start_tomatina_rescue(shooter):
+			return
+		if not _horde_spawned and TomatinaMap.in_rect(_siren_zone, player.global_position):
+			_start_finale(player)
+			return
+		if _finale_elapsed >= FINALE_DURATION and _hose_slot(player.global_position) >= 0:
+			_use_fire_hose(shooter)
+			return
 	var slots := item_slots(peer)
 	# Resolve wheel steps against the latest authoritative slot, even when
 	# several reliable requests arrive before the next state update.

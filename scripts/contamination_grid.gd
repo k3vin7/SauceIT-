@@ -418,10 +418,11 @@ func fill_rect(first: Vector2i, last: Vector2i, thickness: int, kind: int) -> vo
 				deep_count += 1
 			elif was >= deep_threshold and level < deep_threshold:
 				deep_count -= 1
-	for row in range(top, bottom + 1, tile_cells):
-		for column in range(left, right + 1, tile_cells):
+	var first_tile_x := left - posmod(left, tile_cells)
+	var first_tile_y := top - posmod(top, tile_cells)
+	for row in range(first_tile_y, bottom + 1, tile_cells):
+		for column in range(first_tile_x, right + 1, tile_cells):
 			_touch_tile(column, row)
-	_touch_tile(right, bottom)
 	dirty = true
 
 

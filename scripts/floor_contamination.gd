@@ -126,6 +126,20 @@ func paint_mayo_cell(cell: Vector2i, coat := -1,
 
 
 ## Cell-exact: true when there is any mayo at all under this position.
+func wash_at(world_position: Vector3) -> Vector2i:
+	var cell := grid.cell_of(_to_grid(world_position))
+	return cell if wash_cell(cell) else Vector2i(-1, -1)
+
+
+func wash_cell(cell: Vector2i) -> bool:
+	if not grid.has_cell(cell):
+		return false
+	var reach := maxi(1, ceili(0.42 / grid.cell_size))
+	var offset := Vector2i.ONE * reach
+	grid.fill_rect(cell - offset, cell + offset, 0, ContaminationGrid.KIND_MAYO)
+	return true
+
+
 func is_mayo_at(world_position: Vector3) -> bool:
 	return grid.is_painted(_to_grid(world_position))
 

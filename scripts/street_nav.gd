@@ -109,14 +109,22 @@ func line_is_walkable(from: Vector3, to: Vector3) -> bool:
 
 ## The route from one world position to another, as world points on the ground.
 ## Empty if there is no way through.
-func route(from: Vector3, to: Vector3) -> PackedVector3Array:
+func route(from: Vector3, to: Vector3, lateral := 0.0) -> PackedVector3Array:
 	var start := nearest_walkable(StreetMap.cell_at(from))
 	var goal := nearest_walkable(StreetMap.cell_at(to))
 	var points := PackedVector3Array()
 	if not is_walkable(start) or not is_walkable(goal):
 		return points
-	for cell in grid.get_id_path(start, goal):
+	var cells := grid.get_id_path(start, goal)
+	for index in cells.size():
+		var cell := cells[index]
 		var point := StreetMap.cell_middle(cell)
+		if lateral != 0.0 and index > 0 and index < cells.size() - 1:
+			var direction := cells[index + 1] - cell
+			var side := Vector2i(-direction.y, direction.x)
+			if is_walkable(cell + side) and is_walkable(cell - side):
+				point += Vector3(side.x, 0.0, side.y) * clampf(lateral,
+					-StreetMap.CELL * 0.2, StreetMap.CELL * 0.2)
 		if passage.has_area() and point.z >= passage.position.y - StreetMap.CELL \
 				and point.z <= passage.end.y + StreetMap.CELL \
 				and absf(point.x - passage.get_center().x) <= StreetMap.CELL:

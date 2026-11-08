@@ -104,7 +104,9 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 2
+const PROTOCOL_VERSION := 3
+const ENEMY_SNAPSHOT_BATCH_SIZE := 36
+var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
 ## How often one address is worth answering. A blocked address can reconnect as
 ## fast as its machine allows, and an answer to each would be a packet out for
@@ -805,7 +807,12 @@ func _on_peer_connected(id: int) -> void:
 	_spawn_avatar.rpc(id, slot)
 	var snapshot: Array = world.grid_snapshot()
 	for index in snapshot.size():
-		_load_grid.rpc_id(id, index, snapshot[index])
+		var cells: PackedByteArray = snapshot[index]
+		var packed := cells.compress(FileAccess.COMPRESSION_ZSTD)
+		if not packed.is_empty() and packed.size() < cells.size():
+			_load_grid.rpc_id(id, index, packed, cells.size())
+		else:
+			_load_grid.rpc_id(id, index, cells, 0)
 	# Bodies too: whoever is already in the session may already be covered.
 	for existing_id in world.shooter_ids():
 		var body: PackedByteArray = world.body_snapshot(existing_id)
@@ -1179,10 +1186,20 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 	_apply_healing_tomato_state.rpc(healing)
 	_apply_inventory_state.rpc(world.inventory_state())
 	state_bytes_sent += healing.size() * 8 * guests
-	var enemies: PackedFloat32Array = world.enemy_state()
-	if not enemies.is_empty():
-		_apply_enemy_state.rpc(enemies)
-		state_bytes_sent += enemies.size() * 4 * guests
+	var stage_two: bool = world.map_kind == world.MapKind.TOMATINA
+	if stage_two:
+		_tomatina_snapshot_phase = (_tomatina_snapshot_phase + 1) % 3
+		if _tomatina_snapshot_phase != 0:
+			return
+	# Keep each unreliable datagram under the ENet MTU even during a horde.
+	for start in range(0, world.enemy_count(), ENEMY_SNAPSHOT_BATCH_SIZE):
+		var enemies: PackedFloat32Array = world.enemy_state(start, ENEMY_SNAPSHOT_BATCH_SIZE)
+		_apply_enemy_state.rpc(enemies, start, stage_two)
+		state_bytes_sent += (enemies.size() * 4 + 8) * guests
+	if stage_two:
+		var status: PackedFloat64Array = world.tomatina_status()
+		_apply_tomatina_status.rpc(status)
+		state_bytes_sent += status.size() * 8 * guests
 
 
 ## R, on a client. The wipe is a change everyone sees, so the client asks and
@@ -1546,10 +1563,15 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
-func _apply_enemy_state(data: PackedFloat32Array) -> void:
-	if not _world_ready():
-		return
-	world.apply_enemy_state(data)
+func _apply_enemy_state(data: PackedFloat32Array, start: int, smooth: bool) -> void:
+	if _world_ready():
+		world.apply_enemy_state(data, smooth, start)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _apply_tomatina_status(status: PackedFloat64Array) -> void:
+	if _world_ready():
+		world.apply_tomatina_status(status)
 
 
 ## An enemy flinched or went down, and these players should feel it.
@@ -1742,7 +1764,9 @@ func _join_session(id: int, slot: int) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
-func _load_grid(index: int, cells: PackedByteArray) -> void:
+func _load_grid(index: int, cells: PackedByteArray, raw_size: int) -> void:
+	if raw_size > 0:
+		cells = cells.decompress(raw_size, FileAccess.COMPRESSION_ZSTD)
 	world.apply_grid_snapshot_part(index, cells)
 
 
@@ -1803,6 +1827,28 @@ func _peer_can_receive(id: int) -> bool:
 func _apply_healing_tomato_state(data: PackedFloat64Array) -> void:
 	if _world_ready():
 		world.apply_healing_tomato_state(data)
+
+
+func broadcast_shove_clearance(peer: int, indices: PackedInt32Array) -> void:
+	if _online and multiplayer.is_server():
+		_apply_shove_clearance.rpc(peer, indices)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _apply_shove_clearance(peer: int, indices: PackedInt32Array) -> void:
+	if _world_ready():
+		world.apply_shove_clearance(peer, indices)
+
+
+func broadcast_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: int) -> void:
+	if _online and multiplayer.is_server():
+		_show_combat_warning.rpc(at, direction, duration, cue)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: int) -> void:
+	if _world_ready():
+		world.show_combat_warning(at, direction, duration, cue)
 
 
 func request_tomato_action(action: int) -> void:

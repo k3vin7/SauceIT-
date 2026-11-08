@@ -383,15 +383,37 @@ var _burst_request := Vector3.INF
 
 ## The brute's charge: how long is left of it, which way it is going, and how
 ## long until it may charge again.
-const BRUTE_CHARGE_RANGE := 14.0
+const BRUTE_CHARGE_RANGE := 9.0
+const SPECIAL_WINDUP := 0.55
 const BRUTE_CHARGE_SECONDS := 1.2
 const BRUTE_CHARGE_SPEED_SCALE := 2.2
 const BRUTE_CHARGE_COOLDOWN := 4.0
 ## How long it is stuck for after running into a wall.
-const BRUTE_WALL_STUN := 0.8
+const BRUTE_WALL_STUN := 1.25
 var _charge_left := 0.0
 var _charge_cooldown := 0.0
 var _charge_direction := Vector3.ZERO
+var _windup := 0.0
+var _aimed_target: MayoPlayer
+var _escape_push := Vector3.ZERO
+var _escape_left := 0.0
+var _escape_source: MayoPlayer
+var _escape_collision_left := 0.0
+
+signal special_warning(enemy: MayoEnemy, direction: Vector3, duration: float)
+
+var staged_senses := false
+var horde_alert := false
+var sense_left := 0.0
+var _visible_target: MayoPlayer
+var _noticed_for := 0.0
+var _memory_left := 0.0
+var _last_seen := Vector3.INF
+var _remote_position := Vector3.INF
+var _direct_left := 0.0
+var _direct_goal := Vector3.INF
+var _direct_route := false
+var _direct_offset := Vector3.ZERO
 
 ## The bowler's lane. It stands still and rolls a ball from its pool every
 ## `BOWLING_INTERVAL` at whoever it can see down a straight street; the balls
@@ -412,7 +434,7 @@ var _ball_left := 0.0
 ## Player instance id -> seconds until the ball may knock them down again.
 var _ball_hit_cooldown: Dictionary = {}
 
-## The spitter: holds its distance and spits a hitscan stream of ketchup at
+## The spitter: holds its distance and fires a ketchup projectile at
 ## whoever it can see. The spit is a request the world fulfils -- it paints
 ## the visor, the body and a puddle, and none of that is this body's to do.
 const SPIT_RANGE := 18.0
@@ -832,7 +854,7 @@ func build_tomato_grunt(cell_size: float, brush_radius: float, tier := 0) -> voi
 		TomatoVisualsScript.grunt(radius, tier), TomatoVisualsScript.TOMATO)
 
 
-## The brute: the tank. Twice the grunt, three hundred health, and a charge
+## The brute: the tank. Three hundred health and a telegraphed charge
 ## that knocks a player flat -- see `_advance_special`.
 func build_tomato_brute(cell_size: float, brush_radius: float) -> void:
 	kind = EnemyKind.TOMATO_BRUTE
@@ -1009,6 +1031,28 @@ func _can_see_straight(target: MayoPlayer) -> bool:
 	return nav == null or nav.line_is_walkable(global_position, target.global_position)
 
 
+func _has_clear_shot(target: MayoPlayer, origin: Vector3) -> bool:
+	var query := PhysicsRayQueryParameters3D.create(
+		origin, target.global_position + Vector3.UP * 0.4, 1)
+	var ignored: Array[RID] = [get_rid(), target.get_rid()]
+	var space := get_world_3d().direct_space_state
+	for attempt in 6:
+		query.exclude = ignored
+		var hit := space.intersect_ray(query)
+		if hit.is_empty():
+			return true
+		if hit.collider is not MayoEnemy and hit.collider is not MayoPlayer:
+			return false
+		ignored.append(hit.rid)
+	return false
+
+
+func _start_warning(direction: Vector3) -> void:
+	_charge_direction = direction
+	_windup = SPECIAL_WINDUP
+	special_warning.emit(self, direction, _windup)
+
+
 func is_charging() -> bool:
 	return _charge_left > 0.0
 
@@ -1018,16 +1062,20 @@ func _advance_brute(delta: float, target: MayoPlayer) -> Dictionary:
 	if _charge_left > 0.0:
 		_charge_left = maxf(_charge_left - delta, 0.0)
 		return {"flat": _charge_direction, "pace": BRUTE_CHARGE_SPEED_SCALE}
+	if _windup > 0.0:
+		_windup = maxf(0.0, _windup - delta)
+		if _windup <= 0.0:
+			_charge_left = BRUTE_CHARGE_SECONDS
+			_charge_cooldown = BRUTE_CHARGE_COOLDOWN + BRUTE_CHARGE_SECONDS
+		return {"flat": _charge_direction, "pace": BRUTE_CHARGE_SPEED_SCALE if _charge_left > 0.0 else 0.0}
 	if target == null or _charge_cooldown > 0.0 or _attack_lock_left > 0.0:
 		return {}
 	var gap := Vector3(target.global_position.x - global_position.x, 0.0,
 		target.global_position.z - global_position.z)
 	if gap.length() > BRUTE_CHARGE_RANGE or gap.length() < 0.5 or not _can_see_straight(target):
 		return {}
-	_charge_direction = gap.normalized()
-	_charge_left = BRUTE_CHARGE_SECONDS
-	_charge_cooldown = BRUTE_CHARGE_COOLDOWN + BRUTE_CHARGE_SECONDS
-	return {"flat": _charge_direction, "pace": BRUTE_CHARGE_SPEED_SCALE}
+	_start_warning(gap.normalized())
+	return {"flat": _charge_direction, "pace": 0.0}
 
 
 func _advance_bowler(delta: float, target: MayoPlayer) -> Dictionary:
@@ -1035,6 +1083,15 @@ func _advance_bowler(delta: float, target: MayoPlayer) -> Dictionary:
 	# It never walks: pace zero keeps it turning to face whoever it is bowling
 	# at without stepping towards them.
 	var hold := {"pace": 0.0}
+	if _windup > 0.0:
+		_windup = maxf(0.0, _windup - delta)
+		if _windup <= 0.0:
+			var ball := _free_ball()
+			if ball != null:
+				ball.launch(global_position + _charge_direction * (radius + ball.radius + 0.3),
+					_charge_direction)
+			_launch_cooldown = BOWLING_INTERVAL
+		return {"flat": _charge_direction, "pace": 0.0}
 	if target == null or _launch_cooldown > 0.0:
 		return hold
 	var gap := Vector3(target.global_position.x - global_position.x, 0.0,
@@ -1044,10 +1101,8 @@ func _advance_bowler(delta: float, target: MayoPlayer) -> Dictionary:
 	var ball := _free_ball()
 	if ball == null:
 		return hold
-	var direction := gap.normalized()
-	ball.launch(global_position + direction * (radius + ball.radius + 0.3), direction)
-	_launch_cooldown = BOWLING_INTERVAL
-	return hold
+	_start_warning(gap.normalized())
+	return {"flat": _charge_direction, "pace": 0.0}
 
 
 func _free_ball() -> MayoEnemy:
@@ -1063,7 +1118,8 @@ func _advance_spitter(delta: float, target: MayoPlayer) -> Dictionary:
 		return {}
 	var gap := Vector3(target.global_position.x - global_position.x, 0.0,
 		target.global_position.z - global_position.z).length()
-	var sees := _can_see_straight(target)
+	var sees := gap <= SPIT_RANGE and (_spit_cooldown <= 0.0 or gap <= SPIT_HOLD_RANGE) \
+		and _has_clear_shot(target, global_position + Vector3.UP * (height * 0.3))
 	if _spit_cooldown <= 0.0 and gap <= SPIT_RANGE and sees:
 		_spit_request = target
 		_spit_cooldown = SPIT_INTERVAL
@@ -1075,17 +1131,32 @@ func _advance_spitter(delta: float, target: MayoPlayer) -> Dictionary:
 
 func _advance_crawler(delta: float, target: MayoPlayer) -> Dictionary:
 	_tether_break_left = maxf(_tether_break_left - delta, 0.0)
-	tether_target = null
-	if target == null or _tether_break_left > 0.0:
+	if _tether_break_left > 0.0:
+		return {}
+	if is_instance_valid(tether_target):
+		target = tether_target
+	elif is_instance_valid(_aimed_target):
+		target = _aimed_target
+	if target == null:
+		_break_tether()
 		return {}
 	var gap := Vector3(target.global_position.x - global_position.x, 0.0,
 		target.global_position.z - global_position.z)
 	var reach := radius + _target_radius(target) + contact_reach
-	if gap.length() > TETHER_RANGE or gap.length() <= reach + 0.2 or not _can_see_straight(target):
+	if gap.length() > TETHER_RANGE or gap.length() <= reach + 0.2 \
+			or target.is_incapacitated() or not _reaches_height(target) \
+			or not _has_clear_shot(target, global_position + Vector3.UP * 0.25):
+		_break_tether()
 		return {}
-	if not _reaches_height(target) or target.is_incapacitated():
-		return {}
-	tether_target = target
+	if tether_target == null:
+		if _aimed_target == null:
+			_aimed_target = target
+			_start_warning(gap.normalized())
+		_windup = maxf(0.0, _windup - delta)
+		if _windup > 0.0:
+			return {"flat": gap.normalized(), "pace": 0.0}
+		tether_target = target
+		_aimed_target = null
 	# Reeled in by position, not by impulse: an impulse every tick outruns the
 	# player's own acceleration and sends them flying, while a steady pull is
 	# a thing to be dragged by. The mustard slow is the "tied up" half -- the
@@ -1094,6 +1165,14 @@ func _advance_crawler(delta: float, target: MayoPlayer) -> Dictionary:
 	var pull := -gap.normalized() * minf(TETHER_REEL_SPEED * delta, gap.length() - reach)
 	target.move_and_collide(pull)
 	return {"pace": 0.0}
+
+
+func _break_tether() -> void:
+	if is_instance_valid(tether_target) or is_instance_valid(_aimed_target):
+		_tether_break_left = TETHER_BREAK_SECONDS
+	tether_target = null
+	_aimed_target = null
+	_windup = 0.0
 
 
 ## The ball's own tick: it rolls where it was sent, knocks over whoever it
@@ -1463,12 +1542,15 @@ func take_sauce_hit(from := Vector3.INF) -> bool:
 		return false
 	# A hit is what cuts the crawler's thread: the reeled-in player is pulled
 	# off whoever it had, for long enough to get clear.
-	if kind == EnemyKind.CAPRESE_CRAWLER:
-		_tether_break_left = TETHER_BREAK_SECONDS
+	if kind == EnemyKind.CAPRESE_CRAWLER and is_instance_valid(tether_target):
+		_break_tether()
 	health = maxf(health - sauce_damage_per_hit, 0.0)
 	# Being hit is being told where you are, whatever the range says.
 	if sauce_alerts:
 		_alerted = true
+		if staged_senses and from != Vector3.INF:
+			_last_seen = from
+			_memory_left = 2.0
 	if is_alive():
 		_note_flinch()
 		return false
@@ -1546,6 +1628,67 @@ func take_shove(from: Vector3, strength := 1.0) -> void:
 
 
 ## Whether it has noticed a player and is coming for them.
+func push_for_escape(source: MayoPlayer, direction: Vector3) -> void:
+	open_escape_clearance(source)
+	_escape_left = 0.30
+	_escape_push = direction * 7.0
+	_contact_cooldown = maxf(_contact_cooldown, 0.65)
+	_contact_kick_left = 0.14
+
+
+func open_escape_clearance(source: MayoPlayer) -> void:
+	_clear_escape_collision()
+	_escape_source = source
+	add_collision_exception_with(source)
+	source.add_collision_exception_with(self)
+	_escape_collision_left = 0.45
+
+
+func _update_escape_clearance(delta: float) -> void:
+	if _escape_collision_left > 0.0:
+		_escape_collision_left = maxf(0.0, _escape_collision_left - delta)
+		if _escape_collision_left <= 0.0:
+			_clear_escape_collision()
+
+
+func _clear_escape_collision() -> void:
+	if is_instance_valid(_escape_source):
+		remove_collision_exception_with(_escape_source)
+		_escape_source.remove_collision_exception_with(self)
+	_escape_source = null
+
+
+func _perceive(candidate: MayoPlayer, delta: float) -> MayoPlayer:
+	if horde_alert:
+		return candidate
+	sense_left -= delta
+	_memory_left = maxf(0.0, _memory_left - delta)
+	if sense_left <= 0.0:
+		sense_left = 0.10
+		if candidate != _visible_target:
+			_noticed_for = 0.0
+		_visible_target = null
+		if candidate != null:
+			var distance := global_position.distance_to(candidate.global_position)
+			var limit := give_up_range if _alerted else sight_range
+			if distance <= limit and _has_clear_shot(candidate,
+					global_position + Vector3.UP * height * 0.30):
+				_visible_target = candidate
+				_noticed_for += sense_left
+				if _alerted or _noticed_for >= lerpf(0.12, 0.65, distance / limit):
+					_alerted = true
+					_last_seen = candidate.global_position
+					_memory_left = 2.0
+	if is_instance_valid(_visible_target) and _alerted \
+			and _visible_target.state != MayoPlayer.State.DEAD:
+		return _visible_target
+	if _memory_left <= 0.0:
+		_last_seen = Vector3.INF
+		if _visible_target == null:
+			_alerted = false
+	return null
+
+
 func is_alerted() -> bool:
 	return _alerted
 
@@ -1610,7 +1753,11 @@ func _refresh_sight_rings() -> void:
 		_give_up_ring = _make_ring("GiveUpRing", give_up_range, 0.2, give_up_ring_color)
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	if not authority:
+		if _remote_position != Vector3.INF:
+			global_position = global_position.lerp(_remote_position, minf(delta * 24.0, 1.0))
+		_update_escape_clearance(delta)
 	if _sight_ring == null:
 		return
 	# Flat on the ground under the body, whatever the body is doing. A little
@@ -1949,7 +2096,7 @@ func network_state() -> Array:
 
 
 func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
-		new_fall_angle: float, new_max_health := 0.0) -> void:
+		new_fall_angle: float, new_max_health := 0.0, interpolate := false) -> void:
 	# Guarded rather than assigned outright: a zero would make every fraction a
 	# division by nothing, and `health_fraction` clamping it away would hide
 	# that the ceiling never arrived.
@@ -1965,8 +2112,13 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	# rather than derived from a pivot this peer never saw. Split the same way
 	# `_apply_pose` is: a standing body carries its flinch on the visual, a
 	# fallen one on the whole body.
+	_remote_position = Vector3.INF
 	if is_alive():
-		global_transform = Transform3D(Basis(Vector3.UP, facing_yaw), new_position)
+		var smooth := interpolate and kind != EnemyKind.TOMATO_BALL and step.length_squared() < 16.0
+		if smooth:
+			_remote_position = new_position
+		global_transform = Transform3D(Basis(Vector3.UP, facing_yaw),
+			global_position if smooth else new_position)
 		_set_visual_pitch(fall_angle)
 	else:
 		_set_visual_pitch(0.0)
@@ -1994,6 +2146,7 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 func advance(delta: float, targets: Array) -> MayoPlayer:
 	if not authority:
 		return null
+	_update_escape_clearance(delta)
 	if not is_alive():
 		# Dead ones are not skipped -- they are still going over.
 		_advance_fall(delta)
@@ -2025,6 +2178,8 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	var baited := bait != null and is_instance_valid(bait)
 
 	var target := _nearest(targets)
+	if staged_senses:
+		target = _perceive(target, delta)
 	# Noticed, or given up on. Measured flat: a player on a stall roof is as
 	# close as one standing under it, and height should not decide a chase.
 	if target != null:
@@ -2035,7 +2190,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 				_alerted = false
 		elif gap_to_target <= sight_range:
 			_alerted = true
-	else:
+	elif not staged_senses:
 		_alerted = false
 	if not _alerted:
 		target = null
@@ -2051,9 +2206,11 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		# waypoints -- so it rounds the same corners rather than sliding at it.
 		flat = _step_toward(bait.global_position, delta) - global_position
 		flat.y = 0.0
-	elif target != null and _attack_lock_left <= 0.0:
-		flat = _step_toward(target.global_position, delta) - global_position
-		flat.y = 0.0
+	elif _attack_lock_left <= 0.0:
+		var goal := target.global_position if target != null else _last_seen
+		if goal != Vector3.INF:
+			flat = _step_toward(goal, delta) - global_position
+			flat.y = 0.0
 	if special.has("flat"):
 		flat = special["flat"]
 		flat.y = 0.0
@@ -2096,7 +2253,10 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		velocity.z = 0.0
 	_shove = _shove.move_toward(Vector3.ZERO,
 		shove_speed / maxf(shove_decay_seconds, 0.01) * delta)
-
+	if _escape_left > 0.0:
+		velocity.x = _escape_push.x
+		velocity.z = _escape_push.z
+		_escape_left = maxf(0.0, _escape_left - delta)
 	if is_on_floor():
 		velocity.y = 0.0
 	else:
@@ -2110,6 +2270,12 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		_charge_cooldown = BRUTE_CHARGE_COOLDOWN
 		_attack_lock_left = BRUTE_WALL_STUN
 		_contact_cooldown = maxf(_contact_cooldown, BRUTE_WALL_STUN)
+	if _charge_left > 0.0:
+		for index in get_slide_collision_count():
+			var player := get_slide_collision(index).get_collider() as MayoPlayer
+			if player != null and player.state != MayoPlayer.State.DEAD:
+				target = player
+				break
 	var walking := Vector2(velocity.x, velocity.z).length_squared() > 0.000001
 	_set_locomotion_animation(walking)
 	_advance_gait(global_position - stood_at, walking, delta)
@@ -2119,7 +2285,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	# Baited: it is swiping at the drone, not at the party. Returning null before
 	# the reach tests is what makes that true of the damage *and* of the contact
 	# knockback -- neither can happen through a body that is busy elsewhere.
-	if baited or target == null or _contact_cooldown > 0.0:
+	if baited or target == null or _contact_cooldown > 0.0 or _windup > 0.0:
 		return null
 	# Measured between the capsule axes, flat: both bodies are capsules, so the
 	# gap between their surfaces is the axis distance less the two radii.
@@ -2244,18 +2410,40 @@ func _crowd_direction(forward: Vector3, delta := 1.0 / 60.0) -> Vector3:
 func _step_toward(goal: Vector3, delta: float) -> Vector3:
 	if nav == null:
 		return goal
-	if nav.line_is_walkable(global_position, goal):
+	if staged_senses:
+		_direct_left -= delta
+		if _direct_left <= 0.0 or _direct_goal.distance_squared_to(goal) > 4.0:
+			_direct_left = 0.13 + sense_left * 0.4
+			_direct_goal = goal
+			_direct_route = nav.line_is_walkable(global_position, goal)
+			_direct_offset = Vector3.ZERO
+			var gap := goal - global_position
+			gap.y = 0.0
+			if _direct_route and gap.length_squared() > 36.0:
+				var forward := gap.normalized()
+				var side := forward.cross(Vector3.UP)
+				var sample := global_position + forward * 3.0
+				if nav.is_walkable(StreetMap.cell_at(sample + side * StreetMap.CELL)) \
+						and nav.is_walkable(StreetMap.cell_at(sample - side * StreetMap.CELL)):
+					var offset := side * _crowd_side * minf(radius * 2.0, 1.5)
+					if nav.line_is_walkable(global_position, goal + offset):
+						_direct_offset = offset
+		if _direct_route:
+			_route.clear()
+			_repath_timer = 0.0
+			return goal + _direct_offset if global_position.distance_squared_to(goal) > 25.0 else goal
+	elif nav.line_is_walkable(global_position, goal):
 		_route.clear()
 		return goal
 
 	_repath_timer -= delta
 	# Redone when the timer runs out, or at once if the player has left the part
 	# of the street the current route was drawn to.
-	if _repath_timer <= 0.0 or _route.is_empty() \
+	if _repath_timer <= 0.0 or (not staged_senses and _route.is_empty()) \
 			or StreetMap.cell_at(goal) != StreetMap.cell_at(_route_goal):
 		_repath_timer = repath_interval
 		_route_goal = goal
-		_route = nav.route(global_position, goal)
+		_route = nav.route(global_position, goal, _crowd_side * radius if staged_senses else 0.0)
 		_route_step = 0
 
 	# Waypoints already passed are dropped rather than walked back to.
@@ -2285,7 +2473,7 @@ func _nearest(targets: Array) -> MayoPlayer:
 	var best_distance := INF
 	for candidate in targets:
 		var player := candidate as MayoPlayer
-		if player == null or not is_instance_valid(player):
+		if player == null or not is_instance_valid(player) or player.state == MayoPlayer.State.DEAD:
 			continue
 		var distance := global_position.distance_squared_to(player.global_position)
 		if distance < best_distance:

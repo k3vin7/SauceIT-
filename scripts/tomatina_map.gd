@@ -37,6 +37,7 @@ const SEGMENTS: Array[Rect2i] = [
 	Rect2i(28, 36, 4, 13),   # 9 Calle del Cid, the overturned truck
 	Rect2i(20, 22, 20, 15),  # 10 Plaza del Pueblo
 	Rect2i(27, 16, 6, 7),    # 11 the fire truck bay
+	Rect2i(26, 36, 8, 6),    # 12 room to dodge and cover teammates beyond the wreck
 ]
 
 const START_SEGMENT := 0
@@ -46,6 +47,7 @@ const FIRE_BAY_SEGMENT := 11
 ## Where the overturned truck lies across Calle del Cid: three of the four
 ## cells, leaving one cell of gap on the east side with a tomato heap in it.
 const TRUCK_ROW := 44.0
+const SIREN_CELL := Vector2(25.5, 27.5)
 
 ## Where the street is already under tomato juice before anyone arrives: the
 ## short fork end to end, the chokepoint under the overturned truck, and the
@@ -88,11 +90,11 @@ static func spawn_position(slot: int) -> Vector3:
 ## brute where the forks rejoin, a spitter covering a crowd.
 const ELITES := [
 	["BOWLING_TOMATO", Vector2(30.0, 70.5)],
-	["KETCHUP_SPITTER", Vector2(18.0, 55.5)],
-	["CAPRESE_CRAWLER", Vector2(22.5, 55.5)],
+	["KETCHUP_SPITTER", Vector2(16.5, 54.5)],
+	["CAPRESE_CRAWLER", Vector2(22.5, 54.5)],
 	["BOWLING_TOMATO", Vector2(41.5, 51.5)],
-	["TOMATO_BRUTE", Vector2(30.5, 38.0)],
-	["CAPRESE_CRAWLER", Vector2(29.5, 40.0)],
+	["TOMATO_BRUTE", Vector2(30.5, 37.5)],
+	["CAPRESE_CRAWLER", Vector2(23.5, 33.5)],
 	["TOMATO_BRUTE", Vector2(30.0, 29.5)],
 	["TOMATO_BRUTE", Vector2(34.0, 30.0)],
 	["KETCHUP_SPITTER", Vector2(24.5, 28.5)],
@@ -129,7 +131,9 @@ static func grunt_cells() -> Array[Vector2]:
 	# up the street, not on the point of the arrow.
 	var plaza_edge: int = SEGMENTS[START_SEGMENT].position.y - 2
 	var candidates: Array[Vector2i] = []
-	for index in range(START_SEGMENT + 1, FIRE_BAY_SEGMENT):
+	for index in range(START_SEGMENT + 1, SEGMENTS.size()):
+		if index == FIRE_BAY_SEGMENT:
+			continue
 		var rect: Rect2i = SEGMENTS[index]
 		for j in rect.size.y:
 			for i in rect.size.x:
@@ -144,7 +148,8 @@ static func grunt_cells() -> Array[Vector2]:
 		[Rect2i(25, 69, 8, 5), 8],
 		[Rect2i(15, 58, 5, 5), 8],
 		[Rect2i(39, 58, 5, 5), 8],
-		[Rect2i(28, 36, 4, 6), 10],
+		[Rect2i(26, 37, 2, 5), 5],
+		[Rect2i(32, 37, 2, 5), 5],
 		[Rect2i(20, 24, 20, 10), 20],
 	]
 	var out: Array[Vector2] = []
@@ -163,10 +168,12 @@ static func grunt_cells() -> Array[Vector2]:
 ## Where the horde comes in from once the party is on the plaza: its edges,
 ## cycled through in this order so every peer agrees on body N's position.
 const HORDE_EDGES := [
-	Vector2(21.0, 23.0), Vector2(38.5, 23.0), Vector2(21.0, 35.5),
-	Vector2(38.5, 35.5), Vector2(29.5, 23.0), Vector2(24.5, 35.5),
-	Vector2(35.5, 35.5), Vector2(21.0, 29.0), Vector2(38.5, 29.0),
-	Vector2(33.5, 23.0), Vector2(25.5, 23.0), Vector2(29.5, 35.5),
+	[Vector2(21.5, 25.5), Vector2(22.5, 24.5), Vector2(21.5, 26.5),
+		Vector2(22.5, 28.5), Vector2(21.5, 30.5), Vector2(22.5, 30.5)],
+	[Vector2(38.5, 23.5), Vector2(37.5, 24.5), Vector2(38.5, 26.5),
+		Vector2(37.5, 27.5), Vector2(38.5, 29.5), Vector2(37.5, 30.5)],
+	[Vector2(23.5, 23.5), Vector2(26.5, 23.5), Vector2(26.5, 24.5),
+		Vector2(33.5, 23.5), Vector2(34.5, 23.5), Vector2(35.5, 24.5)],
 ]
 
 
@@ -313,10 +320,8 @@ static func debris_boxes() -> Array[Dictionary]:
 	]:
 		boxes.push_back(metre_box(entry[0], entry[1], entry[2], crate))
 	boxes.append_array(wreck_boxes())
-	# Calle del Cid used to be closed by an overturned tomato truck, three cells
-	# of four with a heap to jump in the fourth. Taken out: a three-metre red
-	# box across the road read as a wall, not a wreck. `TRUCK_ROW` stays as the
-	# name of the row, which the probe checks is open.
+	_wrecked_truck(boxes, "Choke", Vector2(28.55, TRUCK_ROW), Vector2(29.8, TRUCK_ROW),
+		Vector2(28.8, TRUCK_ROW + 0.8), Vector2(29.5, TRUCK_ROW - 0.7))
 	return boxes
 
 
@@ -434,7 +439,7 @@ static func refill_boxes() -> Array[Dictionary]:
 	# gap is one cell wide and a truck there would close its only approach.
 	boxes.push_back(_truck_against_wall(Vector2(35.0, 54.5), Vector3.LEFT, side))
 	boxes.push_back(_truck_against_wall(Vector2(25.0, 50.5), Vector3.RIGHT, side))
-	boxes.push_back(_truck_against_wall(Vector2(28.0, 39.5), Vector3.RIGHT, side))
+	boxes.push_back(_truck_against_wall(Vector2(26.0, 39.5), Vector3.RIGHT, side))
 	# The plaza: two on each side wall, one on the north wall beside the bay.
 	boxes.push_back(_truck_against_wall(Vector2(20.0, 24.5), Vector3.RIGHT, side))
 	boxes.push_back(_truck_against_wall(Vector2(20.0, 29.0), Vector3.RIGHT, side))

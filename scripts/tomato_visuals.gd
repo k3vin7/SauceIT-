@@ -21,6 +21,8 @@ const MOZZARELLA := Color("f1ead6")
 const BASIL := Color("3f7a2f")
 const BOTTLE := Color("b8231a")
 const CAP := Color("f2f2f2")
+static var _sphere_meshes := {}
+static var _cylinder_meshes := {}
 const CRATE := Color("8c6a3e")
 
 
@@ -131,12 +133,17 @@ static func _sphere(parent: Node3D, node_name: String, at: Vector3, radius: floa
 		color: Color, roughness := 0.6) -> MeshInstance3D:
 	var node := MeshInstance3D.new()
 	node.name = node_name
-	var mesh := SphereMesh.new()
-	mesh.radius = radius
-	mesh.height = radius * 2.0
-	mesh.radial_segments = 20
-	mesh.rings = 10
-	mesh.material = _material(color, roughness)
+	var key := Vector3(radius, roughness, 0.0)
+	var materials: Dictionary = _sphere_meshes.get_or_add(key, {})
+	var mesh: SphereMesh = materials.get(color)
+	if mesh == null:
+		mesh = SphereMesh.new()
+		mesh.radius = radius
+		mesh.height = radius * 2.0
+		mesh.radial_segments = 20
+		mesh.rings = 10
+		mesh.material = _material(color, roughness)
+		materials[color] = mesh
 	node.mesh = mesh
 	node.position = at
 	parent.add_child(node)
@@ -147,13 +154,18 @@ static func _cylinder(parent: Node3D, node_name: String, at: Vector3, radius: fl
 		height: float, color: Color, rotation := Vector3.ZERO) -> MeshInstance3D:
 	var node := MeshInstance3D.new()
 	node.name = node_name
-	var mesh := CylinderMesh.new()
-	mesh.top_radius = radius
-	mesh.bottom_radius = radius
-	mesh.height = height
-	mesh.radial_segments = 16
-	mesh.rings = 1
-	mesh.material = _material(color, 0.7)
+	var key := Vector2(radius, height)
+	var materials: Dictionary = _cylinder_meshes.get_or_add(key, {})
+	var mesh: CylinderMesh = materials.get(color)
+	if mesh == null:
+		mesh = CylinderMesh.new()
+		mesh.top_radius = radius
+		mesh.bottom_radius = radius
+		mesh.height = height
+		mesh.radial_segments = 16
+		mesh.rings = 1
+		mesh.material = _material(color, 0.7)
+		materials[color] = mesh
 	node.mesh = mesh
 	node.position = at
 	node.rotation = rotation

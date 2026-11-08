@@ -12,8 +12,8 @@ extends SceneTree
 #   * the burst a grunt is dealt is reproducible from its index alone, and the
 #     deal is mostly small with a few large
 #   * a bowled tomato bursts on the first wall and parks itself
-#   * stepping onto the plaza brings the horde
-#   * the stage clears when the elites are down and somebody is at the truck
+#   * the siren schedules separate, capped waves and opens the truck after 30 seconds
+#   * the stage only clears after the finale timer and arrival at the truck
 #   * stage 1 gets its own street back afterwards
 
 var failures: Array[String] = []
@@ -36,6 +36,12 @@ func _frames(count: int) -> void:
 
 
 func _run() -> void:
+	if OS.get_cmdline_user_args().has("--network"):
+		await _run_network()
+		return
+	if OS.get_cmdline_user_args().has("--profile"):
+		await _run_profile()
+		return
 	StreetMap.layout_override = null
 	var festival_cells := StreetMap.floor_cells().size()
 
@@ -87,13 +93,12 @@ func _run() -> void:
 			buried += 1
 			push_error("%s stands in a prop's cell" % body.name)
 	_check(buried == 0, "%d bodies are built inside props" % buried)
-	# Calle del Cid is open: the overturned truck that closed three cells of
-	# four is gone, and nothing else has been parked in the row.
+	# The wreck narrows the approach without cutting off the plaza.
 	var cid_blocked := 0
 	for i in range(28, 32):
 		if StreetMap.blocked_cells().has(Vector2i(i, int(TomatinaMap.TRUCK_ROW))):
 			cid_blocked += 1
-	_check(cid_blocked == 0, "Calle del Cid is blocked in %d of 4 cells" % cid_blocked)
+	_check(cid_blocked > 0 and cid_blocked < 4, "truck gap blocks %d of 4 cells" % cid_blocked)
 	_check(scene.refill_stations().size() == 22, "stage 2 does not have its twenty-two sauce trucks")
 
 	# Encounter pacing: no standing grunts in the entry or regroup bay.
@@ -122,7 +127,6 @@ func _run() -> void:
 		"the bowler did not bring its balls")
 	_check(int(counts.get(MayoEnemy.EnemyKind.KETCHUP_SPITTER, 0)) == 3, "not three spitters")
 	_check(int(counts.get(MayoEnemy.EnemyKind.CAPRESE_CRAWLER, 0)) == 2, "not two crawlers")
-	_check(scene._tomatina_elites_alive() == 10, "elite count is %d, not 10" % scene._tomatina_elites_alive())
 	for index in scene.enemy_count():
 		var enemy: MayoEnemy = scene.enemy_at(index)
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
@@ -313,45 +317,80 @@ func _run() -> void:
 			"the ball did not park after bursting")
 		_check(ball.burst_radius > 0.0, "the ball has nothing to burst with")
 
-	# --- the horde ---
-	scene.set_physics_process(true)
+	# --- shove, the timed horde and extraction ---
 	var player: MayoPlayer = scene._player
-	var before_horde: int = scene.enemy_count()
 	var plaza: Rect2 = TomatinaMap.plaza_rect()
-	player.global_position = Vector3(plaza.get_center().x, 1.28, plaza.get_center().y)
-	await _frames(3)
-	_check(scene.horde_spawned(), "stepping onto the plaza did not bring the horde")
-	var expected_horde: int = scene.minion_spawn_count(scene.TOMATINA_HORDE_BASE)
-	# It comes in over a run of ticks rather than in one frame; wait it in,
-	# and fail below if it never all arrives.
-	var arrival_ticks := 3
-	while scene.enemy_count() - before_horde < expected_horde and arrival_ticks < 180:
-		await _frames(1)
-		arrival_ticks += 1
-	print("horde: all in after %d ticks" % arrival_ticks)
-	_check(arrival_ticks > 4, "the horde arrived in one frame, so the stagger is not working")
-	print("horde: %d bodies for a party of %d" % [scene.enemy_count() - before_horde, scene.party_size()])
-	_check(scene.enemy_count() - before_horde == expected_horde,
-		"the horde is %d bodies, not %d" % [scene.enemy_count() - before_horde, expected_horde])
-	_check(scene.tutorial_spawned().size() == expected_horde,
-		"the horde is not recorded for a late joiner")
+	var siren := TomatinaMap.at_cell(TomatinaMap.SIREN_CELL) + Vector3.UP * 1.28
+	player.global_position = siren
+	scene._check_stage_clear()
+	_check(not scene.horde_spawned(), "entering the plaza armed the siren")
+	var before_horde: int = scene.enemy_count()
+	var peer: int = scene._local.peer_id
+	scene.tomato_action(peer, 0)
+	_check(scene.horde_spawned(), "using the siren did not start the finale")
+	var previous: int = scene.enemy_count()
+	scene._advance_horde_spawn(0.016)
+	_check(scene.enemy_count() - previous <= scene.HORDE_SPAWN_PER_TICK, "spawn burst exceeded its per-step budget")
+	for _step in 160:
+		scene._advance_horde_spawn(0.2)
+	_check(scene._finale_wave == 2, "the finale did not schedule all three approaches")
+	_check(scene.enemy_count() > before_horde, "no reinforcements spawned")
+	_check(scene.tutorial_spawned().size() == scene.enemy_count() - before_horde,
+		"reinforcements are not recorded for a late joiner")
+	var active_grunts := 0
+	for enemy in scene._enemies:
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() \
+				and (enemy.has_meta("horde") or TomatinaMap.in_rect(plaza, enemy.global_position)):
+			active_grunts += 1
+	_check(active_grunts <= scene.tomatina_active_grunt_cap, "the finale exceeded the active grunt cap")
 
-	# --- the clear ---
+	var nearby := TomatinaMap.at_cell(Vector2(26.5, 30.5)) + Vector3.UP * 1.28
+	player.global_position = nearby
+	var shoved: MayoEnemy = null
+	for enemy in scene._enemies:
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive():
+			shoved = enemy
+			break
+	shoved.global_position = nearby + Vector3(0.0, 0.0, -1.6)
+	scene._local.aim_yaw = 0.0
+	scene._local.sauce = 0.0
+	var health := shoved.health
+	scene.tomato_action(peer, scene.ESCAPE_SHOVE_ACTION)
+	_check(shoved._escape_left > 0.0 and shoved.health == health, "empty-tank shove did not open a non-damaging escape")
+	_check(shoved.get_collision_exceptions().has(player), "shove did not open player clearance")
+	for _frame in 30:
+		shoved._update_escape_clearance(1.0 / 60.0)
+	_check(not shoved.get_collision_exceptions().has(player), "shove left a permanent collision exception")
+
+	var teammate: MayoPlayer = scene.create_avatar(2, 1, false).player
+	teammate.global_position = nearby + Vector3.RIGHT * 1.6
+	teammate.health = 0.0
+	teammate.begin_death()
+	scene.tomato_action(peer, 0)
+	scene._advance_tomatina_rescues(0.5)
+	_check(teammate.state == MayoPlayer.State.DEAD, "rescue completed before its channel time")
+	scene._advance_tomatina_rescues(0.6)
+	_check(teammate.state == MayoPlayer.State.NORMAL and is_equal_approx(teammate.health, 40.0),
+		"a teammate was not rescued in place with partial health")
+
+	var hose := TomatinaMap.at_cell(scene.TOMATINA_HOSES[0]) + Vector3.UP * 1.28
+	player.global_position = hose
+	scene._local.aim_yaw = PI
+	var wet := hose + Vector3.BACK * 2.0
+	floor_body.paint_mayo(wet)
+	scene.tomato_action(peer, 0)
+	_check(floor_body.thickness_at(wet) == 0, "the hose did not clear the aimed path")
+
 	var cleared := [false]
 	scene.stage_cleared.connect(func() -> void: cleared[0] = true)
+	scene._check_stage_clear()
+	_check(not cleared[0], "the stage cleared while the player was still outside the truck bay")
 	player.global_position = Vector3(truck_centre.x, 1.28, truck_centre.z)
-	await _frames(3)
-	_check(not cleared[0], "the stage cleared with the elites still standing")
-	for index in scene.enemy_count():
-		var enemy: MayoEnemy = scene.enemy_at(index)
-		if enemy.grade == MayoEnemy.Grade.HEAVY:
-			enemy.health = 0.0
-	player.global_position = Vector3(plaza.get_center().x, 1.28, plaza.get_center().y)
-	await _frames(3)
-	_check(not cleared[0], "the stage cleared with nobody at the fire truck")
-	player.global_position = Vector3(truck_centre.x, 1.28, truck_centre.z)
-	await _frames(3)
-	_check(cleared[0], "the elites are down and the party is at the truck, and the stage did not clear")
+	scene._check_stage_clear()
+	_check(not cleared[0], "one player cleared while a living teammate was outside the truck bay")
+	teammate.global_position = player.global_position + Vector3.RIGHT * 1.5
+	scene._check_stage_clear()
+	_check(cleared[0], "the finale elapsed and both players reached the truck, but the stage did not clear")
 
 	scene.free()
 	await process_frame
@@ -375,3 +414,88 @@ func _run() -> void:
 		for failure in failures:
 			push_error(failure)
 		quit(1)
+
+
+func _make_network_world(view_name: String) -> Node3D:
+	var viewport := SubViewport.new()
+	viewport.name = view_name
+	viewport.own_world_3d = true
+	viewport.size = Vector2i(64, 64)
+	root.add_child(viewport)
+	var world := (load("res://stage_2_tomatina.tscn") as PackedScene).instantiate() as Node3D
+	world.name = "World"
+	viewport.add_child(world)
+	set_multiplayer(SceneMultiplayer.new(), world.get_path())
+	return world
+
+
+func _run_network() -> void:
+	var host = _make_network_world("HostView")
+	var guest = _make_network_world("GuestView")
+	_check(host._net.host(24818, true), "Tomatina host could not open the port")
+	_check(guest._net.join("127.0.0.1", 24818), "Tomatina guest could not connect")
+	for _frame in 600:
+		if guest.shooter_ids().size() == 2 and guest._net.debug_state_packets > 0:
+			break
+		await _frames(1)
+	if guest.shooter_ids().size() != 2 or host.shooter_ids().size() != 2:
+		push_error("Tomatina peers failed to join")
+		quit(1)
+		return
+	var peer: int = guest._net.local_id()
+	var avatar: MayoPlayer = host.shooter_for(peer).player
+	avatar.global_position = TomatinaMap.at_cell(TomatinaMap.SIREN_CELL) + Vector3.UP * 1.28
+	var starting_roster: int = host.enemy_count()
+	guest._net.request_tomato_action(0)
+	for _frame in 180:
+		if guest.horde_spawned() and guest.enemy_count() > starting_roster:
+			break
+		await _frames(1)
+	_check(host.horde_spawned() and guest.horde_spawned(), "guest siren did not replicate")
+	_check(guest.enemy_count() > starting_roster,
+		"no reinforcement spawns (host %d, guest %d, start %d, pending %d, timer %.1f)" %
+			[host.enemy_count(), guest.enemy_count(), starting_roster, host._horde_pending, host._finale_elapsed])
+	_check(guest._finale_elapsed > 0.0 and guest._finale_elapsed <= host._finale_elapsed,
+		"guest did not receive the server finale timer")
+	await _frames(15)
+	var remote: MayoEnemy = guest.enemy_at(starting_roster)
+	var original: MayoEnemy = host.enemy_at(starting_roster)
+	_check(remote != null and original != null and remote.global_position.distance_to(original.global_position) < 2.5,
+		"a reinforcement in the last snapshot batch did not follow the host position")
+	for failure in failures:
+		push_error(failure)
+	if failures.is_empty():
+		print("TOMATINA_NETWORK_OK")
+	quit(0 if failures.is_empty() else 1)
+
+
+func _run_profile() -> void:
+	for cap in [32, 48, 64]:
+		var world = load("res://stage_2_tomatina.tscn").instantiate()
+		root.add_child(world)
+		world.set_physics_process(false)
+		world.debug_clear_enemies()
+		await _frames(2)
+		var plaza := TomatinaMap.at_cell(Vector2(30.0, 29.5))
+		world._player.global_position = plaza + Vector3.UP * 1.28
+		world._player.health = 100000.0
+		for index in cap:
+			var at := plaza + Vector3(float(index % 8) - 3.5, 0.0,
+				float(index / 8) + 3.0) * 2.3
+			world.tutorial_add_enemy(MayoTutorial.KIND_TOMATO_GRUNT, at)
+		await _frames(3)
+		var samples := PackedInt64Array()
+		for frame in 120:
+			await physics_frame
+			world._player.global_position = plaza + Vector3.UP * 1.28
+			var start := Time.get_ticks_usec()
+			world._advance_enemies(1.0 / 60.0)
+			if frame >= 30:
+				samples.append(Time.get_ticks_usec() - start)
+		samples.sort()
+		print("TOMATINA_PROFILE cap=%d enemy_tick_p95_ms=%.2f snapshot_bytes=%d" %
+			[cap, float(samples[int(samples.size() * 0.95)]) / 1000.0,
+				world.enemy_state().size() * 4])
+		world.free()
+		await process_frame
+	quit()
