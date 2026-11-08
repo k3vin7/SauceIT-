@@ -10,6 +10,7 @@ const BodyContaminationScript := preload("res://scripts/body_contamination.gd")
 const VisorScript := preload("res://scripts/visor_contamination.gd")
 const VisorOverlayScript := preload("res://scripts/visor_overlay.gd")
 const HealthHudScript := preload("res://scripts/health_hud.gd")
+const RescueHudScript := preload("res://scripts/rescue_hud.gd")
 const MinimapScript := preload("res://scripts/minimap.gd")
 const KeyLegendScript := preload("res://scripts/key_legend.gd")
 const PLAYER_CHARACTERS: Array[PackedScene] = [
@@ -1060,6 +1061,10 @@ var _tutorial_hud: MayoTutorialHud
 var _tutorial_spawned: Array = []
 var _nav: StreetNav
 var _health_hud: HealthHud
+## Typed as the base Control, like the key legend: a `class_name` is only known
+## once the editor has rebuilt its class cache, and the headless probes run
+## off the checkout without one.
+var _rescue_hud: Control
 var _minimap: Minimap
 var _key_legend: Control
 var _sauce_audio: AudioStreamPlayer
@@ -2561,6 +2566,8 @@ func _layout_view() -> void:
 		_visor_overlay.set_frame(frame)
 	if _health_hud != null:
 		_health_hud.set_frame(frame)
+	if _rescue_hud != null:
+		_rescue_hud.set_frame(frame)
 	if _minimap != null:
 		_minimap.set_frame(frame)
 	if _key_legend != null:
@@ -2721,6 +2728,12 @@ func _build_crosshair() -> void:
 	layer.add_child(_crosshair)
 	_hud_layer = layer
 	if stage_mode:
+		# Over the health bar: going down is the one thing that has to be read
+		# through everything else on the screen.
+		_rescue_hud = RescueHudScript.new()
+		_rescue_hud.world = self
+		_rescue_hud.set_frame(_view_layout)
+		layer.add_child(_rescue_hud)
 		_stage_objective = Label.new()
 		_stage_objective.name = "StageObjective"
 		_stage_objective.position = Vector2(24.0, 24.0)
@@ -6754,6 +6767,52 @@ func _start_tomatina_rescue(shooter: Shooter) -> bool:
 	return false
 
 
+## What `RescueHud` draws for the local player, on every peer. Empty off the
+## Tomatina stage. Downed: the clock, whether anyone is still standing to
+## come, whether someone is on them and how far along, and whether the
+## body can crawl yet. Standing: every downed teammate with their clock and
+## whether they are in reach, plus the local hold's progress if one is on.
+func rescue_hud_state() -> Dictionary:
+	if map_kind != MapKind.TOMATINA or not stage_mode or _local == null:
+		return {}
+	var me := _local.player
+	var state := {}
+	if me.state == MayoPlayer.State.DEAD:
+		state["downed"] = true
+		state["window"] = TOMATINA_RESCUE_WINDOW
+		state["left"] = maxf(TOMATINA_RESCUE_WINDOW - me.state_time(), 0.0)
+		state["standing_teammate"] = _has_standing_teammate(me)
+		state["crawling"] = me.is_crawling()
+		state["rescue_progress"] = -1.0
+		for rescuer in _rescue_attempts:
+			var attempt: Dictionary = _rescue_attempts[rescuer]
+			if int(attempt.peer) == _local.peer_id:
+				state["rescue_progress"] = 1.0 - clampf(float(attempt.left) / TOMATINA_RESCUE_TIME, 0.0, 1.0)
+		return state
+	state["downed"] = false
+	var downed := []
+	var any_in_reach := false
+	for teammate: Shooter in _shooters.values():
+		if teammate == _local or teammate.player.state != MayoPlayer.State.DEAD:
+			continue
+		var in_reach := me.state == MayoPlayer.State.NORMAL \
+			and _rescue_in_reach(me, teammate.player)
+		any_in_reach = any_in_reach or in_reach
+		downed.append({
+			"peer": teammate.peer_id,
+			"position": teammate.player.global_position,
+			"left": maxf(TOMATINA_RESCUE_WINDOW - teammate.player.state_time(), 0.0),
+			"in_reach": in_reach,
+		})
+	state["downed_teammates"] = downed
+	state["in_reach"] = any_in_reach
+	state["rescue_progress"] = -1.0
+	if _rescue_attempts.has(_local.peer_id):
+		var attempt: Dictionary = _rescue_attempts[_local.peer_id]
+		state["rescue_progress"] = 1.0 - clampf(float(attempt.left) / TOMATINA_RESCUE_TIME, 0.0, 1.0)
+	return state
+
+
 func _rescue_in_reach(rescuer: MayoPlayer, target: MayoPlayer) -> bool:
 	return rescuer.global_position.distance_squared_to(target.global_position) <= 6.25 \
 		and _nav.line_is_walkable(rescuer.global_position, target.global_position)
@@ -7094,6 +7153,15 @@ func tomatina_status() -> PackedFloat64Array:
 	for slot in _hose_users:
 		data.append(-(int(slot) + 1))
 		data.append(int(_hose_users[slot]))
+	# Rescues under way, below -1000 so a hose slot can never be mistaken for
+	# one: -(1000 + rescuer), then the downed peer in the thousands and the
+	# time left on the hold in the units, as thousandths of a second. The HUD
+	# on both players is drawn off this, and the server alone runs the hold.
+	for rescuer in _rescue_attempts:
+		var attempt: Dictionary = _rescue_attempts[rescuer]
+		data.append(-(1000 + int(rescuer)))
+		data.append(float(int(attempt.peer)) * 1000.0
+			+ floor(clampf(float(attempt.left) / TOMATINA_RESCUE_TIME, 0.0, 0.999) * 999.0))
 	return data
 
 
@@ -7108,7 +7176,16 @@ func apply_tomatina_status(data: PackedFloat64Array) -> void:
 		if enemy.kind == MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
 			enemy.tether_target = null
 	_hose_users.clear()
+	_rescue_attempts.clear()
 	for at in range(1, data.size() - 1, 2):
+		if data[at] <= -1000.0:
+			var packed := data[at + 1]
+			_rescue_attempts[-int(data[at]) - 1000] = {
+				"peer": int(floor(packed / 1000.0)),
+				"left": fmod(packed, 1000.0) / 999.0 * TOMATINA_RESCUE_TIME,
+				"health": 0.0,
+			}
+			continue
 		if data[at] < 0.0:
 			_hose_users[-int(data[at]) - 1] = int(data[at + 1])
 			continue

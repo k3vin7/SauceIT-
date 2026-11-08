@@ -411,9 +411,22 @@ func _run() -> void:
 			crawled, teammate.walk_speed * 0.5])
 	_check(teammate.state == MayoPlayer.State.DEAD, "crawling stood the teammate up")
 	await _frames(5)
+	var hud: Dictionary = scene.rescue_hud_state()
+	_check(not hud.get("downed", true) and hud.get("downed_teammates", []).size() == 1
+		and hud.get("in_reach", false),
+		"the standing player's HUD does not offer the downed teammate in reach: %s" % str(hud))
 	scene.tomato_action(peer, 0)
 	scene._advance_tomatina_rescues(0.5)
 	_check(teammate.state == MayoPlayer.State.DEAD, "rescue completed before its channel time")
+	hud = scene.rescue_hud_state()
+	_check(absf(float(hud.get("rescue_progress", -1.0)) - 0.5) < 0.05,
+		"the rescuer's HUD reads %.2f of the hold halfway through" % float(hud.get("rescue_progress", -1.0)))
+	var status: PackedFloat64Array = scene.tomatina_status()
+	var carried := false
+	for at in range(1, status.size() - 1, 2):
+		if status[at] <= -1000.0 and int(floor(status[at + 1] / 1000.0)) == teammate.peer_id:
+			carried = true
+	_check(carried, "the rescue under way is not in the status packet")
 	scene._advance_tomatina_rescues(0.6)
 	_check(teammate.state == MayoPlayer.State.NORMAL and is_equal_approx(teammate.health, 40.0),
 		"a teammate was not rescued in place with partial health")
@@ -545,6 +558,35 @@ func _run_network() -> void:
 	var original: MayoEnemy = host.enemy_at(starting_roster)
 	_check(remote != null and original != null and remote.global_position.distance_to(original.global_position) < 2.5,
 		"a reinforcement in the last snapshot batch did not follow the host position")
+
+	# --- going down replicates: the guest's HUD sees the clock and the hold ---
+	host.debug_clear_enemies()
+	var bay := TomatinaMap.at_cell(Vector2(29.5, 19.5)) + Vector3.UP * 1.28
+	host._local.player.global_position = bay
+	avatar.global_position = bay + Vector3.RIGHT * 1.5
+	host._damage_player(avatar, avatar.max_health * 2.0)
+	var guest_hud := {}
+	for _frame in 120:
+		guest_hud = guest.rescue_hud_state()
+		if guest_hud.get("downed", false):
+			break
+		await _frames(1)
+	_check(guest_hud.get("downed", false) and guest_hud.get("standing_teammate", false)
+		and float(guest_hud.get("left", 0.0)) > 15.0,
+		"the guest was not told it is down with a teammate standing: %s" % str(guest_hud))
+	var host_hud: Dictionary = host.rescue_hud_state()
+	_check(host_hud.get("in_reach", false), "the host is not offered the downed guest in reach")
+	host.tomato_action(host._local.peer_id, 0)
+	var progress_seen := -1.0
+	for _frame in 90:
+		guest_hud = guest.rescue_hud_state()
+		progress_seen = maxf(progress_seen, float(guest_hud.get("rescue_progress", -1.0)))
+		if not guest_hud.get("downed", false):
+			break
+		await _frames(1)
+	_check(progress_seen >= 0.0, "the guest never saw the rescue hold's progress")
+	_check(not guest_hud.get("downed", false) and avatar.state == MayoPlayer.State.NORMAL,
+		"the guest was not stood back up by the host's rescue")
 	for failure in failures:
 		push_error(failure)
 	if failures.is_empty():
