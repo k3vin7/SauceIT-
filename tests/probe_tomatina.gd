@@ -391,8 +391,26 @@ func _run() -> void:
 	shoved.horde_alert = false
 	player.global_position = nearby
 	teammate.global_position = nearby + Vector3.RIGHT * 1.6
-	teammate.health = 0.0
-	teammate.begin_death()
+	# --- down: the body crawls at 40% of a walk, and is then picked up ---
+	scene._damage_player(teammate, teammate.max_health * 2.0)
+	_check(teammate.state == MayoPlayer.State.DEAD, "a lethal hit did not put the teammate down")
+	_check(teammate.crawl_allowed, "a Tomatina death did not allow crawling")
+	teammate.use_injected_input = true
+	teammate.input_move = Vector2.ZERO
+	_check(not teammate.is_crawling(), "the body crawled before the death clip had played")
+	teammate._advance_fall(teammate.death_duration)
+	_check(teammate.is_crawling(), "the body could not crawl after the death clip")
+	var crawl_from := teammate.global_position
+	teammate.input_move = Vector2(0.0, -1.0)
+	await _frames(30)
+	teammate.input_move = Vector2.ZERO
+	var crawled := Vector2(teammate.global_position.x - crawl_from.x,
+		teammate.global_position.z - crawl_from.z).length()
+	_check(crawled > 0.5 and crawled < teammate.walk_speed * 0.5 * 0.6,
+		"the downed teammate crawled %.2f m in half a second (walk would be %.2f)" % [
+			crawled, teammate.walk_speed * 0.5])
+	_check(teammate.state == MayoPlayer.State.DEAD, "crawling stood the teammate up")
+	await _frames(5)
 	scene.tomato_action(peer, 0)
 	scene._advance_tomatina_rescues(0.5)
 	_check(teammate.state == MayoPlayer.State.DEAD, "rescue completed before its channel time")
@@ -422,17 +440,21 @@ func _run() -> void:
 	if swept != null and bystander != null:
 		swept.global_position = hose + Vector3.BACK * 15.0 + Vector3.DOWN * 1.0
 		bystander.global_position = hose + Vector3.BACK * 6.0 + Vector3.RIGHT * 5.0 + Vector3.DOWN * 1.0
-		swept._shove = Vector3.ZERO
-		bystander._shove = Vector3.ZERO
 	scene.tomato_action(peer, 0)
 	_check(scene._hose_slot_of(peer) == 0, "[E] at the hose stand did not open the hose")
 	scene._advance_fire_hoses(0.016)
-	_check(floor_body.thickness_at(wet) == 0, "the hose did not clear the aimed path")
+	var wet_after_first := floor_body.thickness_at(wet)
+	var wet_kind := floor_body.sauce_kind_at(wet)
+	# The first tick kills whatever was standing in the jet, and a grunt bursts
+	# ketchup onto the floor as it goes -- onto the path the same tick washed.
+	# The next tick washes that too; what the check wants is the floor once the
+	# water has been on it a moment.
+	scene._advance_fire_hoses(0.016)
+	_check(floor_body.thickness_at(wet) == 0, "the hose did not clear the aimed path (after first tick: thickness %d kind %d)" % [wet_after_first, wet_kind])
 	_check(floor_body.thickness_at(wet_far) == 0, "the hose did not reach 16 m down the aimed path")
 	if swept != null and bystander != null:
-		_check(swept._shove.length() > 5.0 and swept._shove.dot(Vector3.BACK) > 0.0,
-			"a grunt 15 m down the jet was not swept along it (shove %.1f m/s)" % swept._shove.length())
-		_check(bystander._shove.is_zero_approx(), "a grunt beside the jet was swept by it")
+		_check(not swept.is_alive(), "a grunt 15 m down the jet survived the water")
+		_check(bystander.is_alive(), "a grunt beside the jet was killed by it")
 	scene.tomato_action(peer, 0)
 	_check(scene._hose_slot_of(peer) < 0, "[E] again did not close the hose")
 	scene.tomato_action(peer, 0)

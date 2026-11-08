@@ -24,6 +24,10 @@ const CAPSULE_HEIGHT := 2.56
 ## left alone, twice the top speed would take twice as long to reach and the
 ## player would feel heavier rather than faster.
 @export_range(1.0, 80.0, 0.5) var acceleration := 36.0
+## How fast a downed player drags themselves, as a fraction of the walk. Only
+## where the world allows it (`crawl_allowed`) and only once the death clip
+## has played out: a body still falling is not yet a body that can crawl.
+@export_range(0.0, 1.0, 0.05) var crawl_speed_scale := 0.4
 ## Jump. The body is 2.56 m, so these are scaled for it: 8 m/s against 20 m/s^2
 ## clears about 1.6 m, a little over half its own height. Gravity here is the
 ## body's own, not the sauce's -- a player that floated like a droplet would be
@@ -90,6 +94,9 @@ var peer_id := 1
 ## The server plays a remote player's keys back through these. Offline and for
 ## the host's own body this stays false and the real keyboard is read.
 var use_injected_input := false
+## Set by the world when this death is one a teammate can undo -- the
+## Tomatina rescue window. Elsewhere a dead player lies still.
+var crawl_allowed := false
 ## Held still while the doctor is talking, and only ever for a beat.
 ##
 ## Read at the bottom of the input path rather than anywhere higher up: every
@@ -284,7 +291,8 @@ func _physics_process(delta: float) -> void:
 	_advance_wipe(delta)
 
 	var desired := Vector3.ZERO
-	if state == State.NORMAL:
+	var crawling := is_crawling()
+	if state == State.NORMAL or crawling:
 		var input_vector := movement_input()
 		# Movement is relative to where the player is facing, which the prototype
 		# drives from the aim yaw.
@@ -299,7 +307,9 @@ func _physics_process(delta: float) -> void:
 		# to walking pace in mid-air would make a running jump land shorter than
 		# the run that set it up, which is the opposite of what a run is for.
 		var top := run_speed if (run_held() and is_on_floor()) else walk_speed
-		if not is_on_floor():
+		if crawling:
+			top = walk_speed * crawl_speed_scale
+		elif not is_on_floor():
 			top = maxf(top, Vector2(velocity.x, velocity.z).length())
 		desired *= top
 		desired *= mustard_factor()
@@ -307,7 +317,7 @@ func _physics_process(delta: float) -> void:
 	# Going down keeps whatever speed the player slipped at and scrubs it off,
 	# so they skid forward instead of stopping dead where they tripped.
 	var rate := acceleration
-	if state != State.NORMAL:
+	if state != State.NORMAL and not crawling:
 		rate = forward_slip_slide_friction if fall_direction < 0.0 else slip_slide_friction
 	velocity.x = move_toward(velocity.x, desired.x, rate * delta)
 	velocity.z = move_toward(velocity.z, desired.z, rate * delta)
@@ -425,6 +435,13 @@ func network_state() -> Array:
 
 func is_incapacitated() -> bool:
 	return state != State.NORMAL
+
+
+## Down, waiting for a rescue, and past the death clip: the keys move the
+## body at `crawl_speed_scale` of a walk. Still incapacitated -- no firing,
+## no jump, no run, and enemies pay it no attention.
+func is_crawling() -> bool:
+	return state == State.DEAD and crawl_allowed and _state_timer >= death_duration
 
 
 ## No grace period after standing up. Slipping already needs the run key and a

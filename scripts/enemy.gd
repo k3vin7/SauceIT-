@@ -1627,26 +1627,6 @@ func take_shove(from: Vector3, strength := 1.0) -> void:
 	_shove = away.normalized() * shove_speed * clampf(strength, 0.0, 1.0)
 
 
-## A fire hose carrying the body along its jet. Unlike `take_shove`, which
-## pushes away from whoever hit it at the body's own shove speed, this moves
-## it the way the water goes at the speed the water sets, and the world calls
-## it every tick the body is in the jet, so the sweep lasts as long as the
-## jet does. The shove decay still runs underneath, which is what stops the
-## body the moment it leaves the water.
-##
-## Authority only -- the position it moves is what travels.
-func take_sweep(direction: Vector3, speed: float) -> void:
-	if not authority or not is_alive():
-		return
-	var flat := Vector3(direction.x, 0.0, direction.z)
-	if flat.length_squared() < 0.000001 or speed <= 0.0:
-		return
-	if _pressure_left <= 0.0:
-		_contact_kick_left = 0.14
-	_pressure_left = 0.14
-	_shove = flat.normalized() * speed
-
-
 ## Whether it has noticed a player and is coming for them.
 func push_for_escape(source: MayoPlayer, direction: Vector3) -> void:
 	open_escape_clearance(source)

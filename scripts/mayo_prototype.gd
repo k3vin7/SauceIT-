@@ -1096,12 +1096,10 @@ const TOMATINA_HOSES := [Vector2(28.5, 24.0), Vector2(31.5, 24.0)]
 ## The fire hose, once the truck is in. A toggle rather than a trigger: one
 ## press opens it and it runs until the player closes it, steps off the stand
 ## or goes down. The jet reaches more than twice as far as the old squirt did
-## and carries every body it crosses along with it instead of nudging it back
-## a step -- see `_advance_fire_hoses`.
+## and bursts every body it crosses instead of nudging it back a step -- see
+## `_advance_fire_hoses`.
 const HOSE_RANGE := 22.0
 const HOSE_HALF_WIDTH := 2.2
-const HOSE_SWEEP_SPEED := 9.0
-const HOSE_HEAVY_SWEEP_SCALE := 0.45
 const HOSE_JET_RADIUS := 0.45
 const TOMATINA_CHECKPOINT := Vector2(29.5, 46.5)
 ## And how many of them are built in one physics tick. A body is a mesh, its
@@ -4750,6 +4748,9 @@ func _damage_player(player: MayoPlayer, amount: float) -> void:
 	if not player.take_damage(amount):
 		return
 	player.begin_death()
+	# Where a teammate can pick them up they can also drag themselves toward
+	# one, at a fraction of a walk, once the clip has played out.
+	player.crawl_allowed = map_kind == MapKind.TOMATINA and stage_mode
 	# The clip starts on the frame they die, not the frame after: `_process`
 	# would pick the state up a render frame later, and on the frame it matters
 	# most the body would still be standing in its carry pose.
@@ -6828,18 +6829,19 @@ func _hose_reach(from: Vector3, direction: Vector3) -> float:
 
 
 ## Authority, once a tick. Every open hose washes the floor along its jet and
-## carries every body in it the way the water goes, for as long as it is open.
+## bursts every body in it, for as long as it is open.
 ##
 ## **The floor is washed where it is dirty and nowhere else.** The clear is a
 ## splat packet to every peer, and a 22 m jet sampled every half metre across
 ## five columns is 220 cells a tick; sending the clean ones too was most of a
 ## horde's worth of packets for nothing.
 ##
-## **The sweep is `take_sweep`, not `take_shove`.** A shove pushes a body away
-## from the shooter at the body's own shove speed and dies out in a sixth of a
-## second -- a nudge, which is what a squirt of sauce is worth. Water out of a
-## fire main moves a body the way the water goes, and keeps moving it while it
-## is in the jet; a heavy goes at a fraction of the pace, a ball not at all.
+## **Water out of a fire main kills.** A squirt of sauce is a nudge and a few
+## points off; the jet puts any body it touches down on the spot, through the
+## same door every other kill goes through -- `take_sauce_hit` on its last
+## point of health, so it turns, topples and bursts the way a hosed grunt
+## would -- with the kill credited to whoever holds the hose. A bowled ball
+## is a thing thrown at you, not a thing to fight, and is left alone.
 func _advance_fire_hoses(delta: float) -> void:
 	if map_kind != MapKind.TOMATINA or _hose_users.is_empty():
 		return
@@ -6873,10 +6875,14 @@ func _advance_fire_hoses(delta: float) -> void:
 				continue
 			if (gap - direction * along).length() > HOSE_HALF_WIDTH + enemy.radius:
 				continue
-			var speed := HOSE_SWEEP_SPEED
-			if enemy.grade == MayoEnemy.Grade.HEAVY:
-				speed *= HOSE_HEAVY_SWEEP_SCALE
-			enemy.take_sweep(direction, speed)
+			_credit_hit(enemy, shooter)
+			enemy.health = minf(enemy.health, enemy.sauce_damage_per_hit)
+			enemy.take_sauce_hit(from)
+			if enemy.is_alive():
+				continue
+			_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
+			_burst_tomato(enemy, Vector3.INF, shooter)
+			_tomato_down(enemy)
 
 
 ## Every peer, once a frame: a jet from each open hose, from the nozzle to
