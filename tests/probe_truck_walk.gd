@@ -163,6 +163,27 @@ func _run() -> void:
 	_check(_flat(host_on_host, host_on_guest) < AGREEMENT,
 		"the two screens put the host %.2f m apart" % _flat(host_on_host, host_on_guest))
 
+	# -- the guest jumps, and lands -------------------------------------------
+	# The jump travels with the keys and is dealt by the host like a step: it
+	# rises on the host's screen, comes back down, and the guest's own copy is
+	# put where the host says.
+	var floor_y: float = TruckLobby.OCCUPANT_HEIGHT * 0.5
+	var peak: float = floor_y
+	guest_truck.debug_jump = true
+	await _wait(3)
+	guest_truck.debug_jump = false
+	for _index in 60:
+		await physics_frame
+		peak = maxf(peak, _place(host_truck, guest_id).y)
+	var landed: float = _place(host_truck, guest_id).y
+	print("truck: the guest's jump rose %.2f m on the host, back at y = %.2f" % [
+		peak - floor_y, landed])
+	_check(peak - floor_y > 0.5,
+		"a guest holding jump rose only %.2f m on the host" % (peak - floor_y))
+	_check(absf(landed - floor_y) < 0.1, "the guest did not land again, y = %.2f" % landed)
+	_check(absf(_place(guest_truck, guest_id).y - landed) < AGREEMENT,
+		"the guest's own screen has it at another height after the jump")
+
 	# -- the hull holds -------------------------------------------------------
 	# Long enough that an occupant at the truck's speed would be a good way
 	# outside it if nothing stopped them.

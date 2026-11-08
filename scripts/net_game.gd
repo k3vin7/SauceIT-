@@ -96,6 +96,16 @@ const CODE_SWEEP_SECONDS := 60.0
 ## that they have to wait rather than that the game is broken.
 const AUTH_BLOCKED_PREFIX := "mayo1-blocked:"
 const AUTH_FULL_PREFIX := "mayo1-full:"
+## The wire format this build speaks, and the answer a host gives a guest
+## that speaks another. **Bumped whenever an RPC is added, removed or renamed.**
+## Godot numbers a node's RPCs by sorted name, so two builds that disagree on
+## the list deliver each other's packets to the wrong methods: a guest on the
+## older build gets into the truck -- the handshake is not an RPC -- and then
+## stands there, its keys arriving at a method that throws them away. The tag
+## rides in the handshake payload so the mismatch is turned away with a reason
+## before it can become a player.
+const PROTOCOL_VERSION := 2
+const AUTH_VERSION_PREFIX := "mayo-version:"
 ## How often one address is worth answering. A blocked address can reconnect as
 ## fast as its machine allows, and an answer to each would be a packet out for
 ## every packet in -- a reflector pointed at whoever the attacker claims to be.
@@ -206,6 +216,8 @@ var rejected_packets := 0
 var dropped_packets := 0
 ## Peers turned away at the handshake for not knowing the code.
 var refused_peers := 0
+## And those turned away for running a different build of the game.
+var version_refusals := 0
 ## And those turned away without being asked, because their address is waiting
 ## out a run of wrong ones.
 var blocked_attempts := 0
@@ -249,6 +261,7 @@ var _loaded_peers: Dictionary = {}
 var _load_clock := 0.0
 var _refused_busy := false
 var _refused_full := false
+var _refused_version := false
 var hosted_port := DEFAULT_PORT
 var _lobby_broadcast_at := 0.0
 
@@ -302,6 +315,7 @@ func begin_join_room(address: String, port := DEFAULT_PORT, code := "") -> bool:
 	lobby_code = code.strip_edges()
 	_refused_busy = false
 	_refused_full = false
+	_refused_version = false
 	var connected := join(address, port)
 	if not connected:
 		lobby_flow = false
@@ -525,6 +539,7 @@ func leave() -> void:
 	_load_clock = 0.0
 	_refused_busy = false
 	_refused_full = false
+	_refused_version = false
 	_lobby_broadcast_at = 0.0
 	lobby_flow = false
 	_set_status("offline")
@@ -547,7 +562,19 @@ func _arm_authentication() -> void:
 ## Tagged rather than sent bare, so an open session still has something to send:
 ## an empty payload is not a message, and the handshake would sit there.
 func _auth_payload() -> PackedByteArray:
-	return ("mayo1:" + lobby_code).to_utf8_buffer()
+	return ("mayo%d:%s" % [PROTOCOL_VERSION, lobby_code]).to_utf8_buffer()
+
+
+## True of a handshake message from a build that does not speak this version:
+## the explicit answer, or a code tagged with another version number. The
+## dashed tags (`mayo1-full:` and friends) are answers, not codes, and are
+## read before this is asked.
+func _other_version(message: String) -> bool:
+	if message.begins_with(AUTH_VERSION_PREFIX):
+		return true
+	var tag := message.get_slice(":", 0)
+	return tag.begins_with("mayo") and not tag.contains("-") \
+		and tag != "mayo%d" % PROTOCOL_VERSION
 
 
 func _on_peer_authenticating(id: int) -> void:
@@ -620,6 +647,12 @@ func _check_code(id: int, data: PackedByteArray) -> void:
 			_blocked_until_local = _now() + float(
 				message.trim_prefix(AUTH_BLOCKED_PREFIX).to_int())
 			return
+		if _other_version(message):
+			# Not completed either way: a host on another build is about to
+			# drop this peer, or would admit it to a session whose packets it
+			# cannot read.
+			_refused_version = true
+			return
 		scene_multiplayer.complete_auth(id)
 		return
 	# Already told why it is not coming in, and waiting on the drop. Whatever it
@@ -632,6 +665,15 @@ func _check_code(id: int, data: PackedByteArray) -> void:
 		# then got in is not working towards a block.
 		_code_failures.erase(address)
 		scene_multiplayer.complete_auth(id)
+		return
+	if _other_version(data.get_string_from_utf8()):
+		# Told which build this is and dropped, like a full room: it is not a
+		# guess at the code, so it does not count towards a block.
+		version_refusals += 1
+		_set_status("a player was turned away: different game version")
+		scene_multiplayer.send_auth(id,
+			(AUTH_VERSION_PREFIX + str(PROTOCOL_VERSION)).to_utf8_buffer())
+		_queue_drop(id)
 		return
 	refused_peers += 1
 	_record_failure(address)
@@ -721,7 +763,8 @@ func _on_authentication_failed(_id: int) -> void:
 	# The guest is told nothing but that it was refused, so the failure has to be
 	# remembered here: the connection_failed that follows would otherwise report
 	# it as an unreachable host.
-	if not multiplayer.is_server() and not _refused_busy and not _refused_full:
+	if not multiplayer.is_server() and not _refused_busy and not _refused_full \
+			and not _refused_version:
 		_refused_for_code = true
 
 
@@ -833,14 +876,16 @@ func _on_connection_failed() -> void:
 	var refused := _refused_for_code
 	var busy := _refused_busy
 	var full := _refused_full
+	var mismatched := _refused_version
 	var waiting := blocked_seconds()
 	leave()
 	if waiting > 0:
 		_set_status("blocked, %d s left" % waiting)
 		return
-	_set_status("room is full" if full else (
+	_set_status("game version differs from the host" if mismatched else (
+		"room is full" if full else (
 		"session is already in progress" if busy else (
-		"wrong lobby code" if refused else "connection failed")))
+		"wrong lobby code" if refused else "connection failed"))))
 
 
 func _on_server_disconnected() -> void:
@@ -850,6 +895,7 @@ func _on_server_disconnected() -> void:
 	var refused := _refused_for_code or not _joined
 	var busy := _refused_busy
 	var full := _refused_full
+	var mismatched := _refused_version
 	var waiting := blocked_seconds()
 	var was_lobby_flow := lobby_flow
 	leave()
@@ -858,9 +904,10 @@ func _on_server_disconnected() -> void:
 	if waiting > 0:
 		_set_status("blocked, %d s left" % waiting)
 		return
-	var reason := "room is full" if full else (
+	var reason := "game version differs from the host" if mismatched else (
+		"room is full" if full else (
 		"session is already in progress" if busy else (
-		"wrong lobby code" if refused else "host closed the session"))
+		"wrong lobby code" if refused else "host closed the session")))
 	_set_status(reason)
 	session_ended.emit(reason)
 
@@ -923,6 +970,7 @@ func _accept_lobby(id: int, seat: int, stage_id: String,
 	_refused_for_code = false
 	_refused_busy = false
 	_refused_full = false
+	_refused_version = false
 	session_phase = SessionPhase.TRUCK
 	selected_stage = stage_id
 	_set_status("joined truck lobby as player %d" % id)
@@ -1323,17 +1371,17 @@ func run_lobby(delta: float) -> void:
 ## A guest's keys on their way to the host. Unreliable like the stage's: the
 ## host applies the last packet it heard until a newer one lands, so a dropped
 ## one coasts rather than stutters.
-func send_lobby_input(move: Vector2, yaw: float) -> void:
+func send_lobby_input(move: Vector2, yaw: float, jump := false) -> void:
 	if not _online or multiplayer.is_server() or not _lobby_space_ready():
 		return
 	if not _joined or _peer == null \
 			or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
-	_submit_lobby_input.rpc_id(1, move, yaw)
+	_submit_lobby_input.rpc_id(1, move, yaw, jump)
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
-func _submit_lobby_input(move: Vector2, yaw: float) -> void:
+func _submit_lobby_input(move: Vector2, yaw: float, jump := false) -> void:
 	if not multiplayer.is_server() or not _lobby_space_ready():
 		return
 	var sender := multiplayer.get_remote_sender_id()
@@ -1345,7 +1393,8 @@ func _submit_lobby_input(move: Vector2, yaw: float) -> void:
 	if not all_finite([move, yaw]):
 		rejected_packets += 1
 		return
-	_lobby_input[sender] = [clamp_direction(move), wrap_angle(yaw)]
+	# The jump is a bool, and there is no wrong value for a key being down.
+	_lobby_input[sender] = [clamp_direction(move), wrap_angle(yaw), jump]
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")

@@ -27,6 +27,9 @@ const EYE_ABOVE_CENTRE := 0.62
 const WALK_SPEED := 3.4
 const ACCELERATION := 24.0
 const GRAVITY := 20.0
+## A hop rather than the stage's 8 m/s: the roof is 4.1 m up and a body is
+## 2.56 m tall, so a jump that tops out around a metre clears it with room.
+const JUMP_SPEED := 6.5
 ## Where each seat is, and which way the player riding in it faces. Occupants
 ## stand in the aisle in front of their seat rather than on the bench -- there
 ## is still no sitting clip, and a character that can walk away from a pose it
@@ -49,6 +52,7 @@ var input_locked := false
 ## headless check has no keys to press.
 var debug_input_override := false
 var debug_move := Vector2.ZERO
+var debug_jump := false
 
 var _occupants: Dictionary = {}
 var _animators: Dictionary = {}
@@ -69,6 +73,7 @@ func _ready() -> void:
 	_build_truck()
 	_build_idle_camera()
 	_build_ui()
+	_ensure_jump_action()
 	if session != null:
 		if not session.roster_changed.is_connected(_refresh_roster):
 			session.roster_changed.connect(_refresh_roster)
@@ -103,7 +108,7 @@ func _physics_process(delta: float) -> void:
 		return
 	if not session.is_online() or session.is_server():
 		return
-	session.send_lobby_input(_local_move(), _yaw)
+	session.send_lobby_input(_local_move(), _yaw, _local_jump())
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -170,15 +175,18 @@ func step_occupants(client_input: Dictionary, delta: float) -> void:
 		var body: CharacterBody3D = _occupants[peer_id]
 		var move := Vector2.ZERO
 		var yaw: float = _yaws.get(peer_id, body.rotation.y)
+		var jump := false
 		if int(peer_id) == _local_id():
 			move = _local_move()
 			yaw = _yaw
+			jump = _local_jump()
 		elif client_input.has(peer_id):
 			var packet: Array = client_input[peer_id]
 			move = packet[0]
 			yaw = packet[1]
+			jump = packet.size() > 2 and bool(packet[2])
 		_yaws[peer_id] = yaw
-		_step_body(body, move, yaw, delta)
+		_step_body(body, move, yaw, jump, delta)
 		_update_walk_animation(int(peer_id),
 			Vector2(body.velocity.x, body.velocity.z).length_squared() > 0.04)
 
@@ -220,7 +228,26 @@ func _local_move() -> Vector2:
 	return Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
 
 
-func _step_body(body: CharacterBody3D, move: Vector2, yaw: float, delta: float) -> void:
+func _local_jump() -> bool:
+	if debug_input_override:
+		return debug_jump
+	if input_locked or _cursor_free:
+		return false
+	return Input.is_action_pressed("jump")
+
+
+## The stage registers this action for itself; opened on its own, or reached
+## straight from the title, the truck is the first space that wants it.
+func _ensure_jump_action() -> void:
+	if InputMap.has_action("jump"):
+		return
+	InputMap.add_action("jump")
+	var key := InputEventKey.new()
+	key.physical_keycode = KEY_SPACE
+	InputMap.action_add_event("jump", key)
+
+
+func _step_body(body: CharacterBody3D, move: Vector2, yaw: float, jump: bool, delta: float) -> void:
 	body.rotation.y = yaw
 	var forward := -Basis(Vector3.UP, yaw).z
 	var right := Basis(Vector3.UP, yaw).x
@@ -229,7 +256,9 @@ func _step_body(body: CharacterBody3D, move: Vector2, yaw: float, delta: float) 
 	# normalising would turn every nonzero input, however small, into a run.
 	var wish := (right * move.x + forward * -move.y).limit_length(1.0)
 	if body.is_on_floor():
-		body.velocity.y = 0.0
+		# Held, not pressed, as in the stage: the key down on a frame with the
+		# feet on the floor is a jump, so a landing with it still held hops again.
+		body.velocity.y = JUMP_SPEED if jump else 0.0
 	else:
 		body.velocity.y -= GRAVITY * delta
 	body.velocity.x = move_toward(body.velocity.x, wish.x * WALK_SPEED, ACCELERATION * delta)
@@ -382,7 +411,7 @@ func _restore_idle_camera() -> void:
 func _refresh_hint() -> void:
 	if _hint_label == null:
 		return
-	_hint_label.text = "WASD 이동 · 마우스 시점 · Tab 커서 전환 (버튼 조작)" \
+	_hint_label.text = "WASD 이동 · Space 점프 · 마우스 시점 · Tab 커서 전환 (버튼 조작)" \
 		if not _cursor_free else "커서 사용 중 · Tab 으로 다시 걷기"
 
 
