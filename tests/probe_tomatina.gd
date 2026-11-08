@@ -183,12 +183,45 @@ func _run() -> void:
 			break
 	_check(grunt != null, "no small grunt to burst")
 	if grunt != null:
+		# Two more grunts: one stood inside the splash, one well outside it.
+		# The splash is the burst's damage, so the first is hurt by exactly
+		# the notional hits `tomato_burst_damage` is worth and the second is
+		# not touched. Neither is low enough to die of it, so the burst stays
+		# one burst and the splat count below is still the one grunt's.
+		var neighbour: MayoEnemy = null
+		var bystander: MayoEnemy = null
+		for index in scene.enemy_count():
+			var candidate: MayoEnemy = scene.enemy_at(index)
+			if candidate == grunt or candidate.kind != MayoEnemy.EnemyKind.TOMATO_GRUNT \
+					or not candidate.is_alive():
+				continue
+			if neighbour == null:
+				neighbour = candidate
+			elif bystander == null:
+				bystander = candidate
+		_check(neighbour != null and bystander != null, "not enough grunts to stand in the splash")
+		if neighbour != null:
+			neighbour.global_position = grunt.global_position + Vector3(grunt.burst_radius * 0.5, 0.0, 0.0)
+		if bystander != null:
+			bystander.global_position = grunt.global_position + Vector3(grunt.burst_radius + 4.0, 0.0, 0.0)
+		var neighbour_health := neighbour.health if neighbour != null else 0.0
+		var bystander_health := bystander.health if bystander != null else 0.0
 		var before := floor_body.grid.painted_cell_count()
 		scene._pending_splats.clear()
 		grunt.health = grunt.sauce_damage_per_hit * 0.5
 		var hit_at := grunt.global_position + Vector3(0.0, 0.0, grunt.radius)
 		scene._record_splat(grunt, hit_at, Vector3.BACK, scene._local)
 		_check(not grunt.is_alive(), "the last hit did not kill the grunt")
+		if neighbour != null:
+			var hits := maxi(1, int(round(scene.tomato_burst_damage / neighbour.sauce_damage_per_hit)))
+			var splash := neighbour_health - neighbour.health
+			print("splash: the neighbour lost %.2f of %.2f health" % [splash, neighbour_health])
+			_check(is_equal_approx(splash, hits * neighbour.sauce_damage_per_hit),
+				"the splash took %.2f off the neighbour, not %.2f" % [splash, hits * neighbour.sauce_damage_per_hit])
+			_check(neighbour.is_alive(), "the splash killed a full-health grunt")
+		if bystander != null:
+			_check(is_equal_approx(bystander.health, bystander_health),
+				"the splash reached a grunt outside its radius")
 		var after := floor_body.grid.painted_cell_count()
 		print("burst of %.2f m: %d floor cells painted, %d ints queued" % [
 			grunt.burst_radius, after - before, scene._pending_splats.size()])

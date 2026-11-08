@@ -519,6 +519,12 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## more than the squirting that built it -- otherwise the sauce is a worse way of
 ## doing what the stream already does.
 @export_range(0.0, 60.0, 0.5) var ketchup_burst_damage := 12.0
+## What a *tomato* going off takes off the tomatoes inside its own burst
+## radius, flat to the rim like the ketchup blast. A fraction of that blast:
+## a death is free, a six-stack is earned. Enough that a pack set off in the
+## middle chains, not enough that one kill clears a street. Players are
+## never hurt by it, for the same reason they are not hurt by the blast.
+@export_range(0.0, 60.0, 0.5) var tomato_burst_damage := 8.0
 ## How many pieces fly, and how fast. Decoration and a warning: what the blast
 ## marks is decided by the blast, not by where a fragment happens to land.
 @export_range(0, 64, 1) var ketchup_fragments := 28
@@ -3898,12 +3904,17 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 ## roads that exist: the floor splats and the body splats go down the splat
 ## batch, and the fragments are thrown locally by whoever sees the death.
 ##
-## **No damage.** A burst is mess, not a blast: juice on the floor, on the
-## bodies near it, and on the glasses of anyone close enough -- which is what
-## makes killing one at arm's length a mistake you can see yourself making.
-## Thin on the floor, because ketchup is never slippery; a burst in a crowd is
-## a stain you run through, not a trap you laid.
-func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF) -> void:
+## **Splash.** Juice on the floor, on the bodies near it, and on the glasses of
+## anyone close enough -- which is what makes killing one at arm's length a
+## mistake you can see yourself making. The tomatoes it lands on are hurt by
+## it too, `tomato_burst_damage` each, flat out to the rim: a body it kills
+## bursts in turn, so a tight pack goes off like a string of them. Players
+## only get the sauce. Thin on the floor, because ketchup is never slippery;
+## a burst in a crowd is a stain you run through, not a trap you laid.
+## `shooter` is whoever earned the kill that set it off, credited for what
+## the splash kills as well; null for a burst nobody owns, like a bowled
+## tomato meeting its wall.
+func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = null) -> void:
 	var radius := enemy.burst_radius
 	if radius <= 0.0:
 		return
@@ -3928,6 +3939,26 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF) -> void:
 		if other.global_position.distance_to(centre) > radius:
 			continue
 		_stain_body_with_ketchup(other, centre)
+		if tomato_burst_damage <= 0.0 or not other.is_alive():
+			continue
+		# Dealt the way the ketchup blast deals it: through the strand's door,
+		# one notional hit at a time, so a body the splash kills flinches, turns
+		# and topples like one the stream killed. A bowled tomato shrugs it off
+		# in there, as it shrugs off the stream.
+		var hits := maxi(1, int(round(tomato_burst_damage / maxf(other.sauce_damage_per_hit, 0.001))))
+		var crossed_before := other._flinch_crossed
+		if shooter != null:
+			_credit_hit(other, shooter)
+		for _hit in hits:
+			if not other.is_alive():
+				break
+			other.take_sauce_hit(centre)
+		if not other.is_alive():
+			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
+			_burst_tomato(other, Vector3.INF, shooter)
+			_tomato_down(other)
+		elif other._flinch_crossed > crossed_before:
+			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
 	for other_shooter in _shooters.values():
 		var player: MayoPlayer = other_shooter.player
 		if not is_instance_valid(player):
@@ -5085,7 +5116,7 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 			if was_alive:
 				if not enemy.is_alive():
 					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
-					_burst_tomato(enemy)
+					_burst_tomato(enemy, Vector3.INF, shooter)
 					_tomato_down(enemy)
 				elif enemy._flinch_crossed > crossed_before:
 					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds, 1)
@@ -5212,7 +5243,7 @@ func _burst_ketchup(enemy: MayoEnemy, shooter: Shooter) -> void:
 			killed = other.take_sauce_hit(centre)
 		if killed or not other.is_alive():
 			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
-			_burst_tomato(other)
+			_burst_tomato(other, Vector3.INF, shooter)
 			_tomato_down(other)
 		elif other._flinch_crossed > crossed_before:
 			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
