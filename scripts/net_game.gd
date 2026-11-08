@@ -1127,6 +1127,10 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 	# Enemies are the server's outright -- clients simulate none of them -- so
 	# they are sent, never asked for. Unreliable like the player state: a
 	# dropped frame is corrected by the next one.
+	var healing: PackedFloat64Array = world.healing_tomato_state()
+	_apply_healing_tomato_state.rpc(healing)
+	_apply_inventory_state.rpc(world.inventory_state())
+	state_bytes_sent += healing.size() * 8 * guests
 	var enemies: PackedFloat32Array = world.enemy_state()
 	if not enemies.is_empty():
 		_apply_enemy_state.rpc(enemies)
@@ -1744,3 +1748,26 @@ func _peer_can_receive(id: int) -> bool:
 		return false
 	var packet_peer := enet.get_peer(id)
 	return packet_peer != null and packet_peer.get_state() == ENetPacketPeer.STATE_CONNECTED
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _apply_healing_tomato_state(data: PackedFloat64Array) -> void:
+	if _world_ready():
+		world.apply_healing_tomato_state(data)
+
+
+func request_tomato_action(action: int) -> void:
+	if _online and _joined:
+		_request_tomato_action.rpc_id(1, action)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_tomato_action(action: int) -> void:
+	if multiplayer.is_server() and _world_ready() and action >= 0 and action <= 14:
+		world.tomato_action(multiplayer.get_remote_sender_id(), action)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _apply_inventory_state(data: PackedInt32Array) -> void:
+	if _world_ready():
+		world.apply_inventory_state(data)

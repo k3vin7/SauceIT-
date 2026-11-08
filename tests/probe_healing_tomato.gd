@@ -1,0 +1,69 @@
+extends SceneTree
+func _initialize():
+	MayoTutorial.disabled = true
+	call_deferred("run")
+func run():
+	var scene = load("res://stage_2_tomatina.tscn").instantiate()
+	root.add_child(scene)
+	await process_frame
+	scene.set_physics_process(false)
+	var wheel := InputEventMouseButton.new()
+	wheel.pressed = true
+	wheel.button_index = MOUSE_BUTTON_WHEEL_UP
+	scene._unhandled_input(wheel)
+	assert(scene.selected_item_slot(scene._local.peer_id) == 4, "wheel up did not wrap to slot 5")
+	wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
+	scene._unhandled_input(wheel)
+	assert(scene.selected_item_slot(scene._local.peer_id) == 0, "wheel down did not wrap to slot 1")
+	scene.healing_tomato_chance = 1.0
+	var enemy = scene.enemy_at(0)
+	enemy.health = 0
+	scene._advance_healing_tomatoes(0.01)
+	assert(scene._healing_tomatoes.size() == 1, "guaranteed drop missing")
+	var item = scene._healing_tomatoes.values()[0].node
+	var player = scene._player
+	player.state = MayoPlayer.State.NORMAL
+	player.global_position = item.global_position + Vector3.UP
+	player.health = player.max_health
+	scene._advance_healing_tomatoes(0.7)
+	assert(scene._healing_tomatoes.size() == 1, "full-health player consumed item")
+	scene.tomato_action(player.peer_id, 0)
+	assert(scene.local_holds_tomato(), "E did not pick up tomato")
+	scene.tomato_action(player.peer_id, 2)
+	assert(scene.local_holds_tomato(), "full health consumed held tomato")
+	player.health = player.max_health - 10
+	scene.tomato_action(player.peer_id, 2)
+	assert(player.health == player.max_health, "healing failed or exceeded maximum")
+	assert(not scene.local_holds_tomato(), "consumed item still equipped")
+	scene._advance_healing_tomatoes(0.01)
+	assert(scene._healing_tomatoes.is_empty(), "same death dropped twice")
+	assert(scene.item_slots(player.peer_id) == [2,0,0,0,0], "consumed slot not empty")
+	var second = null
+	for candidate in scene._enemies:
+		if candidate.is_alive() and candidate.kind != MayoEnemy.EnemyKind.TOMATO_BALL:
+			second = candidate
+			break
+	second.health = 0
+	scene._advance_healing_tomatoes(0.01)
+	var drop = scene._healing_tomatoes.values()[0].node
+	player.global_position = drop.global_position + Vector3.UP
+	scene.tomato_action(player.peer_id,0)
+	assert(scene.local_holds_tomato(), "second pickup failed")
+	scene.tomato_action(player.peer_id,10)
+	assert(not scene.local_holds_tomato(), "slot 1 did not equip sauce")
+	scene.tomato_action(player.peer_id,11)
+	assert(scene.local_holds_tomato(), "slot 2 did not re-equip tomato")
+	var before: float = player.health
+	scene.tomato_action(player.peer_id,3)
+	assert(scene._thrown_tomatoes.is_empty(), "press threw before release")
+	assert(scene.local_holds_tomato(), "charging consumed item")
+	scene._tomato_charge_started[player.peer_id] = Time.get_ticks_msec() - 2000
+	assert(scene.tomato_charge_fraction(player.peer_id) == 1.0, "charge did not cap")
+	scene.tomato_action(player.peer_id,1)
+	assert(not scene._tomato_charge_started.has(player.peer_id), "release left charge active")
+	assert(scene._thrown_tomatoes.values()[0].velocity.length() > 22.0, "full charge did not increase launch speed")
+	assert(not scene.local_holds_tomato() and scene._thrown_tomatoes.size() == 1, "throw failed")
+	scene._advance_thrown_tomatoes(0.02)
+	assert(player.health == before, "throw damaged owner")
+	print("HEALING_TOMATO_OK")
+	quit()

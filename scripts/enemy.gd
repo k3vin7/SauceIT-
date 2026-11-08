@@ -872,7 +872,7 @@ func build_bowling_tomato(cell_size: float, brush_radius: float) -> void:
 	radius = 1.2 * TOMATO_SCALE
 	height = 3.0 * TOMATO_SCALE
 	_rest_radius = radius
-	max_health = 160.0
+	max_health = 80.0
 	solo_health = max_health
 	health = max_health
 	sauce_damage_per_hit = 0.4
@@ -2066,6 +2066,9 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		* float(special.get("pace", 1.0))
 	if flat.length_squared() > 0.000001:
 		var direction := flat.normalized()
+		if not special.has("flat"):
+			direction = _crowd_direction(direction, delta)
+			pace *= _crowd_speed
 		velocity.x = direction.x * pace
 		velocity.z = direction.z * pace
 		# Turned toward the player rather than snapped: a snap makes it read as
@@ -2076,7 +2079,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 		# *back* to the target: it walks at you backwards, and then topples onto
 		# that back, which looks for all the world like falling forwards.
 		facing_yaw = rotate_toward(facing_yaw,
-			atan2(-direction.x, -direction.z), turn_speed * delta)
+			atan2(-flat.x, -flat.z), turn_speed * delta)
 		_apply_pose()
 	else:
 		velocity.x = 0.0
@@ -2170,6 +2173,69 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 ##
 ## Takes the `goal` rather than the player standing on it: the only thing this
 ## ever read off a target was its position, and the drone is not a player.
+## Peers are supplied by this world, never by tree-wide groups (multiplayer).
+var crowd_peers: Array = []
+var _crowd_side := 1.0
+var _passing_side := 1.0
+var _passing_left := 0.0
+var _crowd_smoothed := Vector3.ZERO
+var _crowd_speed := 1.0
+
+
+func _crowd_direction(forward: Vector3, delta := 1.0 / 60.0) -> Vector3:
+	if forward.length_squared() < 0.000001:
+		return forward
+	_passing_left = maxf(0.0, _passing_left - delta)
+	_crowd_speed = 1.0
+	var direction := forward.normalized()
+	var right := direction.cross(Vector3.UP)
+	var steering := Vector3.ZERO
+	var blocked := false
+	for peer in crowd_peers:
+		if peer == self or not is_instance_valid(peer) or not peer.is_alive() \
+				or peer.kind == EnemyKind.TOMATO_BALL:
+			continue
+		var offset: Vector3 = peer.global_position - global_position
+		if absf(offset.y) > (height + peer.height) * 0.5:
+			continue
+		offset.y = 0.0
+		var distance := offset.length()
+		var spacing: float = radius + peer.radius + 0.7
+		if distance > spacing * 2.5:
+			continue
+		var ahead := offset.dot(direction)
+		var lateral := offset.dot(right)
+		if ahead > 0.0 and ahead < spacing * 2.5 and absf(lateral) < spacing:
+			blocked = true
+			# Keep a stable passing side instead of switching every frame.
+			if _passing_left <= 0.0:
+				_passing_side = -signf(lateral) if absf(lateral) > 0.2 else _crowd_side
+				_passing_left = 1.0
+			_crowd_speed = minf(_crowd_speed, clampf(ahead / spacing, 0.3, 1.0))
+			steering += right * _passing_side * (1.0 - ahead / (spacing * 2.5)) * 1.8
+		if distance > 0.01 and distance < spacing:
+			steering -= offset / distance * (1.0 - distance / spacing)
+	var desired := direction
+	if blocked or steering.length_squared() >= 0.001:
+		desired = (direction + steering.limit_length(1.2)).normalized()
+	var lookahead := maxf(radius * 2.0, 1.5)
+	if not _can_walk_straight_to(global_position + desired * lookahead):
+		# Wait briefly instead of alternating passing sides against a wall.
+		desired = direction
+		_crowd_speed = minf(_crowd_speed, 0.4)
+		if _passing_left <= 0.0:
+			_passing_side = -_passing_side
+			_passing_left = 1.0
+	if _crowd_smoothed.length_squared() < 0.001:
+		_crowd_smoothed = desired
+	else:
+		_crowd_smoothed = _crowd_smoothed.slerp(desired, 1.0 - exp(-delta / 0.22)).normalized()
+	# Smoothing must not introduce a shortcut through a corner.
+	if not _can_walk_straight_to(global_position + _crowd_smoothed * lookahead):
+		_crowd_smoothed = direction
+	return _crowd_smoothed
+
+
 func _step_toward(goal: Vector3, delta: float) -> Vector3:
 	if nav == null:
 		return goal

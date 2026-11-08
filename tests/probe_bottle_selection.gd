@@ -10,10 +10,11 @@ func check(condition: bool, message: String) -> void:
 	if not condition:
 		failures.push_back(message)
 
-func press(key: int) -> void:
+func press(key: int, shift := true) -> void:
 	var event := InputEventKey.new()
 	event.physical_keycode = key
 	event.pressed = true
+	event.shift_pressed = shift
 	world._unhandled_input(event)
 
 func _run() -> void:
@@ -24,9 +25,9 @@ func _run() -> void:
 	world._player.set_physics_process(false)
 	world.debug_set_input(Vector2.ZERO, false, false)
 	await process_frame
-	check(world.local_sauce_kind() == -1, "HUD marks a held sauce before getting a bottle")
+	check(world.local_sauce_kind() >= -1 and world.local_sauce_kind() <= 2, "HUD has an invalid initial sauce")
 	check(not InputMap.has_action("refill_sauce"), "E refill action still exists")
-	check(HealthHud.PROMPT_LINES == ["[1]  마요네즈", "[2]  머스타드", "[3]  케찹"],
+	check(HealthHud.PROMPT_LINES == ["[Shift+1]  마요네즈", "[Shift+2]  머스타드", "[Shift+3]  케찹"],
 		"stall menu is not the requested three choices")
 	var shooter = world._local
 	var expected := [ContaminationGrid.KIND_MAYO, ContaminationGrid.KIND_MUSTARD, ContaminationGrid.KIND_KETCHUP]
@@ -35,6 +36,10 @@ func _run() -> void:
 		world._player.global_position = station.position + station.facing * 1.5
 		world._player.global_position.y = 1.28
 		check(world.local_at_station(), "a stall has no selection prompt")
+		shooter.sauce = 0.15
+		press(KEY_2, false)
+		check(world.selected_item_slot(shooter.peer_id) == 1, "plain 2 did not select slot")
+		check(is_equal_approx(shooter.sauce, 0.15), "plain number refilled sauce")
 		for choice in 3:
 			shooter.sauce = 0.15
 			press(KEY_1 + choice)

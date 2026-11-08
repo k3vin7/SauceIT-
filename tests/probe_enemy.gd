@@ -536,6 +536,12 @@ func _run() -> void:
 	scene.debug_aim_at(enemy.global_position)
 	await physics_frame
 	await process_frame
+	# Visibility follows the local player, including when the camera stays close.
+	var near_position := player.global_position
+	player.global_position = enemy.global_position + Vector3(0, 0, HealthHud.ENEMY_DRAW_RANGE + 1.0)
+	_check(hud.enemy_bar_rect(enemy, camera).size == Vector2.ZERO,
+		"a distant enemy still has a health bar")
+	player.global_position = near_position
 	var bar: Rect2 = hud.enemy_bar_rect(enemy, camera)
 	print("health bar at %.0v size %.0v, inside the view %s of %s" % [
 		bar.position, bar.size, str(hud.frame.encloses(bar)), str(hud.frame)])

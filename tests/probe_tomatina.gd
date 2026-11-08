@@ -76,6 +76,17 @@ func _run() -> void:
 				frontier.push_back(next)
 	print("lattice: %d of %d open cells reachable from the start" % [reached.size(), open.size()])
 	_check(reached.size() == open.size(), "%d open cells are cut off from the start" % (open.size() - reached.size()))
+	# And nobody is built inside a prop: the grunts are dealt round them, the
+	# elites are placed by hand, and the wreckage is placed by hand too.
+	var buried := 0
+	for index in scene.enemy_count():
+		var body: MayoEnemy = scene.enemy_at(index)
+		if body.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			continue
+		if StreetMap.blocked_cells().has(StreetMap.cell_at(body.global_position)):
+			buried += 1
+			push_error("%s stands in a prop's cell" % body.name)
+	_check(buried == 0, "%d bodies are built inside props" % buried)
 	# The overturned truck is a chokepoint, not a wall: the route goes through
 	# its gap rather than round, and the gap is the one cell left of four.
 	var cid_blocked := 0
@@ -85,13 +96,26 @@ func _run() -> void:
 	_check(cid_blocked == 3, "the overturned truck blocks %d of 4 cells, not 3" % cid_blocked)
 	_check(scene.refill_stations().size() == 22, "stage 2 does not have its twenty-two sauce trucks")
 
+	# Encounter pacing: no standing grunts in the entry or regroup bay.
+	for cell in TomatinaMap.grunt_cells():
+		_check(cell.y < 84.0, "a grunt occupies the quiet entry")
+		_check(cell.y < 46.0 or cell.y >= 56.0, "a grunt occupies the regroup approach")
+	var cover_names: Array[String] = []
+	for box in TomatinaMap.debris_boxes():
+		cover_names.push_back(str(box["name"]))
+	_check(cover_names.has("WestRangedCover") and cover_names.has("EastRangedCover"),
+		"a fork is missing its ranged-attack cover")
+	for enemy in scene._enemies:
+		if enemy.has_meta("after_regroup"):
+			_check(enemy.global_position.z < TomatinaMap.at_cell(Vector2(30, 46)).z,
+				"an opening enemy was gated behind regroup")
 	# --- the roster ---
 	var counts := {}
 	for index in scene.enemy_count():
 		var enemy: MayoEnemy = scene.enemy_at(index)
 		counts[enemy.kind] = int(counts.get(enemy.kind, 0)) + 1
 	print("roster: %s" % str(counts))
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) >= 240, "too few grunts on the street")
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) == TomatinaMap.GRUNT_COUNT, "encounter pack grunt count differs from plan")
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BRUTE, 0)) == 3, "not three brutes")
 	_check(int(counts.get(MayoEnemy.EnemyKind.BOWLING_TOMATO, 0)) == 2, "not two bowlers")
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BALL, 0)) == 2 * MayoEnemy.BALLS_PER_BOWLER,
@@ -224,6 +248,16 @@ func _run() -> void:
 			Vector3.RIGHT)
 		var launched_at := ball.global_position
 		_check(ball.is_ball_live(), "the ball did not go live")
+		# A grunt stood in the lane: the ball rolls through it to the wall.
+		var blocker: MayoEnemy = null
+		for index in scene.enemy_count():
+			var candidate: MayoEnemy = scene.enemy_at(index)
+			if candidate.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and candidate.is_alive():
+				blocker = candidate
+				break
+		_check(blocker != null, "no live grunt to stand in the lane")
+		if blocker != null:
+			blocker.global_position = launched_at + Vector3.RIGHT * 2.5
 		var burst_at := Vector3.INF
 		for _tick in 240:
 			ball.advance(1.0 / 60.0, [])
@@ -237,6 +271,11 @@ func _run() -> void:
 			"the ball left the ground on its way to the wall")
 		_check(burst_at != Vector3.INF and burst_at.x > launched_at.x + 2.0,
 			"the ball burst before it had rolled anywhere")
+		if blocker != null:
+			_check(burst_at != Vector3.INF and burst_at.x > blocker.global_position.x + blocker.radius,
+				"the ball stopped at the grunt in the lane instead of rolling through it")
+			_check(blocker.global_position.distance_to(launched_at + Vector3.RIGHT * 2.5) < 0.1,
+				"the ball shoved the grunt in the lane")
 		_check(not ball.is_ball_live() and ball.global_position.y < -40.0,
 			"the ball did not park after bursting")
 		_check(ball.burst_radius > 0.0, "the ball has nothing to burst with")

@@ -1232,6 +1232,7 @@ var debug_timings_us := {
 
 
 func _ready() -> void:
+	_healing_rng.randomize()
 	_feel_rng.randomize()
 	_ensure_input_actions()
 	_build_world()
@@ -1278,6 +1279,7 @@ func _physics_process(delta: float) -> void:
 	if _is_authority():
 		_burst_ground_budget = TOMATO_BURST_TICK_CAP
 		_advance_player_respawns()
+		_advance_healing_tomatoes(delta)
 		for shooter in _shooters.values():
 			_update_slip(shooter)
 			_update_juice_splash(shooter, delta)
@@ -1773,6 +1775,12 @@ func _read_local_input() -> void:
 
 
 func _fire_held() -> bool:
+	if _tomato_fire_block:
+		if not Input.is_action_pressed("fire_mayo"):
+			_tomato_fire_block = false
+		return false
+	if _local != null and selected_item_slot(_local.peer_id) != 0:
+		return false
 	if debug_input_override:
 		return debug_input_firing
 	return Input.is_action_pressed("fire_mayo")
@@ -1831,6 +1839,7 @@ func _process(_delta: float) -> void:
 		_update_player_animation(shooter)
 		_update_visor(shooter)
 		_update_sauce_look(shooter)
+	_update_item_views()
 
 
 ## The capsule lies on its side while the player is down. A capsule is all the
@@ -2031,6 +2040,35 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if not _input_enabled:
 		return
+	if event is InputEventKey and event.pressed and not event.echo:
+		var number: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
+		if number >= KEY_1 and number <= KEY_5:
+			if event.shift_pressed:
+				if number <= KEY_3:
+					_request_refill(number - KEY_1)
+			else:
+				_request_tomato_action(10 + number - KEY_1)
+			get_viewport().set_input_as_handled()
+			return
+	if event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_E:
+		_request_tomato_action(0)
+		return
+	if event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			var step := -1 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1
+			_request_tomato_action(4 if step < 0 else 5)
+			get_viewport().set_input_as_handled()
+			return
+	if event is InputEventMouseButton and local_holds_tomato():
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			_tomato_fire_block = true
+			_request_tomato_action(3 if event.pressed else 1)
+			get_viewport().set_input_as_handled()
+			return
+		if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+			_request_tomato_action(2)
+			get_viewport().set_input_as_handled()
+			return
 	if event.is_action_pressed("wipe_screen"):
 		_request_wipe()
 		return
@@ -2126,6 +2164,7 @@ func _ensure_input_actions() -> void:
 			InputMap.add_action(action)
 			var key := InputEventKey.new()
 			key.physical_keycode = KEY_1 + index
+			key.shift_pressed = true
 			InputMap.action_add_event(action, key)
 	if not InputMap.has_action("toggle_key_legend"):
 		InputMap.add_action("toggle_key_legend")
@@ -2501,6 +2540,18 @@ func set_avatar_authority(peer_id: int, authority: bool) -> void:
 
 
 func _free_shooter(shooter: Shooter) -> void:
+	var peer := shooter.peer_id
+	for book in [_held_tomatoes, _item_hands]:
+		if book.has(peer):
+			if is_instance_valid(book[peer]):
+				book[peer].queue_free()
+			book.erase(peer)
+	# Clients keep replicated held items in the active tomato set.
+	if _healing_tomatoes.has(-peer):
+		_healing_tomatoes[-peer].node.queue_free()
+		_healing_tomatoes.erase(-peer)
+	for book in [_item_slots, _item_selected, _item_throw_time, _tomato_charge_started]:
+		book.erase(peer)
 	for node in [shooter.player, shooter.air_visual,
 			shooter.landing_visual, shooter.shadow_visual, shooter.nozzle_visual]:
 		if is_instance_valid(node):
@@ -3155,6 +3206,9 @@ func _build_street() -> void:
 ## lattice exactly as the festival street's do; the rubble, the sauce trucks
 ## and the fire truck are plain contaminable boxes; the juice is painted onto
 ## the floor before anyone arrives.
+var _tomatina_next_encounter_released := false
+
+
 func _build_tomatina() -> void:
 	var wall_color := Color("8a6a5a")
 	var index := 0
@@ -3165,6 +3219,22 @@ func _build_tomatina() -> void:
 	for box in TomatinaMap.debris_boxes():
 		_create_wall("Debris%02d_%s" % [index, box["name"]], box["position"], box["size"],
 			box["color"])
+		# Tomato contents distinguish small produce crates from solid cover blocks.
+		if "Crates" in str(box["name"]) or box["name"] == "EastRangedCover":
+			for tomato_index in 6:
+				var tomato := MeshInstance3D.new()
+				var sphere := SphereMesh.new()
+				sphere.radius = 0.17
+				sphere.height = 0.30
+				tomato.mesh = sphere
+				var material := StandardMaterial3D.new()
+				material.albedo_color = Color("ce3d27")
+				tomato.material_override = material
+				add_child(tomato)
+				tomato.position = box["position"] + Vector3(
+					(float(tomato_index % 3) - 1.0) * 0.38,
+					box["size"].y * 0.5 + 0.06,
+					(float(tomato_index / 3) - 0.5) * 0.35)
 		index += 1
 	index = 0
 	for box in TomatinaMap.refill_boxes():
@@ -3564,7 +3634,9 @@ func _build_enemies() -> void:
 		return
 	if map_kind == MapKind.TOMATINA:
 		for entry in TomatinaMap.roster():
-			_add_tomatina_enemy(int(TOMATINA_KINDS[entry[0]]), TomatinaMap.at_cell(entry[1]))
+			var index := _add_tomatina_enemy(int(TOMATINA_KINDS[entry[0]]), TomatinaMap.at_cell(entry[1]))
+			if entry[1].y < 46.0:
+				_enemies[index].set_meta("after_regroup", true)
 		_apply_enemy_sight_rings()
 		rescale_enemies()
 		return
@@ -3580,7 +3652,7 @@ func _build_enemies() -> void:
 			enemy.match_player_speed(_local.player.walk_speed, enemy_speed_fraction)
 		enemy.position = StreetMap.from_pixels(spawn[0], spawn[1]) \
 			+ Vector3(0.0, enemy.stand_height(), 0.0)
-		_enemies.push_back(enemy)
+		_register_enemy(enemy)
 		for pair_index in TOAST_RUSHER_PAIR_OFFSETS.size():
 			var rusher := MayoEnemy.new()
 			rusher.name = "Enemy%02d_ToastRusher%d" % [index, pair_index + 1]
@@ -3595,7 +3667,7 @@ func _build_enemies() -> void:
 			rusher.position = enemy.position \
 				+ Vector3(TOAST_RUSHER_PAIR_OFFSETS[pair_index], 0.0, 0.0)
 			rusher.position.y = rusher.stand_height()
-			_enemies.push_back(rusher)
+			_register_enemy(rusher)
 	var fry_stalker := MayoEnemy.new()
 	fry_stalker.name = "Enemy_FryStalker"
 	fry_stalker.authority = _is_authority()
@@ -3608,7 +3680,7 @@ func _build_enemies() -> void:
 	fry_stalker.position = StreetMap.from_pixels(
 		FRY_STALKER_SPAWN[0], FRY_STALKER_SPAWN[1]) \
 		+ Vector3(0.0, fry_stalker.stand_height(), 0.0)
-	_enemies.push_back(fry_stalker)
+	_register_enemy(fry_stalker)
 	_apply_enemy_sight_rings()
 	# Scale them to the party that exists now. Offline that is one player and
 	# the multiplier is 1, so a solo game is untouched.
@@ -3714,7 +3786,7 @@ func tutorial_add_enemy(kind: int, at: Vector3) -> int:
 		enemy.give_up_range = 120.0
 	enemy.nav = _nav
 	enemy.position = Vector3(at.x, enemy.stand_height(), at.z)
-	_enemies.push_back(enemy)
+	_register_enemy(enemy)
 	_apply_enemy_sight_rings()
 	# A heavy arriving is scaled to the party that is here to meet it, by the same
 	# pass a joining player triggers.
@@ -3750,6 +3822,24 @@ func _deal_grunt_burst(index: int) -> Dictionary:
 ## runtime come through here, so a body's index decides the same things on
 ## every peer. A bowler brings its balls with it, appended straight after it.
 ## Returns the body's index, or -1 for a kind this stage does not have.
+## Every body joins `_enemies` through here, so what has to hold across all
+## of them is kept in one place. Today that is one thing: a bowled tomato
+## rolls *through* the other bodies, not into them. The ball and every other
+## enemy are collision exceptions to each other, both ways, so a grunt in the
+## lane neither stops the ball nor is shoved by it, and the ball is not a
+## wall a grunt walks into. Both ways, because an exception is one-sided: a
+## ball that ignores the grunt is still a thing the grunt's own step hits.
+func _register_enemy(enemy: MayoEnemy) -> void:
+	for other in _enemies:
+		if not is_instance_valid(other):
+			continue
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL \
+				or other.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			enemy.add_collision_exception_with(other)
+			other.add_collision_exception_with(enemy)
+	_enemies.push_back(enemy)
+
+
 func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 	var index := _enemies.size()
 	var enemy := MayoEnemy.new()
@@ -3789,7 +3879,7 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 		enemy.match_player_speed(_local.player.walk_speed, speed_fraction)
 	enemy.nav = _nav
 	enemy.position = Vector3(at.x, enemy.stand_height(), at.z)
-	_enemies.push_back(enemy)
+	_register_enemy(enemy)
 	if kind == MayoTutorial.KIND_BOWLING_TOMATO:
 		for ball_index in MayoEnemy.BALLS_PER_BOWLER:
 			var ball := MayoEnemy.new()
@@ -3800,7 +3890,7 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 			ball.burst_radius = 1.5
 			ball.position = MayoEnemy.BALL_PARK
 			enemy.ball_pool.push_back(ball)
-			_enemies.push_back(ball)
+			_register_enemy(ball)
 	return index
 
 
@@ -4359,7 +4449,15 @@ func _advance_enemies(delta: float) -> void:
 	var targets: Array = []
 	for shooter in _shooters.values():
 		targets.push_back(shooter.player)
+	if map_kind == MapKind.TOMATINA and not _tomatina_next_encounter_released:
+		for player in targets:
+			if is_instance_valid(player) and player.global_position.z < TomatinaMap.at_cell(Vector2(30, 46)).z:
+				_tomatina_next_encounter_released = true
 	for enemy in _enemies:
+		# The next encounter waits until the team leaves the regroup bay.
+		if map_kind == MapKind.TOMATINA and not _tomatina_next_encounter_released \
+				and enemy.has_meta("after_regroup") and enemy.is_alive():
+			continue
 		# Which of the party this one is coming for. Normally all of them, and the
 		# body picks the nearest; the tutorial narrows it for the opening fight so
 		# a party of two is not both rushers' problem while the other player
@@ -4369,6 +4467,8 @@ func _advance_enemies(delta: float) -> void:
 			chasing = _tutorial.targets_for(enemy, targets)
 		# Dead ones are advanced too: they are still toppling.
 		var previous_position: Vector3 = enemy.global_position
+		enemy.crowd_peers = _enemies
+		enemy._crowd_side = 1.0 if _enemies.find(enemy) % 2 == 0 else -1.0
 		var hit := enemy.advance(delta, chasing)
 		if map_kind == MapKind.TUTORIAL_RECTANGLE \
 				and _tutorial != null and _tutorial.stage == MayoTutorial.Stage.RUN \
@@ -4419,6 +4519,7 @@ func _advance_player_respawns() -> void:
 		var player := shooter.player as MayoPlayer
 		if player.state != MayoPlayer.State.DEAD or player.state_time() < player.death_duration:
 			continue
+		_tomato_charge_started.erase(shooter.peer_id)
 		player.finish_respawn(spawn_position_for(shooter.spawn_slot))
 		shooter.sauce = 1.0
 		shooter.player_animation_name = StringName()
@@ -6242,3 +6343,323 @@ func debug_reset_profile() -> void:
 		_floor.reset_debug_counters()
 	for wall in _walls:
 		wall.reset_debug_counters()
+
+
+# Server owns rolls and consumption; clients receive the full active set.
+@export_range(0.0, 1.0) var healing_tomato_chance := 0.3
+@export var healing_tomato_amount := 25.0
+var _healing_deaths: Dictionary = {}
+var _healing_tomatoes: Dictionary = {}
+var _healing_rng := RandomNumberGenerator.new()
+
+
+func _make_healing_tomato(at: Vector3) -> MeshInstance3D:
+	var item := MeshInstance3D.new()
+	var sphere := SphereMesh.new()
+	sphere.radius = 0.35
+	sphere.height = 0.55
+	item.mesh = sphere
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color("ed4932")
+	material.emission_enabled = true
+	material.emission = Color("85301b")
+	item.material_override = material
+	add_child(item)
+	item.global_position = at
+	var stem := MeshInstance3D.new()
+	var stem_mesh := CylinderMesh.new()
+	stem_mesh.top_radius = 0.05
+	stem_mesh.bottom_radius = 0.07
+	stem_mesh.height = 0.22
+	stem.mesh = stem_mesh
+	var green := StandardMaterial3D.new()
+	green.albedo_color = Color("65b840")
+	stem.material_override = green
+	item.add_child(stem)
+	stem.position.y = 0.32
+	return item
+
+
+func _advance_healing_tomatoes(delta: float) -> void:
+	for index in _enemies.size():
+		var enemy = _enemies[index]
+		if enemy.is_alive() or _healing_deaths.has(index) or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			continue
+		_healing_deaths[index] = true
+		if _healing_rng.randf() >= healing_tomato_chance:
+			continue
+		var at: Vector3 = enemy.global_position
+		var query := PhysicsRayQueryParameters3D.create(at + Vector3.UP * 2, at - Vector3.UP * 30, 1)
+		query.exclude = [enemy.get_rid()]
+		var ground := get_world_3d().direct_space_state.intersect_ray(query)
+		if not ground.is_empty():
+			at = ground.position
+		at.y += 0.4
+		_healing_tomatoes[index] = {"node": _make_healing_tomato(at), "age": 0.0}
+	for id in _healing_tomatoes.keys():
+		var entry: Dictionary = _healing_tomatoes[id]
+		entry.age += delta
+		if entry.age > 120.0:
+			entry.node.queue_free()
+			_healing_tomatoes.erase(id)
+	_advance_thrown_tomatoes(delta)
+	for peer in _held_tomatoes.keys():
+		if not _shooters.has(peer):
+			_held_tomatoes[peer].queue_free()
+			_held_tomatoes.erase(peer)
+			continue
+		var shooter = _shooters[peer]
+		if selected_item_slot(peer) != 0:
+			shooter.firing = false
+			shooter.fire_hold = 0.0
+
+
+
+func healing_tomato_state() -> PackedFloat64Array:
+	var data := PackedFloat64Array()
+	for id in _healing_tomatoes:
+		var at: Vector3 = _healing_tomatoes[id].node.global_position
+		data.append_array(PackedFloat64Array([id, at.x, at.y, at.z]))
+	for peer in _held_tomatoes:
+		var at: Vector3 = _held_tomatoes[peer].global_position
+		data.append_array(PackedFloat64Array([-peer,at.x,at.y,at.z]))
+	for id in _thrown_tomatoes:
+		var at: Vector3 = _thrown_tomatoes[id].node.global_position
+		data.append_array(PackedFloat64Array([id,at.x,at.y,at.z]))
+	return data
+
+
+func apply_healing_tomato_state(data: PackedFloat64Array) -> void:
+	if _is_authority() or data.size() % 4 != 0:
+		return
+	var active := {}
+	for offset in range(0, data.size(), 4):
+		var id := int(data[offset])
+		active[id] = true
+		var at := Vector3(data[offset+1], data[offset+2], data[offset+3])
+		if not _healing_tomatoes.has(id):
+			_healing_tomatoes[id] = {"node": _make_healing_tomato(at)}
+		_healing_tomatoes[id].node.global_position = at
+	for id in _healing_tomatoes.keys():
+		if not active.has(id):
+			if id >= 1000000:
+				_tomato_fragments(_healing_tomatoes[id].node.global_position, 1.5)
+				_leave_debris(_healing_tomatoes[id].node.global_position, 0.35, TomatoVisuals.TOMATO)
+			_healing_tomatoes[id].node.queue_free()
+			_healing_tomatoes.erase(id)
+
+
+var _held_tomatoes: Dictionary = {}
+var _thrown_tomatoes: Dictionary = {}
+var _next_thrown_tomato := 1000000
+var _tomato_fire_block := false
+
+
+func local_holds_tomato() -> bool:
+	if _local == null:
+		return false
+	return selected_item_slot(_local.peer_id) > 0 and item_slots(_local.peer_id)[selected_item_slot(_local.peer_id)] == 1
+
+
+func _request_tomato_action(action: int) -> void:
+	if not _is_authority() and _local != null:
+		if action == 3:
+			if not _tomato_charge_started.has(_local.peer_id):
+				_tomato_charge_started[_local.peer_id] = Time.get_ticks_msec()
+		elif action == 1 or action == 2 or action == 4 or action == 5 or action >= 10:
+			_tomato_charge_started.erase(_local.peer_id)
+	if _is_authority():
+		tomato_action(_local.peer_id, action)
+	elif is_instance_valid(_net):
+		_net.request_tomato_action(action)
+
+
+func tomato_action(peer: int, action: int) -> void:
+	if not _is_authority() or not _shooters.has(peer):
+		return
+	var shooter = _shooters[peer]
+	var player = shooter.player
+	if player.state != MayoPlayer.State.NORMAL:
+		_tomato_charge_started.erase(peer)
+		return
+	var slots := item_slots(peer)
+	# Resolve wheel steps against the latest authoritative slot, even when
+	# several reliable requests arrive before the next state update.
+	if action == 4 or action == 5:
+		var step := -1 if action == 4 else 1
+		action = 10 + posmod(selected_item_slot(peer) + step, 5)
+	if action >= 10 and action <= 14:
+		_tomato_charge_started.erase(peer)
+		_item_selected[peer] = action - 10
+		shooter.firing = false
+		shooter.fire_hold = 0.0
+		return
+	if action == 0:
+		var empty := slots.find(0, 1)
+		if empty < 0:
+			return
+		var nearest := -1
+		var distance := 2.5 * 2.5
+		for id in _healing_tomatoes:
+			var gap: float = player.global_position.distance_squared_to(_healing_tomatoes[id].node.global_position)
+			if gap < distance:
+				var at: Vector3 = _healing_tomatoes[id].node.global_position
+				var query := PhysicsRayQueryParameters3D.create(
+					player.global_position + Vector3.UP * 0.6, at, 1)
+				query.exclude = [player.get_rid()]
+				var hit := get_world_3d().direct_space_state.intersect_ray(query)
+				if not hit.is_empty() and hit.position.distance_to(at) > 0.5:
+					continue
+				distance = gap
+				nearest = id
+		if nearest >= 0:
+			if _held_tomatoes.has(peer):
+				_healing_tomatoes[nearest].node.queue_free()
+			else:
+				_held_tomatoes[peer] = _healing_tomatoes[nearest].node
+			slots[empty] = 1
+			_item_selected[peer] = empty
+			_healing_tomatoes.erase(nearest)
+			shooter.firing = false
+			shooter.fire_hold = 0.0
+		return
+	if not _held_tomatoes.has(peer) or selected_item_slot(peer) == 0 or slots[selected_item_slot(peer)] != 1:
+		return
+	if action == 3:
+		if not _tomato_charge_started.has(peer):
+			_tomato_charge_started[peer] = Time.get_ticks_msec()
+		return
+	if action == 2:
+		_tomato_charge_started.erase(peer)
+		if player.health >= player.max_health:
+			return
+		player.health = minf(player.max_health, player.health + healing_tomato_amount)
+		slots[selected_item_slot(peer)] = 0
+	elif action == 1:
+		var charge := tomato_charge_fraction(peer)
+		_tomato_charge_started.erase(peer)
+		var direction := -Basis.from_euler(Vector3(shooter.aim_pitch,shooter.aim_yaw,0)).z
+		var node := _make_healing_tomato(player.global_position + Vector3.UP * 0.65)
+		slots[selected_item_slot(peer)] = 0
+		_item_throw_time[peer] = 0.3
+		_thrown_tomatoes[_next_thrown_tomato] = {"node":node,"velocity":direction * lerpf(8.0, 25.0, charge) + Vector3.UP * lerpf(1.0, 3.0, charge),"owner":peer,"age":0.0}
+		_next_thrown_tomato += 1
+
+
+func _advance_thrown_tomatoes(delta: float) -> void:
+	for id in _thrown_tomatoes.keys():
+		var entry: Dictionary = _thrown_tomatoes[id]
+		entry.age += delta
+		var start: Vector3 = entry.node.global_position
+		entry.velocity += Vector3.DOWN * 9.8 * delta
+		var end: Vector3 = start + entry.velocity * delta
+		var query := PhysicsRayQueryParameters3D.create(start,end)
+		if _shooters.has(entry.owner):
+			query.exclude = [_shooters[entry.owner].player.get_rid()]
+		var hit := get_world_3d().direct_space_state.intersect_ray(query)
+		if not hit.is_empty() and hit.collider is MayoPlayer:
+			var victim := hit.collider as MayoPlayer
+			if victim.visor != null:
+				for i in 12:
+					_record_visor_splat(victim, victim.visor.to_global(Vector3(
+						_healing_rng.randf_range(-0.5,0.5), _healing_rng.randf_range(-0.4,0.4), -1)), ContaminationGrid.KIND_KETCHUP)
+		if not hit.is_empty() or entry.age > 5.0:
+			_tomato_fragments(hit.position if not hit.is_empty() else end, 1.5)
+			_leave_debris(hit.position if not hit.is_empty() else end, 0.35, TomatoVisuals.TOMATO)
+			entry.node.queue_free()
+			_thrown_tomatoes.erase(id)
+		else:
+			entry.node.global_position = end
+
+
+var _item_slots: Dictionary = {}
+var _item_selected: Dictionary = {}
+var _item_throw_time: Dictionary = {}
+var _item_hands: Dictionary = {}
+
+func item_slots(peer: int) -> Array:
+	if not _item_slots.has(peer):
+		_item_slots[peer] = [2,0,0,0,0]
+	return _item_slots[peer]
+
+func selected_item_slot(peer: int) -> int:
+	return int(_item_selected.get(peer,0))
+
+func inventory_state() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for peer in _shooters:
+		out.append(peer)
+		out.append(selected_item_slot(peer))
+		for value in item_slots(peer):
+			out.append(value)
+	return out
+
+func apply_inventory_state(data: PackedInt32Array) -> void:
+	if data.size() % 7 != 0 or _is_authority():
+		return
+	for i in range(0,data.size(),7):
+		_item_selected[data[i]] = data[i+1]
+		_item_slots[data[i]] = [data[i+2],data[i+3],data[i+4],data[i+5],data[i+6]]
+
+func _update_item_views() -> void:
+	for peer in _shooters:
+		var shooter = _shooters[peer]
+		var selected := selected_item_slot(peer)
+		var equipped: bool = selected > 0 and item_slots(peer)[selected] == 1
+		if selected != 0 and is_instance_valid(shooter.weapon):
+			shooter.weapon.hide()
+		elif is_instance_valid(shooter.weapon):
+			shooter.weapon.visible = (not shooter.is_local or _first_person) \
+				and shooter.player.state != MayoPlayer.State.DEAD \
+				and (_tutorial == null or _tutorial.has_bottle(peer))
+		var node: MeshInstance3D = _held_tomatoes.get(peer)
+		if node == null and _healing_tomatoes.has(-peer):
+			node = _healing_tomatoes[-peer].node
+		var throw_left: float = maxf(0.0, float(_item_throw_time.get(peer,0.0)) - get_process_delta_time())
+		_item_throw_time[peer] = throw_left
+		if node == null:
+			if _item_hands.has(peer):
+				_item_hands[peer].hide()
+			continue
+		if node != null:
+			node.visible = equipped
+			var basis: Basis = _aim_basis(shooter)
+			var origin: Vector3 = shooter.player.global_position + Vector3.UP * 0.6
+			if shooter.is_local and _first_person and is_instance_valid(_camera):
+				basis = _camera.global_basis
+				origin = _camera.global_position
+			var charge := tomato_charge_fraction(peer)
+			node.global_transform = Transform3D(basis.scaled(Vector3.ONE * 0.55), origin + basis * Vector3(0.37 + charge * 0.06,-0.25 - charge * 0.08,-0.95 + charge * 0.4))
+			if not _item_hands.has(peer):
+				var hand := Node3D.new()
+				add_child(hand)
+				_item_hands[peer] = hand
+				for finger in 5:
+					var mesh := MeshInstance3D.new()
+					var box := BoxMesh.new()
+					box.size = Vector3(0.08,0.13,0.24)
+					mesh.mesh = box
+					var skin := StandardMaterial3D.new()
+					skin.albedo_color = Color("edb58b")
+					mesh.material_override = skin
+					hand.add_child(mesh)
+					mesh.position = Vector3((finger-2)*0.075,-0.17,0.13)
+			var hand: Node3D = _item_hands[peer]
+
+			hand.visible = equipped or throw_left > 0
+			hand.global_transform = node.global_transform
+			if throw_left > 0:
+				hand.position += basis * Vector3(0, sin(throw_left / 0.3 * PI)*0.25,-sin(throw_left / 0.3 * PI)*0.5)
+				hand.rotate_object_local(Vector3.RIGHT, -sin(throw_left / 0.3 * PI)*0.7)
+
+
+const TOMATO_CHARGE_SECONDS := 1.2
+var _tomato_charge_started: Dictionary = {}
+
+func tomato_charge_fraction(peer: int) -> float:
+	if not _shooters.has(peer) or _shooters[peer].player.state != MayoPlayer.State.NORMAL:
+		_tomato_charge_started.erase(peer)
+		return 0.0
+	if not _tomato_charge_started.has(peer):
+		return 0.0
+	return clampf((Time.get_ticks_msec() - float(_tomato_charge_started[peer])) / (TOMATO_CHARGE_SECONDS * 1000.0), 0.0, 1.0)
