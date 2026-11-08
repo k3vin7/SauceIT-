@@ -1658,25 +1658,28 @@ func _clear_escape_collision() -> void:
 	_escape_source = null
 
 
-func _perceive(candidate: MayoPlayer, delta: float) -> MayoPlayer:
-	if horde_alert:
-		return candidate
+func _perceive(targets: Array, delta: float, target_load: Dictionary) -> MayoPlayer:
 	sense_left -= delta
 	_memory_left = maxf(0.0, _memory_left - delta)
 	if sense_left <= 0.0:
 		sense_left = 0.10
-		if candidate != _visible_target:
+		var previous := _visible_target
+		var limit := give_up_range if _alerted else sight_range
+		var candidate := _choose_pursuit_target(targets, limit, target_load)
+		if candidate != previous:
 			_noticed_for = 0.0
-		_visible_target = null
+			if is_instance_valid(previous):
+				var old_load := int(target_load.get(previous.peer_id, 0))
+				target_load[previous.peer_id] = maxi(0, old_load - 1)
+			if candidate != null:
+				target_load[candidate.peer_id] = int(target_load.get(candidate.peer_id, 0)) + 1
+		_visible_target = candidate
 		if candidate != null:
 			var distance := global_position.distance_to(candidate.global_position)
-			var limit := give_up_range if _alerted else sight_range
-			if distance <= limit and _has_clear_shot(candidate,
-					global_position + Vector3.UP * height * 0.30):
-				_visible_target = candidate
-				_noticed_for += sense_left
-				if _alerted or _noticed_for >= lerpf(0.12, 0.65, distance / limit):
-					_alerted = true
+			_noticed_for += sense_left
+			if horde_alert or _alerted or _noticed_for >= lerpf(0.12, 0.65, distance / limit):
+				_alerted = true
+				if not horde_alert:
 					_last_seen = candidate.global_position
 					_memory_left = 2.0
 	if is_instance_valid(_visible_target) and _alerted \
@@ -1687,6 +1690,31 @@ func _perceive(candidate: MayoPlayer, delta: float) -> MayoPlayer:
 		if _visible_target == null:
 			_alerted = false
 	return null
+
+
+func _choose_pursuit_target(targets: Array, limit: float, target_load: Dictionary) -> MayoPlayer:
+	var best: MayoPlayer
+	var best_score := INF
+	var eye := global_position + Vector3.UP * height * 0.30
+	for target in targets:
+		var player := target as MayoPlayer
+		if not is_instance_valid(player) or player.state == MayoPlayer.State.DEAD:
+			continue
+		var distance := global_position.distance_to(player.global_position)
+		if distance > limit:
+			continue
+		var current := player == _visible_target
+		var assigned := int(target_load.get(player.peer_id, 0)) - int(current)
+		# Grunts favor a nearby player but ease off an already crowded target.
+		# Keeping a small preference for the current target avoids jitter.
+		var score := distance - (2.5 if current else 0.0)
+		if kind == EnemyKind.TOMATO_GRUNT:
+			score += float(clampi(assigned, 0, 8)) * 0.85
+		if score >= best_score or (not horde_alert and not _has_clear_shot(player, eye)):
+			continue
+		best = player
+		best_score = score
+	return best
 
 
 func is_alerted() -> bool:
@@ -2143,7 +2171,7 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 ## Walks at `targets`' nearest member and hits it when it gets there. Returns
 ## the player it damaged this frame, or null -- the world owns what damage does,
 ## because on a client the answer is "nothing, wait for the packet".
-func advance(delta: float, targets: Array) -> MayoPlayer:
+func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> MayoPlayer:
 	if not authority:
 		return null
 	_update_escape_clearance(delta)
@@ -2177,9 +2205,7 @@ func advance(delta: float, targets: Array) -> MayoPlayer:
 	# through everything below; it is simply walking at the drone instead.
 	var baited := bait != null and is_instance_valid(bait)
 
-	var target := _nearest(targets)
-	if staged_senses:
-		target = _perceive(target, delta)
+	var target := _perceive(targets, delta, target_load) if staged_senses else _nearest(targets)
 	# Noticed, or given up on. Measured flat: a player on a stall roof is as
 	# close as one standing under it, and height should not decide a chase.
 	if target != null:

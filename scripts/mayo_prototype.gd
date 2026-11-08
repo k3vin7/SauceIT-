@@ -4628,6 +4628,12 @@ func _advance_enemies(delta: float) -> void:
 	# body reading every other. With the horde in that was 270 bodies squared
 	# a tick, and it was the whole of the lag -- see `_crowd_neighbours`.
 	var buckets := _crowd_buckets()
+	var target_load := {}
+	if map_kind == MapKind.TOMATINA and targets.size() > 1:
+		for enemy in _enemies:
+			if enemy.is_alive() and is_instance_valid(enemy._visible_target):
+				var peer := enemy._visible_target.peer_id
+				target_load[peer] = int(target_load.get(peer, 0)) + 1
 	var frame := Engine.get_physics_frames()
 	for index in _enemies.size():
 		var enemy: MayoEnemy = _enemies[index]
@@ -4651,7 +4657,7 @@ func _advance_enemies(delta: float) -> void:
 		enemy.crowd_hold = (frame + index) % 2 == 1
 		if not enemy.crowd_hold and enemy.is_alive():
 			enemy.crowd_peers = _crowd_neighbours(buckets, enemy)
-		var hit := enemy.advance(delta, chasing)
+		var hit := enemy.advance(delta, chasing, target_load)
 		if map_kind == MapKind.TUTORIAL_RECTANGLE \
 				and _tutorial != null and _tutorial.stage == MayoTutorial.Stage.RUN \
 				and enemy.grade == MayoEnemy.Grade.HEAVY and not enemy.tutorial_trapped:

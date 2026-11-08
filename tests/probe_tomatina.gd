@@ -369,6 +369,27 @@ func _run() -> void:
 	_check(not shoved.get_collision_exceptions().has(player), "shove left a permanent collision exception")
 
 	var teammate: MayoPlayer = scene.create_avatar(2, 1, false).player
+	shoved.global_position = nearby
+	player.global_position = nearby + Vector3.RIGHT * 3.0
+	teammate.global_position = nearby + Vector3.BACK * 4.0
+	var blocker_wall := StaticBody3D.new()
+	var blocker_shape := CollisionShape3D.new()
+	var blocker_box := BoxShape3D.new()
+	blocker_box.size = Vector3(0.3, 4.0, 1.8)
+	blocker_shape.shape = blocker_box
+	blocker_wall.add_child(blocker_shape)
+	scene.add_child(blocker_wall)
+	blocker_wall.global_position = nearby + Vector3.RIGHT * 1.5
+	await _frames(2)
+	shoved.horde_alert = false
+	_check(shoved._choose_pursuit_target([player, teammate], 30.0, {}) == teammate,
+		"the nearest player behind a wall hid a visible teammate from the enemy")
+	blocker_wall.free()
+	shoved.horde_alert = true
+	_check(shoved._choose_pursuit_target([player, teammate], 30.0, {peer: 6}) == teammate,
+		"a horde grunt ignored a nearby teammate when its first target was crowded")
+	shoved.horde_alert = false
+	player.global_position = nearby
 	teammate.global_position = nearby + Vector3.RIGHT * 1.6
 	teammate.health = 0.0
 	teammate.begin_death()
