@@ -128,6 +128,7 @@ var _network_previous_position := Vector3.ZERO
 ## next physics step and then cleared. Accumulated rather than assigned so two
 ## rushers arriving on the same frame both count.
 var _pending_enemy_impact := Vector3.ZERO
+var _charge_knockdown := false
 ## A steady shove on the body, in m/s, added to where the feet want to go
 ## rather than to the velocity: the fire hose's thrust is a drift the player
 ## can walk against, not a knock. Authority only; set each tick by whatever
@@ -172,6 +173,7 @@ func begin_death() -> void:
 	_state_timer = 0.0
 	velocity = Vector3.ZERO
 	_pending_enemy_impact = Vector3.ZERO
+	_charge_knockdown = false
 
 
 ## Back at the start, whole -- and, through `reset_state`, out of whatever they
@@ -209,6 +211,7 @@ func reset_state() -> void:
 	_recovery_timer = 0.0
 	wipe_timer = 0.0
 	_pending_enemy_impact = Vector3.ZERO
+	_charge_knockdown = false
 
 
 ## How long the body has been in its current state, for the respawn timer.
@@ -249,6 +252,8 @@ func splash_mustard() -> void:
 
 func apply_enemy_impact(flat_direction: Vector3, push_speed: float,
 		lift_speed: float) -> void:
+	if _charge_knockdown:
+		return
 	var direction := Vector3(flat_direction.x, 0.0, flat_direction.z)
 	if direction.length_squared() < 0.000001:
 		return
@@ -266,6 +271,19 @@ func apply_enemy_impact(flat_direction: Vector3, push_speed: float,
 		flat = flat.normalized() * max_enemy_impact
 	_pending_enemy_impact = flat + Vector3.UP * minf(
 		_pending_enemy_impact.y, max_enemy_lift)
+
+
+func apply_charge_impact(direction: Vector3, push_speed: float, lift_speed: float) -> void:
+	if state == State.DEAD or _charge_knockdown:
+		return
+	# Replace the current run momentum so the hit carries the player away
+	# from the brute even when they were sprinting into it.
+	velocity = Vector3.ZERO
+	_pending_enemy_impact = direction * push_speed + Vector3.UP * lift_speed
+	_charge_knockdown = true
+	fall_direction = 1.0
+	state = State.FALLING
+	_state_timer = 0.0
 
 
 func paint_mayo(world_position: Vector3, world_normal: Vector3,
@@ -326,6 +344,8 @@ func _physics_process(delta: float) -> void:
 	var rate := acceleration
 	if state != State.NORMAL and not crawling:
 		rate = forward_slip_slide_friction if fall_direction < 0.0 else slip_slide_friction
+		if _charge_knockdown and not is_on_floor():
+			rate = slip_slide_friction * 0.5
 	velocity.x = move_toward(velocity.x, desired.x, rate * delta)
 	velocity.z = move_toward(velocity.z, desired.z, rate * delta)
 
@@ -507,7 +527,9 @@ func _advance_fall(delta: float) -> void:
 	if state == State.STUMBLE and _state_timer >= stumble_duration:
 		state = State.FALLING
 		_state_timer = 0.0
-	elif state == State.FALLING and _state_timer >= fall_duration:
+	elif state == State.FALLING and _state_timer >= fall_duration \
+			and (not _charge_knockdown or (is_on_floor() and _pending_enemy_impact.is_zero_approx())):
+		_charge_knockdown = false
 		state = State.DOWN
 		_state_timer = 0.0
 	elif state == State.DOWN and _state_timer >= down_duration:

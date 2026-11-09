@@ -23,6 +23,7 @@ const BOTTLE := Color("b8231a")
 const CAP := Color("f2f2f2")
 static var _sphere_meshes := {}
 static var _cylinder_meshes := {}
+static var _grunt_meshes := {}
 const CRATE := Color("8c6a3e")
 
 
@@ -32,15 +33,48 @@ const CRATE := Color("8c6a3e")
 static func grunt(radius: float, tier: int) -> Node3D:
 	var root := Node3D.new()
 	root.name = "TomatoGruntVisual"
-	var skin := OVERRIPE if tier >= 2 else TOMATO
+	var overripe := tier >= 2
+	var key := Vector2(radius, float(overripe))
+	if not _grunt_meshes.has(key):
+		_grunt_meshes[key] = _build_grunt_mesh(radius, overripe)
+	var model := MeshInstance3D.new()
+	model.name = "Body"
+	model.mesh = _grunt_meshes[key]
+	root.add_child(model)
+	return root
+
+
+static func _build_grunt_mesh(radius: float, overripe: bool) -> ArrayMesh:
+	var root := Node3D.new()
+	var skin := OVERRIPE if overripe else TOMATO
 	_sphere(root, "Body", Vector3.ZERO, radius, skin, 0.55)
 	_cylinder(root, "Stem", Vector3(0.0, radius * 0.95, 0.0), radius * 0.12, radius * 0.45, STEM)
 	_eyes(root, radius)
-	if tier >= 2:
-		# The split: a darker band round the body where it is about to go.
+	if overripe:
 		_cylinder(root, "Split", Vector3(0.0, 0.0, 0.0), radius * 1.02, radius * 0.12,
 			Color("3b0a06"))
-	return root
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var offset := 0
+	for part: MeshInstance3D in root.get_children():
+		var arrays := part.mesh.surface_get_arrays(0)
+		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+		var material := part.mesh.surface_get_material(0) as StandardMaterial3D
+		for i in vertices.size():
+			surface.set_color(material.albedo_color)
+			surface.set_normal(part.basis * normals[i])
+			surface.add_vertex(part.transform * vertices[i])
+		for index: int in arrays[Mesh.ARRAY_INDEX]:
+			surface.add_index(offset + index)
+		offset += vertices.size()
+	root.free()
+	var material := StandardMaterial3D.new()
+	material.vertex_color_use_as_albedo = true
+	material.vertex_color_is_srgb = true
+	material.roughness = 0.6
+	surface.set_material(material)
+	return surface.commit()
 
 
 ## The brute: a tomato twice the size with two arms it swings.
@@ -140,8 +174,8 @@ static func _sphere(parent: Node3D, node_name: String, at: Vector3, radius: floa
 		mesh = SphereMesh.new()
 		mesh.radius = radius
 		mesh.height = radius * 2.0
-		mesh.radial_segments = 20
-		mesh.rings = 10
+		mesh.radial_segments = 8 if radius < 0.15 else 20
+		mesh.rings = 4 if radius < 0.15 else 10
 		mesh.material = _material(color, roughness)
 		materials[color] = mesh
 	node.mesh = mesh

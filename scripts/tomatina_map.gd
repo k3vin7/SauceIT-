@@ -13,6 +13,7 @@ extends RefCounted
 ## Trace the village from the reference: an irregular south-to-north spine
 ## with the refuge courts staggered east, west and east.
 const SEED := 0x70A7A70
+const BOUNDARY_HEIGHT := 6.8
 const START_PLAZA := Rect2i(26, 224, 8, 6)
 const FINISH_APPROACH := Rect2i(28, 36, 4, 9)
 const PLAZA := Rect2i(20, 22, 20, 15)
@@ -24,9 +25,9 @@ const PLAZA_CORNERS := [
 	Vector2i(39, 35), Vector2i(39, 36), Vector2i(38, 36),
 ]
 const SAFE_ROOMS: Array[Rect2i] = [
-	Rect2i(31, 187, 12, 10),
-	Rect2i(9, 117, 12, 12),
-	Rect2i(35, 62, 12, 10),
+	Rect2i(34, 190, 5, 5),
+	Rect2i(14, 120, 5, 5),
+	Rect2i(37, 64, 7, 5),
 ]
 const SAFE_ROOM_NAMES := ["급수 마당", "시장 피난처", "축제 본부"]
 
@@ -84,6 +85,8 @@ const SIDE_ALLEYS := [
 ]
 const TRUCK_ROW := 44.0
 const SIREN_CELL := Vector2(25.5, 27.5)
+const PRESS_KING_CELL := Vector2(35.5, 23.5)
+const PRESS_KING_YAW := 2.55
 const JUICE_ZONES: Array[Rect2i] = [
 	Rect2i(1, 168, 16, 21),
 	Rect2i(23, 145, 22, 14),
@@ -144,9 +147,10 @@ const ALLEY_ELITES := [
 # Each group is centred on a distance along its leg.
 const GRUNT_PACKS := [
 	[0, 0.19, 8], [0, 0.46, 10], [0, 0.77, 12],
-	[1, 0.18, 9], [1, 0.36, 10], [1, 0.57, 10], [1, 0.83, 10],
-	[2, 0.21, 10], [2, 0.51, 12], [2, 0.81, 10],
-	[3, 0.36, 10], [3, 0.73, 10],
+	[1, 0.09, 7], [1, 0.18, 9], [1, 0.36, 10], [1, 0.47, 8],
+	[1, 0.57, 10], [1, 0.70, 11], [1, 0.83, 10],
+	[2, 0.21, 10], [2, 0.51, 12], [2, 0.69, 8], [2, 0.81, 10],
+	[3, 0.36, 10], [3, 0.73, 10], [3, 0.86, 7],
 ]
 
 
@@ -165,9 +169,10 @@ static func encounter_at(cell: Vector2i) -> int:
 
 static func roster() -> Array:
 	var props := debris_boxes()
-	props.append_array(refill_boxes())
+	props.append_array(parked_trucks())
 	props.push_back(fire_truck_box())
 	var taken := _box_cells(props)
+	taken[Vector2i(PRESS_KING_CELL)] = true
 	var out := PLAZA_ELITES.duplicate()
 	for elite in PLAZA_ELITES:
 		taken[Vector2i((elite[1] as Vector2).floor())] = true
@@ -358,7 +363,7 @@ static func blocked_cells() -> Dictionary:
 		if box.get("jumpable", false):
 			continue
 		props.push_back(box)
-	props.append_array(refill_boxes())
+	props.append_array(parked_trucks())
 	props.push_back(fire_truck_box())
 	return _box_cells(props)
 
@@ -465,7 +470,7 @@ static func debris_boxes() -> Array[Dictionary]:
 			elif leg == 3 and i == 2:
 				fraction = 0.45
 			var side := 1.0 if (i + leg) % 2 == 0 else -1.0
-			if (leg == 1 and i == 4) or (leg == 3 and i == 2):
+			if (leg == 1 and i == 4) or (leg == 2 and i == 5) or (leg == 3 and i == 2):
 				side = 1.0
 			var at := _alley_side(leg, fraction, side * 1.66)
 			var stacked := i % 3 != 0
@@ -517,11 +522,11 @@ static func debris_boxes() -> Array[Dictionary]:
 		spill["jumpable"] = true
 		boxes.push_back(spill)
 	for room in SAFE_ROOMS:
-		for x in [room.position.x + 2.5, room.end.x - 2.5]:
-			boxes.push_back(metre_box(Vector2(x, room.position.y + 0.7),
-				Vector3(5.0, 2.4, 3.2), "RefugeTent", CANOPY))
+		boxes.push_back(metre_box(Vector2(room.position.x + 0.82, room.position.y + 0.82),
+			Vector3(5.0, 2.4, 3.2), "RefugeTent", CANOPY))
 		for side in [-1.0, 1.0]:
-			_add_supply_crate(boxes, Vector2(float(room.get_center().x) + 4.0 * side, room.end.y - 0.76))
+			var x: float = room.get_center().x + 0.5 + 1.7 * side
+			_add_supply_crate(boxes, Vector2(x, room.end.y - 0.74))
 		var centre := Vector2(room.position) + Vector2(room.size) * 0.5
 		boxes.push_back(metre_box(centre, Vector3(1.8, 0.6, 1.8), "RefugeBrazier", Color("b85b28")))
 	boxes.push_back(metre_box(Vector2(25.5, 26.5), Vector3(3.5, 4.8, 3.5), "SirenColumn"))
@@ -541,7 +546,7 @@ static func debris_boxes() -> Array[Dictionary]:
 
 static func _add_festival_aftermath(boxes: Array[Dictionary]) -> void:
 	var occupied := boxes.duplicate()
-	occupied.append_array(refill_boxes())
+	occupied.append_array(parked_trucks())
 	occupied.push_back(fire_truck_box())
 	var taken := _box_cells(occupied)
 	_ensure_layout()
@@ -626,7 +631,13 @@ static func _leaves_aftermath_passage(footprint: Dictionary, taken: Dictionary) 
 
 
 static func is_refill_crate(box: Dictionary) -> bool:
-	return String(box.get("name", "")).begins_with("TomatoCrate")
+	var name: String = box["name"]
+	return name.begins_with("TomatoCrate") or name.ends_with("WreckCrate")
+
+
+static func is_supply_prop(box: Dictionary) -> bool:
+	var name: String = box["name"]
+	return name == "LoadedTomatoTruck" or name == "OverturnedTomatoTruck" or is_refill_crate(box)
 
 
 static func _add_supply_crate(boxes: Array[Dictionary], at: Vector2) -> void:
@@ -685,17 +696,13 @@ static func _wrecked_truck(boxes: Array[Dictionary], label: String, body: Vector
 	boxes.push_back(metre_box(crate, Vector3(1.0, 0.9, 1.0), label + "WreckCrate", Color("8c7a4a")))
 
 
-static func refill_boxes() -> Array[Dictionary]:
+static func parked_trucks() -> Array[Dictionary]:
 	var side := Vector3(3.0, 3.2, 6.4)
 	var end := Vector3(6.4, 3.2, 3.0)
 	var boxes: Array[Dictionary] = []
 	var start_row := float(START_PLAZA.position.y) + 2.5
-	boxes.push_back(_truck_against_wall(Vector2(34.0, start_row), Vector3.LEFT, side))
+	boxes.push_back(_truck_against_wall(Vector2(34.0, start_row + 1.0), Vector3.LEFT, side, true))
 	boxes.push_back(_truck_against_wall(Vector2(26.0, start_row), Vector3.RIGHT, side))
-	for room in SAFE_ROOMS:
-		var x := float(room.get_center().x)
-		boxes.push_back(_truck_against_wall(Vector2(x - 2.0, room.end.y), Vector3.FORWARD, end))
-		boxes.push_back(_truck_against_wall(Vector2(x + 2.0, room.end.y), Vector3.FORWARD, end))
 	var stops := [
 		[Vector2(0.32, 1), Vector2(0.54, 1), Vector2(0.65, -1)],
 		[Vector2(0.23, -1), Vector2(0.32, 1), Vector2(0.56, 1), Vector2(0.65, -1), Vector2(0.91, -1)],
@@ -712,12 +719,12 @@ static func refill_boxes() -> Array[Dictionary]:
 			else:
 				boxes.push_back(_truck_against_wall(edge, Vector3.FORWARD * signf(normal.y), end))
 	boxes.push_back(_truck_against_wall(Vector2(26.0, 39.5), Vector3.RIGHT, side))
-	# Spread the plaza supply trucks around its perimeter.
+	# Park a loaded truck at the plaza's eastern edge.
 	boxes.push_back(_truck_against_wall(Vector2(20.0, 24.5), Vector3.RIGHT, side))
 	boxes.push_back(_truck_against_wall(Vector2(20.0, 29.0), Vector3.RIGHT, side))
 	boxes.push_back(_truck_against_wall(Vector2(20.0, 31.5), Vector3.RIGHT, side))
 	boxes.push_back(_truck_against_wall(Vector2(40.0, 27.15), Vector3.LEFT, side))
-	boxes.push_back(_truck_against_wall(Vector2(40.0, 29.0), Vector3.LEFT, side))
+	boxes.push_back(_truck_against_wall(Vector2(40.0, 29.0), Vector3.LEFT, side, true))
 	boxes.push_back(_truck_against_wall(Vector2(40.0, 34.0), Vector3.LEFT, side))
 	boxes.push_back(_truck_against_wall(Vector2(36.0, 22.0), Vector3.BACK, end))
 	return boxes
@@ -725,13 +732,19 @@ static func refill_boxes() -> Array[Dictionary]:
 
 ## A truck parked with its back on the wall face at `wall_cell` (a whole cell
 ## coordinate along the axis it backs onto) and its front out into the street.
-static func _truck_against_wall(wall_cell: Vector2, facing: Vector3, size: Vector3) -> Dictionary:
+static func _truck_against_wall(wall_cell: Vector2, facing: Vector3, size: Vector3,
+		loaded := false) -> Dictionary:
 	var face := at_cell(wall_cell)
 	var depth: float = size.x if absf(facing.x) > 0.5 else size.z
 	var position := face + facing * (depth * 0.5)
 	position.y = size.y * 0.5
-	var footprint := Vector3(size.z, size.y, size.x) if absf(facing.x) > 0.5 else size
-	return {"position": position, "size": footprint, "facing": facing}
+	var footprint := size
+	# The open cargo bed runs parallel to the curb and is visible from the road.
+	var direction := facing.cross(Vector3.UP) if loaded else facing
+	if not loaded and absf(facing.x) > 0.5:
+		footprint = Vector3(size.z, size.y, size.x)
+	return {"position": position, "size": footprint, "facing": direction,
+		"name": "LoadedTomatoTruck" if loaded else "ParkedVan", "color": STEEL}
 
 
 ## The fire truck itself, parked at the back of its bay.

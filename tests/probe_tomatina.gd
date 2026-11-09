@@ -13,7 +13,7 @@ extends SceneTree
 #     deal is mostly small with a few large
 #   * a bowled tomato bursts on the first wall and parks itself
 #   * the siren schedules separate, capped waves and opens the truck after 30 seconds
-#   * the stage only clears after the finale timer and arrival at the truck
+#   * clearing the waves summons the Press King and its defeat opens extraction
 #   * stage 1 gets its own street back afterwards
 
 var failures: Array[String] = []
@@ -59,7 +59,8 @@ func _run() -> void:
 				"%s lost the Blender vertex colors" % batch.name)
 			var model := str(batch.name).get_slice("_", 0)
 			placed[model] = int(placed.get(model, 0)) + batch.multimesh.instance_count
-		_check(int(placed.get("TomatoTruck", 0)) == 4, "loaded tomato trucks are missing")
+		_check(int(placed.get("TomatoTruck", 0)) == 6, "loaded tomato trucks are missing")
+		_check(int(placed.get("SauceVan", 0)) == 24, "decorative vans are missing")
 		_check(int(placed.get("OverturnedTomatoTruck", 0)) == 2, "overturned tomato trucks are missing")
 		_check(int(placed.get("TomatoCrateStack", 0)) == 18, "tomato crate stacks are missing")
 		for prop in TomatinaMap.AFTERMATH_MODELS:
@@ -67,6 +68,14 @@ func _run() -> void:
 				"festival aftermath is missing %s obstacles" % prop[0])
 		_check(int(placed.get("CrushedTomatoes", 0)) > 40, "crushed tomatoes are missing from the streets")
 		_check(int(placed.get("BrokenBoards", 0)) > 25, "broken boards are missing from the streets")
+		var boundary_edges := 0
+		var cells := TomatinaMap.floor_cells()
+		for cell: Vector2i in cells:
+			for step: Vector2i in TomatinaVillageArt.CARDINAL:
+				if not cells.has(cell + step):
+					boundary_edges += 1
+		_check(int(placed.get("BoundaryWall", 0)) == boundary_edges,
+			"the visible exterior does not cover every boundary edge")
 		_check(int(placed.get("Brazier", 0)) == TomatinaMap.SAFE_ROOMS.size(),
 			"a refuge is missing its central campfire")
 		_check(not placed.has("RefugeFireplace"), "a refuge still has a wall fireplace")
@@ -96,6 +105,31 @@ func _run() -> void:
 	_check(StreetMap.layout_override is TomatinaMap, "the lattice is not carrying the Tomatina design")
 	var floor_set := StreetMap.floor_cells()
 	_check(floor_set.size() != festival_cells, "the Tomatina floor is the festival floor")
+	var exterior := scene._walls[0] as ContaminableObject
+	var exterior_face := exterior.get_node("Face0") as MeshInstance3D
+	_check(is_equal_approx(exterior.size.y, TomatinaMap.BOUNDARY_HEIGHT) and not exterior_face.visible,
+		"the exterior collider or its clean paint layer is incorrect")
+	var clean_face := exterior.snapshot_cells(0)
+	exterior.paint_mayo_cell(0, Vector2i(1, 1), ContaminationGrid.KIND_KETCHUP)
+	await _frames(2)
+	_check(exterior_face.visible and exterior.debug_texture_uploads() > 0,
+		"a painted exterior face did not become visible")
+	exterior.restore_cells(0, clean_face)
+	_check(not exterior_face.visible, "a restored clean face still draws")
+	for enemy: MayoEnemy in scene._enemies:
+		if enemy.kind != MayoEnemy.EnemyKind.TOMATO_GRUNT:
+			continue
+		var parts := enemy._visual_meshes()
+		_check(parts.size() == 1, "a grunt has multiple render meshes")
+		var mesh := parts[0] as MeshInstance3D
+		_check(mesh.material_overlay == null, "an unpainted grunt draws a paint overlay")
+		enemy.contamination.paint_mayo_cell(Vector2i(1, 1), ContaminationGrid.KIND_KETCHUP)
+		await _frames(2)
+		_check(mesh.material_overlay != null, "a grunt lost its paint overlay")
+		enemy.contamination.clear()
+		await _frames(2)
+		_check(mesh.material_overlay == null, "a cleaned grunt still draws its paint overlay")
+		break
 	for slot in 4:
 		var spawn: Vector3 = scene.spawn_position_for(slot)
 		_check(floor_set.has(StreetMap.cell_at(spawn)), "spawn %d is not on the street" % slot)
@@ -104,7 +138,7 @@ func _run() -> void:
 	_check(scene._nav != null, "stage 2 built no router")
 	var route: PackedVector3Array = scene._nav.route(scene.spawn_position_for(0), truck_centre)
 	print("route from the start to the fire truck: %d waypoints" % route.size())
-	_check(absi(route.size() - 365) <= 18, "the route is outside the expanded length target")
+	_check(absf(route.size() / 365.0 - 1.0) <= 0.10, "the route is outside the expanded length target")
 	for room in TomatinaMap.SAFE_ROOMS:
 		for y in range(room.position.y, room.end.y):
 			for x in range(room.position.x, room.end.x):
@@ -151,16 +185,23 @@ func _run() -> void:
 			cid_blocked += 1
 	_check(cid_blocked > 0 and cid_blocked < 4, "truck gap blocks %d of 4 cells" % cid_blocked)
 	var stations: Array = scene.refill_stations()
-	var crates := stations.filter(func(station: Dictionary) -> bool:
-		return station.has("half_footprint"))
-	_check(crates.size() == 53 and stations.size() - crates.size() == 32,
-		"stage 2 is missing tomato crates or sauce trucks")
+	var props := TomatinaMap.debris_boxes() + TomatinaMap.parked_trucks()
+	props.push_back(TomatinaMap.fire_truck_box())
+	for box: Dictionary in props:
+		var registered := stations.any(func(station: Dictionary) -> bool:
+			return station["position"] == box["position"])
+		_check(registered == TomatinaMap.is_supply_prop(box),
+			"incorrect supply station registration for %s" % box["name"])
+		if box["name"] == "OverturnedTomatoTruck":
+			_check(registered, "a truck with tomatoes in its overturned cargo bed cannot refill")
+	_check(stations.size() == 62, "stage 2 is missing tomato crates or loaded trucks")
 	var refill_player: MayoPlayer = scene._local.player
 	var original_position := refill_player.global_position
-	var truck: Dictionary = stations[crates.size()]
-	refill_player.global_position = truck["position"] + (truck["facing"] as Vector3)
+	var trucks := TomatinaMap.parked_trucks()
+	var truck: Dictionary = trucks[0]
+	refill_player.global_position = truck["position"] + Vector3.LEFT * 2.5
 	scene._local.sauce = 0.1
-	_check(scene.local_at_station(), "the sauce truck did not show the proximity prompt")
+	_check(scene.local_at_station(), "the loaded truck did not show the proximity prompt")
 	_check(not scene.can_select_refill_sauce(0) and not scene.can_select_refill_sauce(1)
 		and scene.can_select_refill_sauce(2), "the proximity prompt offers the wrong sauces")
 	_check(not scene.refill_for(refill_player.peer_id, 0)
@@ -168,6 +209,10 @@ func _run() -> void:
 		"a sauce truck accepted mayo or mustard")
 	_check(scene.refill_for(refill_player.peer_id, 2) and scene._local.sauce == 1.0
 		and scene.local_sauce_kind() == 2, "a sauce truck did not refill with ketchup")
+	refill_player.global_position = trucks[1]["position"] + Vector3.BACK * 2.6
+	scene._local.sauce = 0.1
+	_check(not scene.local_at_station() and not scene.refill_for(refill_player.peer_id, 2)
+		and scene._local.sauce == 0.1, "a decorative van offered or accepted a refill")
 	var crate_centre := TomatinaMap.at_cell(Vector2(28.0, 227.8))
 	for side in [-1.0, 1.0]:
 		refill_player.global_position = crate_centre + Vector3(1.95 * side, 1.28, 0.0)
@@ -455,8 +500,8 @@ func _run() -> void:
 	teammate.health = 45.0
 	scene._update_tomatina_checkpoint([player, teammate])
 	_check(scene._tomatina_checkpoint == 0 and player.health == player.max_health \
-		and teammate.health == teammate.max_health and scene._local.sauce == 1.0,
-		"the refuge failed to record the checkpoint and refill the party")
+		and teammate.health == teammate.max_health and scene._local.sauce == 0.0,
+		"the refuge failed to heal the party or granted sauce without a supply prop")
 	scene._damage_player(player, player.max_health * 2.0)
 	_check(player.state == MayoPlayer.State.NORMAL, "the refuge did not protect the player")
 	shoved.global_position = nearby
@@ -568,6 +613,22 @@ func _run() -> void:
 	scene._advance_fire_hoses(0.016)
 	_check(scene._hose_slot_of(peer) < 0, "the hose stayed open after the player left the stand")
 
+	scene._advance_press_king_spawn()
+	_check(scene._press_king == null and scene._finale_remaining > 0,
+		"the Press King spawned while the plaza fight was still active")
+	for enemy: MayoEnemy in scene._enemies:
+		if enemy.has_meta("horde") or enemy.has_meta("finale_guard"):
+			enemy.health = 0.0
+	# The earlier hose check called its optional wave without running the
+	# spawn tick. Clear that test fixture before checking the boss gate.
+	scene._hose_wave_pending = 0
+	scene._advance_press_king_spawn()
+	var boss := scene._press_king as MayoEnemy
+	_check(boss != null and boss.kind == MayoEnemy.EnemyKind.PRESS_KING, "the Press King did not spawn")
+	var before_count: int = scene.enemy_count()
+	scene._advance_press_king_spawn()
+	_check(scene.enemy_count() == before_count, "the boss spawn was repeated")
+
 	var cleared := [false]
 	scene.stage_cleared.connect(func() -> void: cleared[0] = true)
 	scene._check_stage_clear()
@@ -577,7 +638,16 @@ func _run() -> void:
 	_check(not cleared[0], "one player cleared while a living teammate was outside the truck bay")
 	teammate.global_position = player.global_position + Vector3.RIGHT * 1.5
 	scene._check_stage_clear()
-	_check(cleared[0], "the finale elapsed and both players reached the truck, but the stage did not clear")
+	_check(not cleared[0], "the party escaped with the Press King alive")
+	if boss != null:
+		boss.advance(2.21, [])
+		scene._press_king.wash_armor(1.0)
+		_check(scene._press_king.exposed_left > 0.0 and boss.is_alive(), "the hose did not open the boss armor")
+		boss.health = 0.1
+		boss.take_sauce_hit()
+		boss.advance(1.91, [])
+		scene._check_stage_clear()
+		_check(cleared[0], "the party could not escape after defeating the Press King")
 
 	scene.free()
 	await process_frame

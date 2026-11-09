@@ -148,7 +148,7 @@ enum EnemyKind {
 	## share the chase, the stain, the topple and the packet with the three
 	## above, and add one trick each in `_advance_special`.
 	TOMATO_GRUNT, TOMATO_BRUTE, BOWLING_TOMATO, TOMATO_BALL, KETCHUP_SPITTER,
-	CAPRESE_CRAWLER,
+	CAPRESE_CRAWLER, PRESS_KING,
 }
 
 @export_group("Its kind")
@@ -386,7 +386,9 @@ var _burst_request := Vector3.INF
 const BRUTE_CHARGE_RANGE := 9.0
 const SPECIAL_WINDUP := 0.55
 const BRUTE_CHARGE_SECONDS := 1.2
-const BRUTE_CHARGE_SPEED_SCALE := 2.2
+const BRUTE_CHARGE_SPEED_SCALE := 3.3
+const BRUTE_CHARGE_PUSH_SPEED := 9.5
+const BRUTE_CHARGE_LIFT_SPEED := 5.0
 const BRUTE_CHARGE_COOLDOWN := 4.0
 ## How long it is stuck for after running into a wall.
 const BRUTE_WALL_STUN := 1.25
@@ -786,7 +788,7 @@ func _finish_primitive_body(cell_size: float, brush_radius: float, mask: Mesh,
 	contamination.brush_radius = brush_radius
 	add_child(contamination)
 	contamination.configure(self, _body_mesh, radius, height, skin)
-	contamination.add_visual_overlay(_visual_root)
+	contamination.add_visual_overlay(_visual_root, true)
 
 
 func _add_sphere_collider(sphere_radius: float, at := Vector3.ZERO) -> void:
@@ -864,7 +866,7 @@ func build_tomato_brute(cell_size: float, brush_radius: float) -> void:
 	radius = 1.8 * TOMATO_SCALE
 	height = radius * 2.0
 	_rest_radius = radius
-	max_health = 300.0
+	max_health = 150.0
 	solo_health = max_health
 	health = max_health
 	sauce_damage_per_hit = 0.4
@@ -1533,7 +1535,7 @@ func health_fraction() -> float:
 ## `from` is where the hit came from, so a killing one can turn the body to face
 ## it. `Vector3.INF` means "not stated", which is what the checks that call this
 ## without a shooter pass.
-func take_sauce_hit(from := Vector3.INF) -> bool:
+func take_sauce_hit(from := Vector3.INF, damage := -1.0) -> bool:
 	if not is_alive():
 		return false
 	# A bowled tomato wears the sauce and is not hurt by it: it is a thing
@@ -1544,7 +1546,7 @@ func take_sauce_hit(from := Vector3.INF) -> bool:
 	# off whoever it had, for long enough to get clear.
 	if kind == EnemyKind.CAPRESE_CRAWLER and is_instance_valid(tether_target):
 		_break_tether()
-	health = maxf(health - sauce_damage_per_hit, 0.0)
+	health = maxf(health - (damage if damage >= 0.0 else sauce_damage_per_hit), 0.0)
 	# Being hit is being told where you are, whatever the range says.
 	if sauce_alerts:
 		_alerted = true
@@ -1719,6 +1721,10 @@ func _choose_pursuit_target(targets: Array, limit: float, target_load: Dictionar
 
 func is_alerted() -> bool:
 	return _alerted
+
+
+func needs_crowd_steering() -> bool:
+	return not staged_senses or _alerted or _last_seen != Vector3.INF or is_instance_valid(bait)
 
 
 ## A flat annulus on the XZ plane: the ring itself, not a filled disc, so what
@@ -2177,7 +2183,8 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 	_update_escape_clearance(delta)
 	if not is_alive():
 		# Dead ones are not skipped -- they are still going over.
-		_advance_fall(delta)
+		if not vanished and not _rested:
+			_advance_fall(delta)
 		return null
 	if kind == EnemyKind.TOMATO_BALL:
 		_advance_ball(delta, targets)
@@ -2221,10 +2228,19 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 	if not _alerted:
 		target = null
 
+	# Keep sensing and hit timers running, but a grounded idle grunt has no
+	# movement to resolve. A hit, a remembered target or bait wakes it here.
+	if kind == EnemyKind.TOMATO_GRUNT and target == null and _last_seen == Vector3.INF \
+			and not baited and _escape_left <= 0.0 and _shove.is_zero_approx() \
+			and velocity.is_zero_approx() and is_on_floor():
+		return pending_hit
+
 	# The stage 2 tricks: a charge, a throw, a spit, a pull. Run here, with the
 	# target decided and the body not yet moved, so a trick can redirect the
 	# walk below without a second movement pass.
+	var was_charging := is_charging()
 	var special := _advance_special(delta, target)
+	var brute_charge_step := was_charging or is_charging()
 
 	var flat := Vector3.ZERO
 	if baited:
@@ -2289,22 +2305,33 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 		velocity.y -= fall_gravity * delta
 	var stood_at := global_position
 	move_and_slide()
-	# A charge that meets a wall ends in it: the brute is stuck for a moment,
-	# which is the opening the charge pays for.
-	if _charge_left > 0.0 and is_on_wall():
-		_charge_left = 0.0
-		_charge_cooldown = BRUTE_CHARGE_COOLDOWN
-		_attack_lock_left = BRUTE_WALL_STUN
-		_contact_cooldown = maxf(_contact_cooldown, BRUTE_WALL_STUN)
-	if _charge_left > 0.0:
+	var charge_hit: MayoPlayer
+	if brute_charge_step:
+		var hit_wall := false
 		for index in get_slide_collision_count():
-			var player := get_slide_collision(index).get_collider() as MayoPlayer
-			if player != null and player.state != MayoPlayer.State.DEAD:
-				target = player
+			var collision := get_slide_collision(index)
+			var collider := collision.get_collider()
+			var player := collider as MayoPlayer
+			if not baited and player != null and player.state != MayoPlayer.State.DEAD \
+					and targets.has(player):
+				charge_hit = player
 				break
+			if collider is StaticBody3D and absf(collision.get_normal().y) < 0.5:
+				hit_wall = true
+		if charge_hit != null:
+			_charge_left = 0.0
+			_contact_cooldown = contact_interval
+			charge_hit.apply_charge_impact(_charge_direction, BRUTE_CHARGE_PUSH_SPEED, BRUTE_CHARGE_LIFT_SPEED)
+		elif hit_wall:
+			_charge_left = 0.0
+			_charge_cooldown = BRUTE_CHARGE_COOLDOWN
+			_attack_lock_left = BRUTE_WALL_STUN
+			_contact_cooldown = maxf(_contact_cooldown, BRUTE_WALL_STUN)
 	var walking := Vector2(velocity.x, velocity.z).length_squared() > 0.000001
 	_set_locomotion_animation(walking)
 	_advance_gait(global_position - stood_at, walking, delta)
+	if brute_charge_step:
+		return charge_hit
 	if pending_hit != null:
 		return pending_hit
 
@@ -2343,12 +2370,6 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 	# it is what stops a swarm of them being a stationary damage tick.
 	if impact_push_speed > 0.0 or impact_lift_speed > 0.0:
 		target.apply_enemy_impact(gap, impact_push_speed, impact_lift_speed)
-	# A charging brute does not bump you, it flattens you: the shove above and
-	# then the floor. The charge is spent on whoever it reached.
-	if _charge_left > 0.0:
-		_charge_left = 0.0
-		if target.can_slip():
-			target.begin_slip()
 	return target
 
 

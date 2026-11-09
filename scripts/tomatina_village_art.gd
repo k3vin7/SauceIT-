@@ -10,6 +10,8 @@ const HOUSES := ["HouseCream", "HousePeach", "HouseLime"]
 const BANNERS := ["BannerWater", "BannerMarket", "BannerFestival"]
 const CARDINAL := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
 const CHUNK_SIZE := 70.0
+const HOUSE_CHUNK_WIDTH := 110.0
+const WALL_DEPTH := 0.54
 
 var _meshes: Dictionary = {}
 var _batches: Dictionary = {}
@@ -35,10 +37,11 @@ func load_kit() -> bool:
 	for model in scene.find_children("*", "MeshInstance3D", true, false):
 		_meshes[model.name] = model.mesh
 	scene.free()
+	_meshes["BoundaryWall"] = _boundary_mesh()
 	return _meshes.has("HouseCream")
 
 
-func build(parent: Node3D, debris: Array[Dictionary], refills: Array[Dictionary], fire_truck: Dictionary) -> void:
+func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dictionary], fire_truck: Dictionary) -> void:
 	_build_frontages()
 	FESTIVAL_DECOR.build(parent, _facades)
 	var ember_mesh := _make_ember_mesh()
@@ -49,11 +52,8 @@ func build(parent: Node3D, debris: Array[Dictionary], refills: Array[Dictionary]
 			var centre: Vector3 = box["position"]
 			_add_fire(parent, Vector3(centre.x, 0.38, centre.z),
 				Vector3(1.24, 1.63, 1.21), ember_mesh, ember_process)
-	for box in refills:
-		var facing: Vector3 = box["facing"]
-		var size: Vector3 = box["size"]
-		_add_box_model("SauceVan", box, facing,
-			Vector3(size.z, size.y, size.x) if absf(facing.x) > 0.5 else size)
+	for box in parked_trucks:
+		_add_debris(box)
 	_add_box_model("FireEngine", fire_truck, Vector3.BACK)
 	for index in TomatinaMap.SAFE_ROOMS.size():
 		var room: Rect2i = TomatinaMap.SAFE_ROOMS[index]
@@ -69,7 +69,7 @@ func build(parent: Node3D, debris: Array[Dictionary], refills: Array[Dictionary]
 	stained_walls.shader = TOON_SHADER
 	stained_walls.set_shader_parameter("tomato_wall", true)
 	for name: String in _batches:
-		var is_wall := name == "LowWall" or name == "Church" or name in HOUSES
+		var is_wall := name == "BoundaryWall" or name == "Church" or name in HOUSES
 		for chunk: Vector2i in _batches[name]:
 			var transforms: Array = _batches[name][chunk]
 			var multimesh := MultiMesh.new()
@@ -82,11 +82,13 @@ func build(parent: Node3D, debris: Array[Dictionary], refills: Array[Dictionary]
 			batch.name = "%s_%d_%d" % [name, chunk.x, chunk.y]
 			batch.multimesh = multimesh
 			batch.material_override = stained_walls if is_wall else material
+			if name == "BrokenBoards" or name == "CrushedTomatoes":
+				batch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			root.add_child(batch)
 
 
-## Use the actual curb of the gameplay floor. Every other cell gets a house
-## and the low stone footing marks the full boundary, including outside turns.
+## The curb is also the face of the collision. The visual panel sits just
+## behind it so that the paint projected onto the collider has room to draw.
 func _build_frontages() -> void:
 	var floor := TomatinaMap.floor_cells()
 	var blocked := TomatinaMap.blocked_cells()
@@ -103,7 +105,8 @@ func _build_frontages() -> void:
 			var facing := Vector3(-step.x, 0.0, -step.y)
 			var curb := Vector2(cell) + Vector2(0.5, 0.5) + Vector2(step) * 0.5
 			var base := TomatinaMap.at_cell(curb)
-			_place("LowWall", base - facing * 0.47, facing, Vector3(StreetMap.CELL, 1.27, 0.9))
+			_place("BoundaryWall", base - facing * (WALL_DEPTH * 0.5 + 0.016), facing,
+				Vector3(StreetMap.CELL + 0.06, TomatinaMap.BOUNDARY_HEIGHT, WALL_DEPTH))
 			var scatter := posmod(cell.x * 31 + cell.y * 47 + step.x * 13 + step.y * 7, 19)
 			if scatter < 3 and open:
 				var at := base + facing * (0.82 + float(scatter) * 0.68)
@@ -127,13 +130,31 @@ func _build_frontages() -> void:
 			var behind := base + Vector3(tangent.x, 0.0, tangent.y) * shift
 			behind -= facing * (depth * 0.5 + 0.18)
 			var variant := posmod(cell.x * 71 + cell.y * 29, HOUSES.size())
-			var height := 7.2 + 0.6 * float(posmod(cell.x * 17 + cell.y * 31, 6))
+			var height := 9.0 + 0.6 * float(posmod(cell.x * 17 + cell.y * 31, 6))
 			var width := StreetMap.CELL * (1.92 if paired else 0.94)
 			_place(HOUSES[variant], behind, facing, Vector3(width, height, depth))
-			var anchor := behind + facing * (depth * 0.46 + 0.07) + Vector3.UP * (height * 0.72)
+			var anchor := behind + facing * (depth * 0.46 + 0.07) + Vector3.UP * (height * 0.84)
 			_facades.push_back(Transform3D(Basis.looking_at(-facing), anchor))
 
 	_build_backlots(floor)
+
+
+func _boundary_mesh() -> ArrayMesh:
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var panel := BoxMesh.new()
+	panel.size = Vector3(0.996, 0.96, 0.88)
+	var coping := BoxMesh.new()
+	coping.size = Vector3(1.0, 0.04, 1.0)
+	for box: BoxMesh in [panel, coping]:
+		var arrays := box.surface_get_arrays(0)
+		var base := Vector3.UP * (0.48 if box == panel else 0.98)
+		var tint := Color("b8a18a") if box == panel else Color("d5bb97")
+		for index: int in arrays[Mesh.ARRAY_INDEX]:
+			surface.set_color(tint)
+			surface.set_normal(arrays[Mesh.ARRAY_NORMAL][index])
+			surface.add_vertex(arrays[Mesh.ARRAY_VERTEX][index] + base)
+	return surface.commit()
 
 
 ## A second row of homes makes the winding roads read as lanes within a village.
@@ -185,14 +206,20 @@ func _add_debris(box: Dictionary) -> void:
 			size = Vector3(size.z, size.y, size.x)
 	elif name.begins_with("TomatoCrateStack"):
 		key = "TomatoCrateStack"
-	elif "Crate" in name:
+	elif TomatinaMap.is_refill_crate(box):
 		key = "TomatoCrate"
 	elif name == "MarketBarrels" or name == "CrushedTomatoes":
 		key = name
 	elif name.ends_with("WreckCanopy"):
 		key = "BrokenBoards"
-	elif name == "LoadedTomatoTruck" or name == "OverturnedTomatoTruck":
-		key = "TomatoTruck" if name == "LoadedTomatoTruck" else name
+	elif name == "ParkedVan" or name == "LoadedTomatoTruck" or name == "OverturnedTomatoTruck":
+		match name:
+			"ParkedVan":
+				key = "SauceVan"
+			"LoadedTomatoTruck":
+				key = "TomatoTruck"
+			"OverturnedTomatoTruck":
+				key = name
 		if name == "OverturnedTomatoTruck":
 			var at: Vector3 = box["position"]
 			at.y = 0.0
@@ -319,7 +346,8 @@ func _place(key: String, at: Vector3, facing := Vector3.BACK, size := Vector3.ZE
 	var scale := size / bounds.size if size != Vector3.ZERO else Vector3.ONE
 	var basis := Basis(Vector3.UP, atan2(facing.x, facing.z))
 	basis = basis.scaled_local(scale)
-	var chunk := Vector2i(floori(at.x / CHUNK_SIZE), floori(at.z / CHUNK_SIZE))
+	var chunk_width := HOUSE_CHUNK_WIDTH if key in HOUSES else CHUNK_SIZE
+	var chunk := Vector2i(floori(at.x / chunk_width), floori(at.z / CHUNK_SIZE))
 	if not _batches.has(key):
 		_batches[key] = {}
 	if not _batches[key].has(chunk):

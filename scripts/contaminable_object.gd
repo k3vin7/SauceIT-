@@ -40,6 +40,7 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	for grid in grids:
 		grid.upload_if_dirty()
+	set_process(false)
 
 
 func configure(new_cell_size: float, new_brush_radius: float) -> void:
@@ -73,6 +74,7 @@ func paint_mayo(world_position: Vector3, world_normal: Vector3,
 		brush_radius, 1, -1, kind)
 	if cell.x < 0:
 		return Vector3i(-1, -1, -1)
+	_queue_face_upload(face)
 	return Vector3i(face, cell.x, cell.y)
 
 
@@ -80,6 +82,13 @@ func paint_mayo_cell(face: int, cell: Vector2i, kind := ContaminationGrid.KIND_M
 	if face < 0 or face >= grids.size():
 		return
 	grids[face].paint_cell(cell, brush_radius, 1, -1, kind)
+	_queue_face_upload(face)
+
+
+func _queue_face_upload(face: int) -> void:
+	if paint_only and visible_surface:
+		(get_child(face) as MeshInstance3D).visible = grids[face].painted_cell_count() > 0
+	set_process(true)
 
 
 func cells_md5() -> String:
@@ -96,7 +105,10 @@ func snapshot_cells(face: int) -> PackedByteArray:
 func restore_cells(face: int, cells: PackedByteArray) -> bool:
 	if face < 0 or face >= grids.size():
 		return false
-	return grids[face].restore_cells(cells)
+	if not grids[face].restore_cells(cells):
+		return false
+	_queue_face_upload(face)
+	return true
 
 
 func face_count() -> int:
@@ -149,6 +161,7 @@ func _rebuild() -> void:
 		remove_child(child)
 		child.queue_free()
 	grids.clear()
+	set_process(false)
 
 	for i in FACE_BASIS.size():
 		var normal: Vector3 = FACE_BASIS[i][0]
@@ -164,7 +177,9 @@ func _rebuild() -> void:
 		face.name = "Face%d" % i
 		face.mesh = _build_face_quad(normal, u_axis, v_axis, face_extent)
 		face.material_override = grid.material
-		face.visible = visible_surface
+		face.visible = visible_surface and not paint_only
+		if paint_only:
+			face.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(face)
 
 	var collision := CollisionShape3D.new()

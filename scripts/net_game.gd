@@ -1652,20 +1652,31 @@ func _apply_tutorial_effect(kind: int, at: Vector3) -> void:
 ## A spitter's lump leaving its mouth: from where, how fast, and for how long
 ## at most. Everyone flies the same lump; what it does when it lands is the
 ## server's, and arrives as stains and health exactly as it always did.
-func broadcast_spit(origin: Vector3, velocity: Vector3, seconds: float) -> void:
+func broadcast_spit(origin: Vector3, velocity: Vector3, seconds: float, lob := false) -> void:
 	if _online and multiplayer.is_server() and not multiplayer.get_peers().is_empty():
-		_show_spit.rpc(origin, velocity, seconds)
+		_show_spit.rpc(origin, velocity, seconds, lob)
 
 
 @rpc("authority", "call_remote", "reliable")
-func _show_spit(origin: Vector3, velocity: Vector3, seconds: float) -> void:
+func _show_spit(origin: Vector3, velocity: Vector3, seconds: float, lob: bool) -> void:
 	if not _world_ready():
 		return
 	var sane := all_finite([origin.x, origin.y, origin.z, velocity.x, velocity.y, velocity.z, seconds])
 	if not sane or seconds < 0.0 or seconds > 5.0 or velocity.length() > 60.0:
 		rejected_packets += 1
 		return
-	world.show_spit(origin, velocity, seconds)
+	world.show_spit(origin, velocity, seconds, lob)
+
+
+func broadcast_tomato_blast(at: Vector3, radius: float) -> void:
+	if _online and multiplayer.is_server() and not multiplayer.get_peers().is_empty():
+		_show_tomato_blast.rpc(at, radius)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _show_tomato_blast(at: Vector3, radius: float) -> void:
+	if _world_ready() and all_finite([at.x, at.y, at.z, radius]) and radius >= 0.5 and radius <= 12.0:
+		world.show_tomato_blast(at, radius)
 
 
 ## One caption. The index of the line, not the line: both ends hold the same

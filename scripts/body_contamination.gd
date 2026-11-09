@@ -106,6 +106,13 @@ func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 
 func _process(_delta: float) -> void:
 	grid.upload_if_dirty()
+	if not _deferred_overlays.is_empty():
+		var painted := grid.painted_cell_count() > 0
+		if painted != _deferred_overlay_visible:
+			_deferred_overlay_visible = painted
+			for mesh: MeshInstance3D in _deferred_overlays:
+				mesh.material_overlay = _deferred_overlays[mesh] if painted else null
+		set_process(false)
 
 
 ## Puts a previous mask back onto a freshly configured grid. Same size -- the
@@ -140,7 +147,11 @@ func _carry_over(kept: PackedByteArray, kept_width: int, kept_height: int) -> vo
 ## the rest pose; drawing from the animated pose instead made the two disagree
 ## the moment anything moved, and the stain slid off a monster as it went over.
 ## Captured here, once, rather than pushed every frame.
-func add_visual_overlay(visual_root: Node) -> void:
+var _deferred_overlays := {}
+var _deferred_overlay_visible := false
+
+
+func add_visual_overlay(visual_root: Node, only_when_painted := false) -> void:
 	if visual_root == null:
 		return
 	_visual_overlay = ShaderMaterial.new()
@@ -157,7 +168,12 @@ func add_visual_overlay(visual_root: Node) -> void:
 		var own := _visual_overlay.duplicate() as ShaderMaterial
 		own.set_shader_parameter("rest_to_body",
 			into_body * mesh_instance.global_transform)
-		mesh_instance.material_overlay = own
+		if only_when_painted:
+			_deferred_overlays[mesh_instance] = own
+		else:
+			mesh_instance.material_overlay = own
+	if only_when_painted:
+		set_process(grid.dirty)
 
 
 ## Marks the hit and returns the centre cell, or (-1, -1) if it landed off the
@@ -166,16 +182,20 @@ func add_visual_overlay(visual_root: Node) -> void:
 ## chart and it is ignored, which is what it was for a long time.
 func paint_mayo(world_position: Vector3, world_normal: Vector3,
 		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
-	return grid.paint(_to_grid(world_position, world_normal), brush_radius, 1, -1, kind)
+	var cell := grid.paint(_to_grid(world_position, world_normal), brush_radius, 1, -1, kind)
+	_queue_overlay_upload()
+	return cell
 
 
 func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
 	grid.paint_cell(cell, brush_radius, 1, -1, kind)
+	_queue_overlay_upload()
 
 
 ## Clean again, for a body that is being handed to a different player.
 func clear() -> void:
 	grid.clear()
+	_queue_overlay_upload()
 
 
 func painted_cell_count() -> int:
@@ -195,7 +215,15 @@ func snapshot_cells() -> PackedByteArray:
 
 
 func restore_cells(cells: PackedByteArray) -> bool:
-	return grid.restore_cells(cells)
+	if not grid.restore_cells(cells):
+		return false
+	_queue_overlay_upload()
+	return true
+
+
+func _queue_overlay_upload() -> void:
+	if not _deferred_overlays.is_empty() and grid.dirty:
+		set_process(true)
 
 
 ## World position -> the unwrapped body surface, in metres. The shader derives
