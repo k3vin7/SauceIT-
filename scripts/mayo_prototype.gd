@@ -6,6 +6,8 @@ const PlayerScript := preload("res://scripts/player_controller.gd")
 const WallScript := preload("res://scripts/contaminable_object.gd")
 const CrosshairScript := preload("res://scripts/crosshair.gd")
 const NetPanelScript := preload("res://scripts/net_panel.gd")
+const UI := preload("res://scripts/sauce_ui.gd")
+const SauceParts := preload("res://scripts/tomatina_sauce_parts.gd")
 const BodyContaminationScript := preload("res://scripts/body_contamination.gd")
 const VisorScript := preload("res://scripts/visor_contamination.gd")
 const VisorOverlayScript := preload("res://scripts/visor_overlay.gd")
@@ -69,6 +71,7 @@ const SPLAT_ENEMY := 5
 ## Addressed by the roof's index in `_roofs`, built in the same order everywhere.
 const SPLAT_ROOF := 6
 const SPLAT_FLOOR_CLEAR := 7
+const SPLAT_BODY_WASH := 8
 
 ## What the nozzle is doing this frame. The **authority decides it and it
 ## travels in the state packet**, because it is the one part of firing that
@@ -165,6 +168,7 @@ class MayoPoint:
 	## a jet.
 	var severed := false
 	var burst_index := 0
+	var range_scale := 1.0
 
 class RibbonPoint:
 	var position := Vector3.ZERO
@@ -201,6 +205,14 @@ class Shooter:
 	var weapon: Node3D
 	var muzzle: Node3D
 	var points: Array[MayoPoint] = []
+	var coins := 0
+	var owned_parts := 1
+	var sauce_part := 0
+	var part_trigger_down := false
+	var part_shots_left := 0
+	var part_cooldown := 0.0
+	var part_tip: Node3D
+	var part_shown := 0
 	var emit_distance := 0.0
 	var attack_direction := Vector3.FORWARD
 	var burst_index := 0
@@ -1096,6 +1108,8 @@ var _completion_emitted := false
 var _stage_roster_initialized := false
 var _stage_clear_emitted := false
 var _stage_objective: Label
+var _objective_card: PanelContainer
+var _refuge_status_label: Label
 
 # --- La Tomatina (stage 2) ------------------------------------------------------
 ## Tomatoes burst by the square metre: how many floor splats a burst lays per
@@ -1427,6 +1441,9 @@ func _physics_process(delta: float) -> void:
 			_advance_press_king_spawn(delta)
 	for shooter in _shooters.values():
 		_advance_strand(shooter, delta)
+	if _sauce_parts != null:
+		_sauce_parts.advance_projectiles(delta, _is_authority())
+		_sauce_parts.advance_coins(delta, _is_authority())
 	if debug_profile_enabled:
 		debug_timings_us.emit_follow += Time.get_ticks_usec() - step_started
 		step_started = Time.get_ticks_usec()
@@ -1480,6 +1497,9 @@ func _physics_process(delta: float) -> void:
 ## Emission and the trigger edges, for one shooter. Split out of the frame loop
 ## so remote shooters go through exactly the same path as the local one.
 func _advance_strand(shooter: Shooter, delta: float) -> void:
+	if SauceParts.PROJECTILES.has(shooter.sauce_part):
+		_advance_part_trigger(shooter, delta)
+		return
 	# A press buys a minimum of stream whether or not it is held, and the
 	# trigger is then dead for a moment. Every peer runs this off the same
 	# press, so nobody has to be told about it.
@@ -1562,6 +1582,65 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 	if _is_authority():
 		_advance_sauce(shooter, delta, delivering or shooter.nozzle == Nozzle.AIR)
 	shooter.was_firing = delivering
+
+
+func _advance_part_trigger(shooter: Shooter, delta: float) -> void:
+	shooter.was_firing = false
+	if not _is_authority():
+		return
+	_decide_nozzle(shooter, delta, false)
+	shooter.part_cooldown = maxf(0.0, shooter.part_cooldown - delta)
+	var pressed := shooter.firing and not shooter.part_trigger_down
+	shooter.part_trigger_down = shooter.firing
+	if shooter.player.state != MayoPlayer.State.NORMAL or shooter.player.is_wiping() \
+			or selected_item_slot(shooter.peer_id) != 0 or _hose_slot_of(shooter.peer_id) >= 0 \
+			or (shooter.is_local and _refuge_shop_room >= 0):
+		shooter.part_shots_left = 0
+		return
+	if shooter.part_cooldown > 0.0:
+		return
+	match shooter.sauce_part:
+		SauceParts.Part.FAN:
+			if shooter.firing and shooter.sauce >= 0.044:
+				shooter.sauce -= 0.044
+				shooter.part_cooldown = 0.14
+				_fire_part_volley(shooter)
+		SauceParts.Part.BURST:
+			if pressed and shooter.part_shots_left == 0 and shooter.sauce >= 0.09:
+				shooter.sauce -= 0.09
+				shooter.part_shots_left = 3
+			if shooter.part_shots_left > 0:
+				shooter.part_shots_left -= 1
+				shooter.part_cooldown = 0.10 if shooter.part_shots_left > 0 else 0.48
+				_fire_part_volley(shooter)
+		SauceParts.Part.ARC, SauceParts.Part.CANNON:
+			var cannon := shooter.sauce_part == SauceParts.Part.CANNON
+			var cost := 0.25 if cannon else 0.14
+			if pressed and shooter.sauce >= cost:
+				shooter.sauce -= cost
+				shooter.part_cooldown = 0.95 if cannon else 0.72
+				_fire_part_volley(shooter)
+
+
+func _fire_part_volley(shooter: Shooter) -> void:
+	var origin := shooter.aim_pivot.global_position
+	var forward := shooter.attack_direction
+	if shooter.sauce_part == SauceParts.Part.ARC:
+		forward = (forward + Vector3.UP * 0.43).normalized()
+	shooter.burst_index += 1
+	show_part_volley(shooter.peer_id, shooter.sauce_part, shooter.sauce_kind, origin, forward)
+	if is_instance_valid(_net) and _net.is_online():
+		_net.broadcast_part_volley(shooter.peer_id, shooter.sauce_part, shooter.sauce_kind, origin, forward)
+
+
+func show_part_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vector3) -> void:
+	if _sauce_parts == null or not SauceParts.PROJECTILES.has(part):
+		return
+	_sauce_parts.show_volley(peer, part, sauce, origin, forward)
+	if part == SauceParts.Part.CANNON:
+		_play_combat_warning(origin, 155.0, 0.16)
+	elif part == SauceParts.Part.ARC:
+		_play_combat_warning(origin, 235.0, 0.10)
 
 
 ## Raises `air_shot_fired` while the nozzle is blowing air, on every peer --
@@ -1878,9 +1957,13 @@ func _burst_spent(shooter: Shooter) -> bool:
 func _read_local_input() -> void:
 	if _local == null:
 		return
+	if _refuge_shop_room >= 0 and (_local.player.state != MayoPlayer.State.NORMAL \
+			or _refuge_shop_in_reach(_local.player.global_position) != _refuge_shop_room):
+		_close_refuge_shop()
+	var shop_open := _refuge_shop_room >= 0
 	# The bottle is acquired at the starting stall. Dialogue never locks input.
 	var allowed := _tutorial == null or _tutorial.allows_firing()
-	var live := _input_enabled and allowed and not _local.player.is_incapacitated() \
+	var live := _input_enabled and not shop_open and allowed and not _local.player.is_incapacitated() \
 		and not _local.player.is_wiping()
 	_local.firing = live and _fire_held()
 	if debug_input_override:
@@ -1897,11 +1980,11 @@ func _read_local_input() -> void:
 	var move := Vector2.ZERO
 	var run := false
 	var jump := false
-	if debug_input_override:
+	if not shop_open and debug_input_override:
 		move = debug_input_move
 		run = debug_input_run
 		jump = debug_input_jump
-	elif _input_enabled:
+	elif not shop_open and _input_enabled:
 		move = Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
 		run = Input.is_action_pressed("run")
 		jump = Input.is_action_pressed("jump")
@@ -2153,6 +2236,13 @@ func _update_fallen_body(shooter: Shooter) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if _local == null:
 		return
+	var interact: bool = event is InputEventKey and event.pressed and not event.echo \
+		and (event.physical_keycode == KEY_E or event.keycode == KEY_E)
+	if _refuge_shop_room >= 0:
+		if interact or event.is_action_pressed("ui_cancel"):
+			_close_refuge_shop()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed("ui_cancel"):
 		menu_requested.emit()
 		get_viewport().set_input_as_handled()
@@ -2199,7 +2289,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_request_tomato_action(ESCAPE_SHOVE_ACTION)
 			get_viewport().set_input_as_handled()
 			return
-		if event.physical_keycode == KEY_E:
+		if interact:
+			if _try_open_refuge_shop():
+				get_viewport().set_input_as_handled()
+				return
 			_request_tomato_action(0)
 			return
 	if event is InputEventMouseButton and event.pressed:
@@ -2541,6 +2634,8 @@ func remove_avatar(peer_id: int) -> void:
 ## Joining a session throws away the offline body: the server decides who is in
 ## the world, this peer included, and says so in the messages that follow.
 func reset_for_join() -> void:
+	if _refuge_shop_room >= 0:
+		_close_refuge_shop()
 	for peer_id in _shooters.keys():
 		_free_shooter(_shooters[peer_id])
 	_shooters.clear()
@@ -2550,6 +2645,7 @@ func reset_for_join() -> void:
 	_hose_users.clear()
 	if map_kind == MapKind.TOMATINA:
 		_reset_tomatina_finale()
+		_sauce_parts.reset()
 	# A tutorial roster is appended by the host. Discard offline spawns before
 	# receiving that roster, otherwise late joining duplicates enemy indices.
 	if _tutorial != null:
@@ -2658,6 +2754,8 @@ func _layout_view() -> void:
 		_key_legend.set_frame(frame)
 	if _tutorial_hud != null:
 		_tutorial_hud.set_frame(frame)
+	if _objective_card != null:
+		_objective_card.position = frame.position + Vector2(20.0, 18.0)
 	_layout_letterbox(size, frame)
 
 
@@ -2820,14 +2918,28 @@ func _build_crosshair() -> void:
 		_rescue_hud.world = self
 		_rescue_hud.set_frame(_view_layout)
 		layer.add_child(_rescue_hud)
+		_objective_card = PanelContainer.new()
+		_objective_card.theme = UI.theme()
+		_objective_card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_objective_card.position = _view_layout.position + Vector2(20.0, 18.0)
+		_objective_card.add_theme_stylebox_override("panel",
+			UI.box(Color(0.08, 0.13, 0.16, 0.93), UI.EDGE, 10, 14.0))
+		_hud_layer.add_child(_objective_card)
+		var objective_content := VBoxContainer.new()
+		objective_content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		objective_content.custom_minimum_size.x = 318.0
+		_objective_card.add_child(objective_content)
+		objective_content.add_child(UI.eyebrow("임무 목표"))
 		_stage_objective = Label.new()
 		_stage_objective.name = "StageObjective"
-		_stage_objective.position = Vector2(24.0, 24.0)
-		_stage_objective.add_theme_font_size_override("font_size", 22)
-		_stage_objective.add_theme_color_override("font_color", Color("fff0a8"))
-		_stage_objective.add_theme_color_override("font_outline_color", Color("17202b"))
-		_stage_objective.add_theme_constant_override("outline_size", 7)
-		_hud_layer.add_child(_stage_objective)
+		_stage_objective.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_stage_objective.add_theme_font_size_override("font_size", 19)
+		objective_content.add_child(_stage_objective)
+		_refuge_status_label = UI.eyebrow("", UI.GOLD)
+		_refuge_status_label.hide()
+		objective_content.add_child(_refuge_status_label)
+		if map_kind == MapKind.TOMATINA:
+			_build_refuge_shop_panel()
 
 
 ## Host / join panel, opened with F2 and closed again once a session is up.
@@ -2837,6 +2949,175 @@ func _build_network_panel() -> void:
 	_net_panel.bind(_net)
 	_net_panel.visible = false
 	_hud_layer.add_child(_net_panel)
+
+
+var _refuge_shop_room := -1
+var _refuge_shop: ColorRect
+var _refuge_shop_title: Label
+var _refuge_shop_wallet: Label
+var _refuge_shop_buttons: Array[Button] = []
+var _refuge_shop_equipped := UI.box(Color("253f3e"), UI.MINT, 8, 14.0)
+var _sauce_parts: SauceParts
+
+
+func _build_refuge_shop_panel() -> void:
+	_refuge_shop = ColorRect.new()
+	_refuge_shop.name = "RefugeShop"
+	_refuge_shop.theme = UI.theme()
+	_refuge_shop.color = UI.SHADE
+	_refuge_shop.hide()
+	_hud_layer.add_child(_refuge_shop)
+	_refuge_shop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	var center := CenterContainer.new()
+	_refuge_shop.add_child(center)
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var panel := PanelContainer.new()
+	center.add_child(panel)
+	var margin := MarginContainer.new()
+	for side in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + side, 24)
+	panel.add_child(margin)
+	var content := VBoxContainer.new()
+	content.custom_minimum_size.x = 440.0
+	content.add_theme_constant_override("separation", 7)
+	margin.add_child(content)
+
+	content.add_child(UI.eyebrow("장비 개조", UI.MINT))
+	_refuge_shop_title = Label.new()
+	_refuge_shop_title.add_theme_font_size_override("font_size", 24)
+	content.add_child(_refuge_shop_title)
+	_refuge_shop_wallet = UI.eyebrow("", UI.GOLD)
+	content.add_child(_refuge_shop_wallet)
+	for part in SauceParts.CATALOG.size():
+		var choice := Button.new()
+		choice.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		choice.pressed.connect(_request_sauce_part.bind(part))
+		content.add_child(choice)
+		_refuge_shop_buttons.append(choice)
+	var close := Button.new()
+	close.text = "닫기  [E / Esc]"
+	close.pressed.connect(_close_refuge_shop)
+	content.add_child(close)
+
+
+func _refuge_shop_in_reach(at: Vector3) -> int:
+	var room := TomatinaMap.safe_room_at(StreetMap.cell_at(at))
+	if room < 0 or at.y < 0.0 or at.y > 2.5:
+		return -1
+	var offset := at - TomatinaMap.refuge_shop_at(room)
+	return room if Vector2(offset.x, offset.z).length_squared() <= 2.0 ** 2 else -1
+
+
+func _try_open_refuge_shop() -> bool:
+	if _refuge_shop == null or _local.player.state != MayoPlayer.State.NORMAL:
+		return false
+	var room := _refuge_shop_in_reach(_local.player.global_position)
+	if room < 0:
+		return false
+	for teammate: Shooter in _shooters.values():
+		if _can_rescue_teammate(_local.player, teammate.player):
+			return false
+	_refuge_shop_room = room
+	_refuge_shop_title.text = "%s 상점" % TomatinaMap.SAFE_ROOM_NAMES[room]
+	_refresh_refuge_shop()
+	_refuge_shop.show()
+	_local.player.frozen = true
+	_local.firing = false
+	_local.fire_hold = 0.0
+	if DisplayServer.get_name() != "headless":
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	return true
+
+
+func _close_refuge_shop() -> void:
+	_refuge_shop_room = -1
+	_refuge_shop.hide()
+	_local.player.frozen = not _input_enabled
+	_tomato_fire_block = Input.is_action_pressed("fire_mayo")
+	if _input_enabled and DisplayServer.get_name() != "headless":
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func _refresh_refuge_shop() -> void:
+	if _refuge_shop_room < 0 or _local == null:
+		return
+	_refuge_shop_wallet.text = "보유 코인  %d" % _local.coins
+	for part in SauceParts.CATALOG.size():
+		var entry: Array = SauceParts.CATALOG[part]
+		var choice := _refuge_shop_buttons[part]
+		var owned := (_local.owned_parts & (1 << part)) != 0
+		var equipped := _local.sauce_part == part
+		choice.visible = owned or _refuge_shop_room >= int(entry[2])
+		choice.disabled = equipped or (not owned and _local.coins < int(entry[3]))
+		if equipped:
+			choice.add_theme_stylebox_override("disabled", _refuge_shop_equipped)
+			choice.add_theme_color_override("font_disabled_color", UI.MINT)
+		else:
+			choice.remove_theme_stylebox_override("disabled")
+			choice.remove_theme_color_override("font_disabled_color")
+		var action := "장착 중" if equipped else ("장착" if owned else "%d코인" % entry[3])
+		choice.text = "%s  ·  %s\n%s" % [entry[0], action, entry[1]]
+
+
+func _request_sauce_part(part: int) -> void:
+	if _refuge_shop_room < 0:
+		return
+	if _is_authority():
+		buy_or_equip_sauce_part(_local.peer_id, part)
+	else:
+		_net.request_sauce_part(part)
+
+
+func buy_or_equip_sauce_part(peer: int, part: int) -> bool:
+	if _sauce_parts == null or not _is_authority() or part < 0 or part >= SauceParts.CATALOG.size():
+		return false
+	var shooter: Shooter = _shooters.get(peer)
+	if shooter == null or shooter.player.state != MayoPlayer.State.NORMAL:
+		return false
+	var room := _refuge_shop_in_reach(shooter.player.global_position)
+	if room < 0:
+		return false
+	var entry: Array = SauceParts.CATALOG[part]
+	var bit := 1 << part
+	if (shooter.owned_parts & bit) == 0:
+		if room < int(entry[2]) or shooter.coins < int(entry[3]):
+			return false
+		shooter.coins -= int(entry[3])
+		shooter.owned_parts |= bit
+	if shooter.sauce_part != part:
+		shooter.sauce_part = part
+		shooter.part_shots_left = 0
+		shooter.part_cooldown = 0.0
+		shooter.part_trigger_down = shooter.firing
+		shooter.fire_hold = 0.0
+		shooter.emit_distance = 0.0
+		shooter.was_firing = false
+	_sauce_parts.dirty = true
+	_refresh_refuge_shop()
+	return true
+
+
+func sauce_shop_state() -> PackedInt32Array:
+	var data := PackedInt32Array()
+	for shooter: Shooter in _shooters.values():
+		data.append_array(PackedInt32Array([shooter.peer_id, shooter.coins,
+			shooter.owned_parts, shooter.sauce_part]))
+	return data
+
+
+func apply_sauce_shop_state(data: PackedInt32Array, coins: PackedFloat32Array) -> void:
+	if _sauce_parts == null or _is_authority() or data.size() % 4 != 0 or coins.size() % 4 != 0:
+		return
+	for index in range(0, data.size(), 4):
+		var shooter: Shooter = _shooters.get(data[index])
+		if shooter == null:
+			continue
+		shooter.coins = data[index + 1]
+		shooter.owned_parts = data[index + 2]
+		shooter.sauce_part = data[index + 3]
+	_sauce_parts.apply_coin_state(coins)
+	_refresh_refuge_shop()
 
 
 ## The overlay draws whichever lenses the local player is currently wearing.
@@ -2861,6 +3142,8 @@ func set_network_panel_open(open: bool) -> void:
 
 
 func set_gameplay_input_enabled(enabled: bool) -> void:
+	if not enabled and _refuge_shop_room >= 0:
+		_close_refuge_shop()
 	_input_enabled = enabled
 	set_physics_process(enabled)
 	if _local != null:
@@ -3412,6 +3695,10 @@ var tomatina_shortcut_open := true
 
 
 func _build_tomatina() -> void:
+	_sauce_parts = SauceParts.new()
+	_sauce_parts.name = "SauceParts"
+	_sauce_parts.world = self
+	add_child(_sauce_parts)
 	var art := TomatinaVillageArt.new()
 	var has_art := art.load_kit()
 	var debris := TomatinaMap.debris_boxes()
@@ -3453,6 +3740,14 @@ func _build_tomatina() -> void:
 		sign.font_size = 96
 		sign.pixel_size = 0.018
 		add_child(sign)
+		_build_refuge_shower(room)
+		var shop_sign := Label3D.new()
+		shop_sign.name = "RefugeShopSign%d" % room
+		shop_sign.text = "상점"
+		shop_sign.position = TomatinaMap.refuge_shop_at(room) + Vector3(0.0, 2.85, -2.0)
+		shop_sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		shop_sign.pixel_size = 0.012
+		add_child(shop_sign)
 	_create_wall("FireTruck", truck["position"], truck["size"], truck["color"], not has_art)
 	if not tomatina_shortcut_open:
 		var gate := TomatinaMap.market_gate()
@@ -3477,7 +3772,64 @@ func _build_tomatina() -> void:
 	_build_start_marker(TomatinaMap.start_arrow())
 
 
+var _refuge_shower_sprays: Array[CPUParticles3D] = []
+
+
+func _build_refuge_shower(room: int) -> void:
+	var at := TomatinaMap.refuge_shower_at(room)
+	var sign := Label3D.new()
+	sign.text = "샤워기"
+	sign.position = at + Vector3.UP * 3.2
+	sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	sign.pixel_size = 0.009
+	add_child(sign)
+
+	var spray := CPUParticles3D.new()
+	spray.name = "RefugeShowerSpray%d" % room
+	spray.position = at + Vector3.UP * 2.69
+	spray.emitting = false
+	spray.one_shot = true
+	spray.amount = 100
+	spray.lifetime = 0.85
+	spray.direction = Vector3.DOWN
+	spray.spread = 12.0
+	spray.initial_velocity_min = 1.5
+	spray.initial_velocity_max = 2.1
+	spray.gravity = Vector3.DOWN * 2.4
+	spray.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
+	spray.emission_sphere_radius = 0.14
+	spray.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var droplet := BoxMesh.new()
+	droplet.size = Vector3(0.021, 0.16, 0.021)
+	var water := StandardMaterial3D.new()
+	water.albedo_color = Color("b5ecff")
+	water.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	droplet.material = water
+	spray.mesh = droplet
+	add_child(spray)
+	_refuge_shower_sprays.append(spray)
+
+
+func _refuge_shower_in_reach(at: Vector3) -> int:
+	for room in _refuge_shower_sprays.size():
+		var offset := at - TomatinaMap.refuge_shower_at(room)
+		if offset.y >= 0.0 and offset.y <= 2.5 and Vector2(offset.x, offset.z).length_squared() <= 0.9 * 0.9:
+			return room
+	return -1
+
+
+func _apply_refuge_shower(peer: int, room: int) -> void:
+	if room < 0 or room >= _refuge_shower_sprays.size():
+		return
+	var shooter: Shooter = _shooters.get(peer)
+	if shooter != null and shooter.player.contamination != null:
+		shooter.player.contamination.wash_sauce(ContaminationGrid.KIND_KETCHUP)
+	_refuge_shower_sprays[room].restart()
+	_refuge_shower_sprays[room].emitting = true
+
+
 func _build_tomatina_route_signs() -> void:
+	TomatinaVillageArt.build_plaza_waymarks(self)
 	var labels := [
 		[Vector2(10.9, 166.0), "지름길 · 토마토즙" if tomatina_shortcut_open else "지름길 폐쇄"],
 		[Vector2(15.5, 164.8), "시장 큰길 · 볼러 주의"],
@@ -3898,6 +4250,11 @@ func _build_enemies() -> void:
 			var enemy := _enemies[index]
 			var leg := TomatinaMap.encounter_at(StreetMap.cell_at(enemy.position))
 			enemy.set_meta("encounter", leg)
+			if entry.size() > 2:
+				if entry[2] is int:
+					enemy.set_meta("alley_ambush", entry[2])
+				elif entry[2] == TomatinaMap.ALLEY_REINFORCEMENT:
+					enemy.set_meta(TomatinaMap.ALLEY_REINFORCEMENT, true)
 			if TomatinaMap.in_rect(_plaza_rect, enemy.position):
 				enemy.set_meta("finale_guard", true)
 			for ball in enemy.ball_pool:
@@ -4310,6 +4667,8 @@ func _is_overripe(enemy: MayoEnemy) -> bool:
 
 
 func _finish_tomato_kill(enemy: MayoEnemy, shooter: Shooter) -> void:
+	if _sauce_parts != null:
+		_sauce_parts.drop_for(enemy)
 	if _is_overripe(enemy):
 		var at := enemy.global_position
 		_overripe_bursts[enemy] = {"at": at, "left": OVERRIPE_BURST_DELAY, "peer": shooter.peer_id if shooter != null else -1}
@@ -4951,6 +5310,10 @@ func _tomatina_action_hint() -> String:
 	var slot := _hose_slot(at)
 	if slot >= 0 and _finale_elapsed >= FINALE_DURATION and not _hose_users.has(slot):
 		return "[E] 물 호스 사용"
+	if _refuge_shower_in_reach(at) >= 0:
+		return "[E] 몸에 묻은 토마토 자국 씻기"
+	if _refuge_shop_room < 0 and _refuge_shop_in_reach(at) >= 0:
+		return "[E] 상점 열기"
 	return ""
 
 
@@ -4980,13 +5343,9 @@ func _update_stage_objective(alive := -1) -> void:
 		else:
 			objective = "생존 팀원과 소방차로 이동"
 		var refuge := _tomatina_refuge_status()
-		var action := _tomatina_action_hint()
-		var lines := PackedStringArray([objective])
-		if not refuge.is_empty():
-			lines.append(refuge)
-		if not action.is_empty():
-			lines.append(action)
-		_stage_objective.text = "\n".join(lines)
+		_stage_objective.text = objective
+		_refuge_status_label.text = refuge
+		_refuge_status_label.visible = not refuge.is_empty()
 		return
 	if alive < 0:
 		alive = 0
@@ -5046,6 +5405,31 @@ func apply_tutorial_line(line_id: int, urgent := false, tag := 0) -> void:
 		_tutorial.show_line(line_id, urgent, tag)
 
 
+const ALLEY_AMBUSH_HALF_LENGTH := 6.0
+const ALLEY_AMBUSH_HALF_WIDTH := 12.0
+var _sprung_alley_ambushes := {}
+
+
+func _advance_alley_ambushes(encounter_targets: Array) -> void:
+	for group in TomatinaMap.ALLEY_AMBUSHES.size():
+		if _sprung_alley_ambushes.has(group):
+			continue
+		var plan: Array = TomatinaMap.ALLEY_AMBUSHES[group]
+		var trip_cell: Vector2 = plan[1]
+		var trip := TomatinaMap.at_cell(trip_cell)
+		var front_cell := Vector2(plan[2][0][1]) + Vector2.ONE * 0.5
+		var forward := trip_cell.direction_to(front_cell)
+		for player: MayoPlayer in encounter_targets[plan[0]]:
+			if player.state != MayoPlayer.State.NORMAL or player.global_position.y > 2.8:
+				continue
+			var offset := player.global_position - trip
+			var flat := Vector2(offset.x, offset.z)
+			if absf(flat.dot(forward)) <= ALLEY_AMBUSH_HALF_LENGTH \
+					and absf(flat.cross(forward)) <= ALLEY_AMBUSH_HALF_WIDTH:
+				_sprung_alley_ambushes[group] = true
+				break
+
+
 func _advance_enemies(delta: float) -> void:
 	if _enemies.is_empty():
 		return
@@ -5058,12 +5442,17 @@ func _advance_enemies(delta: float) -> void:
 	for shooter in _shooters.values():
 		targets.push_back(shooter.player)
 	var encounter_targets := [[], [], [], []]
+	var alley_targets := []
 	if map_kind == MapKind.TOMATINA:
 		_update_tomatina_checkpoint(targets)
 		for player: MayoPlayer in targets:
 			var leg := TomatinaMap.encounter_at(StreetMap.cell_at(player.global_position))
 			if leg >= 0:
 				encounter_targets[leg].push_back(player)
+				if leg == 3 and not TomatinaMap.in_rect(_plaza_rect, player.global_position):
+					alley_targets.push_back(player)
+		if not _horde_spawned:
+			_advance_alley_ambushes(encounter_targets)
 	# Who each body has to steer round, bucketed once a tick rather than every
 	# body reading every other. With the horde in that was 270 bodies squared
 	# a tick, and it was the whole of the lag -- see `_crowd_neighbours`.
@@ -5083,7 +5472,22 @@ func _advance_enemies(delta: float) -> void:
 		# watches. The rule lives there, not here.
 		var chasing: Array = targets
 		if map_kind == MapKind.TOMATINA:
-			chasing = encounter_targets[int(enemy.get_meta("encounter", 3))]
+			var leg := int(enemy.get_meta("encounter", 3))
+			chasing = encounter_targets[leg]
+			if enemy.has_meta("alley_ambush"):
+				var group := int(enemy.get_meta("alley_ambush"))
+				if _horde_spawned or not _sprung_alley_ambushes.has(group):
+					chasing = []
+				elif leg == 3:
+					chasing = alley_targets
+				# In co-op, both ends move on the same cue, even around a blind corner.
+				# Their special attacks still require their ordinary line of sight.
+				enemy.horde_alert = chasing.size() > 1
+			elif enemy.has_meta(TomatinaMap.ALLEY_REINFORCEMENT):
+				if _horde_spawned:
+					chasing = []
+				elif leg == 3:
+					chasing = alley_targets
 		elif _tutorial != null:
 			chasing = _tutorial.targets_for(enemy, targets)
 		# Dead ones are advanced too: they are still toppling.
@@ -5531,13 +5935,15 @@ func _emit_point(shooter: Shooter = null) -> void:
 	# Both jitters use the aim's own axes rather than the world up axis, which
 	# degenerates to a zero vector when aiming straight up or down.
 	var aim_basis := _aim_basis(shooter)
-	var jitter := shooter.rng.randf_range(-lateral_position_jitter, lateral_position_jitter)
+	var focused := shooter.sauce_part == SauceParts.Part.FOCUS
+	var spread := 0.28 if focused else 1.0
+	var jitter := shooter.rng.randf_range(-lateral_position_jitter, lateral_position_jitter) * spread
 	point.position = shooter.muzzle.global_position + shooter.attack_direction * muzzle_forward_offset \
 		+ aim_basis.x * jitter
 	# The nozzle is held off to the side, so the strand is launched at the point
 	# the crosshair marks rather than parallel to the view axis.
 	var convergence := shooter.aim_pivot.global_position + shooter.attack_direction * aim_convergence_distance
-	var angle := shooter.rng.randf_range(-yaw_angle_jitter, yaw_angle_jitter)
+	var angle := shooter.rng.randf_range(-yaw_angle_jitter, yaw_angle_jitter) * spread
 	var direction := (convergence - point.position).normalized().rotated(aim_basis.y, angle).normalized()
 	# The first cast runs from the eyes, not from the nozzle. The nozzle is the
 	# better part of a metre ahead of the aim pivot, so a body pressed up
@@ -5555,6 +5961,9 @@ func _emit_point(shooter: Shooter = null) -> void:
 	# given.
 	var speed := extend_speed * squeeze_pressure(shooter) * sauce_speed_scale(shooter) \
 		* (1.0 + shooter.rng.randf_range(-speed_magnitude_jitter, speed_magnitude_jitter))
+	if focused:
+		speed *= 1.28
+		point.range_scale = 1.6
 	var player_velocity := shooter.player.velocity
 	var travel_scale := extend_speed / maxf(emission_speed, 0.001)
 	point.velocity = direction * speed + Vector3(player_velocity.x, 0.0, player_velocity.z) \
@@ -5612,8 +6021,8 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 
 		point.age += delta
 		if point.powered:
-			var time_expired := use_time_lifetime and point.age >= point_time_lifetime * emission_speed / maxf(extend_speed, 0.001)
-			var distance_expired := use_distance_lifetime and point.distance_travelled >= stream_range
+			var time_expired := use_time_lifetime and point.age >= point_time_lifetime * point.range_scale * emission_speed / maxf(extend_speed, 0.001)
+			var distance_expired := use_distance_lifetime and point.distance_travelled >= stream_range * point.range_scale
 			if time_expired or distance_expired:
 				point.powered = false
 		if not point.powered:
@@ -5703,7 +6112,8 @@ func _begin_landing(point: MayoPoint, hit_position: Vector3, hit_normal: Vector3
 ## using. Working it out independently on each machine would mean agreeing on
 ## burst boundaries as well as on cells, for nothing.
 func _record_floor_splat(shooter: Shooter, burst_index: int,
-		hit_position: Vector3) -> void:
+		hit_position: Vector3, stored_sauce := -1) -> void:
+	var sauce := shooter.sauce_kind if stored_sauce < 0 else stored_sauce
 	var frame := int(Engine.get_physics_frames())
 	var span := maxi(1, roundi(coat_seconds * float(Engine.physics_ticks_per_second)))
 	if shooter.coat_burst != burst_index or frame - shooter.coat_frame >= span:
@@ -5711,10 +6121,10 @@ func _record_floor_splat(shooter: Shooter, burst_index: int,
 		shooter.coat_frame = frame
 		_next_coat += 1
 		shooter.coat_id = _next_coat
-	var cell := _floor.paint_mayo(hit_position, shooter.coat_id, shooter.sauce_kind)
+	var cell := _floor.paint_mayo(hit_position, shooter.coat_id, sauce)
 	if cell.x >= 0:
 		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_FLOOR, shooter.sauce_kind), shooter.coat_id,
+			_splat_code(SPLAT_FLOOR, sauce), shooter.coat_id,
 			cell.x, cell.y]))
 
 
@@ -5728,15 +6138,16 @@ func _record_floor_splat(shooter: Shooter, burst_index: int,
 ## damage depend on how many decorative lumps happened to come back down on the
 ## thing that threw them.
 func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
-		shooter: Shooter, damaging := true) -> void:
+		shooter: Shooter, damaging := true, stored_sauce := -1, damage := -1.0) -> void:
+	var sauce := shooter.sauce_kind if stored_sauce < 0 else stored_sauce
 	if surface is ContaminableObject:
 		var wall := surface as ContaminableObject
-		var splat := wall.paint_mayo(hit_position, hit_normal, shooter.sauce_kind)
+		var splat := wall.paint_mayo(hit_position, hit_normal, sauce)
 		var index := _walls.find(wall)
 		if splat.x < 0 or index < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_WALL, shooter.sauce_kind),
+			_splat_code(SPLAT_WALL, sauce),
 			index * FACES_PER_WALL + splat.x, splat.y, splat.z]))
 		return
 	if surface is MayoPlayer:
@@ -5745,26 +6156,26 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 		# The sauce is a tool rather than a side, so friendly fire drags a
 		# teammate exactly as it drags a monster -- the alternative is a stream
 		# that stops at a body it plainly hit.
-		if damaging and shooter.sauce_kind == ContaminationGrid.KIND_MUSTARD:
+		if damaging and sauce == ContaminationGrid.KIND_MUSTARD:
 			player.splash_mustard()
-		var cell := player.paint_mayo(hit_position, hit_normal, shooter.sauce_kind)
+		var cell := player.paint_mayo(hit_position, hit_normal, sauce)
 		if cell.x < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_BODY, shooter.sauce_kind), player.peer_id,
+			_splat_code(SPLAT_BODY, sauce), player.peer_id,
 			cell.x, cell.y]))
-		_record_visor_splat(player, hit_position, shooter.sauce_kind)
+		_record_visor_splat(player, hit_position, sauce)
 		return
 	if surface is StallRoof:
 		var roof := surface as StallRoof
 		var roof_index := _roofs.find(roof)
 		if roof_index < 0:
 			return
-		var roof_cell := roof.paint_mayo(hit_position, hit_normal, shooter.sauce_kind)
+		var roof_cell := roof.paint_mayo(hit_position, hit_normal, sauce)
 		if roof_cell.x < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_ROOF, shooter.sauce_kind), roof_index,
+			_splat_code(SPLAT_ROOF, sauce), roof_index,
 			roof_cell.x, roof_cell.y]))
 		return
 	if surface is MayoEnemy:
@@ -5804,9 +6215,9 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 						if is_instance_valid(_net) and _net.is_online():
 							_net.send_enemy_shake(index, recipient, 0.0, 0.0, 3)
 						apply_enemy_shake(index, recipient, 0.0, 0.0, 3)
-				boss.take_aimed_sauce_hit(hit_position)
+				boss.take_aimed_sauce_hit(hit_position, damage)
 			else:
-				enemy.take_sauce_hit(shooter.player.global_position)
+				enemy.take_sauce_hit(shooter.player.global_position, damage)
 			if was_alive:
 				if not enemy.is_alive():
 					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
@@ -5817,17 +6228,65 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 			# that fills it sets it off. After the hit, so a body the stream has
 			# just killed goes off as the corpse it now is instead of soaking one
 			# more layer it will never use.
-			if shooter.sauce_kind == ContaminationGrid.KIND_KETCHUP \
+			if sauce == ContaminationGrid.KIND_KETCHUP \
 					and enemy.soak_ketchup(Time.get_ticks_msec() * 0.001):
 				_burst_ketchup(enemy, shooter)
-		if damaging and shooter.sauce_kind == ContaminationGrid.KIND_MUSTARD:
+		if damaging and sauce == ContaminationGrid.KIND_MUSTARD:
 			enemy.splash_mustard()
-		var enemy_cell := enemy.paint_mayo(hit_position, hit_normal, shooter.sauce_kind)
+		var enemy_cell := enemy.paint_mayo(hit_position, hit_normal, sauce)
 		if enemy_cell.x < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_ENEMY, shooter.sauce_kind), index,
+			_splat_code(SPLAT_ENEMY, sauce), index,
 			enemy_cell.x, enemy_cell.y]))
+
+
+func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Dictionary,
+		shooter: Shooter, authority: bool) -> void:
+	if shooter == null:
+		return
+	var at: Vector3 = hit.position
+	var normal: Vector3 = hit.normal
+	var target := hit.collider as Node
+	var blast: float = profile.blast
+	var sauce: int = shot.sauce
+	_spawn_impact_spray(at, normal, shot.velocity, target is MayoEnemy, shooter,
+		1.0 if blast <= 0.0 else 3.0, blast > 0.0)
+	if not authority or target == null:
+		return
+	if target.is_in_group("mayo_floor"):
+		_record_floor_splat(shooter, shooter.burst_index, at, sauce)
+	elif target.is_in_group("mayo_contaminable"):
+		_record_splat(target, at, normal, shooter, true, sauce, profile.damage)
+	if blast <= 0.0:
+		return
+
+	var center := at + normal * 0.08
+	_cut_cheese_by_blast(center, blast)
+	for enemy: MayoEnemy in _enemies:
+		if enemy == target or not enemy.is_alive() or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			continue
+		if enemy.global_position.distance_squared_to(center) <= blast * blast \
+				and _tomato_blast_reaches(center, enemy):
+			_record_splat(enemy, enemy.global_position, Vector3.UP, shooter,
+				true, sauce, profile.damage * 0.40)
+	for teammate: Shooter in _shooters.values():
+		var player := teammate.player
+		if player.state == MayoPlayer.State.DEAD:
+			continue
+		if player != target and player.global_position.distance_squared_to(center) <= blast * blast \
+				and _tomato_blast_reaches(center, player):
+			_record_splat(player, center, Vector3.UP, shooter, false, sauce)
+		elif player == target and player.visor != null:
+			for lens_offset: Vector2 in [Vector2(-0.30, -0.24), Vector2(0.30, -0.24),
+					Vector2(-0.30, 0.24), Vector2(0.30, 0.24)]:
+				_record_visor_splat(player, player.visor.to_global(Vector3(lens_offset.x, lens_offset.y, -0.75)), sauce)
+	for index in 9:
+		var angle := TAU * float(index) / 9.0
+		var foot := Vector3(center.x, 0.14, center.z) \
+			+ Vector3(cos(angle), 0.0, sin(angle)) * blast * 0.65
+		if _tomatina_static_hit(center, foot).is_empty():
+			_record_floor_splat(shooter, shooter.burst_index, foot, sauce)
 
 
 ## Replays a batch of splat centre cells from the server. `paint_cell` depends
@@ -5852,6 +6311,9 @@ func apply_splats(data: PackedInt32Array) -> void:
 			var body_shooter: Shooter = _shooters.get(target)
 			if body_shooter != null:
 				body_shooter.player.paint_mayo_cell(cell, sauce)
+			continue
+		if kind == SPLAT_BODY_WASH:
+			_apply_refuge_shower(target, cell.x)
 			continue
 		if kind == SPLAT_ROOF:
 			if target >= 0 and target < _roofs.size():
@@ -6323,7 +6785,7 @@ func _nozzle_segments(shooter: Shooter, camera_position: Vector3) -> Array:
 		var t := float(index) / 3.0
 		var point := RibbonPoint.new()
 		point.position = tip.lerp(bend, t).lerp(bend.lerp(tail.position, t), t)
-		point.width_scale = lerpf(nozzle_width, 1.0, t)
+		point.width_scale = lerpf(nozzle_width, 0.62 if tail.range_scale > 1.0 else 1.0, t)
 		segment.push_back(point)
 	return [segment]
 
@@ -6366,10 +6828,11 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: S
 				current = []
 		var visual_point := RibbonPoint.new()
 		visual_point.position = point.position
+		visual_point.width_scale = 0.62 if point.range_scale > 1.0 else 1.0
 		if phase == PointPhase.LANDING:
 			var progress := clampf(point.landing_age / landing_transition_time, 0.0, 1.0)
 			visual_point.opacity = 1.0 - progress
-			visual_point.width_scale = 1.0 - progress
+			visual_point.width_scale *= 1.0 - progress
 		current.push_back(visual_point)
 		previous = point
 	if not current.is_empty():
@@ -8258,6 +8721,11 @@ func tomato_action(peer: int, action: int) -> void:
 				and (_hose_slot_of(peer) >= 0 or _hose_slot(player.global_position) >= 0):
 			_toggle_fire_hose(shooter)
 			return
+		var room := _refuge_shower_in_reach(player.global_position)
+		if room >= 0:
+			_apply_refuge_shower(peer, room)
+			_pending_splats.append_array(PackedInt32Array([SPLAT_BODY_WASH, peer, room, 0]))
+			return
 	var slots := item_slots(peer)
 	# Resolve wheel steps against the latest authoritative slot, even when
 	# several reliable requests arrive before the next state update.
@@ -8502,6 +8970,13 @@ func apply_inventory_state(data: PackedInt32Array) -> void:
 func _update_item_views() -> void:
 	for peer in _shooters:
 		var shooter = _shooters[peer]
+		if shooter.part_shown != shooter.sauce_part:
+			if is_instance_valid(shooter.part_tip):
+				shooter.part_tip.queue_free()
+			shooter.part_shown = shooter.sauce_part
+			if shooter.sauce_part != SauceParts.Part.STANDARD:
+				shooter.part_tip = SauceParts.build_tip(shooter.sauce_part,
+					shooter.weapon_sway, shooter.muzzle.position)
 		var selected := selected_item_slot(peer)
 		var equipped: bool = selected > 0 and item_slots(peer)[selected] == 1
 		# A hand on the hose is not a hand on the bottle: the nozzle viewmodel

@@ -1,16 +1,11 @@
 """Build the La Tomatina environment kit and its Godot mesh library."""
-import argparse
 import math
-import sys
 from pathlib import Path
 
 import bpy
 from mathutils import Matrix, Vector
 
 ROOT = Path(__file__).resolve().parent
-parser = argparse.ArgumentParser()
-parser.add_argument("--crate", type=Path, default=ROOT.parent / "Stage1_TomatoCrate" / "Stage1_TomatoCrate.blend")
-args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.context.preferences.filepaths.file_preview_type = "NONE"
 bpy.context.preferences.filepaths.save_version = 0
@@ -27,6 +22,11 @@ palette = {
     "Leaf": "758D49", "LeafLight": "9DAC64", "LeafDark": "576A3B",
     "Flame": "FF8328", "Gold": "FFD163", "Rubber": "30343D",
     "Chrome": "B7BFC2", "Blue": "566D88", "White": "FFF2D1",
+    "PlasterSage": "B2BE92", "PlasterBlue": "9CB9BD", "PlasterHoney": "DEBA73",
+    "RoofSlate": "7798AE", "RoofSage": "7F9B84", "RoofUmber": "B78A61",
+    "RoofWine": "A86E7A", "RoofCopper": "B77856", "ShutterTeal": "3E716F",
+    "ShutterWine": "8B4C51",
+    "FlowerPink": "DA777B", "FlowerGold": "F0B957",
 }
 
 
@@ -140,24 +140,68 @@ def window(x, y, z):
     box((x, y - .10, z - .52), (1.12, .39, .13), "Lime")
 
 
-def house(name, height, body, roof):
+def house(name, height, body, roof, shutters, flowers):
     box((0, 0, .38), (7.8, 6.1, .76), "Stone")
     box((0, 0, height / 2), (7.65, 6, height), body)
     box((0, 0, height - .12), (7.93, 6.22, .26), "Lime")
     gable(8.4, 6.7, height, 2.05, roof)
-    box((0, 0, height + 2.06), (.28, 6.75, .18), "RoofLight")
+    box((0, 0, height + 2.06), (.28, 6.75, .18), roof)
+    for side in (-1, 1):
+        box((side * 4.11, 0, height + .04), (.21, 6.73, .21), roof)
     box((2.1, .97, height + 1.37), (.6, .68, 1.74), "Door")
     box((-.8, -3.06, 1.22), (1.45, .24, 2.44), "Door")
     box((-.8, -3.2, 2.45), (1.75, .43, .16), "Sand")
     for x in (-2.8, 1.35, 2.95):
         window(x, -3.06, height - 1.5)
+        for side in (-1, 1):
+            box((x + side * .62, -3.16, height - 1.5), (.29, .13, .94), shutters)
     window(2.2, -3.06, 1.62)
+    flower_box(-2.8, -3.32, height - 2.14, flowers)
     finish(name)
 
 
-house("HouseCream", 6.1, "Cream", "Terracotta")
-house("HousePeach", 5.3, "Peach", "RoofDark")
-house("HouseLime", 7.0, "Lime", "RoofLight")
+def flower_box(x, y, z, blooms):
+    box((x, y, z + .13), (1.10, .37, .26), "Terracotta")
+    box((x, y, z + .25), (1.14, .41, .08), "RoofUmber")
+    for i in range(5):
+        at = x + (i - 2) * .20
+        rise = z + .36 + (i % 2) * .08
+        gem((at, y, rise), (.15, .14, .15), ("Leaf", "LeafDark")[i % 2], subdivisions=1)
+        gem((at, y - .08, rise + .12), (.084, .07, .08), blooms, subdivisions=1)
+
+
+house("HouseCream", 6.1, "Cream", "Terracotta", "ShutterTeal", "FlowerPink")
+house("HousePeach", 5.3, "Peach", "RoofWine", "Wood", "FlowerGold")
+house("HouseLime", 7.0, "Lime", "RoofUmber", "ShutterWine", "FlowerPink")
+house("HouseSage", 6.6, "PlasterSage", "RoofSage", "Wood", "FlowerGold")
+house("HouseBlue", 6.0, "PlasterBlue", "RoofSlate", "ShutterTeal", "FlowerPink")
+house("HouseHoney", 5.6, "PlasterHoney", "RoofCopper", "ShutterWine", "FlowerGold")
+
+# Street-facing accents fit against the masonry boundary on the town kit.
+window(0, -.03, .74)
+for side in (-1, 1):
+    box((side * .68, -.12, .74), (.36, .12, 1.03), "ShutterTeal")
+    for lift in (.47, .73, .99):
+        box((side * .68, -.19, lift), (.33, .05, .055), "Glass")
+flower_box(0, -.31, .06, "FlowerPink")
+finish("FacadeWindow")
+
+box((0, 0, .69), (.17, .09, .34), "Rubber")
+box((0, -.21, .82), (.09, .42, .09), "Rubber")
+box((0, -.38, .40), (.27, .25, .47), "FlowerGold")
+for x in (-.14, .14):
+    for y in (-.52, -.24):
+        box((x, y, .40), (.035, .035, .49), "Rubber")
+box((0, -.38, .15), (.33, .31, .09), "Rubber")
+cone((0, -.38, .72), .23, .065, .19, "Rubber", sides=4)
+finish("FacadeLantern")
+
+for x, y, height, color in [(-.29, -.26, .44, "Terracotta"), (.28, -.23, .35, "ShutterTeal")]:
+    cone((x, y, height * .50), .16, .23, height, color)
+    cone((x, y, height - .03), .23, .23, .08, color)
+    gem((x, y, height + .14), (.20, .20, .23), "LeafDark", subdivisions=1)
+    gem((x + .09, y - .10, height + .27), (.11, .10, .12), "LeafLight", subdivisions=1)
+finish("FacadePots")
 
 box((0, 0, .38), (8.0, 2.6, .76), "Stone")
 box((0, 0, 1.02), (7.8, 2.45, .72), "Sand")
@@ -482,21 +526,62 @@ for x, z, color in [(-1.04, .99, "Scarlet"), (-.58, .91, "Gold"), (.17, .83, "Sc
     panel.rotation_euler.x = -math.pi / 2
 finish("BrokenFestivalBarrier")
 
-if not args.crate.is_file():
-    raise FileNotFoundError(f"Pass --crate pointing to the Sauce It 3D Blender tomato crate: {args.crate}")
-with bpy.data.libraries.load(str(args.crate), link=False) as (source, target):
-    target.objects = [name for name in source.objects if "TomatoCrate" in name]
-crate = next(obj for obj in target.objects if obj and obj.type == "MESH")
-bpy.context.collection.objects.link(crate)
-crate.name = crate.data.name = "TomatoCrate"
-crate.data.transform(crate.matrix_world)
-crate.matrix_world = Matrix.Identity(4)
-models.append(crate)
+def supply_crate(name, width, depth, height, columns, rows):
+    box((0, 0, .08), (width, depth, .16), "Door")
+    rim = height - .18
+    for side in (-1, 1):
+        for z in (rim * .31, rim * .74):
+            box((0, side * (depth / 2 - .047), z), (width, .094, rim * .37), "Wood")
+            box((side * (width / 2 - .047), 0, z), (.094, depth, rim * .37), "CanvasDark")
+        for end in (-1, 1):
+            box((side * (width / 2 - .068), end * (depth / 2 - .068), rim / 2),
+                (.136, .136, rim), "Door")
+    step_x = (width - .22) / columns
+    step_y = (depth - .22) / rows
+    for row in range(rows):
+        for col in range(columns):
+            index = row * columns + col
+            radius = min(step_x, step_y) * (.47 + .025 * (index % 3))
+            x = (col - (columns - 1) / 2) * step_x + (.015 if row % 2 else -.015)
+            y = (row - (rows - 1) / 2) * step_y
+            z = height - radius - .07 - .025 * (index % 3)
+            for lower_z in ((.33, .60) if height > 1.0 else (.33,)):
+                gem((x, y, lower_z), (radius, radius, radius * .94), "Red", subdivisions=1)
+            gem((x, y, z), (radius, radius, radius * .94),
+                ("Scarlet", "Red", "Scarlet")[index % 3])
+            crown = z + radius * .89
+            for leaf in range(5):
+                angle = leaf * math.tau / 5 + index
+                tip = (x + math.cos(angle) * radius * .45,
+                       y + math.sin(angle) * radius * .45, crown - radius * .12)
+                beam((x, y, crown), tip, radius * .15, .023, "LeafDark")
+            cone((x, y, crown + .035), .028, .019, .07, "Leaf", sides=5)
+    finish(name)
+
+
+supply_crate("TomatoCrate", 2.6, 1.1, 1.2, 5, 2)
+supply_crate("TomatoCrateRefuge", 2.2, 1.15, 1.2, 4, 2)
+supply_crate("TomatoCrateWreck", 1, 1, .9, 2, 2)
+
+# A freestanding beach rinse station. The drain and nozzle share an origin.
+box((0, 0, .028), (1.8, 1.8, .056), "Slate")
+for i in range(-4, 5):
+    box((0, i * .18, .067), (1.61, .12, .032), "Wood")
+box((0, 1.04, .115), (.53, .45, .23), "Stone")
+cone((0, 1.04, 1.55), .064, .064, 2.72, "Chrome", sides=10)
+beam((0, 1.04, 2.91), (0, 0, 2.91), .11, .11, "Chrome")
+cone((0, 0, 2.8), .19, .09, .14, "Chrome", sides=12)
+cone((0, 0, 2.72), .17, .17, .045, "Shade", sides=12)
+box((0, 1.04, 1.83), (.56, .13, .49), "Blue")
+box((0, .964, 1.83), (.11, .03, .32), "White")
+box((0, .964, 1.83), (.32, .03, .11), "White")
+cone((0, .93, 1.15), .12, .12, .08, "Gold", sides=8, rotate=math.pi / 2)
+finish("RefugeShower")
 
 for index, obj in enumerate(models):
     obj.location = ((index % 5) * 16, (index // 5) * 13, 0)
     assert obj.type == "MESH" and obj.data.color_attributes.active_color, obj.name
-    assert all(not face.use_smooth for face in obj.data.polygons) or obj == crate
+    assert all(not face.use_smooth for face in obj.data.polygons)
 
 for screen in bpy.data.screens:
     for area in screen.areas:

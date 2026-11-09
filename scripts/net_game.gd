@@ -104,7 +104,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 4
+const PROTOCOL_VERSION := 7
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
@@ -867,6 +867,8 @@ func _on_peer_connected(id: int) -> void:
 		if existing_id != id:
 			_spawn_avatar.rpc_id(id, existing_id, _slots.get(existing_id, 0))
 	_spawn_avatar.rpc(id, slot)
+	if world._sauce_parts != null:
+		_apply_sauce_shop_state.rpc_id(id, world.sauce_shop_state(), world._sauce_parts.coin_state())
 	var snapshot: Array = world.grid_snapshot()
 	for index in snapshot.size():
 		var cells: PackedByteArray = snapshot[index]
@@ -1304,6 +1306,9 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 	state_bytes_sent += healing.size() * 8 * guests
 	var stage_two: bool = world.map_kind == world.MapKind.TOMATINA
 	if stage_two:
+		if world._sauce_parts.dirty:
+			world._sauce_parts.dirty = false
+			_apply_sauce_shop_state.rpc(world.sauce_shop_state(), world._sauce_parts.coin_state())
 		_tomatina_snapshot_phase = (_tomatina_snapshot_phase + 1) % 3
 		if _tomatina_snapshot_phase != 0:
 			return
@@ -2017,3 +2022,31 @@ func _request_tomato_action(action: int) -> void:
 func _apply_inventory_state(data: PackedInt32Array) -> void:
 	if _world_ready():
 		world.apply_inventory_state(data)
+
+
+func request_sauce_part(part: int) -> void:
+	if _online and _joined:
+		_buy_sauce_part.rpc_id(1, part)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _buy_sauce_part(part: int) -> void:
+	if multiplayer.is_server() and _world_ready() and _within_budget(multiplayer.get_remote_sender_id()):
+		world.buy_or_equip_sauce_part(multiplayer.get_remote_sender_id(), part)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _apply_sauce_shop_state(data: PackedInt32Array, coins: PackedFloat32Array) -> void:
+	if _world_ready():
+		world.apply_sauce_shop_state(data, coins)
+
+
+func broadcast_part_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vector3) -> void:
+	if _online and multiplayer.is_server() and _world_ready():
+		_show_part_volley.rpc(peer, part, sauce, origin, forward)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _show_part_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vector3) -> void:
+	if _world_ready():
+		world.show_part_volley(peer, part, sauce, origin, forward)

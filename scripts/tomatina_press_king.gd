@@ -215,9 +215,9 @@ func is_weak_spot_hit(hit_position: Vector3) -> bool:
 	return (armor_broken or exposed_left > 0.0) and at.z < -0.65 and absf(at.x) < 1.1 and absf(at.y + 0.68) < 1.05
 
 
-func take_aimed_sauce_hit(hit_position: Vector3) -> bool:
+func take_aimed_sauce_hit(hit_position: Vector3, damage := -1.0) -> bool:
 	var multiplier := 1.35 if is_weak_spot_hit(hit_position) else 1.0
-	return _take_sauce_damage(sauce_damage_per_hit * multiplier)
+	return _take_sauce_damage((sauce_damage_per_hit if damage < 0.0 else damage) * multiplier)
 
 
 func _take_sauce_damage(damage: float) -> bool:

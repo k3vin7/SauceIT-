@@ -198,6 +198,17 @@ func clear() -> void:
 	_queue_overlay_upload()
 
 
+func wash_sauce(kind: int) -> void:
+	var cells := snapshot_cells()
+	var changed := false
+	for index in cells.size():
+		if cells[index] != 0 and (cells[index] & ContaminationGrid.KIND_MASK) == kind:
+			cells[index] = 0
+			changed = true
+	if changed:
+		restore_cells(cells)
+
+
 func painted_cell_count() -> int:
 	return grid.painted_cell_count()
 

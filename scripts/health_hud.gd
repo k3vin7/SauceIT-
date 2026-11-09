@@ -1,6 +1,8 @@
 class_name HealthHud
 extends Control
 
+const UI := preload("res://scripts/sauce_ui.gd")
+const Parts := preload("res://scripts/tomatina_sauce_parts.gd")
 const PressKingScript := preload("res://scripts/tomatina_press_king.gd")
 
 ## The two health bars: the player's own, pinned to the bottom of the view, and
@@ -15,12 +17,7 @@ const PressKingScript := preload("res://scripts/tomatina_press_king.gd")
 ## It draws off the view frame, not the window, so the bars sit inside the
 ## letterbox rather than under it.
 
-const PLAYER_BAR := Vector2(320.0, 20.0)
-const PLAYER_MARGIN := 28.0
-## The tank, under the health bar. Slimmer, because it is the second thing you
-## look at rather than the first.
-const SAUCE_BAR := Vector2(320.0, 12.0)
-const SAUCE_GAP := 6.0
+const HUD_WIDTH := 344.0
 const ENEMY_BAR := Vector2(120.0, 10.0)
 ## How far above the enemy's own top the bar floats, in metres.
 const ENEMY_LIFT := 0.9
@@ -30,11 +27,8 @@ const ENEMY_DRAW_RANGE := 20.0
 
 const BACKING := Color(0.04, 0.05, 0.06, 0.78)
 const EDGE := Color(0.86, 0.90, 0.94, 0.5)
-const PLAYER_FULL := Color("6fd38a")
+const PLAYER_FULL := UI.MINT
 const PLAYER_LOW := Color("d4564a")
-## Mayo, and mayo with nothing behind it.
-const SAUCE_FULL := Color("fff0a8")
-const SAUCE_LOW := Color("8a7a3c")
 const ENEMY_FULL := Color("e2683c")
 const ENEMY_LOW := Color("7a2a20")
 ## Below this fraction the bar has gone fully to its low colour.
@@ -53,13 +47,17 @@ const PROMPT_LINE_GAP := 22.0
 const PROMPT_HELD := "  ◀"
 const PROMPT_HELD_COLOR := Color("ffffff")
 const PROMPT_SIZE := 18
-const PROMPT_LIFT := 220.0
+const PROMPT_LIFT := 234.0
 const PROMPT_COLOR := Color("fff0a8")
 const PROMPT_UNAVAILABLE := Color("a5a29c")
 const PROMPT_SHADOW := Color(0.0, 0.0, 0.0, 0.7)
 
 var world: Node3D
 var frame := Rect2()
+var _plate := UI.box(Color(0.07, 0.11, 0.14, 0.93), UI.EDGE, 10)
+var _slot_idle := UI.box(Color(0.08, 0.12, 0.15, 0.88), UI.EDGE, 7)
+var _slot_active := UI.box(Color("443632"), UI.ACCENT, 7)
+var _bottle_glass := UI.box(Color(0.85, 0.94, 1.0, 0.5), Color.TRANSPARENT, 5)
 
 
 func _ready() -> void:
@@ -82,91 +80,94 @@ func _process(_delta: float) -> void:
 func _draw() -> void:
 	if world == null or frame.size.x <= 0.0:
 		return
-	_draw_player()
 	_draw_enemies()
+	if world._local == null:
+		return
+	_draw_player()
+	_draw_slots()
 	_draw_prompt()
-	if world._local != null:
-		var slots: Array = world.item_slots(world._local.peer_id)
-		var selected: int = world.selected_item_slot(world._local.peer_id)
-		for slot in 5:
-			var rect := Rect2(Vector2(frame.get_center().x - 160 + slot*65,frame.end.y-145),Vector2(60,48))
-			draw_rect(rect, Color(1,1,1,1.0 if selected == slot else 0.45), false, 3 if selected == slot else 1)
-			if slot == 0:
-				_draw_bottle_icon(rect.get_center())
-			elif slots[slot] == 1:
-				_draw_tomato_icon(rect.get_center())
 	_draw_pickup_hint()
-	var tomato_hint := "R 고글 닦기   V 밀치기   F4 조작표" if world.map_kind == world.MapKind.TOMATINA else "1~5 장비 선택"
+	var action: String = world._tomatina_action_hint() if world.map_kind == world.MapKind.TOMATINA else ""
+	if not action.is_empty():
+		_draw_action_chip(action)
+	var controls := "R 고글 닦기   ·   V 밀치기   ·   F4 조작표" if world.map_kind == world.MapKind.TOMATINA else "1–5 장비 선택"
 	if world.local_holds_tomato():
-		tomato_hint = "좌클릭 꾹: 힘 모으기 · 놓기: 던지기 / 우클릭: 먹기"
+		controls = "좌클릭 꾹: 힘 모으기 · 놓기: 던지기   /   우클릭: 먹기"
 		if world._tomato_charge_started.has(world._local.peer_id):
 			var charge: float = world.tomato_charge_fraction(world._local.peer_id)
-			var meter := Rect2(frame.get_center() + Vector2(-60,36),Vector2(120,7))
-			draw_rect(meter, Color(1,1,1,0.2))
-			draw_rect(Rect2(meter.position,Vector2(meter.size.x * charge,meter.size.y)),Color("fff0a8"))
-	draw_string(ThemeDB.fallback_font, Vector2(frame.get_center().x - 180, frame.end.y - 160),
-		tomato_hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color("fff0a8"))
+			var meter := Rect2(frame.get_center() + Vector2(-60.0, 36.0), Vector2(120.0, 7.0))
+			_draw_bar(meter, charge, UI.GOLD, UI.ACCENT, 1.0)
+	var footer := Rect2(frame.get_center().x - 192.0, frame.end.y - 21.0, 384.0, 17.0)
+	draw_style_box(_slot_idle, footer)
+	draw_string(ThemeDB.fallback_font, footer.position + Vector2(0.0, 13.0), controls,
+		HORIZONTAL_ALIGNMENT_CENTER, footer.size.x, 13, UI.CREAM)
+
+
+func _draw_slots() -> void:
+	var slots: Array = world.item_slots(world._local.peer_id)
+	var selected: int = world.selected_item_slot(world._local.peer_id)
+	var width := 62.0
+	var gap := 8.0
+	var left := frame.get_center().x - (width * 5.0 + gap * 4.0) * 0.5
+	for slot in 5:
+		var rect := Rect2(left + slot * (width + gap), frame.end.y - 151.0, width, 48.0)
+		draw_style_box(_slot_active if selected == slot else _slot_idle, rect)
+		draw_string(ThemeDB.fallback_font, rect.position + Vector2(6.0, 14.0), str(slot + 1),
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 11, UI.ACCENT if selected == slot else UI.MUTED)
+		if slot == 0:
+			_draw_bottle_icon(rect.get_center() + Vector2(5.0, 0.0))
+		elif slots[slot] == 1:
+			_draw_tomato_icon(rect.get_center() + Vector2(5.0, 2.0))
+		else:
+			draw_line(rect.get_center() + Vector2(-3.0, 1.0), rect.get_center() + Vector2(7.0, 1.0),
+				UI.EDGE, 1.0, true)
 
 
 func _draw_player() -> void:
-	# `world` is the prototype, which has no class_name to type it by, so the
-	# nodes come back as Variants and are cast here -- an untyped camera makes
-	# `unproject_position` untyped too, and the file will not compile.
-	var player := world.get("_player") as MayoPlayer
-	if player == null or not is_instance_valid(player):
-		return
-	var origin := Vector2(
-		frame.position.x + (frame.size.x - PLAYER_BAR.x) * 0.5,
-		frame.position.y + frame.size.y - PLAYER_MARGIN - PLAYER_BAR.y - SAUCE_GAP - SAUCE_BAR.y)
-	_draw_bar(Rect2(origin, PLAYER_BAR), player.health_fraction(), PLAYER_FULL, PLAYER_LOW, 2.0)
-
-	# The tank, and a notch at the half mark the squirt-length curve bends on.
-	# Without the bar the limit is invisible: a press cuts and there is nothing
-	# on screen saying why, or how much shorter the next one will be.
-	var tank := Rect2(Vector2(origin.x, origin.y + PLAYER_BAR.y + SAUCE_GAP), SAUCE_BAR)
-	_draw_bar(tank, world.local_sauce(), SAUCE_FULL, SAUCE_LOW, 2.0)
-	var midpoint: float = world.get("burst_midpoint")
-	var notch_x := tank.position.x + tank.size.x * midpoint
-	draw_line(Vector2(notch_x, tank.position.y - 2.0),
-		Vector2(notch_x, tank.end.y + 2.0), EDGE, 1.0)
-
-	# The two reliability thresholds, so the bar says where the bottle stops
-	# being dependable rather than leaving it to be discovered mid-fight.
-	for level in [world.get("steady_level"), world.get("spluttering_level")]:
-		var at := tank.position.x + tank.size.x * float(level)
-		draw_line(Vector2(at, tank.position.y), Vector2(at, tank.end.y),
-			Color(0.0, 0.0, 0.0, 0.55), 1.0)
-
-	# How much of the mayo on the floor is deep enough to put someone down. A
-	# debug readout rather than a game one -- it walks the whole grid, so it is
-	# asked a few times a second, not every frame -- and it is here because
-	# "how slippery is this street getting" is otherwise invisible while tuning.
-	var deep: float = world.get("debug_deep_fraction")
-	if deep >= 0.0 and world.map_kind != world.MapKind.TOMATINA:
-		var font_deep := ThemeDB.fallback_font
-		var deep_text := "deep %.0f%%" % (deep * 100.0)
-		var deep_at := Vector2(tank.position.x - 8.0
-			- font_deep.get_string_size(deep_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13).x,
-			tank.end.y - 1.0)
-		draw_string(font_deep, deep_at + Vector2(1.0, 1.0), deep_text,
-			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13, Color(0.0, 0.0, 0.0, 0.7))
-		draw_string(font_deep, deep_at, deep_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13,
-			Color("e8cf4a"))
-
-	# The band, and how many seconds of delivery are left in it. Secondary to
-	# the bottle in the player's hand, which is what everyone else reads.
+	var player: MayoPlayer = world._local.player
+	var panel := Rect2(frame.get_center().x - HUD_WIDTH * 0.5, frame.end.y - 96.0, HUD_WIDTH, 73.0)
+	draw_style_box(_plate, panel)
+	var font := ThemeDB.fallback_font
+	var at := panel.position + Vector2(12.0, 19.0)
+	var part: int = world._local.sauce_part
 	var level: float = world.local_sauce()
-	var stage: int = world.sauce_stage_of(level)
-	var label: String = ["", "불안정", "바닥"][clampi(stage, 0, 2)]
-	if label != "":
-		var font := ThemeDB.fallback_font
-		var text := "%s  %.1fs" % [label, world.sauce_seconds_left(level)]
-		var at := Vector2(tank.end.x + 8.0, tank.end.y - 1.0)
-		draw_string(font, at + Vector2(1.0, 1.0), text, HORIZONTAL_ALIGNMENT_LEFT,
-			-1.0, 13, Color(0.0, 0.0, 0.0, 0.7))
-		draw_string(font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13,
-			SAUCE_LOW if stage == 2 else SAUCE_FULL)
+	var cannon := part == Parts.Part.CANNON
+	var stage_two: bool = world.map_kind == world.MapKind.TOMATINA
+	if stage_two:
+		draw_string(font, at, Parts.CATALOG[part][0], HORIZONTAL_ALIGNMENT_LEFT, -1.0, 14, UI.CREAM)
+		draw_string(font, at + Vector2(215.0, 0.0), "%d 코인" % world._local.coins,
+			HORIZONTAL_ALIGNMENT_RIGHT, HUD_WIDTH - 239.0, 14, UI.GOLD)
+	else:
+		draw_string(font, at, "장비 상태", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 14, UI.CREAM)
 
+	var hp := Rect2(panel.position + Vector2(57.0, 28.0), Vector2(207.0, 12.0))
+	var tank := Rect2(hp.position + Vector2(0.0, 22.0), hp.size)
+	var sauce_color: Color = [UI.CREAM, UI.GOLD, UI.ACCENT][clampi(world.local_sauce_kind(), 0, 2)]
+	_draw_bar(hp, player.health_fraction(), PLAYER_FULL, PLAYER_LOW, 1.0)
+	_draw_bar(tank, level, sauce_color, sauce_color.darkened(0.35), 1.0)
+	var markers: Array = [0.25, 0.5, 0.75] if cannon else [world.get("burst_midpoint")]
+	for fraction: float in markers:
+		var notch := tank.position.x + tank.size.x * fraction
+		draw_line(Vector2(notch, tank.position.y + 1.0), Vector2(notch, tank.end.y - 1.0), UI.INK, 1.0)
+	draw_string(font, at + Vector2(0.0, 19.0), "체력", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 12, UI.MUTED)
+	draw_string(font, at + Vector2(0.0, 41.0), "소스", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 12, UI.MUTED)
+	var health := "%d / %d" % [ceili(player.health), ceili(player.max_health)]
+	var sauce := "%d / 4발" % floori(level * 4.0) if cannon else "%d%%" % roundi(level * 100.0)
+	draw_string(font, at + Vector2(256.0, 19.0), health, HORIZONTAL_ALIGNMENT_RIGHT, 64.0, 13, UI.CREAM)
+	draw_string(font, at + Vector2(256.0, 41.0), sauce, HORIZONTAL_ALIGNMENT_RIGHT, 64.0, 13, sauce_color)
+
+
+func _draw_action_chip(text: String) -> void:
+	var font := ThemeDB.fallback_font
+	var message := text.trim_prefix("[E] ")
+	var width := font.get_string_size(message, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17).x
+	var card := Rect2(frame.get_center().x - (width + 62.0) * 0.5, frame.end.y - 201.0, width + 62.0, 38.0)
+	draw_style_box(_plate, card)
+	var key := Rect2(card.position + Vector2(8.0, 7.0), Vector2(25.0, 24.0))
+	draw_style_box(_slot_active, key)
+	draw_string(font, key.position + Vector2(0.0, 17.0), "E", HORIZONTAL_ALIGNMENT_CENTER, key.size.x, 15, UI.CREAM)
+	draw_string(font, card.position + Vector2(43.0, 25.0), message,
+		HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, UI.CREAM)
 
 func _draw_enemies() -> void:
 	var camera := world.get("_camera") as Camera3D
@@ -190,8 +191,12 @@ func _draw_enemies() -> void:
 		if world.map_kind == world.MapKind.TOMATINA:
 			if enemy.kind == MayoEnemy.EnemyKind.PRESS_KING:
 				var boss := enemy as PressKingScript
-				var meter := Rect2(frame.position + Vector2(24.0, 111.0), Vector2(300.0, 8.0))
-				var phase := Color("8ddcfa") if boss.exposed_left > 0.0 else Color("ecad71")
+				var card := Rect2(frame.get_center().x - 158.0, frame.position.y + 18.0, 316.0, 52.0)
+				draw_style_box(_plate, card)
+				draw_string(ThemeDB.fallback_font, card.position + Vector2(12.0, 21.0),
+					"토마토 압착왕", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 15, UI.CREAM)
+				var meter := Rect2(card.position + Vector2(12.0, 32.0), Vector2(292.0, 9.0))
+				var phase := UI.MINT if boss.exposed_left > 0.0 else UI.ACCENT
 				_draw_bar(meter, boss.health_fraction(), phase, ENEMY_LOW, 1.0)
 				continue
 			if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT:
@@ -230,6 +235,8 @@ func _draw_prompt() -> void:
 				-1.0, PROMPT_SIZE).x)
 	var top := frame.position.y + frame.size.y - PROMPT_LIFT \
 		- PROMPT_LINE_GAP * float(lines.size() - 1)
+	draw_style_box(_plate, Rect2(frame.get_center().x - widest * 0.5 - 12.0,
+		top - 21.0, widest + 24.0, 32.0 + PROMPT_LINE_GAP * float(lines.size() - 1)))
 	for index in lines.size():
 		var line: String = lines[index]
 		var available: bool = world.can_select_refill_sauce(first_sauce + index)
@@ -298,18 +305,11 @@ func _draw_bottle_icon(at: Vector2) -> void:
 	elif kind == 2:
 		fill = Color("e84b32")
 	var body := Rect2(at + Vector2(-10,-9),Vector2(20,27))
-	draw_style_box(_icon_box(Color(0.85,0.94,1,0.5)),body)
-	draw_style_box(_icon_box(fill),Rect2(at+Vector2(-7,0),Vector2(14,15)))
+	draw_style_box(_bottle_glass, body)
+	draw_rect(Rect2(at + Vector2(-7, 0), Vector2(14, 15)), fill)
 	draw_rect(Rect2(at+Vector2(-7,-14),Vector2(14,6)), Color("f3d052"))
 	draw_colored_polygon(PackedVector2Array([at+Vector2(-3,-14),at+Vector2(3,-14),at+Vector2(1,-22)]),Color("fff3bf"))
 	draw_line(at+Vector2(-6,-6),at+Vector2(-6,12),Color(1,1,1,0.8),2,true)
-
-
-func _icon_box(color: Color) -> StyleBoxFlat:
-	var style := StyleBoxFlat.new()
-	style.bg_color = color
-	style.set_corner_radius_all(5)
-	return style
 
 
 func _draw_pickup_hint() -> void:

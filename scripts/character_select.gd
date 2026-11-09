@@ -1,5 +1,7 @@
 extends CanvasLayer
 
+const UI := preload("res://scripts/sauce_ui.gd")
+
 ## The door of the truck: four characters, pick one.
 ##
 ## Shown once per session, between being let into a room and the truck itself,
@@ -89,9 +91,10 @@ func _unhandled_input(event: InputEvent) -> void:
 func _build() -> void:
 	var dim := ColorRect.new()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.02, 0.03, 0.04, 0.94)
+	dim.color = UI.INK
 	add_child(dim)
 	var centre := CenterContainer.new()
+	centre.theme = UI.theme()
 	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(centre)
 	var column := VBoxContainer.new()
@@ -101,12 +104,12 @@ func _build() -> void:
 	title.text = "캐릭터 선택"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 42)
-	title.add_theme_color_override("font_color", Color("fff0a8"))
+	title.add_theme_color_override("font_color", UI.CREAM)
 	column.add_child(title)
 	var subtitle := Label.new()
 	subtitle.text = "트럭에 타기 전에 함께할 캐릭터를 고르세요.  (1~4 · ←/→ 선택, Enter 탑승)"
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	subtitle.modulate = Color(0.72, 0.8, 0.84)
+	subtitle.add_theme_color_override("font_color", UI.MUTED)
 	column.add_child(subtitle)
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -116,6 +119,7 @@ func _build() -> void:
 	for index in NAMES.size():
 		row.add_child(_build_card(index, group))
 	_confirm = Button.new()
+	UI.primary(_confirm)
 	_confirm.custom_minimum_size = Vector2(0.0, 48.0)
 	_confirm.add_theme_font_size_override("font_size", 20)
 	_confirm.pressed.connect(_confirm_pick)
@@ -136,10 +140,10 @@ func _build_card(index: int, group: ButtonGroup) -> Button:
 	card.toggle_mode = true
 	card.button_group = group
 	card.focus_mode = Control.FOCUS_NONE
-	card.add_theme_stylebox_override("normal", _card_style(Color("1b2226"), Color("3a464c"), 2))
-	card.add_theme_stylebox_override("hover", _card_style(Color("232c31"), Color("8b9aa1"), 2))
-	card.add_theme_stylebox_override("pressed", _card_style(Color("2c2a1a"), Color("ffd84a"), 4))
-	card.add_theme_stylebox_override("hover_pressed", _card_style(Color("2c2a1a"), Color("ffd84a"), 4))
+	card.add_theme_stylebox_override("normal", _card_style(UI.PANEL, UI.EDGE, 2))
+	card.add_theme_stylebox_override("hover", _card_style(UI.PANEL_RAISED, UI.MINT, 2))
+	card.add_theme_stylebox_override("pressed", _card_style(Color("36302d"), UI.ACCENT, 4))
+	card.add_theme_stylebox_override("hover_pressed", _card_style(Color("36302d"), UI.ACCENT, 4))
 	card.pressed.connect(_select.bind(index))
 	_cards.push_back(card)
 

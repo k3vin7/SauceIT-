@@ -6,13 +6,27 @@ const TOON_SHADER := preload("res://assets/props/Stage2_TomatinaVillage/tomatina
 const PARTICLE_FIRE := preload("res://assets/props/Stage2_TomatinaVillage/tomatina_particle_fire.gdshader")
 const FLAME_VOLUME := preload("res://assets/props/Stage2_TomatinaVillage/tomatina_flame_volume.gdshader")
 const FESTIVAL_DECOR := preload("res://scripts/tomatina_festival_decor.gd")
-const HOUSES := ["HouseCream", "HousePeach", "HouseLime"]
+const HOUSES := ["HouseCream", "HousePeach", "HouseLime", "HouseSage", "HouseBlue", "HouseHoney"]
 const BANNERS := ["BannerWater", "BannerMarket", "BannerFestival"]
 const CARDINAL := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
 const CHUNK_SIZE := 70.0
 const HOUSE_CHUNK_WIDTH := 110.0
 const WALL_DEPTH := 0.54
 const STREET_ACCENTS := {"WaterFront": Color("447d87"), "MarketFront": Color("b87e41"), "FestivalFront": Color("934950"), "TrimStone": Color("dcc5a0")}
+
+# The cell is inside the street. The step points through its exterior wall.
+# Arrows read from the approach to each bend, with the market marking the main street.
+const PLAZA_WAYMARKS := [
+	[Vector2i(31, 207), Vector2i.RIGHT, "◆  ↑"],
+	[Vector2i(38, 192), Vector2i.RIGHT, "←  ◆"],
+	[Vector2i(8, 165), Vector2i.UP, "광장  ↗"],
+	[Vector2i(34, 129), Vector2i.LEFT, "◆  ↑"],
+	[Vector2i(14, 122), Vector2i.LEFT, "광장  ↑"],
+	[Vector2i(13, 93), Vector2i.UP, "◆  ↑"],
+	[Vector2i(28, 66), Vector2i.UP, "◆  →"],
+	[Vector2i(32, 56), Vector2i.UP, "◆  ↑"],
+	[Vector2i(31, 42), Vector2i.RIGHT, "광장  ↑"],
+]
 
 var _meshes: Dictionary = {}
 var _batches: Dictionary = {}
@@ -28,6 +42,48 @@ static func configure_pavement(floor_body: FloorContamination) -> void:
 	var corner := TomatinaMap.at_cell(Vector2(bounds.position))
 	floor_body.pavement_mask = ImageTexture.create_from_image(mask)
 	floor_body.pavement_bounds = Rect2(Vector2(corner.x, corner.z), Vector2(bounds.size) * StreetMap.CELL)
+
+
+static func build_plaza_waymarks(parent: Node3D) -> void:
+	var root := Node3D.new()
+	root.name = "PlazaWaymarks"
+	parent.add_child(root)
+	var rim := BoxMesh.new()
+	rim.size = Vector3(1.48, 0.51, 0.11)
+	var frame := StandardMaterial3D.new()
+	frame.albedo_color = Color("c3a77b")
+	frame.roughness = 0.92
+	rim.material = frame
+	var tile := BoxMesh.new()
+	tile.size = Vector3(1.38, 0.42, 0.036)
+	var glaze := StandardMaterial3D.new()
+	glaze.albedo_color = Color("3f6168")
+	glaze.roughness = 0.78
+	tile.material = glaze
+
+	for entry in PLAZA_WAYMARKS:
+		var step: Vector2i = entry[1]
+		var facing := Vector3(-step.x, 0.0, -step.y)
+		var curb := Vector2(entry[0]) + Vector2.ONE * 0.5 + Vector2(step) * 0.5
+		var plaque := MeshInstance3D.new()
+		plaque.mesh = rim
+		plaque.position = TomatinaMap.at_cell(curb) + Vector3.UP * 2.24 + facing * 0.058
+		plaque.rotation.y = atan2(facing.x, facing.z)
+		root.add_child(plaque)
+
+		var face := MeshInstance3D.new()
+		face.mesh = tile
+		face.position.z = 0.063
+		plaque.add_child(face)
+
+		var lettering := Label3D.new()
+		lettering.text = entry[2]
+		lettering.position.z = 0.085
+		lettering.pixel_size = 0.007
+		lettering.font_size = 42
+		lettering.outline_size = 0
+		lettering.modulate = Color("e7d7b1")
+		plaque.add_child(lettering)
 
 
 func load_kit() -> bool:
@@ -62,6 +118,7 @@ func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dicti
 		var room: Rect2i = TomatinaMap.SAFE_ROOMS[index]
 		var centre := Vector2(float(room.get_center().x) + 0.5, float(room.position.y) + 1.5)
 		_place(BANNERS[index], TomatinaMap.at_cell(centre))
+		_place("RefugeShower", TomatinaMap.refuge_shower_at(index))
 	_place("Church", TomatinaMap.at_cell(Vector2(36.5, 20.6)), Vector3.BACK, Vector3(17, 15, 9))
 	var root := Node3D.new()
 	root.name = "TomatinaVillageArt"
@@ -71,13 +128,19 @@ func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dicti
 	var stained_walls := ShaderMaterial.new()
 	stained_walls.shader = TOON_SHADER
 	stained_walls.set_shader_parameter("tomato_wall", true)
+	var street_walls := stained_walls.duplicate() as ShaderMaterial
+	street_walls.set_shader_parameter("boundary_wall", true)
 	for name: String in _batches:
-		var is_wall := name == "BoundaryWall" or name == "Church" or name in HOUSES
-		var accent: StandardMaterial3D
+		var finish: Material = material
+		if name == "BoundaryWall":
+			finish = street_walls
+		elif name == "Church" or name in HOUSES:
+			finish = stained_walls
 		if STREET_ACCENTS.has(name):
-			accent = StandardMaterial3D.new()
+			var accent := StandardMaterial3D.new()
 			accent.albedo_color = STREET_ACCENTS[name].darkened(0.36)
 			accent.roughness = 0.82
+			finish = accent
 		for chunk: Vector2i in _batches[name]:
 			var transforms: Array = _batches[name][chunk]
 			var multimesh := MultiMesh.new()
@@ -89,7 +152,7 @@ func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dicti
 			var batch := MultiMeshInstance3D.new()
 			batch.name = "%s_%d_%d" % [name, chunk.x, chunk.y]
 			batch.multimesh = multimesh
-			batch.material_override = accent if accent != null else (stained_walls if is_wall else material)
+			batch.material_override = finish
 			if name == "BrokenBoards" or name == "CrushedTomatoes":
 				batch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			root.add_child(batch)
@@ -118,6 +181,8 @@ func _build_frontages() -> void:
 			var scatter := posmod(cell.x * 31 + cell.y * 47 + step.x * 13 + step.y * 7, 19)
 			if scatter < 6:
 				_place_street_front(base, facing, cell)
+			elif scatter < 15:
+				_place_facade_detail(base, facing, scatter)
 			if scatter < 3 and open:
 				var at := base + facing * (0.82 + float(scatter) * 0.68)
 				at += Vector3(tangent.x, 0.0, tangent.y) * 0.44
@@ -147,6 +212,17 @@ func _build_frontages() -> void:
 			_facades.push_back(Transform3D(Basis.looking_at(-facing), anchor))
 
 	_build_backlots(floor)
+
+
+func _place_facade_detail(base: Vector3, facing: Vector3, scatter: int) -> void:
+	var front := base + facing * 0.23
+	var along := facing.cross(Vector3.UP)
+	if scatter < 9:
+		_place("FacadeWindow", front + Vector3.UP * 3.45, facing)
+	elif scatter < 12:
+		_place("FacadeLantern", front + along * 1.25 + Vector3.UP * 2.65, facing)
+	else:
+		_place("FacadePots", front + along * 1.25 + Vector3.UP * 0.04, facing)
 
 
 func _place_street_front(base: Vector3, facing: Vector3, cell: Vector2i) -> void:
@@ -234,7 +310,16 @@ func _add_debris(box: Dictionary) -> void:
 	elif name.begins_with("TomatoCrateStack"):
 		key = "TomatoCrateStack"
 	elif TomatinaMap.is_refill_crate(box):
-		key = "TomatoCrate"
+		if name.ends_with("WreckCrate"):
+			key = "TomatoCrateWreck"
+		elif name.begins_with("TomatoCratesSupply"):
+			key = "TomatoCrateRefuge"
+		else:
+			key = "TomatoCrate"
+		var at: Vector3 = box["position"]
+		at.y -= size.y * 0.5
+		_place(key, at)
+		return
 	elif name == "MarketBarrels" or name == "CrushedTomatoes":
 		key = name
 	elif name.ends_with("WreckCanopy"):
@@ -370,6 +455,9 @@ func _place(key: String, at: Vector3, facing := Vector3.BACK, size := Vector3.ZE
 	var bounds := mesh.get_aabb()
 	var offset := bounds.get_center()
 	offset.y = bounds.position.y
+	if key == "RefugeShower":
+		# The authored origin is under the nozzle, ahead of the post.
+		offset = Vector3.ZERO
 	var scale := size / bounds.size if size != Vector3.ZERO else Vector3.ONE
 	var basis := Basis(Vector3.UP, atan2(facing.x, facing.z))
 	basis = basis.scaled_local(scale)

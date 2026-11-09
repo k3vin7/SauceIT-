@@ -7,6 +7,7 @@ const TutorialScene := preload("res://tutorial_world.tscn")
 const RecruitmentScene := preload("res://recruitment_map.tscn")
 const TruckScene := preload("res://truck_lobby.tscn")
 const CharacterSelectScript := preload("res://scripts/character_select.gd")
+const UI := preload("res://scripts/sauce_ui.gd")
 
 @export var save_path_override := ""
 
@@ -90,29 +91,48 @@ func _show_title() -> void:
 	_title_layer = CanvasLayer.new()
 	_title_layer.name = "TitleUI"
 	add_child(_title_layer)
+	var backdrop := UI.TitleBackdrop.new()
+	_title_layer.add_child(backdrop)
+	backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var centre := CenterContainer.new()
+	centre.theme = UI.theme()
 	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_title_layer.add_child(centre)
+	var layout := HBoxContainer.new()
+	layout.add_theme_constant_override("separation", 78)
+	centre.add_child(layout)
+	var brand := VBoxContainer.new()
+	brand.custom_minimum_size.x = 470.0
+	brand.alignment = BoxContainer.ALIGNMENT_CENTER
+	brand.add_theme_constant_override("separation", 10)
+	layout.add_child(brand)
+	var tag := UI.eyebrow("01–04 PLAYERS   /   CO-OP FOOD FIGHT", UI.CREAM)
+	tag.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	brand.add_child(tag)
+	var title := Label.new()
+	title.text = "SAUCE IT!"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 88)
+	title.add_theme_color_override("font_shadow_color", Color("642e2d"))
+	title.add_theme_constant_override("shadow_offset_x", 3)
+	title.add_theme_constant_override("shadow_offset_y", 5)
+	brand.add_child(title)
+	var subtitle := Label.new()
+	subtitle.text = "소스를 쏘고, 서로의 사선을 비켜라"
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle.add_theme_font_size_override("font_size", 19)
+	brand.add_child(subtitle)
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(470.0, 0.0)
-	centre.add_child(panel)
-	var margin := _margin(38)
+	panel.custom_minimum_size = Vector2(310.0, 0.0)
+	panel.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	layout.add_child(panel)
+	var margin := _margin(26)
 	panel.add_child(margin)
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 14)
 	margin.add_child(column)
-	var title := Label.new()
-	title.text = "SAUCE IT!"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 58)
-	title.add_theme_color_override("font_color", Color("fff0a8"))
-	column.add_child(title)
-	var subtitle := Label.new()
-	subtitle.text = "LAN CO-OP FOOD FIGHT"
-	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	subtitle.modulate = Color(0.72, 0.8, 0.84)
-	column.add_child(subtitle)
-	column.add_child(_button("게임 시작", _start_game))
+	column.add_child(UI.eyebrow("출격 메뉴"))
+	column.add_child(_button("게임 시작", _start_game, true))
 	if save_store.tutorial_completed:
 		column.add_child(_button("튜토리얼 다시 하기", _show_tutorial))
 	column.add_child(_button("옵션", _open_options))
@@ -168,16 +188,18 @@ func _open_recruitment_panel() -> void:
 	(current_space as RecruitmentMap).set_input_locked(true)
 	_recruitment_layer = CanvasLayer.new()
 	_recruitment_layer.name = "RecruitmentUI"
+	_recruitment_layer.layer = 5
 	add_child(_recruitment_layer)
 	var dim := ColorRect.new()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.01, 0.02, 0.03, 0.78)
+	dim.color = UI.SHADE
 	_recruitment_layer.add_child(dim)
 	var centre := CenterContainer.new()
+	centre.theme = UI.theme()
 	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_recruitment_layer.add_child(centre)
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(560.0, 0.0)
+	panel.custom_minimum_size = Vector2(760.0, 0.0)
 	centre.add_child(panel)
 	var margin := _margin(22)
 	panel.add_child(margin)
@@ -185,37 +207,63 @@ func _open_recruitment_panel() -> void:
 	column.add_theme_constant_override("separation", 9)
 	margin.add_child(column)
 	var title := Label.new()
-	title.text = "CREW TERMINAL"
+	title.text = "팀 모집 터미널"
 	title.add_theme_font_size_override("font_size", 30)
 	column.add_child(title)
+	var columns := HBoxContainer.new()
+	columns.add_theme_constant_override("separation", 22)
+	column.add_child(columns)
+	var host := VBoxContainer.new()
+	host.add_theme_constant_override("separation", 9)
+	host.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	columns.add_child(host)
+	var join := VBoxContainer.new()
+	join.add_theme_constant_override("separation", 9)
+	join.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	columns.add_child(join)
+	host.add_child(UI.eyebrow("01  방 만들기"))
+	join.add_child(UI.eyebrow("02  기존 방에 참여"))
 	var stage := OptionButton.new()
 	for stage_id in StageRegistry.available_ids():
 		stage.add_item(StageRegistry.display_name(stage_id))
 		stage.set_item_metadata(stage.item_count - 1, stage_id)
 	stage.select(0)
 	_stage_select = stage
-	column.add_child(_labeled("플레이 스테이지", stage))
+	host.add_child(_labeled("플레이 스테이지", stage))
 	_code_field = LineEdit.new()
 	_code_field.placeholder_text = "비우면 5자리 코드 자동 생성"
-	column.add_child(_labeled("입장 코드 (방 검색 코드가 아닌 인증 코드)", _code_field))
 	_open_room = CheckBox.new()
 	_open_room.text = "코드 없이 열기"
-	column.add_child(_open_room)
-	_port_field = LineEdit.new()
-	_port_field.text = str(MayoNet.DEFAULT_PORT)
-	column.add_child(_labeled("포트", _port_field))
-	column.add_child(_button("방 만들기", _host_room))
-	column.add_child(HSeparator.new())
+	host.add_child(_open_room)
 	_address_field = LineEdit.new()
 	_address_field.text = "127.0.0.1"
-	column.add_child(_labeled("호스트 IP (코드만으로 방 검색 불가)", _address_field))
-	_join_button = _button("참여하기", _join_room)
-	column.add_child(_join_button)
+	join.add_child(_labeled("호스트 IP", _address_field))
+	join.add_child(UI.eyebrow("방장이 알려 준 주소를 입력하세요.", UI.MUTED))
+	column.add_child(HSeparator.new())
+	var connection := HBoxContainer.new()
+	connection.add_theme_constant_override("separation", 22)
+	column.add_child(connection)
+	var code := _labeled("공통 · 입장 코드", _code_field)
+	code.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	connection.add_child(code)
+	_port_field = LineEdit.new()
+	_port_field.text = str(MayoNet.DEFAULT_PORT)
+	connection.add_child(_labeled("공통 · 포트", _port_field))
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 22)
+	column.add_child(actions)
+	var create := _button("방 만들기", _host_room, true)
+	create.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(create)
+	_join_button = _button("참여하기", _join_room, true)
+	_join_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(_join_button)
 	_cancel_join_button = _button("접속 취소", _cancel_join)
 	_cancel_join_button.visible = false
 	column.add_child(_cancel_join_button)
 	_status_label = Label.new()
 	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_status_label.add_theme_color_override("font_color", UI.MUTED)
 	_status_label.text = _notice if not _notice.is_empty() else "호스트가 공유한 IP, 포트, 입장 코드가 필요합니다."
 	column.add_child(_status_label)
 	column.add_child(_button("닫기  (Esc)", _close_recruitment_panel))
@@ -373,8 +421,14 @@ func _on_result_ready(summary: Dictionary) -> void:
 		current_space.call("set_gameplay_input_enabled", false)
 	_clear_ui(_loading_layer)
 	_result_layer = CanvasLayer.new()
+	_result_layer.layer = 8
 	add_child(_result_layer)
+	var dim := ColorRect.new()
+	dim.color = UI.SHADE
+	_result_layer.add_child(dim)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var centre := CenterContainer.new()
+	centre.theme = UI.theme()
 	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_result_layer.add_child(centre)
 	var panel := PanelContainer.new()
@@ -385,6 +439,7 @@ func _on_result_ready(summary: Dictionary) -> void:
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 12)
 	margin.add_child(column)
+	column.add_child(UI.eyebrow("임무 결과", UI.GOLD))
 	var title := Label.new()
 	title.text = str(summary.get("title", "STAGE CLEAR"))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -395,7 +450,7 @@ func _on_result_ready(summary: Dictionary) -> void:
 	detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(detail)
 	if session.is_server():
-		column.add_child(_button("전원 트럭 복귀", func(): session.return_to_truck()))
+		column.add_child(_button("전원 트럭 복귀", func(): session.return_to_truck(), true))
 	else:
 		var waiting := Label.new()
 		waiting.text = "방장이 트럭 복귀를 선택할 때까지 기다리는 중…"
@@ -426,12 +481,14 @@ func _open_options() -> void:
 	if _options_layer != null:
 		return
 	_options_layer = CanvasLayer.new()
+	_options_layer.layer = 9
 	add_child(_options_layer)
 	var dim := ColorRect.new()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.01, 0.015, 0.025, 1.0)
+	dim.color = UI.SHADE
 	_options_layer.add_child(dim)
 	var centre := CenterContainer.new()
+	centre.theme = UI.theme()
 	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_options_layer.add_child(centre)
 	var panel := PanelContainer.new()
@@ -458,7 +515,7 @@ func _open_options() -> void:
 	_sensitivity_slider.step = 0.005
 	_sensitivity_slider.value = save_store.mouse_sensitivity
 	column.add_child(_labeled("마우스 감도", _sensitivity_slider))
-	column.add_child(_button("적용 및 저장", _save_options))
+	column.add_child(_button("적용 및 저장", _save_options, true))
 	column.add_child(_button("취소", _close_options))
 	_set_mouse_visible(true)
 
@@ -497,12 +554,14 @@ func _open_pause() -> void:
 		elif current_space.has_method("set_input_locked"):
 			current_space.call("set_input_locked", true)
 	_pause_layer = CanvasLayer.new()
+	_pause_layer.layer = 8
 	add_child(_pause_layer)
 	var dim := ColorRect.new()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.01, 0.015, 0.025, 0.86)
+	dim.color = UI.SHADE
 	_pause_layer.add_child(dim)
 	var centre := CenterContainer.new()
+	centre.theme = UI.theme()
 	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_pause_layer.add_child(centre)
 	var panel := PanelContainer.new()
@@ -517,7 +576,7 @@ func _open_pause() -> void:
 	heading.text = "메뉴"
 	heading.add_theme_font_size_override("font_size", 30)
 	column.add_child(heading)
-	column.add_child(_button("계속", _close_pause))
+	column.add_child(_button("계속", _close_pause, true))
 	column.add_child(_button("옵션", _open_options))
 	if session.is_online():
 		column.add_child(_button("세션 나가기", _leave_session))
@@ -540,9 +599,15 @@ func _close_pause() -> void:
 func _show_loading(message: String) -> void:
 	_clear_all_ui()
 	_loading_layer = CanvasLayer.new()
+	_loading_layer.layer = 10
 	add_child(_loading_layer)
+	var dim := ColorRect.new()
+	dim.color = UI.INK
+	_loading_layer.add_child(dim)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var label := Label.new()
 	label.text = message
+	label.add_theme_color_override("font_color", UI.CREAM)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label.add_theme_font_size_override("font_size", 28)
@@ -588,10 +653,12 @@ func _clear_ui(layer: CanvasLayer) -> void:
 		layer.queue_free()
 
 
-func _button(text_value: String, callback: Callable) -> Button:
+func _button(text_value: String, callback: Callable, important := false) -> Button:
 	var button := Button.new()
 	button.text = text_value
 	button.custom_minimum_size.y = 42.0
+	if important:
+		UI.primary(button)
 	button.pressed.connect(callback)
 	return button
 

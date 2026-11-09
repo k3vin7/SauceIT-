@@ -1,5 +1,7 @@
 extends Control
 
+const UI := preload("res://scripts/sauce_ui.gd")
+
 ## The whole of the connection UI: host, or type an address and join. No lobby,
 ## no player list, no matchmaking. Opened and closed with F2; hidden at startup,
 ## so a player who never presses it is in the same single-player game as before.
@@ -30,10 +32,11 @@ func _ready() -> void:
 	# panel covers it too and clicks cannot fall through to the game.
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	theme = UI.theme()
 
 	var dim := ColorRect.new()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	dim.color = Color(0.02, 0.03, 0.04, 0.72)
+	dim.color = UI.SHADE
 	add_child(dim)
 
 	# Centred by a container rather than by anchors, so the panel is placed
@@ -58,6 +61,7 @@ func _ready() -> void:
 
 	var title := Label.new()
 	title.text = "LAN 플레이 (최대 4인)"
+	title.add_theme_font_size_override("font_size", 24)
 	column.add_child(title)
 
 	# The same code on both ends. It is checked during the handshake, so a guest
@@ -84,6 +88,7 @@ func _ready() -> void:
 
 	_host_button = Button.new()
 	_host_button.text = "호스트 시작"
+	UI.primary(_host_button)
 	_host_button.pressed.connect(_on_host_pressed)
 	column.add_child(_host_button)
 

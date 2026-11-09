@@ -1,5 +1,7 @@
 extends Control
 
+const UI := preload("res://scripts/sauce_ui.gd")
+
 ## The keys, on screen, with the state of the ones that toggle.
 ##
 ## Every switch in this prototype is a key and nothing on screen says so, which
@@ -19,18 +21,14 @@ const LINE_HEIGHT := 19.0
 const KEY_COLUMN := 52.0
 const PADDING := Vector2(12.0, 9.0)
 
-const BACKING := Color(0.04, 0.05, 0.06, 0.72)
-const EDGE := Color(0.86, 0.90, 0.94, 0.22)
-const KEY_COLOUR := Color("ffe9a8")
-const LABEL_COLOUR := Color(0.88, 0.91, 0.94, 0.92)
-## What a toggle currently reads as: on is worth noticing, off is not.
-const STATE_ON := Color("7fd4a0")
-const STATE_OFF := Color(0.62, 0.66, 0.70, 0.85)
+const KEY_COLOUR := UI.GOLD
+const LABEL_COLOUR := UI.CREAM
 
 var world: Node
 var _frame := Rect2()
 var _font: Font
 var _font_size := 13
+var _plate := UI.box(Color(0.07, 0.11, 0.14, 0.93), UI.EDGE, 10)
 
 
 func _ready() -> void:
@@ -57,15 +55,15 @@ func _process(_delta: float) -> void:
 ## key, what it does, and either "" for a plain key or the state it is in.
 func _rows() -> Array:
 	var rows := [
-		["WASD", "move", ""],
-		["Shift", "run", ""],
-		["Space", "jump", ""],
-		["LMB", "spray", ""],
-		["1~5 / Wheel", "select item slot", ""],
-		["E", "pick up tomato", ""],
-		["Shift+1~3", "refill sauce at supply point", ""],
-		["R", "wipe your glasses", ""],
-		["C", "character", ""],
+		["WASD", "이동", ""],
+		["Shift", "달리기", ""],
+		["Space", "점프", ""],
+		["좌클릭", "소스 분사", ""],
+		["1~5 / 휠", "장비 선택", ""],
+		["E", "토마토 줍기", ""],
+		["Shift+1~3", "보급 지점에서 소스 보충", ""],
+		["R", "고글 닦기", ""],
+		["C", "캐릭터 전환", ""],
 	]
 	if world == null or not is_instance_valid(world):
 		return rows
@@ -78,14 +76,14 @@ func _rows() -> Array:
 			["V", "밀치기", ""], ["F4", "조작표 닫기", ""], ["Esc", "일시 정지", ""],
 		]
 	if world._local != null:
-		rows[6][2] = world.character_name_for(world._local)
-	rows.append(["F1", "camera", "first person" if world._first_person else "over the shoulder"])
+		rows[8][2] = world.character_name_for(world._local)
+	rows.append(["F1", "카메라", "1인칭" if world._first_person else "3인칭"])
 	var panel_open: bool = world._net_panel != null and world._net_panel.visible
-	rows.append(["F2", "LAN panel", "open" if panel_open else "closed"])
-	rows.append(["F3", "enemy sight rings", "on" if world.show_enemy_sight else "off"])
-	rows.append(["F4", "this list", "on"])
-	rows.append(["M", "sound", "muted" if world.muted else "on"])
-	rows.append(["Esc", "quit", ""])
+	rows.append(["F2", "연결 메뉴", "열림" if panel_open else "닫힘"])
+	rows.append(["F3", "적 감지 범위", "켜짐" if world.show_enemy_sight else "꺼짐"])
+	rows.append(["F4", "조작표 닫기", ""])
+	rows.append(["M", "소리", "음소거" if world.muted else "켜짐"])
+	rows.append(["Esc", "일시 정지", ""])
 	return rows
 
 
@@ -103,31 +101,23 @@ func _draw() -> void:
 		widest = maxf(widest, _font.get_string_size(
 			text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, _font_size).x)
 	var size := Vector2(key_width + widest + PADDING.x * 2.0,
-		float(rows.size()) * LINE_HEIGHT + PADDING.y * 2.0)
+		float(rows.size()) * LINE_HEIGHT + PADDING.y * 2.0 + 24.0)
 	# Bottom left of the view frame: the bars own the bottom middle and the map
 	# owns the top right.
 	var frame := _frame if _frame.size.x > 1.0 else Rect2(Vector2.ZERO, get_viewport_rect().size)
 	var at := Vector2(frame.position.x + MARGIN,
 		frame.position.y + frame.size.y - size.y - MARGIN)
 	var box := Rect2(at, size)
-	draw_rect(box, BACKING, true)
-	draw_rect(box, EDGE, false, 1.0)
-
-	var baseline := at + PADDING + Vector2(0.0, _font.get_ascent(_font_size))
+	draw_style_box(_plate, box)
+	draw_string(_font, at + Vector2(PADDING.x, 21.0), "조작표",
+		HORIZONTAL_ALIGNMENT_LEFT, -1.0, 15, UI.MINT)
+	var baseline := at + PADDING + Vector2(0.0, _font.get_ascent(_font_size) + 24.0)
 	for row in rows:
 		draw_string(_font, baseline, str(row[0]), HORIZONTAL_ALIGNMENT_LEFT, -1.0,
 			_font_size, KEY_COLOUR)
 		var label: String = row[1]
+		if row[2] != "":
+			label += " · " + str(row[2])
 		draw_string(_font, baseline + Vector2(key_width, 0.0), label,
 			HORIZONTAL_ALIGNMENT_LEFT, -1.0, _font_size, LABEL_COLOUR)
-		if row[2] != "":
-			var state := str(row[2])
-			var used := _font.get_string_size(label + ": ", HORIZONTAL_ALIGNMENT_LEFT,
-				-1.0, _font_size).x
-			var lit := state == "on" or state == "open"
-			draw_string(_font, baseline + Vector2(KEY_COLUMN, 0.0),
-				label + ": ", HORIZONTAL_ALIGNMENT_LEFT, -1.0, _font_size, LABEL_COLOUR)
-			draw_string(_font, baseline + Vector2(key_width + used, 0.0), state,
-				HORIZONTAL_ALIGNMENT_LEFT, -1.0, _font_size,
-				STATE_ON if lit else STATE_OFF)
 		baseline.y += LINE_HEIGHT

@@ -1,6 +1,8 @@
 class_name TruckLobby
 extends Node3D
 
+const UI := preload("res://scripts/sauce_ui.gd")
+
 signal start_requested
 signal leave_requested
 
@@ -356,6 +358,7 @@ func _build_ui() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
 	var panel := PanelContainer.new()
+	panel.theme = UI.theme()
 	panel.position = Vector2(20.0, 20.0)
 	panel.custom_minimum_size = Vector2(340.0, 0.0)
 	layer.add_child(panel)
@@ -366,6 +369,7 @@ func _build_ui() -> void:
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 8)
 	margin.add_child(column)
+	column.add_child(UI.eyebrow("출격 대기"))
 	var title := Label.new()
 	title.text = "수송 트럭"
 	title.add_theme_font_size_override("font_size", 28)
@@ -379,6 +383,7 @@ func _build_ui() -> void:
 	column.add_child(_status_label)
 	_start_button = Button.new()
 	_start_button.text = "시작하기"
+	UI.primary(_start_button)
 	# Neither button takes keyboard focus. They are clicked with the cursor the
 	# `Tab` toggle frees, and a focused Button swallows `Tab` as focus
 	# navigation -- which is the key that frees the cursor in the first place,
@@ -393,7 +398,7 @@ func _build_ui() -> void:
 	column.add_child(leave)
 	_hint_label = Label.new()
 	_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_hint_label.modulate = Color(0.75, 0.78, 0.72)
+	_hint_label.add_theme_color_override("font_color", UI.MUTED)
 	column.add_child(_hint_label)
 	var cross := Label.new()
 	cross.text = "+"

@@ -1,6 +1,8 @@
 class_name Minimap
 extends Control
 
+const UI := preload("res://scripts/sauce_ui.gd")
+
 ## The street map in the top-right corner, scrolling under the player.
 ##
 ## The streets are baked into a texture once, one pixel per lattice cell, and
@@ -23,12 +25,12 @@ const MARGIN := 16.0
 const VIEW_CELLS := 18.0
 
 const BACKING := Color(0.04, 0.05, 0.06, 0.82)
-const EDGE := Color(0.86, 0.90, 0.94, 0.45)
+const EDGE := UI.EDGE
 const STREET := Color(0.34, 0.38, 0.43, 1.0)
 const STALL := Color("3fc3d4")
-const ENEMY := Color("b06be0")
+const ENEMY := UI.ACCENT
 const LANDMARK := Color("f0a500")
-const PLAYER := Color("e8382c")
+const PLAYER := UI.CREAM
 
 var world: Node3D
 var frame := Rect2()
@@ -38,6 +40,7 @@ var _texture: ImageTexture
 var _image_origin := Vector2i.ZERO
 var _stall_cells := PackedVector2Array()
 var _landmark_cells := PackedVector2Array()
+var _plate := UI.box(Color(0.07, 0.11, 0.14, 0.93), UI.EDGE, 10)
 
 
 func _ready() -> void:
@@ -97,8 +100,16 @@ func _draw() -> void:
 		return
 
 	var box := Rect2(
-		Vector2(frame.position.x + frame.size.x - SIZE - MARGIN, frame.position.y + MARGIN),
+		Vector2(frame.position.x + frame.size.x - SIZE - MARGIN - 7.0, frame.position.y + MARGIN + 29.0),
 		Vector2(SIZE, SIZE))
+	var card := Rect2(box.position - Vector2(7.0, 27.0), box.size + Vector2(14.0, 34.0))
+	draw_style_box(_plate, card)
+	draw_string(ThemeDB.fallback_font, card.position + Vector2(10.0, 18.0),
+		"주변 지도", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13, UI.CREAM)
+	if world._shooters.size() > 1:
+		draw_circle(Vector2(card.end.x - 55.0, card.position.y + 13.0), 3.0, UI.MINT)
+		draw_string(ThemeDB.fallback_font, Vector2(card.end.x - 46.0, card.position.y + 18.0),
+			"팀원", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 12, UI.MUTED)
 	draw_rect(box, BACKING, true)
 
 	var per_cell := box.size.x / (VIEW_CELLS * 2.0)
@@ -122,6 +133,10 @@ func _draw() -> void:
 		if enemy == null or not is_instance_valid(enemy) or not enemy.is_alive():
 			continue
 		_draw_mark(box, centre, per_cell, _cell_of(enemy.global_position), mark * 1.2, ENEMY)
+	for teammate in world._shooters.values():
+		var ally: MayoPlayer = teammate.player
+		if ally != player and ally.state != MayoPlayer.State.DEAD:
+			_draw_mark(box, centre, per_cell, _cell_of(ally.global_position), mark * 1.6, UI.MINT)
 
 	# The player, always dead centre -- the map moves, they do not.
 	var middle := box.get_center()

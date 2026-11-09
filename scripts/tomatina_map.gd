@@ -31,6 +31,7 @@ const SAFE_ROOMS: Array[Rect2i] = [
 ]
 const SAFE_ROOM_NAMES := ["급수 마당", "시장 피난처", "축제 본부"]
 
+
 const ROUTE_POINTS := [
 	[
 		Vector2(29.2, 225.1), Vector2(29.2, 221.1), Vector2(26, 214.7), Vector2(29.2, 206.8),
@@ -156,6 +157,50 @@ const GRUNT_PACKS := [
 	[2, 0.21, 8], [2, 0.51, 10], [2, 0.81, 9],
 	[3, 0.36, 8], [3, 0.73, 9],
 ]
+# Leg, trip point past the mouth of a side alley, then the forward and rear threats.
+const ALLEY_AMBUSHES := [
+	[0, Vector2(28.9, 204.3), [
+		["TOMATO_BRUTE", Vector2i(28, 201)], ["CAPRESE_CRAWLER", Vector2i(25, 206)],
+		["TOMATO_GRUNT", Vector2i(24, 203)],
+	]],
+	[1, Vector2(15.8, 164.7), [
+		["BOWLING_TOMATO", Vector2i(20, 163)], ["KETCHUP_SPITTER", Vector2i(12, 165)],
+		["TOMATO_GRUNT", Vector2i(10, 161)],
+	]],
+	[1, Vector2(33.6, 125.8), [
+		["TOMATO_BRUTE", Vector2i(29, 122)], ["CAPRESE_CRAWLER", Vector2i(36, 128)],
+		["TOMATO_GRUNT", Vector2i(39, 125)],
+	]],
+	[2, Vector2(16.8, 92.7), [
+		["BOWLING_TOMATO", Vector2i(18, 88)], ["CAPRESE_CRAWLER", Vector2i(18, 95)],
+		["TOMATO_GRUNT", Vector2i(21, 95)],
+	]],
+	[3, Vector2(28.5, 57.6), [
+		["TOMATO_BRUTE", Vector2i(24, 57)], ["KETCHUP_SPITTER", Vector2i(31, 58)],
+		["TOMATO_GRUNT", Vector2i(36, 54)],
+	]],
+]
+const ALLEY_REINFORCEMENT := &"alley_reinforcement"
+# Each pack adds a specialist and four grunts between the existing alley fights.
+const ALLEY_REINFORCEMENTS := [
+	[0, 0.34, "KETCHUP_SPITTER"],
+	[1, 0.20, "CAPRESE_CRAWLER"],
+	[1, 0.62, "TOMATO_BRUTE"],
+	[2, 0.11, "KETCHUP_SPITTER"],
+	[2, 0.69, "TOMATO_BRUTE"],
+	[3, 0.11, "CAPRESE_CRAWLER"],
+	[3, 0.79, "KETCHUP_SPITTER"],
+]
+const REINFORCEMENT_GRUNTS := 4
+
+
+static func refuge_shower_at(room: int) -> Vector3:
+	var courtyard := SAFE_ROOMS[room]
+	return at_cell(Vector2(courtyard.end.x - 1.0, courtyard.position.y + 1.15))
+
+
+static func refuge_shop_at(room: int) -> Vector3:
+	return at_cell(Vector2(SAFE_ROOMS[room].position) + Vector2(0.82, 1.62))
 
 
 static func safe_room_at(cell: Vector2i) -> int:
@@ -199,7 +244,34 @@ static func roster() -> Array:
 			out.push_back([entry[0], Vector2(cell) + Vector2(0.5, 0.5)])
 	for cell in _grunt_cells(taken):
 		out.push_back(["TOMATO_GRUNT", cell])
+	# Keep the plaza guard order, including the grunt burst tiers keyed by index.
+	for group in ALLEY_AMBUSHES.size():
+		var ambush_plan: Array = ALLEY_AMBUSHES[group]
+		for entry in ambush_plan[2]:
+			var cell: Vector2i = entry[1]
+			taken[cell] = true
+			out.push_back([entry[0], Vector2(cell) + Vector2.ONE * 0.5, group])
+	_add_alley_reinforcements(out, taken)
 	return out
+
+
+static func _add_alley_reinforcements(out: Array, taken: Dictionary) -> void:
+	for pack in ALLEY_REINFORCEMENTS:
+		var leg: int = pack[0]
+		var pose := _route_pose(leg, float(pack[1]))
+		var nearby := _nearby_open_cells(leg, pose[0], taken, 3.25)
+		if leg == 3:
+			nearby = nearby.filter(func(cell: Vector2i) -> bool:
+				return cell.y >= PLAZA.end.y)
+		if nearby.is_empty():
+			continue
+		var lead: Vector2i = nearby.pop_front()
+		taken[lead] = true
+		out.push_back([pack[2], Vector2(lead) + Vector2.ONE * 0.5, ALLEY_REINFORCEMENT])
+		var grunts: Array[Vector2] = []
+		_add_grunt_pack(grunts, nearby, REINFORCEMENT_GRUNTS, taken)
+		for cell in grunts:
+			out.push_back(["TOMATO_GRUNT", cell, ALLEY_REINFORCEMENT])
 
 
 static func grunt_cells() -> Array[Vector2]:

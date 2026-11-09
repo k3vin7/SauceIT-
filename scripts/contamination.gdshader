@@ -135,8 +135,10 @@ void fragment() {
 	vec3 clean = clean_color.rgb;
 	float tomato_marks = 0.0;
 	if (paved) {
-		vec2 brick = pavement_position / vec2(1.22, 0.81);
-		brick.x += mod(floor(brick.y), 2.0) * 0.5;
+		vec2 brick_size = vec2(1.22, 0.81);
+		vec2 brick = pavement_position / brick_size;
+		float stagger = mod(floor(brick.y), 2.0) * 0.5;
+		brick.x += stagger;
 		vec2 cell = floor(brick);
 		vec2 edge = min(fract(brick), 1.0 - fract(brick));
 		vec2 aa = fwidth(brick);
@@ -148,8 +150,14 @@ void fragment() {
 		if (any(lessThan(mask_uv, vec2(0.0))) || any(greaterThanEqual(mask_uv, vec2(1.0)))) {
 			on_street = 0.0;
 		}
-		vec3 stone = clean * mix(1.0, mix(0.92, 1.08, grain)
-			* (1.0 - 0.23 * max(seam.x, seam.y)), detail);
+		vec2 brick_center = (cell + vec2(0.5) - vec2(stagger, 0.0)) * brick_size;
+		float patch = tomato_hash(floor(brick_center / vec2(5.5, 4.4)));
+		vec3 grey = clean * mix(0.79, 1.15, grain);
+		grey *= mix(vec3(0.91, 0.97, 1.04), vec3(1.08, 1.01, 0.92), patch);
+		vec3 clay = clean * vec3(1.02, 0.66, 0.49) * mix(0.87, 1.12, grain);
+		float brick_cutoff = mix(0.96, 0.68, smoothstep(0.60, 0.93, patch));
+		vec3 paving = mix(grey, clay, step(brick_cutoff, grain));
+		vec3 stone = mix(clean, paving * (1.0 - 0.23 * max(seam.x, seam.y)), detail);
 		float large = tomato_splat(pavement_position, 2.7, 0.69);
 		float small = tomato_splat(pavement_position + vec2(3.7, 1.1), 1.12, 0.46);
 		tomato_marks = max(large, small * 0.81) * on_street;

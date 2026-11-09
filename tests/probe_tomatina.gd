@@ -66,6 +66,8 @@ func _run() -> void:
 		_check(int(placed.get("SauceVan", 0)) == 24, "decorative vans are missing")
 		_check(int(placed.get("OverturnedTomatoTruck", 0)) == 2, "overturned tomato trucks are missing")
 		_check(int(placed.get("TomatoCrateStack", 0)) == 18, "tomato crate stacks are missing")
+		_check(int(placed.get("RefugeShower", 0)) == TomatinaMap.SAFE_ROOMS.size(),
+			"each refuge should have a shower model")
 		for prop in TomatinaMap.AFTERMATH_MODELS:
 			_check(int(placed.get(prop[0], 0)) >= 6,
 				"festival aftermath is missing %s obstacles" % prop[0])
@@ -211,6 +213,43 @@ func _run() -> void:
 	_check(stations.size() == 62, "stage 2 is missing tomato crates or loaded trucks")
 	var refill_player: MayoPlayer = scene._local.player
 	var original_position := refill_player.global_position
+	var interact := InputEventKey.new()
+	interact.physical_keycode = KEY_E
+	interact.pressed = true
+	var cancel := InputEventAction.new()
+	cancel.action = "ui_cancel"
+	cancel.pressed = true
+	scene._unhandled_input(interact)
+	_check(not scene._refuge_shop.visible, "a distant shop opened")
+	for room in TomatinaMap.SAFE_ROOMS.size():
+		refill_player.global_position = TomatinaMap.refuge_shop_at(room) + Vector3.UP * 1.28
+		_check(scene._tomatina_action_hint() == "[E] 상점 열기", "a refuge shop lacks its prompt")
+		scene._unhandled_input(interact)
+		_check(scene._refuge_shop.visible and scene._refuge_shop_room == room
+			and refill_player.frozen and scene.is_physics_processing(),
+			"the shop did not open locally while keeping the world active")
+		scene._unhandled_input(cancel if room % 2 == 0 else interact)
+		_check(not scene._refuge_shop.visible and not refill_player.frozen, "the shop did not close")
+	_probe_sauce_parts(scene, refill_player)
+	refill_player.global_position = original_position
+	var stain := refill_player.contamination
+	var clean_body := stain.snapshot_cells()
+	var stained_body := clean_body.duplicate()
+	stained_body[0] = (1 << ContaminationGrid.KIND_BITS) | ContaminationGrid.KIND_KETCHUP
+	stained_body[1] = (1 << ContaminationGrid.KIND_BITS) | ContaminationGrid.KIND_MAYO
+	stain.restore_cells(stained_body)
+	scene.tomato_action(refill_player.peer_id, 0)
+	_check(stain.snapshot_cells() == stained_body, "a distant shower washed the player")
+	for room in TomatinaMap.SAFE_ROOMS.size():
+		refill_player.global_position = TomatinaMap.refuge_shower_at(room) + Vector3.UP * 1.28
+		_check(scene._refuge_shower_in_reach(refill_player.global_position) == room
+			and scene._tomatina_action_hint().begins_with("[E]"), "shower is missing its interaction prompt")
+		stain.restore_cells(stained_body.duplicate())
+		scene.tomato_action(refill_player.peer_id, 0)
+		var washed := stain.snapshot_cells()
+		_check(washed[0] == 0 and washed[1] == stained_body[1],
+			"shower should remove ketchup from the body and retain other sauces")
+	stain.restore_cells(clean_body)
 	var trucks := TomatinaMap.parked_trucks()
 	var truck: Dictionary = trucks[0]
 	refill_player.global_position = truck["position"] + Vector3.LEFT * 2.5
@@ -248,18 +287,47 @@ func _run() -> void:
 				"an enemy spawned inside a refuge")
 	# --- the roster ---
 	var counts := {}
+	var groups := {}
+	var plaza_guards := {}
+	var reinforced_legs := [0, 0, 0, 0]
+	var reinforcement_grunts := 0
+	var occupied := {}
 	for index in scene.enemy_count():
 		var enemy: MayoEnemy = scene.enemy_at(index)
 		counts[enemy.kind] = int(counts.get(enemy.kind, 0)) + 1
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			continue
+		var cell := StreetMap.cell_at(enemy.global_position)
+		if enemy.has_meta(TomatinaMap.ALLEY_REINFORCEMENT):
+			var leg: int = enemy.get_meta("encounter")
+			_check(leg >= 0 and not occupied.has(cell) and not enemy.has_meta("finale_guard"),
+				"a reinforcement shares a spawn or is outside its alley")
+			if leg >= 0:
+				reinforced_legs[leg] += 1
+			reinforcement_grunts += int(enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT)
+		occupied[cell] = true
+		if enemy.has_meta("finale_guard"):
+			plaza_guards[enemy.kind] = int(plaza_guards.get(enemy.kind, 0)) + 1
+		if enemy.has_meta("alley_ambush"):
+			var group := int(enemy.get_meta("alley_ambush"))
+			groups[group] = int(groups.get(group, 0)) + 1
+			var plan: Array = TomatinaMap.ALLEY_AMBUSHES[group]
+			_check(enemy.get_meta("encounter") == plan[0] and not enemy.has_meta("finale_guard"),
+				"an ambusher spawned outside its alley")
 	print("roster: %s" % str(counts))
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) == TomatinaMap.grunt_cells().size(), "encounter pack grunt count differs from plan")
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) <= 140, "repeated grunt packs were not cut")
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BRUTE, 0)) == 4, "not four brutes")
-	_check(int(counts.get(MayoEnemy.EnemyKind.BOWLING_TOMATO, 0)) == 2, "not two bowlers")
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BALL, 0)) == 2 * MayoEnemy.BALLS_PER_BOWLER,
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) - reinforcement_grunts <= 140,
+		"the original grunt packs grew")
+	_check(reinforced_legs == [5, 10, 10, 10] and reinforcement_grunts == 28,
+		"the alley reinforcement packs are incomplete")
+	for group in TomatinaMap.ALLEY_AMBUSHES.size():
+		_check(groups.get(group, 0) == 3, "alley ambush %d is missing an attacker" % group)
+	_check(plaza_guards == {MayoEnemy.EnemyKind.TOMATO_BRUTE: 2,
+		MayoEnemy.EnemyKind.CAPRESE_CRAWLER: 1, MayoEnemy.EnemyKind.KETCHUP_SPITTER: 2,
+		MayoEnemy.EnemyKind.TOMATO_GRUNT: 20}, "the alley ambushes changed the plaza guard")
+	var bowlers := int(counts.get(MayoEnemy.EnemyKind.BOWLING_TOMATO, 0))
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BALL, 0)) == bowlers * MayoEnemy.BALLS_PER_BOWLER,
 		"the bowler did not bring its balls")
-	_check(int(counts.get(MayoEnemy.EnemyKind.KETCHUP_SPITTER, 0)) == 3, "not three spitters")
-	_check(int(counts.get(MayoEnemy.EnemyKind.CAPRESE_CRAWLER, 0)) == 3, "not three crawlers")
 	for index in scene.enemy_count():
 		var enemy: MayoEnemy = scene.enemy_at(index)
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
@@ -736,6 +804,63 @@ func _run() -> void:
 		quit(1)
 
 
+func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
+	var parts := preload("res://scripts/tomatina_sauce_parts.gd")
+	var shooter = scene._local
+	var system = scene._sauce_parts
+	shooter.coins = 40
+	_check(not scene.buy_or_equip_sauce_part(player.peer_id, -1), "shop accepted an invalid part")
+	player.global_position = TomatinaMap.refuge_shop_at(0) + Vector3.UP * 1.28
+	_check(not scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.CANNON),
+		"first shop sold a later part")
+	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.FAN) and shooter.coins == 35,
+		"fan purchase did not debit the wallet")
+	shooter.firing = true
+	scene._advance_strand(shooter, 0.01)
+	_check(system._projectiles.size() == 5, "fan did not emit five streams")
+	shooter.firing = false
+	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.FOCUS), "focus purchase failed")
+	scene._emit_point(shooter)
+	_check(shooter.points.back().range_scale > 1.0, "focus did not extend the jet")
+	shooter.points.clear()
+	system.reset()
+
+	player.global_position = TomatinaMap.refuge_shop_at(1) + Vector3.UP * 1.28
+	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.BURST), "burst purchase failed")
+	shooter.firing = true
+	scene._advance_strand(shooter, 0.01)
+	shooter.firing = false
+	for i in 4:
+		scene._advance_strand(shooter, 0.11)
+	_check(system._projectiles.size() == 3, "one burst press did not fire exactly three shots")
+	system.reset()
+	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.ARC), "arc purchase failed")
+	shooter.firing = true
+	scene._advance_strand(shooter, 0.01)
+	_check(system._projectiles.size() == 1 and system._projectiles[0].velocity.y > 0.0,
+		"arc did not launch upward")
+	shooter.firing = false
+	system.reset()
+
+	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.CANNON), "cannon purchase failed")
+	shooter.sauce = 1.0
+	for shot in 5:
+		shooter.firing = true
+		scene._advance_strand(shooter, 0.01)
+		shooter.firing = false
+		scene._advance_strand(shooter, 1.0)
+	_check(system._projectiles.size() == 4 and shooter.sauce == 0.0, "a full cannon did not fire exactly four shots")
+	var balance: int = shooter.coins
+	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.STANDARD)
+		and scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.CANNON)
+		and shooter.coins == balance, "switching an owned part charged again")
+	scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.STANDARD)
+	shooter.coins = 0
+	shooter.owned_parts = 1
+	shooter.sauce = 1.0
+	system.reset()
+
+
 func _probe_cheese_thread(scene) -> void:
 	var index := -1
 	for i in scene.enemy_count():
@@ -823,6 +948,7 @@ func _run_network() -> void:
 	var avatar: MayoPlayer = host.shooter_for(peer).player
 	avatar.global_position = TomatinaMap.at_cell(TomatinaMap.SIREN_CELL) + Vector3.UP * 1.28
 	var starting_roster: int = host.enemy_count()
+	_check(guest.enemy_count() == starting_roster, "the starting roster differs between peers")
 	guest._net.request_tomato_action(0)
 	for _frame in 180:
 		if guest.horde_spawned() and guest.enemy_count() > starting_roster:
@@ -834,10 +960,15 @@ func _run_network() -> void:
 			[host.enemy_count(), guest.enemy_count(), starting_roster, host._horde_pending, host._finale_elapsed])
 	_check(guest._finale_elapsed > 0.0 and guest._finale_elapsed <= host._finale_elapsed,
 		"guest did not receive the server finale timer")
-	await _frames(15)
-	var remote: MayoEnemy = guest.enemy_at(starting_roster)
-	var original: MayoEnemy = host.enemy_at(starting_roster)
-	_check(remote != null and original != null and remote.global_position.distance_to(original.global_position) < 2.5,
+	var reinforcement_synced := false
+	for _frame in 90:
+		var remote: MayoEnemy = guest.enemy_at(starting_roster)
+		var original: MayoEnemy = host.enemy_at(starting_roster)
+		if remote != null and original != null and remote.global_position.distance_to(original.global_position) < 2.5:
+			reinforcement_synced = true
+			break
+		await _frames(1)
+	_check(reinforcement_synced,
 		"a reinforcement in the last snapshot batch did not follow the host position")
 
 	# --- going down replicates: the guest's HUD sees the clock and the hold ---
@@ -868,6 +999,62 @@ func _run_network() -> void:
 	_check(progress_seen >= 0.0, "the guest never saw the rescue hold's progress")
 	_check(not guest_hud.get("downed", false) and avatar.state == MayoPlayer.State.NORMAL,
 		"the guest was not stood back up by the host's rescue")
+
+	avatar.global_position = TomatinaMap.refuge_shower_at(0) + Vector3.UP * 1.28
+	var previous_sauce: int = host._local.sauce_kind
+	host._local.sauce_kind = ContaminationGrid.KIND_KETCHUP
+	var hit: Vector3 = avatar.global_position + Vector3.BACK * 0.4
+	host._record_splat(avatar, hit, Vector3.BACK, host._local)
+	host._local.sauce_kind = previous_sauce
+	var before_wash: PackedByteArray = host.body_snapshot(peer)
+	for _frame in 120:
+		if guest.body_snapshot(peer) == before_wash:
+			break
+		await _frames(1)
+	_check(avatar.contamination.painted_cell_count() > 0 and guest.body_snapshot(peer) == before_wash,
+		"body stain did not replicate before the shower")
+	guest._net.request_tomato_action(0)
+	for _frame in 120:
+		if avatar.contamination.painted_cell_count() == 0 and guest.body_snapshot(peer) == host.body_snapshot(peer):
+			break
+		await _frames(1)
+	_check(avatar.contamination.painted_cell_count() == 0
+		and guest.body_snapshot(peer) == host.body_snapshot(peer), "guest shower did not replicate")
+
+	avatar.global_position = TomatinaMap.refuge_shop_at(0) + Vector3.UP * 1.28
+	for _frame in 120:
+		if guest._tomatina_action_hint() == "[E] 상점 열기":
+			break
+		await _frames(1)
+	var interact := InputEventKey.new()
+	interact.physical_keycode = KEY_E
+	interact.pressed = true
+	guest._unhandled_input(interact)
+	_check(guest._refuge_shop.visible and not host._refuge_shop.visible
+		and host.is_physics_processing(), "the guest shop interrupted the host or failed to open")
+	for index in 5:
+		host._sauce_parts._place_coin(10000 + index, avatar.global_position - Vector3.UP)
+	for _frame in 120:
+		if guest._local.coins >= 5:
+			break
+		await _frames(1)
+	_check(guest._local.coins == 5 and host._local.coins == 5,
+		"the guest's coin pickup was not shared with the host")
+	var parts := preload("res://scripts/tomatina_sauce_parts.gd")
+	guest._request_sauce_part(parts.Part.FAN)
+	for _frame in 120:
+		if guest._local.sauce_part == parts.Part.FAN:
+			break
+		await _frames(1)
+	_check(guest._local.sauce_part == parts.Part.FAN and guest._local.coins == 0
+		and host.shooter_for(peer).sauce_part == parts.Part.FAN and host._local.coins == 5,
+		"the guest's purchase did not equip and debit only the guest")
+	avatar.global_position = TomatinaMap.refuge_shower_at(0) + Vector3.UP * 1.28
+	for _frame in 120:
+		if not guest._refuge_shop.visible:
+			break
+		await _frames(1)
+	_check(not guest._refuge_shop.visible, "the guest shop stayed open after leaving its counter")
 	for failure in failures:
 		push_error(failure)
 	if failures.is_empty():
