@@ -48,11 +48,13 @@ static func _build_grunt_mesh(radius: float, overripe: bool) -> ArrayMesh:
 	var root := Node3D.new()
 	var skin := OVERRIPE if overripe else TOMATO
 	_sphere(root, "Body", Vector3.ZERO, radius, skin, 0.55)
-	_cylinder(root, "Stem", Vector3(0.0, radius * 0.95, 0.0), radius * 0.12, radius * 0.45, STEM)
+	var stem_height := radius * (0.68 if overripe else 0.45)
+	_cylinder(root, "Stem", Vector3(0.0, radius * 1.02, 0.0), radius * 0.12, stem_height,
+		Color("e3c767") if overripe else STEM)
 	_eyes(root, radius)
 	if overripe:
-		_cylinder(root, "Split", Vector3(0.0, 0.0, 0.0), radius * 1.02, radius * 0.12,
-			Color("3b0a06"))
+		_cylinder(root, "Split", Vector3(0.0, 0.0, 0.0), radius * 1.025, radius * 0.17,
+			Color("381b2d"))
 	var surface := SurfaceTool.new()
 	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var offset := 0

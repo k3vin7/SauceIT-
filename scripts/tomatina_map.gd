@@ -39,8 +39,8 @@ const ROUTE_POINTS := [
 	[
 		Vector2(36.4, 192.5), Vector2(30, 190.9), Vector2(17.3, 190.9), Vector2(8.5, 186.9),
 		Vector2(4.6, 178.9), Vector2(3.8, 171), Vector2(10.1, 166.2), Vector2(20.5, 163),
-		Vector2(25.2, 157.5), Vector2(28.4, 149.5), Vector2(38, 146.4), Vector2(45.1, 142.4),
-		Vector2(46.7, 135.2), Vector2(45.1, 128.9), Vector2(38.7, 124.9), Vector2(32.4, 122.5),
+		Vector2(25.2, 157.5), Vector2(28.4, 149.5), Vector2(35.0, 144.0),
+		Vector2(37.0, 137.0), Vector2(36.5, 130.0), Vector2(32.4, 122.5),
 		Vector2(16.5, 122.5),
 	],
 	[
@@ -70,26 +70,31 @@ const ROAD_WIDTHS := [
 		Vector2(0.43, 3.35), Vector2(0.51, 2.72), Vector2(0.60, 1.75), Vector2(0.71, 2.90),
 		Vector2(0.78, 2.75), Vector2(0.87, 1.78), Vector2(0.96, 2.23), Vector2(1, 2.45)],
 ]
+const CAPRESE_RESCUE_BAY := Rect2i(26, 68, 6, 5)
+const CAPRESE_AMBUSH_CELL := Vector2(31.5, 68.5)
 const ROAD_POCKETS := [
 	[1, Rect2i(0, 168, 5, 4)],
-	[1, Rect2i(46, 137, 5, 4)],
+	[1, Rect2i(37, 137, 5, 4)],
 	[2, Rect2i(11, 95, 5, 4)],
+	[2, CAPRESE_RESCUE_BAY],
 ]
 # Smaller side passages end at houses and never bypass a refuge.
 const SIDE_ALLEYS := [
 	[0, [Vector2(29.2, 206.8), Vector2(24, 203.9), Vector2(20, 199.4), Vector2(17, 196.2)]],
 	[1, [Vector2(10.1, 166.2), Vector2(10, 159), Vector2(6.8, 155.2), Vector2(7.8, 149.4)]],
-	[1, [Vector2(40.5, 126), Vector2(43.2, 120.4), Vector2(41.5, 114.2), Vector2(36.7, 111.8)]],
+	[1, [Vector2(35.4, 128.0), Vector2(41.0, 124.5), Vector2(41.5, 119.2)]],
 	[2, [Vector2(16.1, 95.4), Vector2(21.7, 96.3), Vector2(27.1, 97.8), Vector2(31.1, 95.1)]],
 	[3, [Vector2(32.2, 58.4), Vector2(36.2, 54.3), Vector2(40.7, 53), Vector2(43.5, 48.6)]],
 ]
+const MARKET_SHORTCUT := [Vector2(10.1, 166.2), Vector2(13.5, 156.5), Vector2(15.5, 143.5), Vector2(22.5, 132.0), Vector2(28.0, 122.5)]
+const MARKET_GATE_CELL := Vector2(15.0, 146.0)
 const TRUCK_ROW := 44.0
 const SIREN_CELL := Vector2(25.5, 27.5)
 const PRESS_KING_CELL := Vector2(35.5, 23.5)
 const PRESS_KING_YAW := 2.55
 const JUICE_ZONES: Array[Rect2i] = [
 	Rect2i(1, 168, 16, 21),
-	Rect2i(23, 145, 22, 14),
+	Rect2i(10, 144, 11, 19),
 	Rect2i(8, 90, 13, 20),
 	Rect2i(15, 47, 15, 12),
 	Rect2i(28, 42, 4, 6),
@@ -142,15 +147,14 @@ const PLAZA_ELITES := [
 const ALLEY_ELITES := [
 	["KETCHUP_SPITTER", 0, 0.61], ["CAPRESE_CRAWLER", 0, 0.83],
 	["BOWLING_TOMATO", 1, 0.29], ["BOWLING_TOMATO", 1, 0.81],
-	["TOMATO_BRUTE", 2, 0.45], ["CAPRESE_CRAWLER", 2, 0.83],
+	["TOMATO_BRUTE", 2, 0.45],
 ]
 # Each group is centred on a distance along its leg.
 const GRUNT_PACKS := [
 	[0, 0.19, 8], [0, 0.46, 10], [0, 0.77, 12],
-	[1, 0.09, 7], [1, 0.18, 9], [1, 0.36, 10], [1, 0.47, 8],
-	[1, 0.57, 10], [1, 0.70, 11], [1, 0.83, 10],
-	[2, 0.21, 10], [2, 0.51, 12], [2, 0.69, 8], [2, 0.81, 10],
-	[3, 0.36, 10], [3, 0.73, 10], [3, 0.86, 7],
+	[1, 0.13, 7], [1, 0.34, 8], [1, 0.53, 8], [1, 0.72, 9], [1, 0.89, 8],
+	[2, 0.21, 8], [2, 0.51, 10], [2, 0.81, 9],
+	[3, 0.36, 8], [3, 0.73, 9],
 ]
 
 
@@ -172,10 +176,20 @@ static func roster() -> Array:
 	props.append_array(parked_trucks())
 	props.push_back(fire_truck_box())
 	var taken := _box_cells(props)
+	taken.merge(market_gate_cells())
 	taken[Vector2i(PRESS_KING_CELL)] = true
 	var out := PLAZA_ELITES.duplicate()
 	for elite in PLAZA_ELITES:
 		taken[Vector2i((elite[1] as Vector2).floor())] = true
+	var ambush := Vector2i(CAPRESE_AMBUSH_CELL.floor())
+	if not taken.has(ambush):
+		taken[ambush] = true
+		out.append(["CAPRESE_CRAWLER", CAPRESE_AMBUSH_CELL])
+	else:
+		var cells := _nearby_open_cells(2, CAPRESE_AMBUSH_CELL, taken, 14.0)
+		if not cells.is_empty():
+			taken[cells[0]] = true
+			out.append(["CAPRESE_CRAWLER", Vector2(cells[0]) + Vector2(0.5, 0.5)])
 	for entry in ALLEY_ELITES:
 		var pose := _route_pose(int(entry[1]), float(entry[2]))
 		var cells := _nearby_open_cells(int(entry[1]), pose[0], taken, 14.0)
@@ -284,6 +298,8 @@ static func _ensure_layout() -> void:
 		var points: Array = alley[1]
 		for index in range(1, points.size()):
 			_raster_segment(points[index - 1], points[index], int(alley[0]), 1.23)
+	for index in range(1, MARKET_SHORTCUT.size()):
+		_raster_segment(MARKET_SHORTCUT[index - 1], MARKET_SHORTCUT[index], 1, 1.65)
 	for pocket in ROAD_POCKETS:
 		_add_floor_rect(pocket[1], pocket[0])
 	_add_floor_rect(START_PLAZA, 0)
@@ -291,6 +307,8 @@ static func _ensure_layout() -> void:
 		_add_floor_rect(rect, 3)
 	for corner in PLAZA_CORNERS:
 		_floor_legs.erase(corner)
+	# This corner is cut off by the stalls on the first market bend.
+	_floor_legs.erase(Vector2i(5, 186))
 	for room in SAFE_ROOMS:
 		_add_floor_rect(room, -1)
 	for cell: Vector2i in _floor_legs:
@@ -357,6 +375,14 @@ static func _route_pose(leg: int, fraction: float) -> Array[Vector2]:
 ## -- debris, the sauce trucks, the fire truck -- except the tomato heap in the
 ## truck's gap, which is jumped and is left out so a route through the
 ## chokepoint still exists.
+static func market_gate() -> Dictionary:
+	return metre_box(MARKET_GATE_CELL, Vector3(22.8, 4.8, 2.0), "MarketShortcutGate", Color("2f5a64"))
+
+
+static func market_gate_cells() -> Dictionary:
+	return _box_cells([market_gate()])
+
+
 static func blocked_cells() -> Dictionary:
 	var props: Array[Dictionary] = []
 	for box in debris_boxes():
@@ -585,7 +611,8 @@ static func _try_add_aftermath(boxes: Array[Dictionary], taken: Dictionary,
 	var box := metre_box(centre, size, model[0], RUBBLE)
 	var footprint := _box_cells([box] as Array[Dictionary])
 	for cell: Vector2i in footprint:
-		if taken.has(cell) or _floor_legs.get(cell, -1) != leg or START_PLAZA.has_point(cell):
+		if taken.has(cell) or _floor_legs.get(cell, -1) != leg or START_PLAZA.has_point(cell) \
+				or CAPRESE_RESCUE_BAY.has_point(cell):
 			return false
 	if not _leaves_aftermath_passage(footprint, taken):
 		return false
@@ -770,6 +797,16 @@ static func seed_floor(floor_body: FloorContamination) -> void:
 				juicy = true
 				break
 		if juicy:
-			var low := at_cell(Vector2(cell))
-			var high := at_cell(Vector2(cell + Vector2i.ONE))
-			floor_body.fill_rect(low, high, 1, ContaminationGrid.KIND_KETCHUP)
+			var shift := Vector2(float(dirt % 5 - 2), float(dirt % 3 - 1)) * 0.095
+			var spread := Vector2(0.54 + float(dirt % 4) * 0.043, 0.49 + float(dirt % 5) * 0.05)
+			for row in 14:
+				var top := float(row) / 14.0
+				var bottom := float(row + 1) / 14.0
+				var t := ((top + bottom) * 0.5 - 0.5 - shift.y) / spread.y
+				if absf(t) >= 1.0:
+					continue
+				var radius := spread.x * sqrt(1.0 - t * t)
+				var centre := 0.5 + shift.x + sin(t * 4.0 + float(dirt)) * 0.065
+				var low := at_cell(Vector2(cell) + Vector2(maxf(0.0, centre - radius), top))
+				var high := at_cell(Vector2(cell) + Vector2(minf(1.0, centre + radius), bottom))
+				floor_body.fill_rect(low, high, 1, ContaminationGrid.KIND_KETCHUP)

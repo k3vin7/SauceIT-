@@ -1,6 +1,8 @@
 class_name HealthHud
 extends Control
 
+const PressKingScript := preload("res://scripts/tomatina_press_king.gd")
+
 ## The two health bars: the player's own, pinned to the bottom of the view, and
 ## one floating over each living enemy.
 ##
@@ -94,7 +96,7 @@ func _draw() -> void:
 			elif slots[slot] == 1:
 				_draw_tomato_icon(rect.get_center())
 	_draw_pickup_hint()
-	var tomato_hint := "1~5 장비 선택"
+	var tomato_hint := "R 고글 닦기   V 밀치기   F4 조작표" if world.map_kind == world.MapKind.TOMATINA else "1~5 장비 선택"
 	if world.local_holds_tomato():
 		tomato_hint = "좌클릭 꾹: 힘 모으기 · 놓기: 던지기 / 우클릭: 먹기"
 		if world._tomato_charge_started.has(world._local.peer_id):
@@ -140,7 +142,7 @@ func _draw_player() -> void:
 	# asked a few times a second, not every frame -- and it is here because
 	# "how slippery is this street getting" is otherwise invisible while tuning.
 	var deep: float = world.get("debug_deep_fraction")
-	if deep >= 0.0:
+	if deep >= 0.0 and world.map_kind != world.MapKind.TOMATINA:
 		var font_deep := ThemeDB.fallback_font
 		var deep_text := "deep %.0f%%" % (deep * 100.0)
 		var deep_at := Vector2(tank.position.x - 8.0
@@ -185,6 +187,17 @@ func _draw_enemies() -> void:
 		var enemy := world.enemy_at(index) as MayoEnemy
 		if enemy == null or not is_instance_valid(enemy) or not enemy.is_alive():
 			continue
+		if world.map_kind == world.MapKind.TOMATINA:
+			if enemy.kind == MayoEnemy.EnemyKind.PRESS_KING:
+				var boss := enemy as PressKingScript
+				var meter := Rect2(frame.position + Vector2(24.0, 111.0), Vector2(300.0, 8.0))
+				var phase := Color("8ddcfa") if boss.exposed_left > 0.0 else Color("ecad71")
+				_draw_bar(meter, boss.health_fraction(), phase, ENEMY_LOW, 1.0)
+				continue
+			if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT:
+				var to_enemy := enemy.global_position - camera.global_position
+				if to_enemy.length_squared() > 30.0 ** 2 or to_enemy.normalized().dot(-camera.global_basis.z) < 0.997:
+					continue
 		var bar := enemy_bar_rect(enemy, camera)
 		if bar.size.x <= 0.0:
 			continue
@@ -203,8 +216,12 @@ func _draw_prompt() -> void:
 	# Every line is laid out against the widest of them, so the block is a block
 	# rather than a ragged edge that shifts as the marker moves down it.
 	var lines := PROMPT_LINES.duplicate()
+	var first_sauce := 0
+	if world.map_kind == world.MapKind.TOMATINA:
+		lines = PackedStringArray([PROMPT_LINES[2]])
+		first_sauce = 2
 	for index in lines.size():
-		if not world.can_select_refill_sauce(index):
+		if not world.can_select_refill_sauce(first_sauce + index):
 			lines[index] += "  ·  보급 불가"
 	var widest := 0.0
 	for line in lines:
@@ -215,9 +232,9 @@ func _draw_prompt() -> void:
 		- PROMPT_LINE_GAP * float(lines.size() - 1)
 	for index in lines.size():
 		var line: String = lines[index]
-		var available: bool = world.can_select_refill_sauce(index)
+		var available: bool = world.can_select_refill_sauce(first_sauce + index)
 		var colour := PROMPT_COLOR if available else PROMPT_UNAVAILABLE
-		if index == held:
+		if first_sauce + index == held:
 			line += PROMPT_HELD
 			if available:
 				colour = PROMPT_HELD_COLOR
@@ -296,6 +313,9 @@ func _icon_box(color: Color) -> StyleBoxFlat:
 
 
 func _draw_pickup_hint() -> void:
+	if world.map_kind == world.MapKind.TOMATINA:
+		if not world._tomatina_action_hint().is_empty() or world.rescue_hud_state().get("in_reach", false):
+			return
 	var player := world.get("_player") as MayoPlayer
 	var camera := world.get("_camera") as Camera3D
 	if not is_instance_valid(player) or not is_instance_valid(camera):

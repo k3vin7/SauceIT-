@@ -8,3 +8,4 @@ map_kind = 2
 tutorial_enabled = false
 stage_mode = true
 network_ui_enabled = false
+show_key_legend = false

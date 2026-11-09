@@ -86,6 +86,7 @@ const CAPSULE_HEIGHT := 2.56
 
 var health := 100.0
 var frame_movement := Vector3.ZERO
+var cheese_snag_left := 0.0
 ## False on a client for every player including their own: the body is placed
 ## by the server. Aim stays local -- see MayoPrototype._read_local_input.
 var authority := true
@@ -212,6 +213,7 @@ func reset_state() -> void:
 	wipe_timer = 0.0
 	_pending_enemy_impact = Vector3.ZERO
 	_charge_knockdown = false
+	cheese_snag_left = 0.0
 
 
 ## How long the body has been in its current state, for the respawn timer.
@@ -311,6 +313,7 @@ func _physics_process(delta: float) -> void:
 	else:
 		_recovery_timer = maxf(_recovery_timer - delta, 0.0)
 	mustard_slow = maxf(mustard_slow - delta, 0.0)
+	cheese_snag_left = maxf(0.0, cheese_snag_left - delta)
 	_advance_wipe(delta)
 
 	var desired := Vector3.ZERO
@@ -336,6 +339,8 @@ func _physics_process(delta: float) -> void:
 			top = maxf(top, Vector2(velocity.x, velocity.z).length())
 		desired *= top
 		desired *= mustard_factor()
+		if cheese_snag_left > 0.0:
+			desired *= 0.40
 		if state == State.NORMAL:
 			desired += Vector3(external_drift.x, 0.0, external_drift.z)
 

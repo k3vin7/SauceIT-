@@ -34,11 +34,13 @@ var connection := 0.0:
 
 var impact_left := 0.0
 var impact_kill := false
+var impact_weak_spot := false
 
 
-func confirm_impact(killed: bool) -> void:
-	impact_left = 0.24 if killed else 0.12
+func confirm_impact(killed: bool, weak_spot := false) -> void:
+	impact_left = 0.24 if killed else 0.18 if weak_spot else 0.12
 	impact_kill = killed
+	impact_weak_spot = weak_spot
 	set_process(true)
 	queue_redraw()
 
@@ -78,8 +80,11 @@ func _draw() -> void:
 		draw_line(from, to, tint, width)
 
 	if impact_left > 0.0:
-		var alpha := clampf(impact_left / (0.24 if impact_kill else 0.12), 0.0, 1.0)
+		var duration := 0.24 if impact_kill else 0.18 if impact_weak_spot else 0.12
+		var alpha := clampf(impact_left / duration, 0.0, 1.0)
 		var accent := Color(1.0, 0.48, 0.22, alpha) if impact_kill else Color(1.0, 0.92, 0.7, alpha)
+		if impact_weak_spot:
+			accent = Color(0.42, 0.94, 1.0, alpha)
 		for diagonal in [Vector2(1, 1), Vector2(-1, 1), Vector2(1, -1), Vector2(-1, -1)]:
 			var direction: Vector2 = diagonal.normalized()
 			draw_line(centre + direction * 7.0, centre + direction * (14.0 if impact_kill else 11.0), accent, 2.0)

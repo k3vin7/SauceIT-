@@ -55,9 +55,12 @@ func _run() -> void:
 	if village != null:
 		var placed := {}
 		for batch: MultiMeshInstance3D in village.get_children():
-			_check(batch.multimesh.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] != null,
-				"%s lost the Blender vertex colors" % batch.name)
 			var model := str(batch.name).get_slice("_", 0)
+			if TomatinaVillageArt.STREET_ACCENTS.has(model):
+				_check(batch.material_override is StandardMaterial3D, "%s is missing its street accent" % batch.name)
+			else:
+				_check(batch.multimesh.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] != null,
+					"%s lost the Blender vertex colors" % batch.name)
 			placed[model] = int(placed.get(model, 0)) + batch.multimesh.instance_count
 		_check(int(placed.get("TomatoTruck", 0)) == 6, "loaded tomato trucks are missing")
 		_check(int(placed.get("SauceVan", 0)) == 24, "decorative vans are missing")
@@ -76,6 +79,8 @@ func _run() -> void:
 					boundary_edges += 1
 		_check(int(placed.get("BoundaryWall", 0)) == boundary_edges,
 			"the visible exterior does not cover every boundary edge")
+		for accent in TomatinaVillageArt.STREET_ACCENTS:
+			_check(int(placed.get(accent, 0)) > 0, "%s is missing from the street" % accent)
 		_check(int(placed.get("Brazier", 0)) == TomatinaMap.SAFE_ROOMS.size(),
 			"a refuge is missing its central campfire")
 		_check(not placed.has("RefugeFireplace"), "a refuge still has a wall fireplace")
@@ -138,7 +143,14 @@ func _run() -> void:
 	_check(scene._nav != null, "stage 2 built no router")
 	var route: PackedVector3Array = scene._nav.route(scene.spawn_position_for(0), truck_centre)
 	print("route from the start to the fire truck: %d waypoints" % route.size())
-	_check(absf(route.size() / 365.0 - 1.0) <= 0.10, "the route is outside the expanded length target")
+	_check(not route.is_empty() and route.size() < 375, "the market shortcut did not shorten the stage")
+	for cell: Vector2i in TomatinaMap.market_gate_cells():
+		if scene._nav.is_walkable(cell):
+			scene._nav.grid.set_point_solid(cell, true)
+	var detour: PackedVector3Array = scene._nav.route(scene.spawn_position_for(0), truck_centre)
+	print("market routes: %d waypoints open, %d closed" % [route.size(), detour.size()])
+	_check(detour.size() >= route.size() + 12, "closing the shortcut does not leave a longer main route")
+	scene._nav.build()
 	for room in TomatinaMap.SAFE_ROOMS:
 		for y in range(room.position.y, room.end.y):
 			for x in range(room.position.x, room.end.x):
@@ -166,6 +178,8 @@ func _run() -> void:
 				reached[next] = true
 				frontier.push_back(next)
 	print("lattice: %d of %d open cells reachable from the start" % [reached.size(), open.size()])
+	if reached.size() != open.size():
+		print("isolated cells: ", open.keys().filter(func(cell: Vector2i) -> bool: return not reached.has(cell)))
 	_check(reached.size() == open.size(), "%d open cells are cut off from the start" % (open.size() - reached.size()))
 	# And nobody is built inside a prop: the grunts are dealt round them, the
 	# elites are placed by hand, and the wreckage is placed by hand too.
@@ -239,6 +253,7 @@ func _run() -> void:
 		counts[enemy.kind] = int(counts.get(enemy.kind, 0)) + 1
 	print("roster: %s" % str(counts))
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) == TomatinaMap.grunt_cells().size(), "encounter pack grunt count differs from plan")
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) <= 140, "repeated grunt packs were not cut")
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BRUTE, 0)) == 4, "not four brutes")
 	_check(int(counts.get(MayoEnemy.EnemyKind.BOWLING_TOMATO, 0)) == 2, "not two bowlers")
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BALL, 0)) == 2 * MayoEnemy.BALLS_PER_BOWLER,
@@ -436,6 +451,34 @@ func _run() -> void:
 			"the ball did not park after bursting")
 		_check(ball.burst_radius > 0.0, "the ball has nothing to burst with")
 
+	var flank := TomatinaMap.at_cell(Vector2(28.5, 70.5))
+	var ambush := TomatinaMap.at_cell(TomatinaMap.CAPRESE_AMBUSH_CELL)
+	var teammate_lane := TomatinaMap.at_cell(Vector2(31.5, 69.5))
+	_check(scene._nav.is_walkable(StreetMap.cell_at(flank))
+		and scene._nav.line_is_walkable(flank, ambush)
+		and scene._nav.line_is_walkable(flank, teammate_lane),
+		"the rescue bay cannot see both the crawler and its target lane")
+
+	# A lethal hit primes an overripe body, then releases exactly one explosion.
+	var ripe_at := TomatinaMap.at_cell(Vector2(30.5, 224.5))
+	var ripe: MayoEnemy = scene.enemy_at(scene.tutorial_add_enemy(MayoTutorial.KIND_TOMATO_GRUNT, ripe_at))
+	ripe.burst_tier = 2
+	ripe.burst_radius = 5.5
+	ripe.take_sauce_hit(Vector3.INF, ripe.max_health)
+	scene._pending_splats.clear()
+	scene._finish_tomato_kill(ripe, scene._local)
+	_check(scene.get_node_or_null("OverripeWarning") != null and ripe.vanished,
+		"the overripe tomato did not show its warning")
+	scene._advance_overripe_bursts(0.5)
+	_check(scene._overripe_bursts.has(ripe) and scene._pending_splats.is_empty(),
+		"the overripe tomato exploded before its warning ended")
+	scene._burst_ground_budget = scene.TOMATO_BURST_TICK_CAP
+	scene._advance_overripe_bursts(0.16)
+	_check(not scene._overripe_bursts.has(ripe) and not scene._pending_splats.is_empty(),
+		"the overripe tomato did not explode after its warning")
+
+	_probe_cheese_thread(scene)
+
 	# --- shove, the timed horde and extraction ---
 	var player: MayoPlayer = scene._player
 	var plaza: Rect2 = TomatinaMap.plaza_rect()
@@ -454,6 +497,9 @@ func _run() -> void:
 		scene._advance_horde_spawn(0.2)
 	_check(scene._finale_wave == 2, "the finale did not schedule all three approaches")
 	_check(scene.enemy_count() > before_horde, "no reinforcements spawned")
+	var wave_kinds: Array = scene.tutorial_spawned().map(func(entry: Array) -> int: return int(entry[0]))
+	for kind in scene.FINALE_SPECIALS:
+		_check(wave_kinds.has(kind), "a scheduled special enemy did not enter the finale")
 	_check(scene.tutorial_spawned().size() == scene.enemy_count() - before_horde,
 		"reinforcements are not recorded for a late joiner")
 	var active_grunts := 0
@@ -590,7 +636,7 @@ func _run() -> void:
 	_check(swept != null and bystander != null, "no two grunts left to hose")
 	if swept != null and bystander != null:
 		swept.global_position = hose + Vector3.BACK * 15.0 + Vector3.DOWN * 1.0
-		bystander.global_position = hose + Vector3.BACK * 6.0 + Vector3.RIGHT * 5.0 + Vector3.DOWN * 1.0
+		bystander.global_position = hose + Vector3.BACK * 8.0 + Vector3.RIGHT * 2.0 + Vector3.DOWN * 0.58
 	scene.tomato_action(peer, 0)
 	_check(scene._hose_slot_of(peer) == 0, "[E] at the hose stand did not open the hose")
 	scene._advance_fire_hoses(0.016)
@@ -605,15 +651,19 @@ func _run() -> void:
 	_check(floor_body.thickness_at(wet_far) == 0, "the hose did not reach 16 m down the aimed path")
 	if swept != null and bystander != null:
 		_check(not swept.is_alive(), "a grunt 15 m down the jet survived the water")
-		_check(bystander.is_alive(), "a grunt beside the jet was killed by it")
+		_check(bystander.is_alive() and bystander._shove.length_squared() > 0.0,
+			"a grunt in the water spray was not pushed safely out of the jet")
 	scene.tomato_action(peer, 0)
 	_check(scene._hose_slot_of(peer) < 0, "[E] again did not close the hose")
+	var queued: int = scene._hose_wave_pending
 	scene.tomato_action(peer, 0)
+	_check(queued == scene.HOSE_WAVE_COUNT and scene._hose_wave_pending == queued,
+		"reopening the hose queued a second counterattack")
 	player.global_position = hose + Vector3.RIGHT * 6.0
 	scene._advance_fire_hoses(0.016)
 	_check(scene._hose_slot_of(peer) < 0, "the hose stayed open after the player left the stand")
 
-	scene._advance_press_king_spawn()
+	scene._advance_press_king_spawn(0.0)
 	_check(scene._press_king == null and scene._finale_remaining > 0,
 		"the Press King spawned while the plaza fight was still active")
 	for enemy: MayoEnemy in scene._enemies:
@@ -622,11 +672,18 @@ func _run() -> void:
 	# The earlier hose check called its optional wave without running the
 	# spawn tick. Clear that test fixture before checking the boss gate.
 	scene._hose_wave_pending = 0
-	scene._advance_press_king_spawn()
+	player.global_position = TomatinaMap.at_cell(TomatinaMap.PRESS_KING_CELL) + Vector3.UP * 1.28
+	scene._advance_press_king_spawn(0.0)
+	_check(scene._press_king == null and scene.get_node_or_null("PressKingRiseRubble") != null,
+		"the boss appeared before its entrance warning")
+	scene._advance_press_king_spawn(scene.PRESS_KING_RISE_WARNING + 0.01)
 	var boss := scene._press_king as MayoEnemy
 	_check(boss != null and boss.kind == MayoEnemy.EnemyKind.PRESS_KING, "the Press King did not spawn")
+	if boss != null:
+		_check(boss.global_position.distance_to(player.global_position) > 3.0, "the occupied boss entrance did not use a fallback")
+	player.global_position = nearby
 	var before_count: int = scene.enemy_count()
-	scene._advance_press_king_spawn()
+	scene._advance_press_king_spawn(0.0)
 	_check(scene.enemy_count() == before_count, "the boss spawn was repeated")
 
 	var cleared := [false]
@@ -643,6 +700,10 @@ func _run() -> void:
 		boss.advance(2.21, [])
 		scene._press_king.wash_armor(1.0)
 		_check(scene._press_king.exposed_left > 0.0 and boss.is_alive(), "the hose did not open the boss armor")
+		boss.advance(0.8, [])
+		var exposed: float = scene._press_king.exposed_left
+		scene._press_king.wash_armor(1.0)
+		_check(is_equal_approx(exposed, scene._press_king.exposed_left), "continuous water refreshed the exposure")
 		boss.health = 0.1
 		boss.take_sauce_hit()
 		boss.advance(1.91, [])
@@ -673,6 +734,63 @@ func _run() -> void:
 		for failure in failures:
 			push_error(failure)
 		quit(1)
+
+
+func _probe_cheese_thread(scene) -> void:
+	var index := -1
+	for i in scene.enemy_count():
+		if scene.enemy_at(i).kind == MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
+			index = i
+			break
+	if index < 0:
+		_check(false, "there is no crawler for the mozzarella check")
+		return
+	var caster: MayoEnemy = scene.enemy_at(index)
+	var player: MayoPlayer = scene._local.player
+	var previous_position := player.global_position
+	var previous_caster := caster.global_position
+	player.global_position = TomatinaMap.at_cell(Vector2(29.5, 226.0)) + Vector3.UP * 1.28
+	caster.global_position = TomatinaMap.at_cell(Vector2(29.5, 224.5)) + Vector3.UP * caster.stand_height()
+	caster._visible_target = player
+	scene._try_cast_cheese_thread(index, caster, 1.0)
+	if not scene._cheese_threads.has(index):
+		_check(false, "the crawler did not place a thread across a clear retreat path")
+		player.global_position = previous_position
+		caster.global_position = previous_caster
+		return
+	var thread = scene._cheese_threads[index]
+	var centre: Vector3 = (thread.from + thread.to) * 0.5
+	var across := (thread.to as Vector3) - (thread.from as Vector3)
+	var approach := across.normalized().cross(Vector3.UP)
+	var grounded := Vector3(centre.x, MayoPlayer.CAPSULE_HEIGHT * 0.5, centre.z) + approach * 0.4
+	player.global_position = grounded
+	player.frame_movement = approach * 1.0
+	_check(not thread.armed(), "the crawler did not telegraph its thread")
+	scene._advance_cheese_threads(thread.WINDUP + 0.01)
+	_check(thread.armed() and player.cheese_snag_left == 0.0, "arming caught movement from the warning phase")
+	player.global_position = grounded + Vector3.UP
+	scene._advance_cheese_threads(0.01)
+	_check(player.cheese_snag_left == 0.0, "jumping over the thread caught the player")
+	player.global_position = grounded
+	scene._advance_cheese_threads(0.01)
+	_check(player.cheese_snag_left > 0.0, "crossing the armed thread on foot did not slow the player")
+	scene._try_cast_cheese_thread(index, caster, 1.0)
+	_check(scene._cheese_threads.size() == 1, "the crawler replaced an active thread")
+	var snapshot: PackedFloat32Array = scene.cheese_thread_state()
+	scene._cut_cheese_by_stream(centre - approach, centre + approach)
+	_check(scene._cheese_threads.is_empty(), "a stream crossing the armed thread did not cut it")
+	scene.apply_cheese_thread_state(snapshot)
+	_check(scene._cheese_threads.has(index) and scene._cheese_threads[index].armed(),
+		"the thread snapshot did not restore the armed segment")
+	scene._cut_cheese_by_blast(centre + Vector3.UP, 0.4)
+	_check(scene._cheese_threads.has(index), "a blast outside its radius cut the thread")
+	scene._cut_cheese_by_blast(centre + Vector3.UP, 2.0)
+	_check(scene._cheese_threads.is_empty(), "a tomato blast within reach did not cut the thread")
+	player.global_position = previous_position
+	player.cheese_snag_left = 0.0
+	player.frame_movement = Vector3.ZERO
+	caster.global_position = previous_caster
+	caster._visible_target = null
 
 
 func _make_network_world(view_name: String) -> Node3D:

@@ -17,7 +17,10 @@ func run():
 	assert(scene.selected_item_slot(scene._local.peer_id) == 0, "wheel down did not wrap to slot 1")
 	scene.healing_tomato_chance = 1.0
 	var enemy = scene.enemy_at(0)
+	var clear_ground: Vector3 = scene.spawn_position_for(0) + Vector3.FORWARD * 7.0
+	enemy.global_position = clear_ground
 	enemy.health = 0
+	scene.tutorial_clear_corpse(0)
 	scene._advance_healing_tomatoes(0.01)
 	assert(scene._healing_tomatoes.size() == 1, "guaranteed drop missing")
 	var item = scene._healing_tomatoes.values()[0].node
@@ -43,7 +46,9 @@ func run():
 		if candidate.is_alive() and candidate.kind != MayoEnemy.EnemyKind.TOMATO_BALL:
 			second = candidate
 			break
+	second.global_position = clear_ground + Vector3.RIGHT * 5.0
 	second.health = 0
+	scene.tutorial_clear_corpse(scene._enemies.find(second))
 	scene._advance_healing_tomatoes(0.01)
 	var drop = scene._healing_tomatoes.values()[0].node
 	player.global_position = drop.global_position + Vector3.UP
@@ -77,9 +82,22 @@ func run():
 	var target_health: float = target.health
 	flying.velocity = Vector3.DOWN * 200.0
 	scene._advance_thrown_tomatoes(0.02)
-	assert(scene._thrown_tomatoes.is_empty(), "the tomato did not land")
+	assert(flying.has("ground_hit"), "the tomato did not land")
+	assert(target.health == target_health, "the tomato damaged a target before the fuse expired")
+	assert(scene.get_node_or_null("TomatoFuseWarning") != null, "the landing warning was not built")
+	var landing: Vector3 = flying.ground_hit
+	var protected: MayoEnemy = scene.enemy_at(scene.enemy_count() - 1)
+	protected.global_position = landing + Vector3.LEFT * 3.4 + Vector3.UP * protected.stand_height()
+	var protected_health := protected.health
+	scene._create_wall("BlastTestCover", landing + Vector3.LEFT * 1.7 + Vector3.UP * 1.4,
+		Vector3(0.5, 2.8, 3.0), Color.GRAY)
+	player.global_position = clear_ground + Vector3.LEFT * 9.0
+	await physics_frame
+	scene._advance_thrown_tomatoes(scene.THROWN_TOMATO_FUSE + 0.01)
+	assert(scene._thrown_tomatoes.is_empty(), "the tomato did not explode after the fuse")
 	print("splash: the grunt beside the landing lost %.2f health" % (target_health - target.health))
 	assert(target.health < target_health, "a grunt beside the landing was not hurt by the splash")
+	assert(protected.health == protected_health, "the explosion damaged a target through cover")
 	assert(player.health == before, "the splash hurt the thrower")
 	print("HEALING_TOMATO_OK")
 	quit()

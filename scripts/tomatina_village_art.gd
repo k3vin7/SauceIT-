@@ -12,6 +12,7 @@ const CARDINAL := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
 const CHUNK_SIZE := 70.0
 const HOUSE_CHUNK_WIDTH := 110.0
 const WALL_DEPTH := 0.54
+const STREET_ACCENTS := {"WaterFront": Color("447d87"), "MarketFront": Color("b87e41"), "FestivalFront": Color("934950"), "TrimStone": Color("dcc5a0")}
 
 var _meshes: Dictionary = {}
 var _batches: Dictionary = {}
@@ -38,6 +39,8 @@ func load_kit() -> bool:
 		_meshes[model.name] = model.mesh
 	scene.free()
 	_meshes["BoundaryWall"] = _boundary_mesh()
+	for name in STREET_ACCENTS:
+		_meshes[name] = BoxMesh.new()
 	return _meshes.has("HouseCream")
 
 
@@ -70,6 +73,11 @@ func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dicti
 	stained_walls.set_shader_parameter("tomato_wall", true)
 	for name: String in _batches:
 		var is_wall := name == "BoundaryWall" or name == "Church" or name in HOUSES
+		var accent: StandardMaterial3D
+		if STREET_ACCENTS.has(name):
+			accent = StandardMaterial3D.new()
+			accent.albedo_color = STREET_ACCENTS[name].darkened(0.36)
+			accent.roughness = 0.82
 		for chunk: Vector2i in _batches[name]:
 			var transforms: Array = _batches[name][chunk]
 			var multimesh := MultiMesh.new()
@@ -81,7 +89,7 @@ func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dicti
 			var batch := MultiMeshInstance3D.new()
 			batch.name = "%s_%d_%d" % [name, chunk.x, chunk.y]
 			batch.multimesh = multimesh
-			batch.material_override = stained_walls if is_wall else material
+			batch.material_override = accent if accent != null else (stained_walls if is_wall else material)
 			if name == "BrokenBoards" or name == "CrushedTomatoes":
 				batch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			root.add_child(batch)
@@ -108,6 +116,8 @@ func _build_frontages() -> void:
 			_place("BoundaryWall", base - facing * (WALL_DEPTH * 0.5 + 0.016), facing,
 				Vector3(StreetMap.CELL + 0.06, TomatinaMap.BOUNDARY_HEIGHT, WALL_DEPTH))
 			var scatter := posmod(cell.x * 31 + cell.y * 47 + step.x * 13 + step.y * 7, 19)
+			if scatter < 6:
+				_place_street_front(base, facing, cell)
 			if scatter < 3 and open:
 				var at := base + facing * (0.82 + float(scatter) * 0.68)
 				at += Vector3(tangent.x, 0.0, tangent.y) * 0.44
@@ -137,6 +147,23 @@ func _build_frontages() -> void:
 			_facades.push_back(Transform3D(Basis.looking_at(-facing), anchor))
 
 	_build_backlots(floor)
+
+
+func _place_street_front(base: Vector3, facing: Vector3, cell: Vector2i) -> void:
+	var key := "WaterFront" if cell.y >= 190 else ("MarketFront" if cell.y >= 120 else "FestivalFront")
+	var tangent := facing.cross(Vector3.UP)
+	var front := base + facing * 0.10
+	if key == "WaterFront":
+		_place(key, front + Vector3.UP * 1.7, facing, Vector3(3.65, 0.20, 0.20))
+		_place(key, front - tangent * 1.62, facing, Vector3(0.20, 1.9, 0.20))
+		_place("TrimStone", front + tangent * 0.7, facing, Vector3(1.22, 0.48, 0.26))
+	else:
+		_place("TrimStone", front, facing, Vector3(2.65, 3.12, 0.22))
+		_place(key, front + facing * 0.15 + Vector3.UP * 0.16, facing, Vector3(2.25, 2.72, 0.16))
+		for index in 5:
+			var lift := 0.55 + float(index) * 0.42
+			_place("TrimStone", front + facing * 0.27 + Vector3.UP * lift, facing, Vector3(2.20, 0.06, 0.07))
+		_place(key, front + Vector3.UP * 3.07, facing, Vector3(3.1, 0.22, 0.55))
 
 
 func _boundary_mesh() -> ArrayMesh:

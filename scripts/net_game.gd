@@ -1198,8 +1198,9 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 		state_bytes_sent += (enemies.size() * 4 + 8) * guests
 	if stage_two:
 		var status: PackedFloat64Array = world.tomatina_status()
-		_apply_tomatina_status.rpc(status)
-		state_bytes_sent += status.size() * 8 * guests
+		var threads: PackedFloat32Array = world.cheese_thread_state()
+		_apply_tomatina_status.rpc(status, threads)
+		state_bytes_sent += (status.size() * 8 + threads.size() * 4) * guests
 
 
 ## R, on a client. The wipe is a change everyone sees, so the client asks and
@@ -1569,9 +1570,10 @@ func _apply_enemy_state(data: PackedFloat32Array, start: int, smooth: bool) -> v
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
-func _apply_tomatina_status(status: PackedFloat64Array) -> void:
+func _apply_tomatina_status(status: PackedFloat64Array, threads: PackedFloat32Array) -> void:
 	if _world_ready():
 		world.apply_tomatina_status(status)
+		world.apply_cheese_thread_state(threads)
 
 
 ## An enemy flinched or went down, and these players should feel it.
@@ -1666,6 +1668,28 @@ func _show_spit(origin: Vector3, velocity: Vector3, seconds: float, lob: bool) -
 		rejected_packets += 1
 		return
 	world.show_spit(origin, velocity, seconds, lob)
+
+
+func broadcast_overripe_burst(at: Vector3, radius: float, priming: bool) -> void:
+	if is_online() and is_server():
+		_show_overripe_burst.rpc(at, radius, priming)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _show_overripe_burst(at: Vector3, radius: float, priming: bool) -> void:
+	if world != null:
+		world.show_overripe_burst(at, radius, priming)
+
+
+func broadcast_tomato_fuse(at: Vector3) -> void:
+	if is_online() and is_server():
+		_show_tomato_fuse.rpc(at)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _show_tomato_fuse(at: Vector3) -> void:
+	if world != null:
+		world._show_tomato_fuse(at)
 
 
 func broadcast_tomato_blast(at: Vector3, radius: float) -> void:

@@ -154,7 +154,7 @@ void fragment() {
 		float small = tomato_splat(pavement_position + vec2(3.7, 1.1), 1.12, 0.46);
 		tomato_marks = max(large, small * 0.81) * on_street;
 		vec3 ketchup = mix(vec3(0.43, 0.037, 0.021), vec3(0.68, 0.082, 0.035), grain);
-		stone = mix(stone, ketchup, tomato_marks * 0.94);
+		stone = mix(stone, ketchup, tomato_marks * 0.65);
 		clean = mix(vec3(0.18, 0.135, 0.102), stone, on_street);
 	}
 	vec3 stained = mix(clean, mayo_color.rgb * tint, painted);
@@ -165,9 +165,9 @@ void fragment() {
 		// Let grey pavers show through the old juice while fresh drops sit on top.
 		float wave = sin(pavement_position.x * 1.48 + sin(pavement_position.y * 1.15))
 			* cos(pavement_position.y * 2.07) * 0.5 + 0.5;
-		vec3 juice = mix(vec3(0.56, 0.055, 0.026), vec3(0.79, 0.16, 0.058), wave);
+		vec3 juice = mix(vec3(0.30, 0.045, 0.027), vec3(0.54, 0.14, 0.077), wave);
 		juice = mix(juice, vec3(0.39, 0.023, 0.013), tomato_marks * 0.8);
-		base_albedo = mix(clean, juice, painted * mix(0.46, 0.86, wave));
+		base_albedo = mix(clean, juice, painted * mix(0.44, 0.68, wave));
 	}
 	ALBEDO = base_albedo;
 
@@ -175,6 +175,9 @@ void fragment() {
 	rough = mix(rough, mix(mayo_roughness, deep_roughness, 0.3), mid);
 	rough = mix(rough, mix(mayo_roughness, deep_roughness, 0.6), thick);
 	ROUGHNESS = mix(rough, deep_roughness, deep);
+	if (paved && kind > 1.5 && kind < 2.5) {
+		ROUGHNESS = mix(ROUGHNESS, 0.22, painted * 0.86);
+	}
 	if (paved && kind > 1.5 && kind < 2.5) {
 		ROUGHNESS = max(ROUGHNESS, 0.66);
 	}

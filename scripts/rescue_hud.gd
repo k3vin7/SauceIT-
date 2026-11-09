@@ -97,15 +97,14 @@ func _draw_standing(state: Dictionary) -> void:
 	if camera != null and is_instance_valid(camera):
 		for entry in downed:
 			var at: Vector3 = entry["position"] + Vector3.UP * TAG_LIFT
-			if camera.is_position_behind(at) \
-					or camera.global_position.distance_to(at) > TAG_DRAW_RANGE:
+			if camera.global_position.distance_to(at) > TAG_DRAW_RANGE:
 				continue
 			var screen := camera.unproject_position(at)
-			if not frame.has_point(screen):
-				continue
-			var tag := "쓰러진 팀원 · %d초" % ceili(float(entry["left"]))
-			if entry.get("in_reach", false):
-				tag = "[E] 구조 · %d초" % ceili(float(entry["left"]))
+			if camera.is_position_behind(at):
+				var side := camera.to_local(at).x
+				screen = Vector2(frame.position.x + 90.0 if side < 0.0 else frame.end.x - 90.0, frame.get_center().y)
+			screen = screen.clamp(frame.position + Vector2(90.0, 110.0), frame.end - Vector2(90.0, 140.0))
+			var tag := "팀원 %.0fm · %d초" % [camera.global_position.distance_to(at), ceili(float(entry["left"]))]
 			_text(screen, tag, TAG_SIZE, RESCUE if entry.get("in_reach", false) else DOWN)
 	var centre := frame.get_center()
 	if state.get("rescue_progress", -1.0) >= 0.0:

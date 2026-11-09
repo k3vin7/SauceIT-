@@ -396,7 +396,6 @@ var _charge_left := 0.0
 var _charge_cooldown := 0.0
 var _charge_direction := Vector3.ZERO
 var _windup := 0.0
-var _aimed_target: MayoPlayer
 var _escape_push := Vector3.ZERO
 var _escape_left := 0.0
 var _escape_source: MayoPlayer
@@ -445,13 +444,7 @@ const SPIT_INTERVAL := 3.0
 var _spit_cooldown := 1.5
 var _spit_request: MayoPlayer = null
 
-## The crawler's thread: within range and in sight it reels one player in,
-## and a hit on it lets go for a while -- which is what a teammate is for.
-const TETHER_RANGE := 8.0
-const TETHER_REEL_SPEED := 6.5
-const TETHER_BREAK_SECONDS := 2.0
-var tether_target: MayoPlayer = null
-var _tether_break_left := 0.0
+var cheese_cast_left := 0.7
 
 
 func _ready() -> void:
@@ -970,8 +963,7 @@ func build_ketchup_spitter(cell_size: float, brush_radius: float) -> void:
 		TomatoVisualsScript.spitter(radius, height), TomatoVisualsScript.BOTTLE)
 
 
-## The crawler: a caprese skewer that reels one player in on a thread of
-## mozzarella until somebody hits it.
+## The crawler places a low mozzarella strand across the street.
 func build_caprese_crawler(cell_size: float, brush_radius: float) -> void:
 	kind = EnemyKind.CAPRESE_CRAWLER
 	grade = Grade.HEAVY
@@ -1024,8 +1016,6 @@ func _advance_special(delta: float, target: MayoPlayer) -> Dictionary:
 			return _advance_bowler(delta, target)
 		EnemyKind.KETCHUP_SPITTER:
 			return _advance_spitter(delta, target)
-		EnemyKind.CAPRESE_CRAWLER:
-			return _advance_crawler(delta, target)
 	return {}
 
 
@@ -1131,54 +1121,6 @@ func _advance_spitter(delta: float, target: MayoPlayer) -> Dictionary:
 	return {}
 
 
-func _advance_crawler(delta: float, target: MayoPlayer) -> Dictionary:
-	_tether_break_left = maxf(_tether_break_left - delta, 0.0)
-	if _tether_break_left > 0.0:
-		return {}
-	if is_instance_valid(tether_target):
-		target = tether_target
-	elif is_instance_valid(_aimed_target):
-		target = _aimed_target
-	if target == null:
-		_break_tether()
-		return {}
-	var gap := Vector3(target.global_position.x - global_position.x, 0.0,
-		target.global_position.z - global_position.z)
-	var reach := radius + _target_radius(target) + contact_reach
-	if gap.length() > TETHER_RANGE or gap.length() <= reach + 0.2 \
-			or target.is_incapacitated() or not _reaches_height(target) \
-			or not _has_clear_shot(target, global_position + Vector3.UP * 0.25):
-		_break_tether()
-		return {}
-	if tether_target == null:
-		if _aimed_target == null:
-			_aimed_target = target
-			_start_warning(gap.normalized())
-		_windup = maxf(0.0, _windup - delta)
-		if _windup > 0.0:
-			return {"flat": gap.normalized(), "pace": 0.0}
-		tether_target = target
-		_aimed_target = null
-	# Reeled in by position, not by impulse: an impulse every tick outruns the
-	# player's own acceleration and sends them flying, while a steady pull is
-	# a thing to be dragged by. The mustard slow is the "tied up" half -- the
-	# same slow the floor uses, so nothing new is on the player.
-	target.splash_mustard()
-	var pull := -gap.normalized() * minf(TETHER_REEL_SPEED * delta, gap.length() - reach)
-	target.move_and_collide(pull)
-	return {"pace": 0.0}
-
-
-func _break_tether() -> void:
-	if is_instance_valid(tether_target) or is_instance_valid(_aimed_target):
-		_tether_break_left = TETHER_BREAK_SECONDS
-	tether_target = null
-	_aimed_target = null
-	_windup = 0.0
-
-
-## The ball's own tick: it rolls where it was sent, knocks over whoever it
-## meets, and bursts on the first wall. Nothing of the chase applies to it.
 func _advance_ball(delta: float, _targets: Array) -> void:
 	if not _ball_live:
 		velocity = Vector3.ZERO
@@ -1247,6 +1189,12 @@ func launch(from: Vector3, direction: Vector3) -> void:
 	_ball_hit_cooldown.clear()
 	fall_angle = 0.0
 	_apply_pose()
+
+
+func stop_ball_in_water() -> void:
+	if _ball_live:
+		_burst_request = global_position
+		_retire_ball()
 
 
 func is_ball_live() -> bool:
@@ -1542,10 +1490,6 @@ func take_sauce_hit(from := Vector3.INF, damage := -1.0) -> bool:
 	# thrown at you, not a thing to fight.
 	if kind == EnemyKind.TOMATO_BALL:
 		return false
-	# A hit is what cuts the crawler's thread: the reeled-in player is pulled
-	# off whoever it had, for long enough to get clear.
-	if kind == EnemyKind.CAPRESE_CRAWLER and is_instance_valid(tether_target):
-		_break_tether()
 	health = maxf(health - (damage if damage >= 0.0 else sauce_damage_per_hit), 0.0)
 	# Being hit is being told where you are, whatever the range says.
 	if sauce_alerts:
@@ -1792,6 +1736,10 @@ func _process(delta: float) -> void:
 		if _remote_position != Vector3.INF:
 			global_position = global_position.lerp(_remote_position, minf(delta * 24.0, 1.0))
 		_update_escape_clearance(delta)
+	if kind == EnemyKind.TOMATO_GRUNT and burst_tier >= 2 and is_alive():
+		var danger := clampf((0.42 - health_fraction()) / 0.42, 0.0, 1.0)
+		var swell := 1.0 + danger * (0.12 + sin(float(Time.get_ticks_msec()) * 0.022) * 0.07)
+		_visual_root.scale = Vector3.ONE * swell
 	if _sight_ring == null:
 		return
 	# Flat on the ground under the body, whatever the body is doing. A little
@@ -2235,7 +2183,7 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 			and velocity.is_zero_approx() and is_on_floor():
 		return pending_hit
 
-	# The stage 2 tricks: a charge, a throw, a spit, a pull. Run here, with the
+	# The stage 2 tricks: a charge, a throw, or a spit. Run here, with the
 	# target decided and the body not yet moved, so a trick can redirect the
 	# walk below without a second movement pass.
 	var was_charging := is_charging()

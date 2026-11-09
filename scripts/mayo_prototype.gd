@@ -329,6 +329,7 @@ class Shooter:
 	## the enemy that caused it was. Driven by an RPC rather than by the enemy
 	## state packet -- see `shake_from_enemy`.
 	var shake_left := 0.0
+	var last_weak_spot_ms := -1000
 	var shake_span := 0.0
 	var shake_degrees := 0.0
 	var shake_direction := Vector3.ZERO
@@ -1102,6 +1103,19 @@ const FINALE_WAVES := [0.0, 9.0, 19.0]
 const PressKing := preload("res://scripts/tomatina_press_king.gd")
 const FINALE_COUNT_TAG := -999
 const PRESS_KING_LOB_CUE := 7
+const HOSE_COUNTERATTACK_CUE := 8
+const PRESS_KING_RISE_CUE := 9
+const PRESS_KING_RISE_WARNING := 0.85
+const OVERRIPE_BURST_DELAY := 0.65
+const FINALE_SPECIALS := [MayoTutorial.KIND_KETCHUP_SPITTER, MayoTutorial.KIND_CAPRESE_CRAWLER, MayoTutorial.KIND_TOMATO_BRUTE]
+var _press_king_rise_left := 0.0
+var _press_king_rise_at := Vector3.INF
+var _overripe_bursts: Dictionary = {}
+var _finale_special_pending := false
+const FINALE_CHECKPOINT_TAG := -998
+const HOSE_PENDING_TAG := -997
+const PRESS_KING_WASH_TAG := -996
+var _tomatina_warning_sounds: Dictionary = {}
 var _press_king: PressKing
 var _press_king_hideout: Node3D
 var _finale_remaining := 0
@@ -1116,7 +1130,7 @@ const TOMATINA_HOSES := [Vector2(28.5, 24.0), Vector2(31.5, 24.0)]
 ## and bursts every body it crosses instead of nudging it back a step -- see
 ## `_advance_fire_hoses`.
 const HOSE_RANGE := 22.0
-const HOSE_HALF_WIDTH := 2.2
+const HOSE_SPRAY_RADIUS := 2.2
 const HOSE_JET_RADIUS := 0.45
 ## How far the hose line pays out from its reel before the hose is dropped.
 ## Opening needs the player at the stand (`_hose_slot`); keeping it open only
@@ -1140,11 +1154,8 @@ const HOSE_KICK_DEGREES := 10.0
 const HOSE_KICK_ATTACK := 0.07
 const HOSE_KICK_SETTLE := 0.45
 const HOSE_RUMBLE_DEGREES := 0.35
-## Tomatoes called in from the plaza edges when a hose opens, so there is
-## something to put the water on, and how long before another opening calls
-## more -- see `_queue_hose_wave`.
+## The first use of water draws one counterattack before the boss arrives.
 const HOSE_WAVE_COUNT := 14
-const HOSE_WAVE_COOLDOWN := 18.0
 ## And how many of them are built in one physics tick. A body is a mesh, its
 ## colliders and a contamination grid; the whole horde in one frame was a
 ## fifth of a second with nothing drawn. Eight a tick has it all in within
@@ -1194,8 +1205,11 @@ var _hose_stands := {}
 var _hose_nozzles := {}
 var _hose_wave_pending := 0
 var _hose_wave_wait := 0.0
-var _hose_wave_cooldown := 0.0
-var _tether_visuals := {}
+var _hose_wave_called := false
+const CheeseThread := preload("res://scripts/tomatina_cheese_thread.gd")
+const CHEESE_THROW_RANGE := 11.0
+const CHEESE_ANCHOR_REACH := 10.0
+var _cheese_threads: Dictionary = {}
 var _warning_sound: AudioStreamWAV
 var _siren_label: Label3D
 @export_range(12, 96, 1) var tomatina_active_grunt_cap := 32
@@ -1384,6 +1398,8 @@ func _physics_process(delta: float) -> void:
 		_burst_ground_budget = TOMATO_BURST_TICK_CAP
 		if map_kind == MapKind.TOMATINA:
 			_advance_tomatina_rescues(delta)
+			_advance_overripe_bursts(delta)
+			_advance_cheese_threads(delta)
 		_advance_player_respawns()
 		_advance_healing_tomatoes(delta)
 		for shooter in _shooters.values():
@@ -1399,7 +1415,7 @@ func _physics_process(delta: float) -> void:
 		_advance_fire_hoses(delta)
 		_advance_hose_wave(delta)
 		if map_kind == MapKind.TOMATINA:
-			_advance_press_king_spawn()
+			_advance_press_king_spawn(delta)
 	for shooter in _shooters.values():
 		_advance_strand(shooter, delta)
 	if debug_profile_enabled:
@@ -1924,7 +1940,8 @@ func _is_authority() -> bool:
 
 func _process(_delta: float) -> void:
 	if map_kind == MapKind.TOMATINA:
-		_update_tether_visuals()
+		for thread: CheeseThread in _cheese_threads.values():
+			thread.update_visual()
 		_update_hose_visuals()
 	if _local == null:
 		return
@@ -2778,6 +2795,8 @@ func _build_crosshair() -> void:
 	# Above the sauce, so there is always something to aim with.
 	_crosshair = CrosshairScript.new()
 	_crosshair.visible = show_crosshair
+	if map_kind == MapKind.TOMATINA:
+		(_crosshair as Crosshair).outline_color = Color("151823")
 	layer.add_child(_crosshair)
 	_hud_layer = layer
 	if stage_mode:
@@ -2792,6 +2811,8 @@ func _build_crosshair() -> void:
 		_stage_objective.position = Vector2(24.0, 24.0)
 		_stage_objective.add_theme_font_size_override("font_size", 22)
 		_stage_objective.add_theme_color_override("font_color", Color("fff0a8"))
+		_stage_objective.add_theme_color_override("font_outline_color", Color("17202b"))
+		_stage_objective.add_theme_constant_override("outline_size", 7)
 		_hud_layer.add_child(_stage_objective)
 
 
@@ -3143,6 +3164,16 @@ func _build_weapon(shooter: Shooter) -> void:
 	# weapon axis; at this length the visible tip offset stays inside the strand.
 	tube.rotate_object_local(Vector3.UP, deg_to_rad(7.0))
 	sway.add_child(tube)
+	if map_kind == MapKind.TOMATINA:
+		var shell := tube.find_child("*SauceTube_Bottle*", true, false) as MeshInstance3D
+		if shell != null:
+			for surface in shell.mesh.get_surface_count():
+				var source := shell.get_active_material(surface) as StandardMaterial3D
+				if source != null:
+					var material := source.duplicate() as StandardMaterial3D
+					material.albedo_color = source.albedo_color.darkened(0.42)
+					material.emission_energy_multiplier *= 0.30
+					shell.set_surface_override_material(surface, material)
 	var contents_node := tube.find_child("*SauceFill*", true, false)
 	if contents_node is MeshInstance3D:
 		shooter.bottle_contents = contents_node as MeshInstance3D
@@ -3207,7 +3238,7 @@ func _update_bottle_gauge(shooter: Shooter) -> void:
 	elif stage == SauceStage.EMPTY:
 		tint = Color("c0392b")
 	if shooter.bottle_material != null:
-		shooter.bottle_material.albedo_color = tint
+		shooter.bottle_material.albedo_color = tint.darkened(0.21) if map_kind == MapKind.TOMATINA else tint
 func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3, color: Color,
 		visible_surface := true, paint_only := false) -> void:
 	var wall := WallScript.new()
@@ -3352,6 +3383,7 @@ func _build_street() -> void:
 ## and the fire truck are plain contaminable boxes; the juice is painted onto
 ## the floor before anyone arrives.
 var _tomatina_checkpoint := -1
+var tomatina_shortcut_open := true
 
 
 func _build_tomatina() -> void:
@@ -3397,6 +3429,10 @@ func _build_tomatina() -> void:
 		sign.pixel_size = 0.018
 		add_child(sign)
 	_create_wall("FireTruck", truck["position"], truck["size"], truck["color"], not has_art)
+	if not tomatina_shortcut_open:
+		var gate := TomatinaMap.market_gate()
+		_create_wall(gate["name"], gate["position"], gate["size"], gate["color"])
+	_build_tomatina_route_signs()
 	_fire_truck_zone = TomatinaMap.fire_truck_zone()
 	_plaza_rect = TomatinaMap.plaza_rect()
 	var siren := TomatinaMap.at_cell(TomatinaMap.SIREN_CELL)
@@ -3404,7 +3440,7 @@ func _build_tomatina() -> void:
 	_build_zone_marker("Siren", _siren_zone, Color(1.0, 0.74, 0.18, 0.55))
 	_build_zone_marker("FireTruckBay", _fire_truck_zone, Color(0.9, 0.15, 0.1, 0.22))
 	var label := Label3D.new()
-	label.text = "[E] 사이렌"
+	label.text = "사이렌"
 	_siren_label = label
 	label.position = siren + Vector3.UP * 2.0
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -3414,6 +3450,23 @@ func _build_tomatina() -> void:
 		_build_hose_stand(slot, TomatinaMap.at_cell(TOMATINA_HOSES[slot]))
 	TomatinaMap.seed_floor(_floor)
 	_build_start_marker(TomatinaMap.start_arrow())
+
+
+func _build_tomatina_route_signs() -> void:
+	var labels := [
+		[Vector2(10.9, 166.0), "지름길 · 토마토즙" if tomatina_shortcut_open else "지름길 폐쇄"],
+		[Vector2(15.5, 164.8), "시장 큰길 · 볼러 주의"],
+		[Vector2(28.0, 70.5), "측면 우회"],
+	]
+	for entry in labels:
+		var label := Label3D.new()
+		label.text = entry[1]
+		label.position = TomatinaMap.at_cell(entry[0]) + Vector3.UP * 3.8
+		label.pixel_size = 0.012
+		label.font_size = 64
+		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		label.modulate = Color("e7f1b1")
+		add_child(label)
 
 
 func _add_tomatina_supply(box: Dictionary) -> void:
@@ -3811,6 +3864,10 @@ func _build_enemies() -> void:
 		_apply_enemy_sight_rings()
 		return
 	if map_kind == MapKind.TOMATINA:
+		if not tomatina_shortcut_open:
+			for cell: Vector2i in TomatinaMap.market_gate_cells():
+				if _nav.is_walkable(cell):
+					_nav.grid.set_point_solid(cell, true)
 		for entry in TomatinaMap.roster():
 			var index := _add_tomatina_enemy(int(TOMATINA_KINDS[entry[0]]), TomatinaMap.at_cell(entry[1]))
 			var enemy := _enemies[index]
@@ -4065,6 +4122,7 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 			_press_king = enemy as PressKing
 			enemy.name = "PressKing"
 			_press_king.arena = _plaza_rect
+			_press_king.exposure_seconds = 10.0 if party_size() == 1 else PressKing.OPEN_SECONDS
 			_press_king.build_press_king(body_cell_size, contamination_brush_radius)
 			_press_king.slam_hit.connect(_damage_player)
 			_press_king.lob_warning.connect(_warn_press_king_lob)
@@ -4121,6 +4179,7 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 		return
 	if centre == Vector3.INF:
 		centre = enemy.global_position
+	_cut_cheese_by_blast(centre, radius)
 	var wanted := mini(int(round(TOMATO_SPLATS_PER_M2 * PI * radius * radius)),
 		TOMATO_BURST_SPLAT_CAP)
 	var count := mini(wanted, _burst_ground_budget)
@@ -4165,6 +4224,8 @@ func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Sho
 			continue
 		if other.global_position.distance_to(centre) > radius:
 			continue
+		if single_blast and map_kind == MapKind.TOMATINA and not _tomato_blast_reaches(centre, other):
+			continue
 		_stain_body_with_ketchup(other, centre)
 		if damage <= 0.0 or not other.is_alive():
 			continue
@@ -4181,20 +4242,60 @@ func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Sho
 				other.take_sauce_hit(centre)
 		if not other.is_alive():
 			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
-			_burst_tomato(other, Vector3.INF, shooter)
-			_tomato_down(other)
+			_finish_tomato_kill(other, shooter)
 		elif other._flinch_crossed > crossed_before:
 			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
 
 
-## The pieces that fly, scaled to the burst. Decoration, thrown on every peer
-## from its own dice: the stains are already decided above and only they
-## travel, exactly as the ketchup burst's fragments do.
-## A Tomatina body went down, on whichever peer noticed. A tomato has burst,
-## so it vanishes and leaves pieces; anything else lies where it fell, on the
-## corpse layer, so the road stays passable either way. Called once per body:
-## on the authority where the kill is dealt, on a client when the packet says
-## so.
+func _is_overripe(enemy: MayoEnemy) -> bool:
+	return enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.burst_tier >= 2
+
+
+func _finish_tomato_kill(enemy: MayoEnemy, shooter: Shooter) -> void:
+	if _is_overripe(enemy):
+		var at := enemy.global_position
+		_overripe_bursts[enemy] = {"at": at, "left": OVERRIPE_BURST_DELAY, "peer": shooter.peer_id if shooter != null else -1}
+		enemy.vanish()
+		show_overripe_burst(at, enemy.burst_radius, true)
+		if is_instance_valid(_net) and _net.is_online():
+			_net.broadcast_overripe_burst(at, enemy.burst_radius, true)
+		return
+	_burst_tomato(enemy, Vector3.INF, shooter)
+	_tomato_down(enemy)
+
+
+func _advance_overripe_bursts(delta: float) -> void:
+	for enemy: MayoEnemy in _overripe_bursts.keys():
+		var fuse: Dictionary = _overripe_bursts[enemy]
+		fuse.left -= delta
+		if fuse.left > 0.0:
+			continue
+		_overripe_bursts.erase(enemy)
+		if not is_instance_valid(enemy):
+			continue
+		_burst_tomato(enemy, fuse.at, _shooters.get(fuse.peer))
+		_leave_debris(fuse.at, enemy.radius, TomatoVisuals.OVERRIPE)
+		if is_instance_valid(_net) and _net.is_online():
+			_net.broadcast_overripe_burst(fuse.at, enemy.burst_radius, false)
+
+
+func show_overripe_burst(at: Vector3, radius: float, priming: bool) -> void:
+	if not priming:
+		_tomato_fragments(at, radius)
+		_leave_debris(at, 0.91, TomatoVisuals.OVERRIPE)
+		return
+	_play_combat_warning(at, 490.0, OVERRIPE_BURST_DELAY)
+	_pulse_blast_radius(Vector3(at.x, 0.0, at.z), radius, OVERRIPE_BURST_DELAY, Color("ffe0a3"))
+	var swelling := TomatoVisuals.grunt(0.91, 2)
+	swelling.name = "OverripeWarning"
+	add_child(swelling)
+	swelling.global_position = at
+	var pulse := create_tween()
+	pulse.tween_property(swelling, "scale", Vector3.ONE * 1.35, OVERRIPE_BURST_DELAY).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	pulse.tween_callback(swelling.queue_free)
+
+
+## Burst bodies leave debris. Other bodies leave the path clear for movement.
 func _tomato_down(enemy: MayoEnemy) -> void:
 	if map_kind != MapKind.TOMATINA or enemy.vanished:
 		return
@@ -4517,13 +4618,17 @@ func _update_juice_kickup(delta: float) -> void:
 
 
 func _reset_tomatina_finale() -> void:
-	for beam in _tether_visuals.values():
-		beam.queue_free()
-	_tether_visuals.clear()
+	_overripe_bursts.clear()
+	_press_king_rise_at = Vector3.INF
+	_press_king_rise_left = 0.0
+	_finale_special_pending = false
+	for thread: CheeseThread in _cheese_threads.values():
+		thread.queue_free()
+	_cheese_threads.clear()
 	_free_hose_visuals()
 	_hose_users.clear()
 	_hose_wave_pending = 0
-	_hose_wave_cooldown = 0.0
+	_hose_wave_called = false
 	for shooter: Shooter in _shooters.values():
 		if is_instance_valid(shooter.player):
 			shooter.player.external_drift = Vector3.ZERO
@@ -4564,6 +4669,7 @@ func _advance_horde_spawn(delta: float) -> void:
 	var next_wave := _finale_wave + 1
 	if next_wave < FINALE_WAVES.size() and _finale_elapsed >= FINALE_WAVES[next_wave]:
 		_finale_wave = next_wave
+		_finale_special_pending = true
 		_horde_pending = minion_spawn_count(TOMATINA_HORDE_BASE) / FINALE_WAVES.size()
 		_horde_spawn_wait = 0.0
 		var entry := TomatinaMap.at_cell(TomatinaMap.HORDE_EDGES[_finale_wave][0])
@@ -4588,7 +4694,9 @@ func _advance_horde_spawn(delta: float) -> void:
 		_horde_spawned_count += 1
 		if not _nav.is_walkable(StreetMap.cell_at(at)) or not _horde_spawn_clear(at):
 			continue
-		if tutorial_spawn_enemy(MayoTutorial.KIND_TOMATO_GRUNT, at) >= 0:
+		var kind := int(FINALE_SPECIALS[_finale_wave]) if _finale_special_pending else MayoTutorial.KIND_TOMATO_GRUNT
+		if tutorial_spawn_enemy(kind, at) >= 0:
+			_finale_special_pending = false
 			_horde_pending -= 1
 			remaining -= 1
 
@@ -4604,24 +4712,35 @@ func _horde_spawn_clear(at: Vector3) -> bool:
 	return true
 
 
-func _advance_press_king_spawn() -> void:
+func _advance_press_king_spawn(delta: float) -> void:
 	if not _horde_spawned or _finale_elapsed < FINALE_DURATION or is_instance_valid(_press_king):
 		return
 	_finale_remaining = _hose_wave_pending
 	for enemy in _enemies:
-		if enemy.is_alive() and (enemy.has_meta("finale_guard") or enemy.has_meta("horde")):
+		if (enemy.is_alive() or _overripe_bursts.has(enemy)) and (enemy.has_meta("finale_guard") or enemy.has_meta("horde")):
 			_finale_remaining += 1
 	if _finale_remaining > 0:
+		_press_king_rise_at = Vector3.INF
 		return
-	var at := TomatinaMap.at_cell(TomatinaMap.PRESS_KING_CELL)
-	for shooter: Shooter in _shooters.values():
-		var gap := shooter.player.global_position - at
-		if shooter.player.state != MayoPlayer.State.DEAD and Vector2(gap.x, gap.z).length_squared() < 9.0:
+	if _press_king_rise_at != Vector3.INF:
+		_press_king_rise_left -= delta
+		if _press_king_rise_left > 0.0:
 			return
-	tutorial_spawn_enemy(MayoTutorial.KIND_PRESS_KING, at)
-	show_combat_warning(at, Vector3.ZERO, 1.1, 1)
-	if is_instance_valid(_net) and _net.is_online():
-		_net.broadcast_combat_warning(at, Vector3.ZERO, 1.1, 1)
+		var at := _press_king_rise_at
+		_press_king_rise_at = Vector3.INF
+		if _horde_spawn_clear(at):
+			tutorial_spawn_enemy(MayoTutorial.KIND_PRESS_KING, at)
+			return
+	for cell: Vector2 in [TomatinaMap.PRESS_KING_CELL, Vector2(33.5, 26.5), Vector2(32.5, 31.5), Vector2(26.5, 32.5)]:
+		var at := TomatinaMap.at_cell(cell)
+		if not _nav.is_walkable(StreetMap.cell_at(at)) or not _horde_spawn_clear(at):
+			continue
+		_press_king_rise_at = at
+		_press_king_rise_left = PRESS_KING_RISE_WARNING
+		show_combat_warning(at, Vector3.ZERO, PRESS_KING_RISE_WARNING, PRESS_KING_RISE_CUE)
+		if is_instance_valid(_net) and _net.is_online():
+			_net.broadcast_combat_warning(at, Vector3.ZERO, PRESS_KING_RISE_WARNING, PRESS_KING_RISE_CUE)
+		return
 
 
 func horde_spawned() -> bool:
@@ -4741,32 +4860,75 @@ func _check_stage_clear() -> void:
 		stage_cleared.emit()
 
 
+func _tomatina_refuge_status() -> String:
+	if _local == null or _horde_spawned:
+		return ""
+	var room := TomatinaMap.safe_room_at(StreetMap.cell_at(_local.player.global_position))
+	if room < 0:
+		return ""
+	if room <= _tomatina_checkpoint:
+		return "%s · 체크포인트 확보" % TomatinaMap.SAFE_ROOM_NAMES[room]
+	var present := 0
+	var standing := 0
+	for shooter: Shooter in _shooters.values():
+		if shooter.player.state == MayoPlayer.State.DEAD:
+			continue
+		standing += 1
+		if TomatinaMap.safe_room_at(StreetMap.cell_at(shooter.player.global_position)) == room:
+			present += 1
+	return "%s · 집결 %d/%d" % [TomatinaMap.SAFE_ROOM_NAMES[room], present, standing]
+
+
+func _tomatina_action_hint() -> String:
+	if _local == null or _local.player.state != MayoPlayer.State.NORMAL:
+		return ""
+	for teammate: Shooter in _shooters.values():
+		if _can_rescue_teammate(_local.player, teammate.player):
+			return ""
+	var at := _local.player.global_position
+	if not _horde_spawned and TomatinaMap.in_rect(_siren_zone, at):
+		return "[E] 사이렌 작동"
+	if _hose_slot_of(_local.peer_id) >= 0:
+		return "[E] 호스 끄기"
+	var slot := _hose_slot(at)
+	if slot >= 0 and _finale_elapsed >= FINALE_DURATION and not _hose_users.has(slot):
+		return "[E] 물 호스 사용"
+	return ""
+
+
 func _update_stage_objective(alive := -1) -> void:
 	if _stage_objective == null:
 		return
 	if map_kind == MapKind.TOMATINA:
+		var objective := ""
 		if not _horde_spawned:
-			_stage_objective.text = "목표 · 광장에서 사이렌 작동 [E] · 밀치기 [V]"
+			objective = "교회 광장으로 이동 · 사이렌 작동"
 		elif _finale_elapsed < FINALE_DURATION:
-			_stage_objective.text = "소방차 도착까지 %d초 · 밀치기 [V]" % ceili(FINALE_DURATION - _finale_elapsed)
+			objective = "광장 방어 · 급수 압력 확보까지 %d초" % ceili(FINALE_DURATION - _finale_elapsed)
 		elif not is_instance_valid(_press_king):
-			_stage_objective.text = "광장 방어 · 남은 적 %d" % _finale_remaining if _finale_remaining > 0 \
-				else "광장 방어 · 교회 오른편 잔해에서 떨어지기"
+			objective = "광장 방어 · 남은 적 %d" % _finale_remaining if _finale_remaining > 0 \
+				else "광장 방어 · 종소리가 들린다"
+			if _hose_wave_pending > 0:
+				objective += " · 북쪽 반격 %d마리 접근 중" % _hose_wave_pending
 		elif _press_king.is_alive():
-			var hint := "호스로 갑옷 벗기기 [E]"
-			if _press_king.armor_broken or _press_king.exposed_left > 0.0:
-				hint = "노출된 속살에 케첩 분사"
-			_stage_objective.text = "토마토 압착왕 · 체력 %d%% · %s" % [
-				ceili(_press_king.health_fraction() * 100.0), hint]
-		elif _local != null and _hose_slot_of(_local.peer_id) >= 0:
-			_stage_objective.text = "호스 분사 중 · 끄기 [E] · 생존 팀원과 소방차로 이동"
+			var armor := "갑옷 · 호스를 맞혀 세척"
+			if _press_king.armor_broken:
+				armor = "갑옷 파괴 · 드러난 속살 조준"
+			elif _press_king.exposed_left > 0.0:
+				armor = "속살 노출 %d초 · 소스 분사" % ceili(_press_king.exposed_left)
+			elif _press_king.wash_progress() > 0.0:
+				armor = "갑옷 세척 %d%%" % floori(_press_king.wash_progress() * 100.0)
+			objective = "토마토 압착왕  %d%%  |  %s" % [ceili(_press_king.health_fraction() * 100.0), armor]
 		else:
-			_stage_objective.text = "목표 · 생존 팀원과 소방차로 이동 · 호스 켜기/끄기 [E]"
-		if _local != null:
-			for teammate: Shooter in _shooters.values():
-				if teammate != _local and teammate.player.state == MayoPlayer.State.DEAD:
-					_stage_objective.text += " · 쓰러진 팀원 구조 [E]"
-					break
+			objective = "생존 팀원과 소방차로 이동"
+		var refuge := _tomatina_refuge_status()
+		var action := _tomatina_action_hint()
+		var lines := PackedStringArray([objective])
+		if not refuge.is_empty():
+			lines.append(refuge)
+		if not action.is_empty():
+			lines.append(action)
+		_stage_objective.text = "\n".join(lines)
 		return
 	if alive < 0:
 		alive = 0
@@ -4882,6 +5044,8 @@ func _advance_enemies(delta: float) -> void:
 			enemy.global_position = TutorialCourseScript.constrain_bruiser(
 				enemy.global_position, previous_position, enemy.radius)
 		if map_kind == MapKind.TOMATINA:
+			if enemy.kind == MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
+				_try_cast_cheese_thread(index, enemy, delta)
 			var burst_at: Vector3 = enemy.take_burst_request()
 			if burst_at != Vector3.INF:
 				_burst_tomato(enemy, burst_at)
@@ -5101,6 +5265,9 @@ func apply_enemy_state(data: PackedFloat32Array, interpolate := false, start := 
 		# after a wall. The stains arrived down the splat batch already; the
 		# radius is the same on every peer by construction.
 		if was_alive and not enemy.is_alive() and not _is_authority():
+			if _is_overripe(enemy):
+				enemy.vanish()
+				continue
 			_tomato_down(enemy)
 		if enemy.burst_radius <= 0.0:
 			continue
@@ -5124,13 +5291,15 @@ func _build_start_marker(at := Vector3.ZERO) -> void:
 	material.albedo_color = Color("f0a500")
 	material.emission_enabled = true
 	material.emission = Color("f0a500")
-	material.emission_energy_multiplier = 0.6
+	material.emission_energy_multiplier = 0.15 if map_kind == MapKind.TOMATINA else 0.6
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 
 	var marker := Node3D.new()
 	marker.name = "StartArrow"
 	add_child(marker)
 	marker.position = at
+	if map_kind == MapKind.TOMATINA:
+		marker.scale = Vector3(0.56, 1.0, 0.56)
 
 	# Painted on the road, so it is sized by the road rather than in metres.
 	var scale: float = StreetMap.SCALE
@@ -5409,6 +5578,9 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 			if debug_profile_enabled:
 				debug_raycast_count += 1
 			var hit := space_state.intersect_ray(query)
+			if not _cheese_threads.is_empty() and _is_authority():
+				var end: Vector3 = next if hit.is_empty() else hit.position
+				_cut_cheese_by_stream(point.last_collision_position, end)
 			if not hit.is_empty():
 				# Everything the strand touches is landed on. Only the server's
 				# copy marks anything: every peer runs this same code for every
@@ -5565,14 +5737,22 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 			var was_alive := enemy.is_alive()
 			var crossed_before := enemy._flinch_crossed
 			if enemy is PressKing:
-				(enemy as PressKing).take_aimed_sauce_hit(hit_position)
+				var boss := enemy as PressKing
+				if boss.is_weak_spot_hit(hit_position):
+					var now_ms := Time.get_ticks_msec()
+					if now_ms - shooter.last_weak_spot_ms >= 180:
+						shooter.last_weak_spot_ms = now_ms
+						var recipient := PackedInt32Array([shooter.peer_id])
+						if is_instance_valid(_net) and _net.is_online():
+							_net.send_enemy_shake(index, recipient, 0.0, 0.0, 3)
+						apply_enemy_shake(index, recipient, 0.0, 0.0, 3)
+				boss.take_aimed_sauce_hit(hit_position)
 			else:
 				enemy.take_sauce_hit(shooter.player.global_position)
 			if was_alive:
 				if not enemy.is_alive():
 					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
-					_burst_tomato(enemy, Vector3.INF, shooter)
-					_tomato_down(enemy)
+					_finish_tomato_kill(enemy, shooter)
 				elif enemy._flinch_crossed > crossed_before:
 					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds, 1)
 			# Ketchup piles up on the body rather than on the floor, and the stack
@@ -5701,8 +5881,7 @@ func _burst_ketchup(enemy: MayoEnemy, shooter: Shooter) -> void:
 			killed = other.take_sauce_hit(centre)
 		if killed or not other.is_alive():
 			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
-			_burst_tomato(other, Vector3.INF, shooter)
-			_tomato_down(other)
+			_finish_tomato_kill(other, shooter)
 		elif other._flinch_crossed > crossed_before:
 			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
 		_stain_body_with_ketchup(other, centre)
@@ -6740,6 +6919,10 @@ func apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
 	if _local == null or not peers.has(_local.peer_id):
 		return
 	var enemy := _enemies[enemy_index]
+	if accent == 3:
+		if _crosshair is Crosshair:
+			(_crosshair as Crosshair).confirm_impact(false, true)
+		return
 	if accent > 0:
 		_play_contact_accent(defeat_sound if accent == 2 else first_contact_sound,
 			enemy.global_position, 0.85 if accent == 2 else 0.92, 4.0 if accent == 2 else 1.0)
@@ -6882,7 +7065,7 @@ func _make_healing_tomato(at: Vector3) -> MeshInstance3D:
 	stem_mesh.height = 0.22
 	stem.mesh = stem_mesh
 	var green := StandardMaterial3D.new()
-	green.albedo_color = Color("65b840")
+	green.albedo_color = Color("66dcd0") if map_kind == MapKind.TOMATINA else Color("65b840")
 	stem.material_override = green
 	item.add_child(stem)
 	stem.position.y = 0.32
@@ -6892,7 +7075,7 @@ func _make_healing_tomato(at: Vector3) -> MeshInstance3D:
 func _advance_healing_tomatoes(delta: float) -> void:
 	for index in _enemies.size():
 		var enemy = _enemies[index]
-		if enemy.is_alive() or _healing_deaths.has(index) or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+		if enemy.is_alive() or _healing_deaths.has(index) or _overripe_bursts.has(enemy) or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
 			continue
 		_healing_deaths[index] = true
 		if _healing_rng.randf() >= healing_tomato_chance:
@@ -6978,9 +7161,7 @@ func _start_tomatina_rescue(shooter: Shooter) -> bool:
 	if not _input_enabled:
 		return false
 	for teammate: Shooter in _shooters.values():
-		if teammate.player.state == MayoPlayer.State.DEAD \
-				and teammate.player.state_time() <= TOMATINA_RESCUE_WINDOW - TOMATINA_RESCUE_TIME \
-				and _rescue_in_reach(shooter.player, teammate.player):
+		if _can_rescue_teammate(shooter.player, teammate.player):
 			if not _rescue_attempts.has(shooter.peer_id):
 				_rescue_attempts[shooter.peer_id] = {
 					"peer": teammate.peer_id, "left": TOMATINA_RESCUE_TIME,
@@ -7019,8 +7200,7 @@ func rescue_hud_state() -> Dictionary:
 	for teammate: Shooter in _shooters.values():
 		if teammate == _local or teammate.player.state != MayoPlayer.State.DEAD:
 			continue
-		var in_reach := me.state == MayoPlayer.State.NORMAL \
-			and _rescue_in_reach(me, teammate.player)
+		var in_reach := _can_rescue_teammate(me, teammate.player)
 		any_in_reach = any_in_reach or in_reach
 		downed.append({
 			"peer": teammate.peer_id,
@@ -7035,6 +7215,12 @@ func rescue_hud_state() -> Dictionary:
 		var attempt: Dictionary = _rescue_attempts[_local.peer_id]
 		state["rescue_progress"] = 1.0 - clampf(float(attempt.left) / TOMATINA_RESCUE_TIME, 0.0, 1.0)
 	return state
+
+
+func _can_rescue_teammate(rescuer: MayoPlayer, target: MayoPlayer) -> bool:
+	return rescuer.state == MayoPlayer.State.NORMAL and target.state == MayoPlayer.State.DEAD \
+		and target.state_time() <= TOMATINA_RESCUE_WINDOW - TOMATINA_RESCUE_TIME \
+		and _rescue_in_reach(rescuer, target)
 
 
 func _rescue_in_reach(rescuer: MayoPlayer, target: MayoPlayer) -> bool:
@@ -7166,15 +7352,8 @@ func _wash_floor_at(sample: Vector3) -> void:
 ## one aimed up washes only where it comes down, in a wider patch. The clear
 ## is a splat packet to every peer, so clean cells are never sent.
 ##
-## **Water out of a fire main kills.** A squirt of sauce is a nudge and a few
-## points off; the jet puts any body it touches down on the spot, through the
-## same door every other kill goes through -- `take_sauce_hit` on its last
-## point of health, so it turns, topples and bursts the way a hosed grunt
-## would -- with the kill credited to whoever holds the hose. "Touches" now
-## has a height to it: a body is in the jet when the jet, at that body's
-## distance, is within a body's reach of its feet, so a hose pointed at the
-## sky sails over the horde the way a bottle pointed there would. A bowled
-## ball is a thing thrown at you, not a thing to fight, and is left alone.
+## The core bursts enemies and stops bowling balls. The surrounding mist
+## pushes enemies away, and only the core washes the Press King's armor.
 func _advance_fire_hoses(delta: float) -> void:
 	if map_kind != MapKind.TOMATINA:
 		return
@@ -7215,26 +7394,30 @@ func _advance_fire_hoses(delta: float) -> void:
 			for dx in [-1.5, -0.75, 0.0, 0.75, 1.5]:
 				for dz in [-1.5, -0.75, 0.0, 0.75, 1.5]:
 					_wash_floor_at(landing + Vector3(float(dx), 0.0, float(dz)))
-		var reach := float(points.size()) * HOSE_STEP
-		var reach_flat := reach * maxf(flat_length, 0.01)
+		var jet_span := points[-1] - from
+		var reach_flat := Vector2(jet_span.x, jet_span.z).length()
 		for enemy in _enemies:
-			if not enemy.is_alive() or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			if not enemy.is_alive():
 				continue
 			var gap := enemy.global_position - from
 			var gap_flat := Vector3(gap.x, 0.0, gap.z)
-			var in_jet := false
 			var along := gap_flat.dot(forward)
-			if along > 0.0 and along <= reach_flat + enemy.radius \
-					and (gap_flat - forward * along).length() <= HOSE_HALF_WIDTH + enemy.radius:
-				var travel := along / maxf(flat_length, 0.05)
-				var jet_y := from.y + direction.y * travel \
-					- HOSE_JET_GRAVITY * 0.5 * pow(travel / HOSE_JET_SPEED, 2.0)
-				in_jet = jet_y <= enemy.global_position.y + 2.4 and jet_y >= enemy.global_position.y - 2.0
-			if not in_jet and landed:
-				var splash_gap := enemy.global_position - landing
-				splash_gap.y = 0.0
-				in_jet = splash_gap.length() <= 1.5 + enemy.radius
-			if not in_jet:
+			if along <= 0.0 or along > reach_flat + enemy.radius:
+				continue
+			var travel := minf(along, reach_flat) / maxf(flat_length, 0.05)
+			var jet_y := from.y + direction.y * travel \
+				- HOSE_JET_GRAVITY * 0.5 * pow(travel / HOSE_JET_SPEED, 2.0)
+			var edge := (gap_flat - forward * minf(along, reach_flat)).length() - enemy.radius
+			var vertical_gap := absf(jet_y - enemy.global_position.y) - enemy.height * 0.5
+			if edge > HOSE_SPRAY_RADIUS or vertical_gap > HOSE_SPRAY_RADIUS:
+				continue
+			if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+				if edge <= HOSE_JET_RADIUS and vertical_gap <= HOSE_JET_RADIUS:
+					enemy.stop_ball_in_water()
+				continue
+			if edge > HOSE_JET_RADIUS or vertical_gap > HOSE_JET_RADIUS:
+				if not enemy is PressKing:
+					enemy.take_shove(from, 0.65)
 				continue
 			if enemy is PressKing:
 				(enemy as PressKing).wash_armor(delta)
@@ -7245,24 +7428,20 @@ func _advance_fire_hoses(delta: float) -> void:
 			if enemy.is_alive():
 				continue
 			_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
-			_burst_tomato(enemy, Vector3.INF, shooter)
-			_tomato_down(enemy)
+			_finish_tomato_kill(enemy, shooter)
 
 
-## A hose opening calls the tomatoes in. Authority only; once per
-## `HOSE_WAVE_COOLDOWN`, so flicking the hose on and off is not a horde
-## generator. The bodies arrive over `_advance_hose_wave`, a beat after the
-## main opens, from the same plaza edges the finale's waves used.
+## The first hose opening calls one announced counterattack before the boss.
 func _queue_hose_wave() -> void:
-	if _hose_wave_cooldown > 0.0 or not _is_authority() or is_instance_valid(_press_king):
+	if _hose_wave_called or not _is_authority() or is_instance_valid(_press_king):
 		return
-	_hose_wave_cooldown = HOSE_WAVE_COOLDOWN
-	_hose_wave_pending += HOSE_WAVE_COUNT
+	_hose_wave_called = true
+	_hose_wave_pending = HOSE_WAVE_COUNT
 	_hose_wave_wait = 1.2
-	var entry := TomatinaMap.at_cell(TomatinaMap.HORDE_EDGES[0][0])
-	show_combat_warning(entry, Vector3.ZERO, 0.6, 1)
+	var entry := TomatinaMap.at_cell(TomatinaMap.HORDE_EDGES[2][0])
+	show_combat_warning(entry, Vector3.ZERO, 1.2, HOSE_COUNTERATTACK_CUE)
 	if is_instance_valid(_net) and _net.is_online():
-		_net.broadcast_combat_warning(entry, Vector3.ZERO, 0.6, 1)
+		_net.broadcast_combat_warning(entry, Vector3.ZERO, 1.2, HOSE_COUNTERATTACK_CUE)
 
 
 ## Authority, once a tick: the tomatoes a hose called in, built a couple at a
@@ -7271,7 +7450,6 @@ func _queue_hose_wave() -> void:
 func _advance_hose_wave(delta: float) -> void:
 	if map_kind != MapKind.TOMATINA:
 		return
-	_hose_wave_cooldown = maxf(_hose_wave_cooldown - delta, 0.0)
 	if _hose_wave_pending <= 0:
 		return
 	_hose_wave_wait -= delta
@@ -7284,9 +7462,7 @@ func _advance_hose_wave(delta: float) -> void:
 				and (enemy.has_meta("horde") or TomatinaMap.in_rect(_plaza_rect, enemy.global_position)):
 			active += 1
 	var remaining := mini(HORDE_SPAWN_PER_TICK, mini(_hose_wave_pending, tomatina_active_grunt_cap - active))
-	var edges: Array = []
-	for wave in TomatinaMap.HORDE_EDGES:
-		edges.append_array(wave)
+	var edges: Array = TomatinaMap.HORDE_EDGES[2]
 	for attempt in edges.size():
 		if remaining <= 0:
 			break
@@ -7383,7 +7559,7 @@ func _build_hose_stand(slot: int, at: Vector3) -> void:
 	add_child(stand)
 	var steel := _hose_material(Color(0.22, 0.23, 0.25), 0.6, 0.5)
 	var red := _hose_material(Color(0.8, 0.12, 0.1), 0.1, 0.55)
-	var hose := _hose_material(Color(0.86, 0.22, 0.1), 0.0, 0.75)
+	var hose := _hose_material(Color(0.18, 0.56, 0.63), 0.0, 0.75)
 	var brass := _hose_material(Color(0.82, 0.62, 0.24), 0.8, 0.35)
 	var plate := CylinderMesh.new()
 	plate.top_radius = 0.46
@@ -7413,13 +7589,13 @@ func _build_hose_stand(slot: int, at: Vector3) -> void:
 	resting.position = Vector3(0.36, 0.95, 0.0)
 	resting.rotation_degrees = Vector3(-55.0, 0.0, 0.0)
 	stand.add_child(resting)
-	_hose_stands[slot] = {"anchor": anchor, "nozzle": resting}
 	var hose_label := Label3D.new()
-	hose_label.text = "[E] 물 호스 켜기/끄기"
+	hose_label.text = "급수 대기"
 	hose_label.position = Vector3.UP * 1.6
 	hose_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	hose_label.pixel_size = 0.009
 	stand.add_child(hose_label)
+	_hose_stands[slot] = {"anchor": anchor, "nozzle": resting, "label": hose_label}
 
 
 ## The nozzle a player holds, under their aim pivot so it yaws and pitches with
@@ -7491,6 +7667,8 @@ func _free_hose_visuals() -> void:
 	for visual in _hose_visuals.values():
 		for segment in visual["jet"]:
 			segment.queue_free()
+		for segment in visual["spray"]:
+			segment.queue_free()
 		for segment in visual["line"]:
 			segment.queue_free()
 		visual["splash"].queue_free()
@@ -7549,9 +7727,14 @@ func _update_hose_visuals() -> void:
 		var stand: Dictionary = _hose_stands.get(slot, {})
 		if not stand.is_empty() and is_instance_valid(stand["nozzle"]):
 			stand["nozzle"].visible = shooter == null
+			var label: Label3D = stand["label"]
+			label.text = "급수 대기" if _finale_elapsed < FINALE_DURATION else ("사용 중" if shooter != null else "호스 사용 가능")
+			label.modulate = Color("8bdff4") if _finale_elapsed >= FINALE_DURATION else Color("ddd6ba")
 		if shooter == null or not is_instance_valid(shooter.player):
 			if not visual.is_empty():
 				for segment in visual["jet"]:
+					segment.hide()
+				for segment in visual["spray"]:
 					segment.hide()
 				for segment in visual["line"]:
 					segment.hide()
@@ -7574,18 +7757,25 @@ func _update_hose_visuals() -> void:
 			splash.material_override = foam
 			splash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			add_child(splash)
-			visual = {"jet": [], "line": [], "splash": splash,
-				"water": water, "rubber": _hose_material(Color(0.72, 0.16, 0.1), 0.0, 0.8)}
+			var mist := water.duplicate() as StandardMaterial3D
+			mist.albedo_color = Color(0.62, 0.86, 1.0, 0.09)
+			visual = {"jet": [], "spray": [], "line": [], "splash": splash, "mist": mist,
+				"water": water, "rubber": _hose_material(Color(0.16, 0.42, 0.47), 0.0, 0.8)}
 			_hose_visuals[slot] = visual
 		var nozzle := _hose_nozzle_for(shooter)
 		var direction := _hose_direction(shooter)
 		var tip := _hose_nozzle_marker(nozzle, "Tip").global_position
-		var arc := _hose_arc(tip, direction)
+		var arc := _hose_arc(shooter.player.global_position + Vector3.UP * 0.9, direction)
 		var jet_points := PackedVector3Array([tip])
 		jet_points.append_array(arc)
 		_lay_segments(visual["jet"], jet_points, visual["water"],
 			func(index: int, _count: int) -> float:
 				return lerpf(HOSE_JET_RADIUS * 0.3, HOSE_JET_RADIUS, clampf(float(index) / 12.0, 0.0, 1.0)))
+		var mist_points := PackedVector3Array([tip])
+		for index in range(3, arc.size(), 4):
+			mist_points.append(arc[index])
+		_lay_segments(visual["spray"], mist_points, visual["mist"],
+			func(index: int, _count: int) -> float: return lerpf(0.5, HOSE_SPRAY_RADIUS, clampf(index / 4.0, 0.0, 1.0)))
 		if _hose_landed(arc):
 			var pulse := 1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.02)
 			visual["splash"].global_transform = Transform3D(Basis.from_scale(
@@ -7672,6 +7862,12 @@ func _on_special_warning(enemy: MayoEnemy, direction: Vector3, duration: float) 
 
 
 func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: int) -> void:
+	if map_kind == MapKind.TOMATINA and cue in [0, 1, HOSE_COUNTERATTACK_CUE, PRESS_KING_RISE_CUE]:
+		if not muted:
+			_play_combat_warning(at, 220.0, duration, _tomatina_warning_sound(cue))
+		if cue == PRESS_KING_RISE_CUE:
+			_show_rise_rubble(at, duration)
+		return
 	if cue == PRESS_KING_LOB_CUE:
 		_play_combat_warning(at, 275.0, duration)
 		var warning := MeshInstance3D.new()
@@ -7680,7 +7876,7 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 		ring.outer_radius = PressKing.LOB_RADIUS
 		var tint := StandardMaterial3D.new()
 		tint.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		tint.albedo_color = Color("ff8c46")
+		tint.albedo_color = Color("a9ffff")
 		warning.mesh = ring
 		warning.material_override = tint
 		warning.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -7710,13 +7906,66 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 	get_tree().create_timer(duration).timeout.connect(marker.queue_free)
 
 
-func _play_combat_warning(at: Vector3, pitch: float, duration: float) -> void:
+func _show_rise_rubble(at: Vector3, duration: float) -> void:
+	var rubble := Node3D.new()
+	rubble.name = "PressKingRiseRubble"
+	add_child(rubble)
+	rubble.global_position = at
+	var stone := StandardMaterial3D.new()
+	stone.albedo_color = Color("88716a")
+	var animation := create_tween().set_parallel()
+	for index in 9:
+		var angle := TAU * float(index) / 9.0
+		var out := Vector3(cos(angle), 0.0, sin(angle))
+		var rock := MeshInstance3D.new()
+		var block := BoxMesh.new()
+		block.size = Vector3(0.7, 0.35, 0.54) * (0.55 + 0.14 * (index % 4))
+		rock.mesh = block
+		rock.material_override = stone
+		rubble.add_child(rock)
+		rock.position = out * (1.2 + 0.2 * (index % 3)) + Vector3.UP * 0.16
+		rock.rotation.y = angle
+		var launch := duration * (0.44 + 0.04 * (index % 4))
+		animation.tween_property(rock, "position", rock.position + Vector3.UP * 0.4 + out * 0.8, duration - launch).set_delay(launch)
+		animation.tween_property(rock, "rotation:z", 0.22 if index % 2 == 0 else -0.22, duration * 0.14).set_trans(Tween.TRANS_SINE)
+	animation.chain().tween_callback(rubble.queue_free)
+
+
+func _tomatina_warning_sound(cue: int) -> AudioStreamWAV:
+	if _tomatina_warning_sounds.has(cue):
+		return _tomatina_warning_sounds[cue]
+	var wave := AudioStreamWAV.new()
+	wave.format = AudioStreamWAV.FORMAT_8_BITS
+	wave.mix_rate = 16000
+	var frames := PackedByteArray()
+	frames.resize(wave.mix_rate * 3 / 4)
+	for index in frames.size():
+		var t := float(index) / wave.mix_rate
+		var sample := 0.0
+		match cue:
+			0:
+				var sweep := TAU * (275.0 * t + 56.0 * t * t)
+				sample = (sin(sweep) + sin(sweep * 2.0) * 0.32) * (1.0 - t / 0.75)
+			PRESS_KING_RISE_CUE:
+				sample = sin(TAU * 146.0 * t) * exp(-t * 3.5)
+				sample += sin(TAU * 387.0 * t) * 0.44 * exp(-t * 8.0)
+			_:
+				var beat := fmod(t, 0.19 if cue == HOSE_COUNTERATTACK_CUE else 0.28)
+				var base := 115.0 if cue == HOSE_COUNTERATTACK_CUE else 75.0
+				sample = sin(TAU * (base * beat - 36.0 * beat * beat)) * exp(-beat * 22.0) * (1.0 - t)
+		frames[index] = 128 + roundi(clampf(sample * minf(t * 300.0, 1.0) * 75.0, -127.0, 127.0))
+	wave.data = frames
+	_tomatina_warning_sounds[cue] = wave
+	return wave
+
+
+func _play_combat_warning(at: Vector3, pitch: float, duration: float, sound: AudioStream = null) -> void:
 	if muted:
 		return
 	if _warning_sound == null:
 		_warning_sound = _placeholder_tone(220.0, 0.50)
 	var voice := AudioStreamPlayer3D.new()
-	voice.stream = _warning_sound
+	voice.stream = sound if sound != null else _warning_sound
 	voice.pitch_scale = pitch / 220.0
 	voice.max_distance = 48.0
 	voice.volume_db = -9.0
@@ -7728,37 +7977,124 @@ func _play_combat_warning(at: Vector3, pitch: float, duration: float) -> void:
 		get_tree().create_timer(duration).timeout.connect(voice.queue_free)
 
 
-func _update_tether_visuals() -> void:
-	for enemy in _enemies:
-		if enemy.kind != MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
+func _try_cast_cheese_thread(index: int, enemy: MayoEnemy, delta: float) -> void:
+	enemy.cheese_cast_left = maxf(0.0, enemy.cheese_cast_left - delta)
+	if enemy.cheese_cast_left > 0.0 or not enemy.is_alive() or _cheese_threads.has(index):
+		return
+	var target := enemy._visible_target
+	if not is_instance_valid(target) or target.state != MayoPlayer.State.NORMAL:
+		return
+	var gap := target.global_position - enemy.global_position
+	var flat := Vector3(gap.x, 0.0, gap.z)
+	if flat.length_squared() < 2.5 ** 2 or flat.length_squared() > CHEESE_THROW_RANGE ** 2:
+		return
+	if not _tomatina_static_hit(enemy.global_position, target.global_position).is_empty():
+		return
+	var heading := flat.normalized()
+	var side := heading.cross(Vector3.UP)
+	var retreat := Vector3(target.global_position.x, CheeseThread.HEIGHT, target.global_position.z)
+	for distance in [3.4, -2.8]:
+		var centre := retreat + heading * float(distance)
+		if not _nav.is_walkable(StreetMap.cell_at(centre)):
 			continue
-		var beam: MeshInstance3D = _tether_visuals.get(enemy)
-		var target := enemy.tether_target
-		if not is_instance_valid(target) or not enemy.is_alive():
-			if is_instance_valid(beam):
-				beam.hide()
+		if not _tomatina_static_hit(retreat, centre).is_empty():
 			continue
-		if beam == null:
-			beam = MeshInstance3D.new()
-			var mesh := BoxMesh.new()
-			mesh.size = Vector3(0.065, 0.065, 1.0)
-			beam.mesh = mesh
-			var material := StandardMaterial3D.new()
-			material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			material.albedo_color = Color("fff2bb")
-			beam.material_override = material
-			beam.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			add_child(beam)
-			_tether_visuals[enemy] = beam
-		var from := enemy.global_position + Vector3.UP * 0.25
-		var to := target.global_position + Vector3.UP * 0.3
-		var span := to - from
-		if span.length_squared() < 0.001:
-			beam.hide()
+		var from := _cheese_anchor(centre, -side)
+		var to := _cheese_anchor(centre, side)
+		if from.distance_squared_to(to) < 4.0 ** 2:
 			continue
-		beam.global_transform = Transform3D(Basis.looking_at(span).scaled_local(
-			Vector3(1.0, 1.0, span.length())), (from + to) * 0.5)
-		beam.show()
+		_add_cheese_thread(index, from, to)
+		enemy.cheese_cast_left = 6.5
+		_play_combat_warning(centre, 520.0, CheeseThread.WINDUP)
+		return
+	enemy.cheese_cast_left = 0.4
+
+
+func _cheese_anchor(centre: Vector3, direction: Vector3) -> Vector3:
+	var limit := centre + direction * CHEESE_ANCHOR_REACH
+	var hit := _tomatina_static_hit(centre, limit)
+	return limit if hit.is_empty() else (hit.position as Vector3) - direction * 0.06
+
+
+func _add_cheese_thread(index: int, from: Vector3, to: Vector3) -> CheeseThread:
+	var thread := CheeseThread.new()
+	add_child(thread)
+	thread.configure(from, to)
+	_cheese_threads[index] = thread
+	return thread
+
+
+func _remove_cheese_thread(index: int) -> void:
+	var thread: CheeseThread = _cheese_threads[index]
+	_cheese_threads.erase(index)
+	thread.hide()
+	thread.queue_free()
+
+
+func _advance_cheese_threads(delta: float) -> void:
+	for index: int in _cheese_threads.keys():
+		var thread: CheeseThread = _cheese_threads[index]
+		var caster := enemy_at(index)
+		if caster == null or not caster.is_alive() or thread.left <= delta:
+			_remove_cheese_thread(index)
+			continue
+		var was_armed := thread.armed()
+		thread.left -= delta
+		if not was_armed:
+			continue
+		for shooter: Shooter in _shooters.values():
+			if not thread.tripped.has(shooter.peer_id) and thread.snagged(shooter.player):
+				thread.tripped[shooter.peer_id] = true
+				shooter.player.cheese_snag_left = 0.75
+				_play_combat_warning(shooter.player.global_position, 205.0, 0.14)
+
+
+func _cut_cheese_by_stream(from: Vector3, to: Vector3) -> void:
+	for index: int in _cheese_threads.keys():
+		var thread: CheeseThread = _cheese_threads[index]
+		if thread.hit_by_stream(from, to):
+			_remove_cheese_thread(index)
+
+
+func _cut_cheese_by_blast(at: Vector3, radius: float) -> void:
+	for index: int in _cheese_threads.keys():
+		var thread: CheeseThread = _cheese_threads[index]
+		var nearest := Geometry3D.get_closest_point_to_segment(at, thread.from, thread.to)
+		if at.distance_squared_to(nearest) <= radius * radius and _tomatina_static_hit(at, nearest).is_empty():
+			_remove_cheese_thread(index)
+
+
+func cheese_thread_state() -> PackedFloat32Array:
+	var data := PackedFloat32Array()
+	for index: int in _cheese_threads:
+		var thread: CheeseThread = _cheese_threads[index]
+		data.append_array(PackedFloat32Array([index, thread.from.x, thread.from.y, thread.from.z,
+			thread.to.x, thread.to.y, thread.to.z, thread.left]))
+	return data
+
+
+func apply_cheese_thread_state(data: PackedFloat32Array) -> void:
+	if data.size() % 8 != 0:
+		return
+	var seen := {}
+	for at in range(0, data.size(), 8):
+		var index := int(data[at])
+		var from := Vector3(data[at + 1], data[at + 2], data[at + 3])
+		var to := Vector3(data[at + 4], data[at + 5], data[at + 6])
+		var thread: CheeseThread = _cheese_threads.get(index)
+		if thread != null and (not thread.from.is_equal_approx(from) or not thread.to.is_equal_approx(to)):
+			_remove_cheese_thread(index)
+			thread = null
+		if thread == null:
+			thread = _add_cheese_thread(index, from, to)
+			_play_combat_warning((from + to) * 0.5, 520.0, CheeseThread.WINDUP)
+		thread.left = data[at + 7]
+		seen[index] = true
+	for index: int in _cheese_threads.keys():
+		if not seen.has(index):
+			_remove_cheese_thread(index)
+
+
 
 
 func tomatina_status() -> PackedFloat64Array:
@@ -7766,14 +8102,12 @@ func tomatina_status() -> PackedFloat64Array:
 	if map_kind != MapKind.TOMATINA:
 		return data
 	data.append(_finale_elapsed if _horde_spawned else -1.0)
+	data.append_array(PackedFloat64Array([FINALE_CHECKPOINT_TAG, _tomatina_checkpoint, HOSE_PENDING_TAG, _hose_wave_pending]))
+	if is_instance_valid(_press_king):
+		data.append_array(PackedFloat64Array([PRESS_KING_WASH_TAG, _press_king.wash_progress()]))
 	if _finale_elapsed >= FINALE_DURATION and not is_instance_valid(_press_king):
 		data.append(FINALE_COUNT_TAG)
 		data.append(_finale_remaining)
-	for index in _enemies.size():
-		var enemy := _enemies[index]
-		if enemy.is_alive() and is_instance_valid(enemy.tether_target):
-			data.append(index)
-			data.append(enemy.tether_target.peer_id)
 	# Open hoses ride in the same pair list, told apart by a negative first
 	# entry: -(slot + 1), then the peer holding it.
 	for slot in _hose_users:
@@ -7798,13 +8132,20 @@ func apply_tomatina_status(data: PackedFloat64Array) -> void:
 	if is_instance_valid(_siren_label):
 		_siren_label.visible = not _horde_spawned
 	_finale_elapsed = maxf(0.0, data[0])
-	for enemy in _enemies:
-		if enemy.kind == MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
-			enemy.tether_target = null
 	_hose_users.clear()
 	_rescue_attempts.clear()
 	_finale_remaining = 0
 	for at in range(1, data.size() - 1, 2):
+		if data[at] == FINALE_CHECKPOINT_TAG:
+			_tomatina_checkpoint = int(data[at + 1])
+			continue
+		if data[at] == HOSE_PENDING_TAG:
+			_hose_wave_pending = int(data[at + 1])
+			continue
+		if data[at] == PRESS_KING_WASH_TAG:
+			if is_instance_valid(_press_king):
+				_press_king.apply_wash_progress(data[at + 1])
+			continue
 		if data[at] == FINALE_COUNT_TAG:
 			_finale_remaining = int(data[at + 1])
 			continue
@@ -7819,10 +8160,6 @@ func apply_tomatina_status(data: PackedFloat64Array) -> void:
 		if data[at] < 0.0:
 			_hose_users[-int(data[at]) - 1] = int(data[at + 1])
 			continue
-		var enemy := enemy_at(int(data[at]))
-		var shooter: Shooter = _shooters.get(int(data[at + 1]))
-		if enemy != null and shooter != null:
-			enemy.tether_target = shooter.player
 	_update_stage_objective()
 
 
@@ -7960,6 +8297,10 @@ func _advance_thrown_tomatoes(delta: float) -> void:
 		if hit.collider is StaticBody3D and normal.y >= 0.65:
 			entry.ground_hit = point
 			entry.fuse = THROWN_TOMATO_FUSE
+			if map_kind == MapKind.TOMATINA:
+				_show_tomato_fuse(point)
+				if is_instance_valid(_net) and _net.is_online():
+					_net.broadcast_tomato_fuse(point)
 			entry.node.global_position = point + normal * 0.275
 		else:
 			# A wall or a body can deflect the tomato, but the fuse starts on landing.
@@ -7968,9 +8309,29 @@ func _advance_thrown_tomatoes(delta: float) -> void:
 			entry.node.global_position = point + normal * 0.025
 
 
+func _tomato_blast_reaches(at: Vector3, body: PhysicsBody3D) -> bool:
+	return _tomatina_static_hit(at + Vector3.UP * 0.12, body.global_position).is_empty()
+
+
+func _tomatina_static_hit(from: Vector3, to: Vector3) -> Dictionary:
+	if from.is_equal_approx(to):
+		return {}
+	var query := PhysicsRayQueryParameters3D.create(from, to, 1)
+	var ignored: Array[RID] = []
+	var space := get_world_3d().direct_space_state
+	while true:
+		query.exclude = ignored
+		var hit := space.intersect_ray(query)
+		if hit.is_empty() or hit.collider is StaticBody3D:
+			return hit
+		ignored.append(hit.rid)
+	return {}
+
+
 func _explode_thrown_tomato(at: Vector3, owner: Shooter) -> void:
 	var radius := thrown_tomato_splash_radius
 	show_tomato_blast(at, radius)
+	_cut_cheese_by_blast(at + Vector3.UP * 0.12, radius)
 	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
 		_net.broadcast_tomato_blast(at, radius)
 	_spit_puddle(at, radius)
@@ -7979,11 +8340,39 @@ func _explode_thrown_tomato(at: Vector3, owner: Shooter) -> void:
 		return
 	var gap := owner.player.global_position - at
 	var distance := gap.length()
-	if distance > radius:
+	if distance > radius or (map_kind == MapKind.TOMATINA and not _tomato_blast_reaches(at, owner.player)):
 		return
 	var strength := 1.0 - distance / radius
 	owner.player.apply_enemy_impact(gap, 5.0 * strength, 1.8 * strength)
 	_damage_player(owner.player, thrown_tomato_self_damage * lerpf(0.27, 1.0, strength))
+
+
+func _show_tomato_fuse(at: Vector3) -> void:
+	_play_combat_warning(at, 610.0, 0.2)
+	_pulse_blast_radius(at, thrown_tomato_splash_radius, THROWN_TOMATO_FUSE, Color("b8ecff"))
+
+
+func _pulse_blast_radius(at: Vector3, radius: float, duration: float, color: Color) -> void:
+	var marker := MeshInstance3D.new()
+	marker.name = "TomatoFuseWarning"
+	var ring := TorusMesh.new()
+	ring.inner_radius = radius - 0.12
+	ring.outer_radius = radius
+	marker.mesh = ring
+	var tint := StandardMaterial3D.new()
+	tint.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	tint.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	tint.albedo_color = color
+	marker.material_override = tint
+	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	marker.scale.y = 0.25
+	add_child(marker)
+	marker.global_position = at + Vector3.UP * 0.04
+	var pulse := create_tween()
+	for index in 3:
+		pulse.tween_property(tint, "albedo_color:a", 0.22, duration / 6.0)
+		pulse.tween_property(tint, "albedo_color:a", 1.0, duration / 6.0)
+	pulse.tween_callback(marker.queue_free)
 
 
 func show_tomato_blast(at: Vector3, radius: float) -> void:

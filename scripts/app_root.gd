@@ -295,6 +295,8 @@ func _on_transition_requested(stage_id: String, transition: int) -> void:
 		_on_transition_failed("stage scene could not be loaded")
 		return
 	var world = packed.instantiate()
+	if stage_id == "stage_2":
+		world.tomatina_shortcut_open = transition % 2 == 1
 	world.external_net = session
 	world.mouse_sensitivity = save_store.mouse_sensitivity
 	world.stage_cleared.connect(_on_stage_cleared)

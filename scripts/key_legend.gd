@@ -69,6 +69,14 @@ func _rows() -> Array:
 	]
 	if world == null or not is_instance_valid(world):
 		return rows
+	if world.map_kind == world.MapKind.TOMATINA:
+		return [
+			["WASD", "이동", ""], ["Shift", "달리기", ""], ["Space", "점프", ""],
+			["좌클릭", "소스 분사 / 토마토 던지기", ""], ["우클릭", "토마토 먹기", ""],
+			["1~5 / 휠", "장비 선택", ""], ["E", "가까운 대상과 상호작용", ""],
+			["Shift+3", "보급 지점에서 케첩 보충", ""], ["R", "고글 닦기", ""],
+			["V", "밀치기", ""], ["F4", "조작표 닫기", ""], ["Esc", "일시 정지", ""],
+		]
 	if world._local != null:
 		rows[6][2] = world.character_name_for(world._local)
 	rows.append(["F1", "camera", "first person" if world._first_person else "over the shoulder"])
@@ -86,13 +94,15 @@ func _draw() -> void:
 		return
 	var rows := _rows()
 	var widest := 0.0
+	var key_width := float(KEY_COLUMN)
 	for row in rows:
+		key_width = maxf(key_width, _font.get_string_size(str(row[0]), HORIZONTAL_ALIGNMENT_LEFT, -1.0, _font_size).x + 12.0)
 		var text: String = row[1]
 		if row[2] != "":
 			text += ": " + str(row[2])
 		widest = maxf(widest, _font.get_string_size(
 			text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, _font_size).x)
-	var size := Vector2(KEY_COLUMN + widest + PADDING.x * 2.0,
+	var size := Vector2(key_width + widest + PADDING.x * 2.0,
 		float(rows.size()) * LINE_HEIGHT + PADDING.y * 2.0)
 	# Bottom left of the view frame: the bars own the bottom middle and the map
 	# owns the top right.
@@ -108,7 +118,7 @@ func _draw() -> void:
 		draw_string(_font, baseline, str(row[0]), HORIZONTAL_ALIGNMENT_LEFT, -1.0,
 			_font_size, KEY_COLOUR)
 		var label: String = row[1]
-		draw_string(_font, baseline + Vector2(KEY_COLUMN, 0.0), label,
+		draw_string(_font, baseline + Vector2(key_width, 0.0), label,
 			HORIZONTAL_ALIGNMENT_LEFT, -1.0, _font_size, LABEL_COLOUR)
 		if row[2] != "":
 			var state := str(row[2])
@@ -117,7 +127,7 @@ func _draw() -> void:
 			var lit := state == "on" or state == "open"
 			draw_string(_font, baseline + Vector2(KEY_COLUMN, 0.0),
 				label + ": ", HORIZONTAL_ALIGNMENT_LEFT, -1.0, _font_size, LABEL_COLOUR)
-			draw_string(_font, baseline + Vector2(KEY_COLUMN + used, 0.0), state,
+			draw_string(_font, baseline + Vector2(key_width + used, 0.0), state,
 				HORIZONTAL_ALIGNMENT_LEFT, -1.0, _font_size,
 				STATE_ON if lit else STATE_OFF)
 		baseline.y += LINE_HEIGHT

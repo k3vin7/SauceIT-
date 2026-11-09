@@ -15,6 +15,8 @@ const LOB_GRAVITY := 18.0
 const LOB_RADIUS := 2.6
 const OPEN_SECONDS := 7.0
 const WASH_SECONDS := 0.75
+const ARENA_MARGIN := 16.0
+var exposure_seconds := OPEN_SECONDS
 const ARMOR_BREAK_FRACTION := 0.5
 
 var arena := Rect2()
@@ -172,8 +174,8 @@ func _update_presentation() -> void:
 		if spreading:
 			width = lerpf(1.8, width, clampf(wave_t, 0.0, 1.0))
 		_wave.scale = Vector3(width, 0.7, width)
-		_wave_material.albedo_color = (Color(1.0, 0.19, 0.04, 0.85 - wave_t * 0.52)
-			if spreading else Color(1.0, 0.70, 0.15, 0.24 + 0.17 * sin(act_time * 18.0)))
+		_wave_material.albedo_color = (Color(0.92, 0.85, 1.0, 0.85 - wave_t * 0.52)
+			if spreading else Color(0.71, 0.47, 1.0, 0.40 + 0.17 * sin(act_time * 18.0)))
 
 
 func _process(delta: float) -> void:
@@ -188,23 +190,33 @@ func wash_armor(delta: float) -> void:
 	if not is_alive() or act == Act.RISE or armor_broken:
 		return
 	if exposed_left > 0.0:
-		exposed_left = OPEN_SECONDS
 		return
 	_wash += delta
 	if _wash >= WASH_SECONDS:
 		_wash = 0.0
-		exposed_left = OPEN_SECONDS
+		exposed_left = exposure_seconds
 		_set_act(Act.STAGGER)
+
+
+func wash_progress() -> float:
+	return clampf(_wash / WASH_SECONDS, 0.0, 1.0)
+
+
+func apply_wash_progress(fraction: float) -> void:
+	_wash = clampf(fraction, 0.0, 1.0) * WASH_SECONDS
 
 
 func take_sauce_hit(_from := Vector3.INF, damage := -1.0) -> bool:
 	return _take_sauce_damage(damage if damage >= 0.0 else sauce_damage_per_hit)
 
 
-func take_aimed_sauce_hit(hit_position: Vector3) -> bool:
+func is_weak_spot_hit(hit_position: Vector3) -> bool:
 	var at := to_local(hit_position)
-	var weak_spot := at.z < -0.65 and absf(at.x) < 1.1 and absf(at.y + 0.68) < 1.05
-	var multiplier := 1.35 if weak_spot and (armor_broken or exposed_left > 0.0) else 1.0
+	return (armor_broken or exposed_left > 0.0) and at.z < -0.65 and absf(at.x) < 1.1 and absf(at.y + 0.68) < 1.05
+
+
+func take_aimed_sauce_hit(hit_position: Vector3) -> bool:
+	var multiplier := 1.35 if is_weak_spot_hit(hit_position) else 1.0
 	return _take_sauce_damage(sauce_damage_per_hit * multiplier)
 
 
@@ -240,7 +252,7 @@ func _slam(targets: Array, old_time: float) -> void:
 	for target: MayoPlayer in targets:
 		if target.state == MayoPlayer.State.DEAD or _wave_hits.has(target.peer_id):
 			continue
-		if not arena.has_point(Vector2(target.global_position.x, target.global_position.z)):
+		if not arena.grow(ARENA_MARGIN).has_point(Vector2(target.global_position.x, target.global_position.z)):
 			continue
 		var gap := target.global_position - global_position
 		gap.y = 0.0
@@ -299,7 +311,7 @@ func _chase(delta: float, targets: Array) -> void:
 	var nearest := INF
 	for player: MayoPlayer in targets:
 		var at := player.global_position
-		if player.state == MayoPlayer.State.DEAD or not arena.has_point(Vector2(at.x, at.z)):
+		if player.state == MayoPlayer.State.DEAD or not arena.grow(ARENA_MARGIN).has_point(Vector2(at.x, at.z)):
 			continue
 		var distance := global_position.distance_squared_to(at)
 		if distance < nearest:
@@ -331,7 +343,9 @@ func _chase(delta: float, targets: Array) -> void:
 	if distance < 3.0:
 		_set_act(Act.IDLE)
 		return
-	var point := Vector3(aim.x, global_position.y, aim.y)
+	var inset := arena.grow(-radius)
+	var chase_at := aim.clamp(inset.position, inset.end)
+	var point := Vector3(chase_at.x, global_position.y, chase_at.y)
 	var step := _step_toward(point, delta) - global_position
 	step.y = 0.0
 	var pace := move_speed * (1.36 if armor_broken else 1.0)
@@ -345,7 +359,7 @@ func _chase(delta: float, targets: Array) -> void:
 func network_state() -> Array:
 	var flags := int(act) + (10 if armor_broken else 0)
 	var packed := (flags * 100000 + mini(999, roundi(act_time * 100.0)) * 100
-		+ clampi(ceili(exposed_left * 10.0), 0, 99))
+		+ clampi(ceili(exposed_left * 8.0), 0, 99))
 	return [global_position, facing_yaw, health, packed, max_health]
 
 
@@ -357,5 +371,5 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	act = (flags % 10) as Act
 	armor_broken = flags >= 10
 	act_time = float((packed % 100000) / 100) * 0.01
-	exposed_left = float(packed % 100) * 0.1
+	exposed_left = float(packed % 100) / 8.0
 	_update_presentation()
