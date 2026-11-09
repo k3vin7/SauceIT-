@@ -56,6 +56,10 @@ var debug_jump := false
 
 var _occupants: Dictionary = {}
 var _animators: Dictionary = {}
+## Which character each occupant is currently drawn as, peer id -> index, so a
+## pick that arrives after the body was built can be told from one that has
+## not changed.
+var _worn: Dictionary = {}
 var _yaws: Dictionary = {}
 var _roster_label: Label
 var _stage_label: Label
@@ -428,6 +432,7 @@ func _refresh_roster() -> void:
 			_occupants.erase(peer_id)
 			_animators.erase(peer_id)
 			_yaws.erase(peer_id)
+			_worn.erase(peer_id)
 	var lines: Array[String] = []
 	var ids: Array = assignments.keys()
 	ids.sort_custom(func(a, b): return int(assignments[a]) < int(assignments[b]))
@@ -437,6 +442,11 @@ func _refresh_roster() -> void:
 			" (방장)" if int(peer_id) == 1 else ""])
 		if not _occupants.has(peer_id):
 			_spawn_occupant(int(peer_id), seat)
+		elif int(_worn.get(peer_id, -1)) != _character_for(int(peer_id), seat):
+			# They picked after this body was built -- a guest still at the
+			# character select is already on the roster, in the look its seat
+			# gave it. Same body, same place, new character.
+			_dress_occupant(int(peer_id), _occupants[peer_id], _character_for(int(peer_id), seat))
 	_roster_label.text = "참가자 %d / 4\n%s" % [assignments.size(), "\n".join(lines)]
 	_stage_label.text = "선택: %s" % StageRegistry.display_name(session.selected_stage)
 	var host := session.is_server()
@@ -448,8 +458,16 @@ func _refresh_roster() -> void:
 		if _start_button.disabled else "1~4인으로 시작"
 
 
+## Who this occupant is drawn as: the character they picked on the way in, which
+## the session carries, or the one their seat decides when there is no session
+## to ask (the truck opened on its own).
+func _character_for(peer_id: int, seat: int) -> int:
+	if session != null:
+		return posmod(session.character_of(peer_id), CHARACTER_SCENES.size())
+	return seat % CHARACTER_SCENES.size()
+
+
 func _spawn_occupant(peer_id: int, seat: int) -> void:
-	var index := seat % CHARACTER_SCENES.size()
 	var body := CharacterBody3D.new()
 	body.name = "Occupant_%d" % peer_id
 	var spawn: Vector3 = SEATS[seat]["position"]
@@ -462,17 +480,7 @@ func _spawn_occupant(peer_id: int, seat: int) -> void:
 	collision.shape = capsule
 	body.add_child(collision)
 	add_child(body)
-	var visual := CHARACTER_SCENES[index].instantiate() as Node3D
-	visual.name = "Character"
-	visual.scale = Vector3.ONE * (OCCUPANT_HEIGHT / CHARACTER_HEIGHTS[index])
-	visual.position = Vector3(0.0, -OCCUPANT_HEIGHT * 0.5, 0.0)
-	# Hidden on the screen of the player wearing it, exactly as the stage hides
-	# it in first person: the camera sits at eye height inside this mesh, and
-	# an unhidden one is the inside of a head filling the view. Every other
-	# peer is looking at a remote occupant and sees it.
-	visual.visible = peer_id != _local_id()
-	body.add_child(visual)
-	_bind_animator(peer_id, visual, index)
+	_dress_occupant(peer_id, body, _character_for(peer_id, seat))
 	_occupants[peer_id] = body
 	_yaws[peer_id] = float(SEATS[seat]["yaw"])
 	if peer_id == _local_id():
@@ -487,6 +495,27 @@ func _spawn_occupant(peer_id: int, seat: int) -> void:
 		body.add_child(tag)
 
 
+## Puts character `index` on a body, replacing whatever it was wearing.
+func _dress_occupant(peer_id: int, body: CharacterBody3D, index: int) -> void:
+	var old := body.get_node_or_null("Character")
+	if old != null:
+		body.remove_child(old)
+		old.queue_free()
+	_animators.erase(peer_id)
+	var visual := CHARACTER_SCENES[index].instantiate() as Node3D
+	visual.name = "Character"
+	visual.scale = Vector3.ONE * (OCCUPANT_HEIGHT / CHARACTER_HEIGHTS[index])
+	visual.position = Vector3(0.0, -OCCUPANT_HEIGHT * 0.5, 0.0)
+	# Hidden on the screen of the player wearing it, exactly as the stage hides
+	# it in first person: the camera sits at eye height inside this mesh, and
+	# an unhidden one is the inside of a head filling the view. Every other
+	# peer is looking at a remote occupant and sees it.
+	visual.visible = peer_id != _local_id()
+	body.add_child(visual)
+	_bind_animator(peer_id, visual, index)
+	_worn[peer_id] = index
+
+
 func _bind_animator(peer_id: int, visual: Node3D, index: int) -> void:
 	var players := visual.find_children("*", "AnimationPlayer", true, false)
 	if players.is_empty():
@@ -495,7 +524,10 @@ func _bind_animator(peer_id: int, visual: Node3D, index: int) -> void:
 	var suffix: String = CHARACTER_WALKS[index]
 	var clip := StringName()
 	for candidate in player.get_animation_list():
-		if candidate == suffix or candidate.ends_with("/" + suffix):
+		# By suffix, as the stage finds them. Two of the files prefix their clips
+		# with the character's name (`Character_2_Walk_WeaponHold`), and an exact
+		# match left those two standing in their bind pose with their arms out.
+		if String(candidate).ends_with(suffix):
 			clip = StringName(candidate)
 			break
 	if clip.is_empty():

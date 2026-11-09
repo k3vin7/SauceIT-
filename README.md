@@ -460,6 +460,9 @@ godot --headless --path . --script res://tests/probe_panel.gd                  #
 godot --headless --path . --script res://tests/probe_harness.gd                # the two-player harness swaps controls correctly
 godot --headless --path . --script res://tests/probe_body.gd                   # body stains, glasses, and the wipe
 godot --headless --path . --script res://tests/probe_character_switch.gd       # all player models, animation sets, C-switch presentation
+godot --headless --path . --script res://tests/probe_character_select.gd       # real ENet, two apps: pick at the door, same character in truck and stage
+godot --headless --path . --script res://tests/probe_blast.gd                  # overripe and thrown-tomato blasts hurt both sides, walls are cover
+godot --headless --path . --script res://tests/probe_run_carry.gd              # a run jump keeps its pace; held Space without Shift does not
 ```
 
 `probe_determinism.gd` prints `MAYO_GRID_HASH`; run it twice and compare, since a difference between two processes is exactly what would break the grid sync.

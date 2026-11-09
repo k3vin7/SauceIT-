@@ -534,6 +534,15 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## middle chains, not enough that one kill clears a street. Players are
 ## never hurt by it, for the same reason they are not hurt by the blast.
 @export_range(0.0, 60.0, 0.5) var tomato_burst_damage := 8.0
+## The overripe tomato is the exception: it is a bomb, it says so for
+## `OVERRIPE_BURST_DELAY` before it goes, and it does not care whose side
+## anybody is on. What it takes off every other tomato in its radius -- one
+## hit, flat to the rim, stopped by a wall -- is more than a grunt has, so
+## popping one inside a pack takes the pack with it.
+@export_range(0.0, 200.0, 0.5) var overripe_burst_damage := 45.0
+## And what it takes off a player standing on it. Falls off to about a
+## quarter at the rim, like a thrown tomato's blast -- see `_blast_players`.
+@export_range(0.0, 100.0, 0.5) var overripe_burst_player_damage := 25.0
 ## How many pieces fly, and how fast. Decoration and a warning: what the blast
 ## marks is decided by the blast, not by where a fragment happens to land.
 @export_range(0, 64, 1) var ketchup_fragments := 28
@@ -2167,6 +2176,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		_local.requested_character_index = posmod(
 			_local.requested_character_index + 1, PLAYER_CHARACTERS.size())
 		set_character_variant(_local.peer_id, _local.requested_character_index)
+		# In a truck session the pick belongs to the session, not to this stage:
+		# told about the change, it is still what they are wearing back in the
+		# truck and in the next stage.
+		if is_instance_valid(_net) and _net.lobby_flow:
+			_net.choose_character(_local.requested_character_index)
 		return
 	if not _input_enabled:
 		return
@@ -3047,6 +3061,17 @@ func set_character_variant(peer_id: int, requested_index: int) -> void:
 	if shooter.player_visual != null and shooter.player.contamination != null:
 		shooter.player.contamination.add_visual_overlay(shooter.player_visual)
 	set_first_person(_first_person)
+
+
+## The character the player at this keyboard arrives as -- the one they picked
+## before the truck. Sets what this peer *asks* for as well as what it wears:
+## a guest sends `requested_character_index` with every input packet, and one
+## left at zero would talk the host back into the default a tick later.
+func set_local_character(index: int) -> void:
+	if _local == null:
+		return
+	_local.requested_character_index = posmod(index, PLAYER_CHARACTERS.size())
+	set_character_variant(_local.peer_id, _local.requested_character_index)
 
 
 func _apply_player_character_size(shooter: Shooter, index: int) -> void:
@@ -4170,6 +4195,11 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 ## bursts in turn, so a tight pack goes off like a string of them. Players
 ## only get the sauce. Thin on the floor, because ketchup is never slippery;
 ## a burst in a crowd is a stain you run through, not a trap you laid.
+##
+## **The overripe one is a blast, not a splash.** It deals
+## `overripe_burst_damage` to the tomatoes in its radius in one hit, and it
+## hurts and throws the players in there as well -- it has warned everybody
+## for `OVERRIPE_BURST_DELAY`, and a wall is cover from it for either side.
 ## `shooter` is whoever earned the kill that set it off, credited for what
 ## the splash kills as well; null for a burst nobody owns, like a bowled
 ## tomato meeting its wall.
@@ -4193,7 +4223,11 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 			_pending_splats.append_array(PackedInt32Array([
 				_splat_code(SPLAT_FLOOR, ContaminationGrid.KIND_KETCHUP), -1,
 				cell.x, cell.y]))
-	_splash_enemies(centre, radius, tomato_burst_damage, shooter, enemy)
+	var overripe := _is_overripe(enemy)
+	_splash_enemies(centre, radius,
+		overripe_burst_damage if overripe else tomato_burst_damage, shooter, enemy, overripe)
+	if overripe:
+		_blast_players(centre, radius, overripe_burst_player_damage)
 	for other_shooter in _shooters.values():
 		var player: MayoPlayer = other_shooter.player
 		if not is_instance_valid(player):
@@ -4245,6 +4279,30 @@ func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Sho
 			_finish_tomato_kill(other, shooter)
 		elif other._flinch_crossed > crossed_before:
 			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
+
+
+## A blast reaching the party. Every standing player inside `radius` of `at`
+## is hurt and thrown back from it, whoever set it off: `damage` at the
+## centre, falling to about a quarter of it at the rim. On the Tomatina
+## streets a wall between the blast and the player is cover, as it is for the
+## tomatoes -- see `_tomato_blast_reaches`. A safe room is still safe; that
+## is `_damage_player`'s rule and it holds here too.
+func _blast_players(at: Vector3, radius: float, damage: float) -> void:
+	if damage <= 0.0 or radius <= 0.0:
+		return
+	for shooter: Shooter in _shooters.values():
+		var player := shooter.player
+		if not is_instance_valid(player) or player.state == MayoPlayer.State.DEAD:
+			continue
+		var gap := player.global_position - at
+		var distance := gap.length()
+		if distance > radius:
+			continue
+		if map_kind == MapKind.TOMATINA and not _tomato_blast_reaches(at, player):
+			continue
+		var strength := 1.0 - distance / radius
+		player.apply_enemy_impact(gap, 5.0 * strength, 1.8 * strength)
+		_damage_player(player, damage * lerpf(0.27, 1.0, strength))
 
 
 func _is_overripe(enemy: MayoEnemy) -> bool:
@@ -7036,7 +7094,10 @@ func debug_reset_profile() -> void:
 ## it costs the heal the tomato was worth.
 @export var thrown_tomato_damage := 65.0
 @export_range(0.5, 12.0, 0.1, "suffix:m") var thrown_tomato_splash_radius := 4.5
-@export var thrown_tomato_self_damage := 30.0
+## What the same blast takes off a player standing in it -- the thrower and
+## their teammates alike, a grenade does not check sides -- at the centre,
+## falling to about a quarter at the rim. See `_blast_players`.
+@export var thrown_tomato_player_damage := 30.0
 const THROWN_TOMATO_FUSE := 0.75
 const THROWN_TOMATO_MAX_FLIGHT := 10.0
 var _tomato_blast_sound: AudioStreamWAV
@@ -8336,15 +8397,8 @@ func _explode_thrown_tomato(at: Vector3, owner: Shooter) -> void:
 		_net.broadcast_tomato_blast(at, radius)
 	_spit_puddle(at, radius)
 	_splash_enemies(at, radius, thrown_tomato_damage, owner, null, true)
-	if owner == null or not is_instance_valid(owner.player) or owner.player.state == MayoPlayer.State.DEAD:
-		return
-	var gap := owner.player.global_position - at
-	var distance := gap.length()
-	if distance > radius or (map_kind == MapKind.TOMATINA and not _tomato_blast_reaches(at, owner.player)):
-		return
-	var strength := 1.0 - distance / radius
-	owner.player.apply_enemy_impact(gap, 5.0 * strength, 1.8 * strength)
-	_damage_player(owner.player, thrown_tomato_self_damage * lerpf(0.27, 1.0, strength))
+	# Friend or foe: whoever is standing in it, the thrower's own party included.
+	_blast_players(at, radius, thrown_tomato_player_damage)
 
 
 func _show_tomato_fuse(at: Vector3) -> void:

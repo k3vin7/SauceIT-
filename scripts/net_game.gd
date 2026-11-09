@@ -104,7 +104,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 3
+const PROTOCOL_VERSION := 4
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
@@ -249,6 +249,22 @@ var lobby_flow := false
 var session_phase: int = SessionPhase.OFFLINE
 var selected_stage := "stage_1"
 var _lobby_ready: Dictionary = {}
+## Which of the four characters each player picked at the truck's door, peer id
+## -> index. The same index means the same character in the truck
+## (`TruckLobby.CHARACTER_SCENES`) and in the stage (`PLAYER_CHARACTERS`), so
+## one number carries a player's look through both. The host's copy is the one
+## that counts; it rides to the guests with the roster in `_sync_lobby`. A peer
+## with no entry has not picked yet and is shown as the character its seat
+## would have had -- see `character_of`.
+var _characters: Dictionary = {}
+const CHARACTER_COUNT := 4
+## Set by the app, which puts a character select between joining and the truck.
+## With it set a guest no longer calls itself ready the moment it is accepted:
+## it is ready when its truck is up (`report_lobby_initialized`), which is
+## after it has picked. Otherwise the host could start the stage while a guest
+## was still looking at four characters. Off by default, so a session driven
+## without the app is ready on acceptance as it always was.
+var defer_lobby_ready := false
 ## The truck the party is riding in, while the session sits in its lobby phase.
 ## It is bound by the TruckLobby itself rather than through `bind`, which is the
 ## combat world's: the two spaces never exist at the same time, and the truck
@@ -307,6 +323,7 @@ func begin_host_room(port := DEFAULT_PORT, code := "", open_to_anyone := false,
 	_joined = true
 	_slots = {1: 0}
 	_lobby_ready = {1: true}
+	_characters.clear()
 	lobby_joined.emit()
 	roster_changed.emit()
 	return true
@@ -315,6 +332,7 @@ func begin_host_room(port := DEFAULT_PORT, code := "", open_to_anyone := false,
 func begin_join_room(address: String, port := DEFAULT_PORT, code := "") -> bool:
 	lobby_flow = true
 	lobby_code = code.strip_edges()
+	_characters.clear()
 	_refused_busy = false
 	_refused_full = false
 	_refused_version = false
@@ -338,6 +356,43 @@ func seat_assignments() -> Dictionary:
 	return _slots.duplicate()
 
 
+## The character a player is wearing: the one they picked, or -- until they
+## have -- the one their seat used to decide, so a body that has to be drawn
+## before its owner has chosen is still drawn as somebody.
+func character_of(peer_id: int) -> int:
+	if _characters.has(peer_id):
+		return clampi(int(_characters[peer_id]), 0, CHARACTER_COUNT - 1)
+	return posmod(int(_slots.get(peer_id, 0)), CHARACTER_COUNT)
+
+
+func has_character(peer_id: int) -> bool:
+	return _characters.has(peer_id)
+
+
+## Only the players who have actually picked, peer id -> index.
+func character_assignments() -> Dictionary:
+	return _characters.duplicate()
+
+
+## This peer's pick. Kept here at once, so the truck this peer is about to
+## build dresses its own body correctly without waiting a round trip, and sent
+## to the host, who tells everybody else.
+func choose_character(index: int) -> void:
+	if not lobby_flow or not _online:
+		return
+	index = clampi(index, 0, CHARACTER_COUNT - 1)
+	var mine := local_id()
+	if int(_characters.get(mine, -1)) == index:
+		return
+	_characters[mine] = index
+	if multiplayer.is_server():
+		_broadcast_lobby()
+		return
+	roster_changed.emit()
+	if _joined:
+		_choose_character.rpc_id(1, index)
+
+
 func lobby_ready_count() -> int:
 	return _lobby_ready.size()
 
@@ -357,6 +412,12 @@ func attach_play_world(new_world: Node) -> void:
 	for id in ids:
 		new_world.create_avatar(int(id), int(_slots[id]), int(id) == mine)
 	new_world.claim_avatar(mine, int(_slots.get(mine, 0)))
+	# Everybody walks out of the truck as who they walked into it as. Dressed
+	# here, before the first state packet, so nobody is seen as the default
+	# character for the frames it would take the index to arrive.
+	for id in ids:
+		new_world.set_character_variant(int(id), character_of(int(id)))
+	new_world.set_local_character(character_of(mine))
 	new_world.set_gameplay_input_enabled(false)
 
 
@@ -532,6 +593,7 @@ func leave() -> void:
 	_pending_drop_after.clear()
 	_next_sweep = 0.0
 	_slots = {1: 0}
+	_characters.clear()
 	_refused_for_code = false
 	_joined = false
 	session_phase = SessionPhase.OFFLINE
@@ -852,6 +914,7 @@ func _on_peer_disconnected(id: int) -> void:
 	_view_budget.erase(id)
 	_views.erase(id)
 	_slots.erase(id)
+	_characters.erase(id)
 	_lobby_ready.erase(id)
 	_loaded_peers.erase(id)
 	if multiplayer.is_server() and world != null:
@@ -954,15 +1017,49 @@ func _apply_roster_packet(packet: PackedInt32Array) -> bool:
 	return true
 
 
+## Every pick, as [peer id, index] pairs in peer order.
+func _character_packet() -> PackedInt32Array:
+	var packet := PackedInt32Array()
+	var ids: Array = _characters.keys()
+	ids.sort()
+	for id in ids:
+		if _slots.has(id):
+			packet.push_back(int(id))
+			packet.push_back(int(_characters[id]))
+	return packet
+
+
+## The host's picks, on a guest. Anything that is not a seated player with an
+## index in range is skipped rather than failing the packet: the roster it
+## arrived with is already applied and is still right.
+##
+## This peer's own pick is the exception when the packet has none for it. That
+## is a roster sent before the host heard the choice, and dropping the local
+## copy for it would undress this player for a round trip.
+func _apply_character_packet(packet: PackedInt32Array) -> void:
+	var parsed := {}
+	for index in range(0, packet.size() - 1, 2):
+		var id := int(packet[index])
+		var character := int(packet[index + 1])
+		if _slots.has(id) and character >= 0 and character < CHARACTER_COUNT:
+			parsed[id] = character
+	var mine := local_id()
+	if not parsed.has(mine) and _characters.has(mine):
+		parsed[mine] = _characters[mine]
+	_characters = parsed
+
+
 func _broadcast_lobby() -> void:
 	if not lobby_flow or not multiplayer.is_server():
 		return
 	var ready := PackedInt32Array(_lobby_ready.keys())
 	ready.sort()
 	var packet := _roster_packet()
+	var characters := _character_packet()
 	for peer_id in _slots.keys():
 		if int(peer_id) != 1 and _peer_can_receive(int(peer_id)):
-			_sync_lobby.rpc_id(int(peer_id), packet, ready, selected_stage, session_phase)
+			_sync_lobby.rpc_id(int(peer_id), packet, ready, selected_stage, session_phase,
+				characters)
 	roster_changed.emit()
 
 
@@ -983,14 +1080,17 @@ func _accept_lobby(id: int, seat: int, stage_id: String,
 	_set_status("joined truck lobby as player %d" % id)
 	lobby_joined.emit()
 	roster_changed.emit()
-	_report_lobby_ready.rpc_id(1)
+	if not defer_lobby_ready:
+		_report_lobby_ready.rpc_id(1)
 
 
 @rpc("authority", "call_remote", "reliable")
 func _sync_lobby(packet: PackedInt32Array, ready: PackedInt32Array,
-		stage_id: String, remote_phase: int) -> void:
+		stage_id: String, remote_phase: int,
+		characters := PackedInt32Array()) -> void:
 	if multiplayer.is_server() or not lobby_flow or not _apply_roster_packet(packet):
 		return
+	_apply_character_packet(characters)
 	selected_stage = stage_id
 	if remote_phase >= SessionPhase.OFFLINE and remote_phase <= SessionPhase.RESULT:
 		session_phase = remote_phase
@@ -1009,6 +1109,22 @@ func _report_lobby_ready() -> void:
 	if not _slots.has(sender):
 		return
 	_lobby_ready[sender] = true
+	_broadcast_lobby()
+
+
+## A guest's pick, at the host. Clamped like every other number a client sends;
+## there is no wrong character, only an index outside the four.
+@rpc("any_peer", "call_remote", "reliable")
+func _choose_character(index: int) -> void:
+	if not lobby_flow or not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if not _slots.has(sender):
+		return
+	index = clampi(index, 0, CHARACTER_COUNT - 1)
+	if int(_characters.get(sender, -1)) == index:
+		return
+	_characters[sender] = index
 	_broadcast_lobby()
 
 

@@ -6,6 +6,7 @@ enum Flow { TITLE, TUTORIAL, RECRUITMENT, TRUCK_LOBBY, LOADING, STAGE, RESULT }
 const TutorialScene := preload("res://tutorial_world.tscn")
 const RecruitmentScene := preload("res://recruitment_map.tscn")
 const TruckScene := preload("res://truck_lobby.tscn")
+const CharacterSelectScript := preload("res://scripts/character_select.gd")
 
 @export var save_path_override := ""
 
@@ -19,6 +20,8 @@ var _title_layer: CanvasLayer
 var _options_layer: CanvasLayer
 var _pause_layer: CanvasLayer
 var _recruitment_layer: CanvasLayer
+## The character select, up between being let into a room and the truck.
+var _character_layer: CanvasLayer
 var _loading_layer: CanvasLayer
 var _result_layer: CanvasLayer
 var _status_label: Label
@@ -41,6 +44,9 @@ func _ready() -> void:
 	save_store = SauceSaveStore.new(save_path_override)
 	save_store.load_data()
 	_apply_options()
+	# A guest is ready when its truck is up, which is after it has picked a
+	# character -- not the moment the host lets it in.
+	session.defer_lobby_ready = true
 	_connect_session()
 	_show_title()
 
@@ -54,6 +60,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		_close_recruitment_panel()
 	elif _pause_layer != null and is_instance_valid(_pause_layer):
 		_close_pause()
+	elif _character_layer != null and is_instance_valid(_character_layer):
+		# The select has its own way out (`세션 나가기`). A pause menu on top of
+		# it would unlock the office behind it on the way back.
+		pass
 	elif flow not in [Flow.TITLE, Flow.LOADING, Flow.RESULT]:
 		_open_pause()
 	get_viewport().set_input_as_handled()
@@ -255,7 +265,35 @@ func _close_recruitment_panel() -> void:
 
 func _on_lobby_joined() -> void:
 	if flow == Flow.RECRUITMENT:
-		_show_truck()
+		_show_character_select()
+
+
+## Let into a room, host or guest: pick who to be before climbing in. Shown
+## this once per session -- coming back from a stage goes straight to the
+## truck (`truck_returned`), wearing what was picked here.
+func _show_character_select() -> void:
+	if _character_layer != null and is_instance_valid(_character_layer):
+		return
+	_clear_ui(_recruitment_layer)
+	_recruitment_layer = null
+	# The office stays behind the select, and stays locked: the panel that led
+	# here locked it, but say so again rather than depend on that.
+	if current_space is RecruitmentMap:
+		(current_space as RecruitmentMap).set_input_locked(true)
+	var select := CharacterSelectScript.new()
+	select.session = session
+	select.character_chosen.connect(_on_character_chosen)
+	select.leave_requested.connect(_leave_session)
+	add_child(select)
+	_character_layer = select
+	_set_mouse_visible(true)
+
+
+func _on_character_chosen(index: int) -> void:
+	if flow != Flow.RECRUITMENT or not session.is_online():
+		return
+	session.choose_character(index)
+	_show_truck()
 
 
 func _show_truck() -> void:
@@ -533,8 +571,9 @@ func _clear_space() -> void:
 
 func _clear_all_ui() -> void:
 	for layer in [_title_layer, _options_layer, _pause_layer, _recruitment_layer,
-			_loading_layer, _result_layer]:
+			_character_layer, _loading_layer, _result_layer]:
 		_clear_ui(layer)
+	_character_layer = null
 	_title_layer = null
 	_options_layer = null
 	_pause_layer = null
@@ -585,7 +624,7 @@ func _restore_mouse_for_flow() -> void:
 func _mouse_should_be_visible() -> bool:
 	# Options can be opened on top of the pause menu. Closing only that top
 	# layer must not capture the cursor while the pause menu is still active.
-	for layer in [_options_layer, _pause_layer, _recruitment_layer]:
+	for layer in [_options_layer, _pause_layer, _recruitment_layer, _character_layer]:
 		if layer != null and is_instance_valid(layer):
 			return true
 	# The truck is walked through rather than watched, so it holds its own

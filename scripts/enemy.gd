@@ -386,7 +386,9 @@ var _burst_request := Vector3.INF
 const BRUTE_CHARGE_RANGE := 9.0
 const SPECIAL_WINDUP := 0.55
 const BRUTE_CHARGE_SECONDS := 1.2
-const BRUTE_CHARGE_SPEED_SCALE := 3.3
+## Times its walk. Doubled from 3.3: at that pace a player who saw the wind-up
+## could simply run away from it, and a charge you can outrun is a jog.
+const BRUTE_CHARGE_SPEED_SCALE := 6.6
 const BRUTE_CHARGE_PUSH_SPEED := 9.5
 const BRUTE_CHARGE_LIFT_SPEED := 5.0
 const BRUTE_CHARGE_COOLDOWN := 4.0

@@ -130,6 +130,9 @@ var _network_previous_position := Vector3.ZERO
 ## rushers arriving on the same frame both count.
 var _pending_enemy_impact := Vector3.ZERO
 var _charge_knockdown := false
+## The top speed the ground allowed on the last frame the feet were on it: the
+## most a jump may carry through the air. See `_physics_process`.
+var _air_carry := 0.0
 ## A steady shove on the body, in m/s, added to where the feet want to go
 ## rather than to the velocity: the fire hose's thrust is a drift the player
 ## can walk against, not a knock. Authority only; set each tick by whatever
@@ -332,11 +335,22 @@ func _physics_process(delta: float) -> void:
 		# crosses the gap at a run and simply cannot gain any more -- scrubbing it
 		# to walking pace in mid-air would make a running jump land shorter than
 		# the run that set it up, which is the opposite of what a run is for.
-		var top := run_speed if (run_held() and is_on_floor()) else walk_speed
+		#
+		# **What the air keeps is what the feet last gave it**, not whatever speed
+		# the body happens to have. Keeping the body's own speed made a held jump
+		# key a run with no run key: each landing is one frame on the ground, one
+		# frame of braking takes 0.6 m/s off, and the next hop carried the rest --
+		# seven seconds of running pace after Shift was let go. So the ground notes
+		# the pace it allowed on every frame it is stood on, and a hop pushed off
+		# at a walk is held to a walk however fast the body arrived.
+		var grounded := is_on_floor()
+		var top := run_speed if (run_held() and grounded) else walk_speed
 		if crawling:
 			top = walk_speed * crawl_speed_scale
-		elif not is_on_floor():
-			top = maxf(top, Vector2(velocity.x, velocity.z).length())
+		elif grounded:
+			_air_carry = top
+		else:
+			top = maxf(top, minf(Vector2(velocity.x, velocity.z).length(), _air_carry))
 		desired *= top
 		desired *= mustard_factor()
 		if cheese_snag_left > 0.0:
