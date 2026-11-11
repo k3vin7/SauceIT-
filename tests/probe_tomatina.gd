@@ -848,7 +848,7 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 		shooter.firing = true
 		scene._advance_strand(shooter, 0.01)
 		shooter.firing = false
-		scene._advance_strand(shooter, 1.0)
+		scene._advance_strand(shooter, 3.7)
 	_check(system._projectiles.size() == 4 and shooter.sauce == 0.0, "a full cannon did not fire exactly four shots")
 	var balance: int = shooter.coins
 	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.STANDARD)

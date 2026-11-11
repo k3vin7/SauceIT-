@@ -209,6 +209,9 @@ class Shooter:
 	var owned_parts := 1
 	var sauce_part := 0
 	var part_trigger_down := false
+	## A press made while the part is still cooling down is remembered for this
+	## long, so a click a moment early fires when the part comes back.
+	var part_press_left := 0.0
 	var part_shots_left := 0
 	var part_cooldown := 0.0
 	var part_tip: Node3D
@@ -1590,43 +1593,82 @@ func _advance_part_trigger(shooter: Shooter, delta: float) -> void:
 		return
 	_decide_nozzle(shooter, delta, false)
 	shooter.part_cooldown = maxf(0.0, shooter.part_cooldown - delta)
-	var pressed := shooter.firing and not shooter.part_trigger_down
+	if shooter.firing and not shooter.part_trigger_down:
+		shooter.part_press_left = PART_PRESS_BUFFER
+	else:
+		shooter.part_press_left = maxf(0.0, shooter.part_press_left - delta)
 	shooter.part_trigger_down = shooter.firing
 	if shooter.player.state != MayoPlayer.State.NORMAL or shooter.player.is_wiping() \
 			or selected_item_slot(shooter.peer_id) != 0 or _hose_slot_of(shooter.peer_id) >= 0 \
 			or (shooter.is_local and _refuge_shop_room >= 0):
 		shooter.part_shots_left = 0
+		shooter.part_press_left = 0.0
 		return
 	if shooter.part_cooldown > 0.0:
 		return
+	var pressed := shooter.part_press_left > 0.0
+	shooter.part_press_left = 0.0
+	var profile: Dictionary = SauceParts.PROJECTILES[shooter.sauce_part]
+	var cost: float = profile.cost
+	var cooldown: float = profile.cooldown
 	match shooter.sauce_part:
 		SauceParts.Part.FAN:
-			if shooter.firing and shooter.sauce >= 0.044:
-				shooter.sauce -= 0.044
-				shooter.part_cooldown = 0.14
+			if shooter.firing and shooter.sauce >= cost:
+				shooter.sauce -= cost
+				shooter.part_cooldown = cooldown
 				_fire_part_volley(shooter)
 		SauceParts.Part.BURST:
-			if pressed and shooter.part_shots_left == 0 and shooter.sauce >= 0.09:
-				shooter.sauce -= 0.09
+			if pressed and shooter.part_shots_left == 0 and shooter.sauce >= cost:
+				shooter.sauce -= cost
 				shooter.part_shots_left = 3
 			if shooter.part_shots_left > 0:
 				shooter.part_shots_left -= 1
-				shooter.part_cooldown = 0.10 if shooter.part_shots_left > 0 else 0.48
+				shooter.part_cooldown = 0.10 if shooter.part_shots_left > 0 else cooldown
 				_fire_part_volley(shooter)
 		SauceParts.Part.ARC, SauceParts.Part.CANNON:
-			var cannon := shooter.sauce_part == SauceParts.Part.CANNON
-			var cost := 0.25 if cannon else 0.14
 			if pressed and shooter.sauce >= cost:
 				shooter.sauce -= cost
-				shooter.part_cooldown = 0.95 if cannon else 0.72
+				shooter.part_cooldown = cooldown
 				_fire_part_volley(shooter)
+
+
+const PART_PRESS_BUFFER := 0.3
+## How far ahead the lob looks for something under the crosshair to land on.
+const ARC_AIM_REACH := 30.0
+
+
+## Which way the lob leaves so that it comes down on what the crosshair is on.
+## The low arc of the two that get there. With nothing under the crosshair, or
+## something further than the lob can carry, it is thrown up and forward as
+## before.
+func _arc_launch_direction(shooter: Shooter, origin: Vector3) -> Vector3:
+	var forward := shooter.attack_direction
+	var fallback := (forward + Vector3.UP * 0.43).normalized()
+	var query := PhysicsRayQueryParameters3D.create(origin, origin + forward * ARC_AIM_REACH)
+	query.exclude = [shooter.player.get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	if hit.is_empty():
+		return fallback
+	var profile: Dictionary = SauceParts.PROJECTILES[SauceParts.Part.ARC]
+	var speed: float = profile.speed
+	var gravity: float = profile.gravity
+	var offset: Vector3 = hit.position - origin
+	var flat := Vector3(offset.x, 0.0, offset.z)
+	var distance := flat.length()
+	if distance < 0.05:
+		return forward
+	var root := speed ** 4 - gravity * (gravity * distance * distance + 2.0 * offset.y * speed * speed)
+	if root < 0.0:
+		return fallback
+	var pitch := atan2(speed * speed - sqrt(root), gravity * distance)
+	return (flat / distance * cos(pitch) + Vector3.UP * sin(pitch)).normalized()
 
 
 func _fire_part_volley(shooter: Shooter) -> void:
 	var origin := shooter.aim_pivot.global_position
 	var forward := shooter.attack_direction
 	if shooter.sauce_part == SauceParts.Part.ARC:
-		forward = (forward + Vector3.UP * 0.43).normalized()
+		forward = _arc_launch_direction(shooter, origin)
 	shooter.burst_index += 1
 	show_part_volley(shooter.peer_id, shooter.sauce_part, shooter.sauce_kind, origin, forward)
 	if is_instance_valid(_net) and _net.is_online():
@@ -6257,7 +6299,10 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 	if target.is_in_group("mayo_floor"):
 		_record_floor_splat(shooter, shooter.burst_index, at, sauce)
 	elif target.is_in_group("mayo_contaminable"):
-		_record_splat(target, at, normal, shooter, true, sauce, profile.damage)
+		var direct: float = profile.damage
+		if target is MayoEnemy:
+			direct = SauceParts.scaled_damage(direct, target as MayoEnemy)
+		_record_splat(target, at, normal, shooter, true, sauce, direct)
 	if blast <= 0.0:
 		return
 
@@ -6269,7 +6314,8 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 		if enemy.global_position.distance_squared_to(center) <= blast * blast \
 				and _tomato_blast_reaches(center, enemy):
 			_record_splat(enemy, enemy.global_position, Vector3.UP, shooter,
-				true, sauce, profile.damage * 0.40)
+				true, sauce, SauceParts.scaled_damage(
+					profile.damage * SauceParts.BLAST_DAMAGE_SHARE, enemy))
 	for teammate: Shooter in _shooters.values():
 		var player := teammate.player
 		if player.state == MayoPlayer.State.DEAD:

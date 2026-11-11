@@ -4,18 +4,32 @@ enum Part { STANDARD, FAN, FOCUS, BURST, ARC, CANNON }
 
 const CATALOG := [
 	["기본 노즐", "기본 연속 분사", 0, 0],
-	["부채꼴 노즐", "가까운 적을 향해 다섯 갈래로 분사", 0, 5],
+	["부채꼴 노즐", "정면 부채꼴로 다섯 갈래 분사 · 가까울수록 강함", 0, 5],
 	["집중 노즐", "가늘고 멀리 뻗는 연속 분사", 0, 5],
 	["점사 밸브", "한 번 누를 때 짧게 세 발 분사", 1, 5],
-	["곡사 캡", "포물선으로 날아가 터지는 소스 덩어리", 1, 6],
+	["곡사 캡", "조준한 곳에 포물선으로 떨어져 터지는 소스 덩어리", 1, 6],
 	["대포형 소스통", "직선으로 날아가 크게 폭발 · 한 발에 탱크 25%", 1, 7],
 ]
 const PROJECTILES := {
-	Part.FAN: {"speed": 22.0, "gravity": 0.0, "life": 0.19, "size": 0.09, "damage": 3.4, "blast": 0.0},
-	Part.BURST: {"speed": 32.0, "gravity": 0.0, "life": 0.29, "size": 0.14, "damage": 16.0, "blast": 0.0},
-	Part.ARC: {"speed": 13.0, "gravity": 15.0, "life": 2.3, "size": 0.23, "damage": 32.0, "blast": 1.8},
-	Part.CANNON: {"speed": 34.0, "gravity": 0.0, "life": 0.60, "size": 0.32, "damage": 64.0, "blast": 2.7},
+	Part.FAN: {"speed": 22.0, "gravity": 0.0, "life": 0.19, "size": 0.09, "damage": 1.7, "blast": 0.0,
+		"cost": 0.010, "cooldown": 0.14},
+	Part.BURST: {"speed": 32.0, "gravity": 0.0, "life": 0.29, "size": 0.14, "damage": 9.5, "blast": 0.0,
+		"cost": 0.040, "cooldown": 0.48},
+	Part.ARC: {"speed": 13.0, "gravity": 15.0, "life": 2.3, "size": 0.23, "damage": 22.0, "blast": 1.8,
+		"cost": 0.045, "cooldown": 0.72},
+	Part.CANNON: {"speed": 34.0, "gravity": 0.0, "life": 0.60, "size": 0.32, "damage": 120.0, "blast": 2.7,
+		"cost": 0.25, "cooldown": 3.6},
 }
+## Tuned against the plain stream on a 0.4-per-point body: about 35 damage a
+## second held, about 700 a tank. `damage` is for that body; `scaled_damage`
+## carries it to softer ones, the way the stream's own per-point damage does.
+const REFERENCE_HIT_DAMAGE := 0.4
+## What a blast deals to everything but the body it landed on.
+const BLAST_DAMAGE_SHARE := 0.5
+
+
+static func scaled_damage(base: float, enemy: MayoEnemy) -> float:
+	return base * enemy.sauce_damage_per_hit / REFERENCE_HIT_DAMAGE
 const COIN_PICKUP_RADIUS := 1.45
 const GRUNT_DROP_CHANCE := 0.15
 const SPECIAL_DROP_CHANCE := 0.50
