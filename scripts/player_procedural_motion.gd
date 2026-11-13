@@ -18,6 +18,11 @@ var initialized := false
 var previous_slot := -1
 var equip_left := 0.0
 
+## Where the hands hold a bottle stood on end to be shaken, from its socket.
+const GRIP_SPREAD := 0.17
+const GRIP_LIFT := 0.30
+
+
 func configure(owner_shooter, owner_world) -> void:
 	shooter = owner_shooter
 	world = owner_world
@@ -68,10 +73,12 @@ func _process_modification() -> void:
 	# Move the tube socket and BOTH palm targets together so recoil never breaks grip.
 	var socket: int = bones["SauceTubeSocket"]
 	var displacement: Vector3 = body.global_basis * Vector3(0.0, kick * 0.08 + pressure * 0.035, kick * 0.09 + pressure * 0.025)
-	# Shaking the bottle: the tube and both hands go up and down together.
-	if shooter.bottle_shake_show > 0.001:
-		displacement += body.global_basis * Vector3(0.0, sin(clock * 42.0) * 0.16, 0.0) \
-			* shooter.bottle_shake_show
+	# Shaking the bottle: the tube and both hands come up and go up and down
+	# together, and the tube is stood on end -- see below.
+	var upright: float = smoothstep(0.0, 1.0, shooter.bottle_shake_pose)
+	if upright > 0.001:
+		displacement += body.global_basis * (Vector3(0.0, 0.22, 0.0) * upright \
+			+ Vector3(0.0, sin(clock * 42.0) * 0.16, 0.0) * shooter.bottle_shake_show)
 	var slot: int = world.selected_item_slot(shooter.peer_id)
 	if slot != previous_slot:
 		equip_left = 0.3
@@ -86,6 +93,17 @@ func _process_modification() -> void:
 	if socket >= 0:
 		var pose := skeleton.get_bone_global_pose(socket)
 		pose.origin += skeleton.global_basis.inverse() * displacement
+		if upright > 0.001:
+			# Tipped about the body's own side-to-side axis, so the nozzle that
+			# pointed ahead points up.
+			var side: Vector3 = (skeleton.global_basis.inverse() * body.global_basis.x).normalized()
+			pose.basis = Basis(side, deg_to_rad(world.BOTTLE_SHAKE_UPRIGHT_DEGREES) * upright) * pose.basis
+			# Both hands come in to hold it where it now stands, one either side.
+			var grip: Vector3 = skeleton.global_transform * pose.origin
+			for hand_side in hand_targets:
+				var across := -GRIP_SPREAD if hand_side == "Left" else GRIP_SPREAD
+				hand_targets[hand_side] = (hand_targets[hand_side] as Vector3).lerp(
+					grip + body.global_basis * Vector3(across, GRIP_LIFT, 0.0), upright)
 		skeleton.set_bone_global_pose(socket, pose)
 	for side in hand_targets:
 		var target: Vector3 = hand_targets[side]
