@@ -3744,7 +3744,7 @@ func _update_bottle_gauge(shooter: Shooter) -> void:
 	if shooter.bottle_material != null:
 		shooter.bottle_material.albedo_color = tint.darkened(0.21) if map_kind == MapKind.TOMATINA else tint
 func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3, color: Color,
-		visible_surface := true, paint_only := false) -> void:
+		visible_surface := true, paint_only := false, corner_cut := 0.0) -> void:
 	var wall := WallScript.new()
 	wall.name = wall_name
 	wall.position = wall_position
@@ -3752,6 +3752,7 @@ func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3,
 	wall.body_color = color
 	wall.visible_surface = visible_surface
 	wall.paint_only = paint_only
+	wall.collision_corner_cut = corner_cut
 	wall.cell_size = grid_cell_size
 	wall.brush_radius = contamination_brush_radius
 	add_child(wall)
@@ -3908,8 +3909,11 @@ func _build_tomatina() -> void:
 		_create_wall("TomatinaWall%02d" % _walls.size(), position, size,
 			Color("c9ad90"), true, has_art)
 	for box in debris + parked_trucks:
+		# Flat food smears are scenery; navigation already treats them as open.
+		if box.get("jumpable", false) and float(box["size"].y) <= 0.12:
+			continue
 		_create_wall("Prop%02d_%s" % [_walls.size(), box["name"]], box["position"],
-			box["size"], box["color"], not has_art)
+			box["size"], box["color"], not has_art, false, 0.14)
 		if TomatinaMap.is_supply_prop(box):
 			_add_tomatina_supply(box)
 	if has_art:
@@ -4289,6 +4293,7 @@ func _make_contaminable(holder: Node3D, part_name: String, at: Vector3,
 	part.cell_size = grid_cell_size
 	part.brush_radius = contamination_brush_radius
 	part.visible_surface = visible_surface
+	part.collision_corner_cut = 0.10
 	holder.add_child(part)
 	return part
 
@@ -4335,6 +4340,7 @@ func _create_vending_machine(machine_name: String, box: Dictionary, visible_surf
 	chassis.visible_surface = visible_surface
 	chassis.cell_size = grid_cell_size
 	chassis.brush_radius = contamination_brush_radius
+	chassis.collision_corner_cut = 0.10
 	holder.add_child(chassis)
 	# Registered like any other wall: the splat protocol addresses it by its
 	# index here, and nesting it under the holder changes nothing, because

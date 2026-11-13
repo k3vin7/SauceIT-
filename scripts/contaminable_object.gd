@@ -21,6 +21,8 @@ const FACE_BASIS := [
 ## the visible surface.  Ordinary walls keep rendering their generated quads.
 @export var visible_surface := true
 var paint_only := false
+## Prop-only footprint bevel; ordinary walls retain exact box collision.
+var collision_corner_cut := 0.0
 
 @export_group("Contamination Grid")
 @export_range(0.05, 0.5, 0.01, "suffix:m") var cell_size := 0.1
@@ -184,9 +186,25 @@ func _rebuild() -> void:
 
 	var collision := CollisionShape3D.new()
 	collision.name = "WallCollision"
-	var box_shape := BoxShape3D.new()
-	box_shape.size = size
-	collision.shape = box_shape
+	if collision_corner_cut > 0.0:
+		var half := size * 0.5
+		var cut := minf(collision_corner_cut, minf(half.x, half.z) * 0.4)
+		var outline := [Vector2(-half.x+cut,-half.z),Vector2(half.x-cut,-half.z),
+			Vector2(half.x,-half.z+cut),Vector2(half.x,half.z-cut),
+			Vector2(half.x-cut,half.z),Vector2(-half.x+cut,half.z),
+			Vector2(-half.x,half.z-cut),Vector2(-half.x,-half.z+cut)]
+		var points := PackedVector3Array()
+		for y in [-half.y,half.y]:
+			for point: Vector2 in outline:
+				points.append(Vector3(point.x,y,point.y))
+		var hull := ConvexPolygonShape3D.new()
+		hull.points = points
+		hull.margin = 0.01
+		collision.shape = hull
+	else:
+		var box_shape := BoxShape3D.new()
+		box_shape.size = size
+		collision.shape = box_shape
 	add_child(collision)
 
 

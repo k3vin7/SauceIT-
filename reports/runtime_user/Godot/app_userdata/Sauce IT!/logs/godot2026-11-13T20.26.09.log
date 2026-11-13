@@ -1,0 +1,19 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+audited prop colliders: 151
+ERROR: player stuck sliding around prop (2.6, 1.2, 1.1) at (-1.682692, 1.279947, -0.932692)
+   at: push_error (core/variant/variant_utility.cpp:1023)
+   GDScript backtrace (most recent call first):
+       [0] run (res://tests/probe_prop_collision.gd:66)
+ERROR: player stuck sliding around prop (7.3, 2.9, 3.0) at (-4.032931, 1.280442, -1.882932)
+   at: push_error (core/variant/variant_utility.cpp:1023)
+   GDScript backtrace (most recent call first):
+       [0] run (res://tests/probe_prop_collision.gd:66)
+ERROR: player stuck sliding around prop (3.0, 2.0, 2.4) at (-1.882932, 1.280544, -1.582932)
+   at: push_error (core/variant/variant_utility.cpp:1023)
+   GDScript backtrace (most recent call first):
+       [0] run (res://tests/probe_prop_collision.gd:66)
+ERROR: player stuck sliding around prop (3.0, 3.2, 6.4) at (-1.882692, 1.279946, -3.582693)
+   at: push_error (core/variant/variant_utility.cpp:1023)
+   GDScript backtrace (most recent call first):
+       [0] run (res://tests/probe_prop_collision.gd:66)
