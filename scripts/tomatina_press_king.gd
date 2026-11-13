@@ -1,7 +1,6 @@
 extends MayoEnemy
 
 const MODEL := "res://assets/enemies/Stage2_PressKing/Stage2_PressKing.glb"
-const TOON := preload("res://assets/enemies/Stage2_PressKing/press_king_toon.gdshader")
 const CLIPS := [&"Rise", &"Idle", &"Walk", &"Slam", &"ArmorBreak", &"Collapse", &"Lob"]
 enum Act { RISE, IDLE, WALK, SLAM, STAGGER, DEATH, LOB }
 
@@ -35,7 +34,6 @@ var _weak_spot: MeshInstance3D
 var _wave: MeshInstance3D
 var _wave_material: StandardMaterial3D
 var _splinters: CPUParticles3D
-static var _toon_palette := {}
 
 
 static func make_visual() -> Node3D:
@@ -44,19 +42,7 @@ static func make_visual() -> Node3D:
 		return null
 	var visual := asset.instantiate() as Node3D
 	visual.rotation.y = PI
-	for piece: MeshInstance3D in visual.find_children("*", "MeshInstance3D", true, false):
-		for surface in piece.mesh.get_surface_count():
-			var material := piece.mesh.surface_get_material(surface) as BaseMaterial3D
-			if material == null:
-				continue
-			if not _toon_palette.has(material):
-				var tone := ShaderMaterial.new()
-				tone.shader = TOON
-				tone.set_shader_parameter("pigment", material.albedo_color)
-				if material.emission_enabled:
-					tone.set_shader_parameter("glow", 0.26)
-				_toon_palette[material] = tone
-			piece.set_surface_override_material(surface, _toon_palette[material])
+	EnemyInk.apply(visual)
 	return visual
 
 

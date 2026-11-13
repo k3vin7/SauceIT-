@@ -184,6 +184,8 @@ func begin_death() -> void:
 ## were in the middle of when they died.
 func finish_respawn(at: Vector3) -> void:
 	global_position = at
+	reset_physics_interpolation()
+	_render_snap_until = Engine.get_physics_frames() + 2
 	velocity = Vector3.ZERO
 	health = max_health
 	reset_state()
@@ -559,3 +561,17 @@ func _advance_fall(delta: float) -> void:
 		_state_timer = 0.0
 		fall_direction = 1.0
 		_recovery_timer = recovery_window
+
+
+var _render_snap_until := 0
+
+func render_position() -> Vector3:
+	if Engine.get_physics_frames() <= _render_snap_until:
+		return global_position
+	var rendered := get_global_transform_interpolated().origin
+	# Teleports outside the normal respawn path also snap instead of sweeping.
+	if rendered.distance_squared_to(global_position) > 1.0:
+		reset_physics_interpolation()
+		_render_snap_until = Engine.get_physics_frames() + 2
+		return global_position
+	return rendered

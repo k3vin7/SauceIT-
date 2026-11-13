@@ -737,6 +737,26 @@ func _run() -> void:
 		"the capsule lay down differently on the two screens (%.1f vs %.1f deg)" % [
 			rad_to_deg(server_tilt_peak), rad_to_deg(client_tilt_peak)])
 
+	# Each transient animation is retained until a snapshot arrives, then deduplicated.
+	var motion_peer: int = server_world._local.peer_id
+	var remote_motion = client_world._shooters[motion_peer].procedural_motion
+	for kind in [1, 2, 3]:
+		server_world._record_motion_event(motion_peer, kind, server_world._local.player.global_position + Vector3.FORWARD)
+		var snapshot: PackedFloat64Array = server_world.player_motion_state()
+		client_world.apply_player_motion_state(snapshot)
+		var serial: int = server_world._motion_events[motion_peer].serial
+		_check(client_world._motion_seen.get(motion_peer, 0) == serial, "motion event was not received")
+		if kind == 1:
+			_check(remote_motion.reach_left > 0.0, "remote pickup did not animate")
+		elif kind == 2:
+			_check(client_world._item_throw_time.get(motion_peer, 0.0) > 0.0, "remote throw did not animate")
+		else:
+			_check(remote_motion.eat_left > 0.0, "remote eating did not animate")
+		remote_motion.reach_left = 0.0
+		client_world.apply_player_motion_state(snapshot)
+		_check(remote_motion.reach_left == 0.0, "duplicate packet restarted the reach")
+	print("PLAYER_MOTION_REPLICATION_OK")
+
 	# --- and the grid still matches after all of that ---
 	print("final grid: server %s / client %s" % [server_world.grid_md5(), client_world.grid_md5()])
 	_check(server_world.grid_md5() == client_world.grid_md5(),

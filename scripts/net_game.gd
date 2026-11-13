@@ -1303,6 +1303,7 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 	var healing: PackedFloat64Array = world.healing_tomato_state()
 	_apply_healing_tomato_state.rpc(healing)
 	_apply_inventory_state.rpc(world.inventory_state())
+	_apply_player_motion_state.rpc(world.player_motion_state())
 	state_bytes_sent += healing.size() * 8 * guests
 	var stage_two: bool = world.map_kind == world.MapKind.TOMATINA
 	if stage_two:
@@ -2050,3 +2051,9 @@ func broadcast_part_volley(peer: int, part: int, sauce: int, origin: Vector3, fo
 func _show_part_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vector3) -> void:
 	if _world_ready():
 		world.show_part_volley(peer, part, sauce, origin, forward)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _apply_player_motion_state(data: PackedFloat64Array) -> void:
+	if _world_ready():
+		world.apply_player_motion_state(data)

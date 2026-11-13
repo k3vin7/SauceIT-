@@ -1,0 +1,24 @@
+Smoothness fix validation — 2026-11-13
+
+Confirmed defect: camera read raw 60Hz CharacterBody position on every render frame.
+Fix: interpolate player position for the camera and local aim pivot, retain raw
+mouse orientation, restore the authoritative pivot position before physics casts.
+Enable physics interpolation for player bodies only; existing effect paths retain
+their own update policies. Respawns and large teleports snap render history.
+Cache generated placeholder tones rather than regenerate their sample data.
+
+Correctness:
+CAMERA_SMOOTHING_OK — 92 camera movements between physics ticks over two seconds;
+viewmodel/camera origins agree, physics muzzle remains authoritative, respawn snaps.
+CHARACTER_SWITCH_OK, PROCEDURAL_MOTION_OK, CONTEXT_FEEDBACK_OK.
+
+Short rendered measurements, RTX4060Ti, 1280x720, OpenGL compatibility, VSync:
+Stage 1 idle: 119.5 FPS average, worst frame 44.6ms.
+Stage 1 moving/spraying: 118.5 FPS average, worst frame 60.3ms.
+Stage 2 idle: 119.0 FPS average, worst frame 16.0ms.
+Stage 2 moving/spraying: 117.7 FPS average, worst frame 17.1ms.
+
+Limitations: six seconds per scenario; combat is not deterministic and stage 1
+included incapacitated frames. These are current-run observations, not proof of
+a causal FPS improvement. The earlier 751ms frame did not recur; its original
+cause remains unproven. Longer sessions and WAN latency are not covered.

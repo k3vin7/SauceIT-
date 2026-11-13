@@ -1,0 +1,47 @@
+{
+	"adapter": "NVIDIA GeForce RTX 4060 Ti",
+	"renderer": "gl_compatibility",
+	"resolution": [
+		1280,
+		720
+	],
+	"results": [
+		{
+			"average_fps": 120.034268868105,
+			"frames": 721,
+			"incapacitated_frames": 0,
+			"max_ms": 10.184,
+			"one_percent_low_fps": 100.800100800101,
+			"p95_ms": 9.54,
+			"scenario": "res://stage_1_festival.tscn idle"
+		},
+		{
+			"average_fps": 93.780771815752,
+			"frames": 564,
+			"incapacitated_frames": 0,
+			"max_ms": 751.577,
+			"one_percent_low_fps": 4.35284763292146,
+			"p95_ms": 11.097,
+			"scenario": "res://stage_1_festival.tscn moving_and_spraying"
+		},
+		{
+			"average_fps": 118.056932747678,
+			"frames": 709,
+			"incapacitated_frames": 0,
+			"max_ms": 74.719,
+			"one_percent_low_fps": 45.5127293414877,
+			"p95_ms": 11.278,
+			"scenario": "res://stage_2_tomatina.tscn idle"
+		},
+		{
+			"average_fps": 116.465375675707,
+			"frames": 700,
+			"incapacitated_frames": 24,
+			"max_ms": 21.125,
+			"one_percent_low_fps": 56.244777270682,
+			"p95_ms": 12.245,
+			"scenario": "res://stage_2_tomatina.tscn moving_and_spraying"
+		}
+	],
+	"vsync": 1
+}

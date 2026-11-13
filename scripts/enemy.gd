@@ -15,6 +15,8 @@ extends CharacterBody3D
 
 const FryStalkerVisualScript := preload("res://scripts/fry_stalker_visual.gd")
 const TomatoVisualsScript := preload("res://scripts/tomato_visuals.gd")
+const EnemyInk := preload("res://scripts/enemy_ink.gd")
+const TomatoBruteMotion := preload("res://scripts/tomato_brute_motion.gd")
 const HAMBURGER_MONSTER := preload(
 	"res://assets/enemies/hamburger_monster/hamburger_monster.glb")
 ## The authored crawler, measured off its meshes at scale 1: fingertip to
@@ -333,6 +335,9 @@ var _attack_animation_active := false
 var _attack_target: MayoPlayer
 var _attack_impact_left := 0.0
 var _fry_visual: Node
+var _brute_motion: TomatoBruteMotion
+var _brute_walking := false
+var _remote_brute_charging := false
 var _attack_lock_left := 0.0
 ## How far through the flinch it is, in seconds, counting down. The flinch is
 ## driven **through `fall_angle`** rather than through a field of its own, so it
@@ -394,6 +399,9 @@ const BRUTE_CHARGE_LIFT_SPEED := 5.0
 const BRUTE_CHARGE_COOLDOWN := 4.0
 ## How long it is stuck for after running into a wall.
 const BRUTE_WALL_STUN := 1.25
+# Brutes pack the charge flag above the valid fall-angle range in snapshots.
+const BRUTE_CHARGE_POSE_FLAG := 8.0
+const BRUTE_ALERT_POSE_FLAG := 16.0
 var _charge_left := 0.0
 var _charge_cooldown := 0.0
 var _charge_direction := Vector3.ZERO
@@ -540,6 +548,7 @@ func build(cell_size: float, brush_radius: float, body_color: Color) -> void:
 	# not show while the monster is upright and you are looking at its side. It
 	# shows when it topples and the crown turns to face you.
 	contamination.configure(self, _body_mesh, _body_radius(), height, body_color)
+	EnemyInk.apply(_visual_root)
 	contamination.add_visual_overlay(_visual_root)
 
 	health = max_health
@@ -676,6 +685,7 @@ func build_moldy_toast_rusher(cell_size: float, brush_radius: float,
 	# The same per-mesh rest matrix the bruiser uses, captured once at build --
 	# not a live world-to-body inverse pushed every frame, which slides the
 	# stain off anything that animates.
+	EnemyInk.apply(_visual_root)
 	contamination.add_visual_overlay(_visual_root)
 	_play_animation(_idle_animation)
 
@@ -760,6 +770,7 @@ func build_fry_stalker(cell_size: float, brush_radius: float) -> void:
 	contamination.brush_radius = brush_radius
 	add_child(contamination)
 	contamination.configure(self, _body_mesh, radius, height, Color("9e0b06"))
+	EnemyInk.apply(_visual_root)
 	contamination.add_visual_overlay(_visual_root)
 
 
@@ -783,6 +794,7 @@ func _finish_primitive_body(cell_size: float, brush_radius: float, mask: Mesh,
 	contamination.brush_radius = brush_radius
 	add_child(contamination)
 	contamination.configure(self, _body_mesh, radius, height, skin)
+	EnemyInk.apply(_visual_root)
 	contamination.add_visual_overlay(_visual_root, true)
 
 
@@ -877,8 +889,18 @@ func build_tomato_brute(cell_size: float, brush_radius: float) -> void:
 	shove_speed = 4.8
 	shove_needs_party = true
 	_add_sphere_collider(radius)
+	var visual := TomatoVisualsScript.brute(radius)
+	var torso := Node3D.new()
+	torso.name = "Torso"
+	for part in visual.get_children():
+		visual.remove_child(part)
+		torso.add_child(part)
+	visual.add_child(torso)
+	_brute_motion = TomatoBruteMotion.new()
+	_brute_motion.build(radius, [torso.get_node("ShoulderL"), torso.get_node("ShoulderR")], torso)
+	visual.add_child(_brute_motion)
 	_finish_primitive_body(cell_size, brush_radius, _sphere_mask(radius),
-		TomatoVisualsScript.brute(radius), TomatoVisualsScript.OVERRIPE)
+		visual, TomatoVisualsScript.OVERRIPE)
 
 
 ## The bowler: stands at the end of a straight and rolls giant tomatoes down
@@ -1283,6 +1305,8 @@ func _advance_pending_attack(delta: float) -> MayoPlayer:
 
 func _play_death_animation() -> void:
 	_attack_animation_active = false
+	if _brute_motion != null:
+		_brute_motion.reset_pose()
 	_attack_lock_left = 0.0
 	_attack_target = null
 	_attack_impact_left = 0.0
@@ -1738,6 +1762,10 @@ func _process(delta: float) -> void:
 		if _remote_position != Vector3.INF:
 			global_position = global_position.lerp(_remote_position, minf(delta * 24.0, 1.0))
 		_update_escape_clearance(delta)
+	if _brute_motion != null and is_alive():
+		var charging := is_charging() if authority else _remote_brute_charging
+		_brute_motion.advance_pose(delta, _brute_walking, charging)
+		_brute_motion.advance_expression(delta, _alerted)
 	if kind == EnemyKind.TOMATO_GRUNT and burst_tier >= 2 and is_alive():
 		var danger := clampf((0.42 - health_fraction()) / 0.42, 0.0, 1.0)
 		var swell := 1.0 + danger * (0.12 + sin(float(Time.get_ticks_msec()) * 0.022) * 0.07)
@@ -1839,6 +1867,8 @@ func _advance_fall(delta: float) -> void:
 func _advance_gait(step: Vector3, walking: bool, delta: float) -> void:
 	var covered := Vector2(step.x, step.z).length()
 	_ground_covered += covered
+	if _brute_motion != null:
+		_brute_walking = walking and covered > 0.001
 	if _fry_visual != null:
 		_fry_visual.set_motion(_ground_covered, walking and _attack_lock_left <= 0.0)
 	if _gait != null:
@@ -1852,6 +1882,8 @@ func _advance_gait(step: Vector3, walking: bool, delta: float) -> void:
 		var pace := 1.0
 		if walking and move_speed > 0.01:
 			pace = clampf(covered / maxf(delta, 0.0001) / move_speed, 0.25, 2.0)
+			if kind == EnemyKind.MOLDY_TOAST_RUSHER:
+				pace = clampf(pace * 2.6, 0.25, 3.0)
 		_animation_player.speed_scale = pace
 
 
@@ -2076,7 +2108,12 @@ func restore_cells(cells: PackedByteArray) -> bool:
 ## It rides in the packet rather than in a join message because it changes
 ## whenever somebody joins or leaves, and the cost is one float per body.
 func network_state() -> Array:
-	return [global_position, facing_yaw, health, fall_angle, max_health]
+	var pose := fall_angle
+	if kind == EnemyKind.TOMATO_BRUTE and is_alive() and is_charging():
+		pose += BRUTE_CHARGE_POSE_FLAG
+	if kind == EnemyKind.TOMATO_BRUTE and is_alive() and _alerted:
+		pose += BRUTE_ALERT_POSE_FLAG
+	return [global_position, facing_yaw, health, pose, max_health]
 
 
 func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
@@ -2090,7 +2127,13 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	var step := new_position - global_position
 	var walking := Vector2(step.x, step.z).length_squared() > 0.000001
 	facing_yaw = yaw
-	fall_angle = new_fall_angle
+	if kind == EnemyKind.TOMATO_BRUTE:
+		_alerted = new_health > 0.0 and new_fall_angle >= BRUTE_ALERT_POSE_FLAG
+		if _alerted:
+			new_fall_angle -= BRUTE_ALERT_POSE_FLAG
+	_remote_brute_charging = kind == EnemyKind.TOMATO_BRUTE \
+		and new_health > 0.0 and new_fall_angle >= BRUTE_CHARGE_POSE_FLAG
+	fall_angle = new_fall_angle - BRUTE_CHARGE_POSE_FLAG if _remote_brute_charging else new_fall_angle
 	health = new_health
 	# The position is the server's outright, so the pose is written around it
 	# rather than derived from a pivot this peer never saw. Split the same way

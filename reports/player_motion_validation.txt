@@ -1,0 +1,27 @@
+Player motion integration — 2026-11-13
+
+Runtime changes
+- All four player rigs receive a post-animation SkeletonModifier3D.
+- Two-bone arm IK preserves segment lengths and wrist orientation.
+- Shared tube/palm displacement provides recoil and equipment transitions.
+- Pickup reach, held tomato, charged throw, eating and visor wiping drive hands.
+- Authored locomotion is retained with ground-contact IK and upper-body motion.
+- Incapacitated states defer to existing authored animation.
+- First-person sleeves, forearms and fingers follow the visual weapon and item actions.
+  These use a shared runtime mesh rather than each character's original skinned arms.
+- Motion event serials and age are replicated; duplicate and stale events do not restart.
+- Throw charge is replicated separately from authoritative gameplay.
+
+Validation
+PROCEDURAL_MOTION_OK: all four rigs, reachable hand target, segment length, finite poses.
+CHARACTER_SWITCH_OK: four-character switching and existing sockets/gauges.
+HEALING_TOMATO_OK: pickup, inventory, use and thrown damage regression.
+PLAYER_MOTION_REPLICATION_OK: pickup/throw/eat decoding and duplicate suppression.
+MAYO_NETWORK_OK: real local ENet host/client session and existing gameplay regression.
+Rendered and inspected four character views and first-person view.
+
+Limits
+Ground adaptation augments existing locomotion rather than replacing it with a fully
+procedural gait. No voice-driven lip sync is added because no player voice-sample
+input was identified in this integration. Local-network checks do not simulate WAN
+latency or packet loss. Existing item regression reports shutdown resource warnings.

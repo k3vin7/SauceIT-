@@ -186,6 +186,8 @@ class Shooter:
 	var player_collision: CollisionShape3D
 	var body_mesh: MeshInstance3D
 	var player_visual: Node3D
+	var first_person_arms: Node3D
+	var procedural_motion: SkeletonModifier3D
 	var player_animation: AnimationPlayer
 	var player_animation_name := StringName()
 	var character_index := 0
@@ -754,7 +756,7 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## The key list in the corner of the screen. **`F4` toggles it.** On by default
 ## while this is a prototype: every switch here is a key and nothing else says
 ## which.
-@export var show_key_legend := true:
+@export var show_key_legend := false:
 	set(value):
 		show_key_legend = value
 		if is_instance_valid(_key_legend):
@@ -1376,6 +1378,8 @@ var debug_timings_us := {
 
 
 func _ready() -> void:
+	# World effects already have their own render paths; interpolate player bodies only.
+	physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	_healing_rng.randomize()
 	_feel_rng.randomize()
 	_ensure_input_actions()
@@ -2199,7 +2203,12 @@ func _play_tone(player: AudioStreamPlayer, hertz: float, seconds: float,
 ## The generator on its own, because `AudioStreamPlayer` and
 ## `AudioStreamPlayer3D` share no base but `Node` -- the splat voices are
 ## positional and could not be handed to the typed helper above.
+var _tone_cache: Dictionary = {}
+
 func _placeholder_tone(hertz: float, seconds: float, noisy := false) -> AudioStreamWAV:
+	var key := Vector3(hertz, seconds, 1.0 if noisy else 0.0)
+	if _tone_cache.has(key):
+		return _tone_cache[key]
 	var rate := 22050.0
 	var frames := int(rate * seconds)
 	var wave := AudioStreamWAV.new()
@@ -2216,6 +2225,7 @@ func _placeholder_tone(hertz: float, seconds: float, noisy := false) -> AudioStr
 			sample = noise.randf_range(-1.0, 1.0)
 		data[i] = int(clampf(sample * fade * 90.0, -127.0, 127.0)) + 128
 	wave.data = data
+	_tone_cache[key] = wave
 	return wave
 
 
@@ -2228,6 +2238,7 @@ func _place_viewmodel() -> void:
 		return
 	_local.player.rotation.y = _local.aim_yaw
 	if _local.aim_pivot != null:
+		_local.aim_pivot.global_position = _local.player.render_position() + Vector3.UP * eye_height
 		_local.aim_pivot.rotation.x = _local.aim_pitch
 
 
@@ -3241,6 +3252,9 @@ func _build_player_body(shooter: Shooter) -> void:
 	collision.shape = capsule_shape
 	shooter.player.add_child(collision)
 	shooter.player_collision = collision
+	shooter.player.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_ON
+	shooter.player.get_global_transform_interpolated()
+	shooter.player.reset_physics_interpolation()
 
 	var body_mesh := MeshInstance3D.new()
 	body_mesh.name = "CapsuleBody"
@@ -3276,6 +3290,7 @@ func _build_player_body(shooter: Shooter) -> void:
 	aim_pivot.position = Vector3(0.0, eye_height, 0.0)
 	shooter.player.add_child(aim_pivot)
 	shooter.aim_pivot = aim_pivot
+	aim_pivot.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 
 	# The glasses hang off the aim pivot, which already carries the aim pitch,
 	# so they move with the camera rather than with the body.
@@ -3328,6 +3343,11 @@ func _build_player_visual(shooter: Shooter) -> void:
 	var skeletons := visual.find_children("*", "Skeleton3D", true, false)
 	if not skeletons.is_empty():
 		var skeleton := skeletons[0] as Skeleton3D
+		var motion = load("res://scripts/player_procedural_motion.gd").new()
+		motion.name = "ProceduralPlayerMotion"
+		skeleton.add_child(motion)
+		motion.configure(shooter, self)
+		shooter.procedural_motion = motion
 		if skeleton.find_bone("SauceTubeMuzzle") >= 0:
 			var attachment := BoneAttachment3D.new()
 			attachment.name = "SauceTubeMuzzle"
@@ -3373,6 +3393,7 @@ func set_character_variant(peer_id: int, requested_index: int) -> void:
 		shooter.player.remove_child(shooter.player_visual)
 		shooter.player_visual.queue_free()
 	shooter.player_visual = null
+	shooter.procedural_motion = null
 	shooter.player_animation = null
 	shooter.player_animation_name = StringName()
 	shooter.walk_animation = StringName()
@@ -3499,6 +3520,11 @@ func _build_weapon(shooter: Shooter) -> void:
 	sway.name = "Sway"
 	weapon.add_child(sway)
 	shooter.weapon_sway = sway
+	var arms = load("res://scripts/player_viewmodel_arms.gd").new()
+	arms.name = "FirstPersonArms"
+	shooter.aim_pivot.add_child(arms)
+	arms.configure(shooter, self)
+	shooter.first_person_arms = arms
 
 	var tube := SAUCE_TUBE_SCENE.instantiate() as Node3D
 	if tube == null:
@@ -5896,7 +5922,7 @@ func _update_camera() -> void:
 		return
 	_camera.fov = _rendered_fov
 	var aim_basis := _aim_basis()
-	var eye := _player.global_position + Vector3.UP * eye_height
+	var eye := _player.render_position() + Vector3.UP * eye_height
 	var tilt := _player.fall_tilt()
 	# The stumble shakes the view in both camera modes; it is small enough that
 	# the shoulder camera keeps the capsule in frame.
@@ -5947,6 +5973,8 @@ func _update_aim(shooter: Shooter = null) -> void:
 	# The body yaws, the weapon pivot pitches, and the strand always leaves
 	# along the camera forward axis.
 	shooter.player.rotation.y = shooter.aim_yaw
+	# Restore the authoritative muzzle origin before physics casts.
+	shooter.aim_pivot.position = Vector3.UP * eye_height
 	shooter.aim_pivot.rotation.x = shooter.aim_pitch
 	shooter.attack_direction = -_aim_basis(shooter).z
 
@@ -7487,6 +7515,8 @@ func apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
 		return
 	var enemy := _enemies[enemy_index]
 	if accent == 3:
+		if _health_hud != null:
+			_health_hud.notify_action("약점 명중", Color("6de5f2"))
 		if _crosshair is Crosshair:
 			(_crosshair as Crosshair).confirm_impact(false, true)
 		return
@@ -7497,6 +7527,8 @@ func apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
 			true, _local, 2.0 if accent == 2 else 1.3, true)
 		if _crosshair is Crosshair:
 			(_crosshair as Crosshair).confirm_impact(accent == 2)
+	if accent == 2 and _health_hud != null:
+		_health_hud.notify_action("협동 처치" if peers.size() > 1 else "처치 확인")
 	var toward := enemy.global_position - _local.player.global_position
 	toward.y = 0.0
 	if toward.length_squared() < 0.000001:
@@ -8803,6 +8835,9 @@ func tomato_action(peer: int, action: int) -> void:
 				distance = gap
 				nearest = id
 		if nearest >= 0:
+			if is_instance_valid(shooter.procedural_motion):
+				shooter.procedural_motion.reach_for(_healing_tomatoes[nearest].node.global_position)
+			_record_motion_event(peer, 1, _healing_tomatoes[nearest].node.global_position)
 			if _held_tomatoes.has(peer):
 				_healing_tomatoes[nearest].node.queue_free()
 			else:
@@ -8823,6 +8858,9 @@ func tomato_action(peer: int, action: int) -> void:
 		_tomato_charge_started.erase(peer)
 		if player.health >= player.max_health:
 			return
+		_record_motion_event(peer, 3, player.global_position)
+		if is_instance_valid(shooter.procedural_motion):
+			shooter.procedural_motion.eat_left = 0.48
 		player.health = minf(player.max_health, player.health + healing_tomato_amount)
 		slots[selected_item_slot(peer)] = 0
 	elif action == 1:
@@ -8832,6 +8870,7 @@ func tomato_action(peer: int, action: int) -> void:
 		var node := _make_healing_tomato(player.global_position + Vector3.UP * 0.65)
 		slots[selected_item_slot(peer)] = 0
 		_item_throw_time[peer] = 0.3
+		_record_motion_event(peer, 2, player.global_position)
 		_thrown_tomatoes[_next_thrown_tomato] = {"node":node,"velocity":direction * lerpf(8.0, 25.0, charge) + Vector3.UP * lerpf(1.0, 3.0, charge),"owner":peer,"age":0.0}
 		_next_thrown_tomato += 1
 
@@ -9030,7 +9069,7 @@ func _update_item_views() -> void:
 		if (selected != 0 or _hose_slot_of(peer) >= 0) and is_instance_valid(shooter.weapon):
 			shooter.weapon.hide()
 		elif is_instance_valid(shooter.weapon):
-			shooter.weapon.visible = (not shooter.is_local or _first_person) \
+			shooter.weapon.visible = shooter.is_local and _first_person \
 				and shooter.player.state != MayoPlayer.State.DEAD \
 				and (_tutorial == null or _tutorial.has_bottle(peer))
 		var node: MeshInstance3D = _held_tomatoes.get(peer)
@@ -9067,7 +9106,7 @@ func _update_item_views() -> void:
 					mesh.position = Vector3((finger-2)*0.075,-0.17,0.13)
 			var hand: Node3D = _item_hands[peer]
 
-			hand.visible = equipped or throw_left > 0
+			hand.visible = false # The articulated character/viewmodel hands provide the grip.
 			hand.global_transform = node.global_transform
 			if throw_left > 0:
 				hand.position += basis * Vector3(0, sin(throw_left / 0.3 * PI)*0.25,-sin(throw_left / 0.3 * PI)*0.5)
@@ -9078,9 +9117,55 @@ const TOMATO_CHARGE_SECONDS := 1.2
 var _tomato_charge_started: Dictionary = {}
 
 func tomato_charge_fraction(peer: int) -> float:
+	if not _is_authority() and _shooters.has(peer):
+		var motion = _shooters[peer].procedural_motion
+		if is_instance_valid(motion):
+			return motion.remote_charge
 	if not _shooters.has(peer) or _shooters[peer].player.state != MayoPlayer.State.NORMAL:
 		_tomato_charge_started.erase(peer)
 		return 0.0
 	if not _tomato_charge_started.has(peer):
 		return 0.0
 	return clampf((Time.get_ticks_msec() - float(_tomato_charge_started[peer])) / (TOMATO_CHARGE_SECONDS * 1000.0), 0.0, 1.0)
+
+
+# Persistent event serials survive lost state packets; clients play each once.
+var _motion_events: Dictionary = {}
+var _motion_seen: Dictionary = {}
+func _record_motion_event(peer: int, kind: int, at: Vector3) -> void:
+	var old: Dictionary = _motion_events.get(peer, {})
+	_motion_events[peer] = {"serial": int(old.get("serial", 0)) + 1, "kind": kind, "at": at, "time": Time.get_ticks_msec()}
+
+func player_motion_state() -> PackedFloat64Array:
+	var out := PackedFloat64Array()
+	for peer in _shooters:
+		var event: Dictionary = _motion_events.get(peer, {})
+		var at: Vector3 = event.get("at", Vector3.ZERO)
+		var age := (Time.get_ticks_msec() - int(event.get("time", 0))) / 1000.0
+		out.append_array(PackedFloat64Array([peer, event.get("serial", 0), event.get("kind", 0), at.x, at.y, at.z, age, tomato_charge_fraction(peer)]))
+	return out
+
+func apply_player_motion_state(data: PackedFloat64Array) -> void:
+	if _is_authority() or data.size() % 8 != 0:
+		return
+	for offset in range(0, data.size(), 8):
+		var peer := int(data[offset])
+		var serial := int(data[offset + 1])
+		var shooter: Shooter = _shooters.get(peer)
+		if shooter == null:
+			continue
+		var motion = shooter.procedural_motion
+		if is_instance_valid(motion):
+			motion.remote_charge = clampf(data[offset + 7], 0.0, 1.0)
+		if serial <= int(_motion_seen.get(peer, 0)):
+			continue
+		_motion_seen[peer] = serial
+		var remaining := maxf(0.0, 0.48 - data[offset + 6])
+		if remaining <= 0.0 or not is_instance_valid(motion):
+			continue
+		match int(data[offset + 2]):
+			1:
+				motion.reach_for(Vector3(data[offset+3], data[offset+4], data[offset+5]))
+				motion.reach_left = remaining
+			2: _item_throw_time[peer] = minf(remaining, 0.3)
+			3: motion.eat_left = remaining

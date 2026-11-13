@@ -64,3 +64,7 @@ fire_mayo={
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 environment/defaults/default_clear_color=Color(0.055, 0.067, 0.085, 1)
+
+[physics]
+
+common/physics_interpolation=true

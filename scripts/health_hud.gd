@@ -71,7 +71,30 @@ func set_frame(new_frame: Rect2) -> void:
 	queue_redraw()
 
 
+var _pickup_refresh_left := 0.0
+var _pickup_target: Node3D
+var _nearby_pickups: Array[Node3D] = []
+var pickup_scan_count := 0
+var feedback_rows: Array[Dictionary] = []
+
+func notify_action(text: String, accent := Color("ffd46a")) -> void:
+	if not feedback_rows.is_empty() and feedback_rows.back().text == text and feedback_rows.back().left > 2.3:
+		feedback_rows.back().count += 1
+		feedback_rows.back().left = 2.8
+		return
+	feedback_rows.append({"text": text, "color": accent, "left": 2.8, "count": 1})
+	while feedback_rows.size() > 3:
+		feedback_rows.pop_front()
+
 func _process(_delta: float) -> void:
+	_pickup_refresh_left -= _delta
+	if _pickup_refresh_left <= 0.0:
+		_pickup_refresh_left = 0.1
+		_refresh_pickups()
+	for row in feedback_rows:
+		row.left -= _delta
+	feedback_rows = feedback_rows.filter(func(row): return row.left > 0.0)
+
 	# Both bars move every frame -- one with the damage, one with the enemy --
 	# so there is nothing to be gained by trying to redraw only on a change.
 	queue_redraw()
@@ -84,13 +107,14 @@ func _draw() -> void:
 	if world._local == null:
 		return
 	_draw_player()
+	_draw_context_extras()
 	_draw_slots()
 	_draw_prompt()
 	_draw_pickup_hint()
 	var action: String = world._tomatina_action_hint() if world.map_kind == world.MapKind.TOMATINA else ""
 	if not action.is_empty():
 		_draw_action_chip(action)
-	var controls := "R 고글 닦기   ·   V 밀치기   ·   F4 조작표" if world.map_kind == world.MapKind.TOMATINA else "1–5 장비 선택"
+	var controls := "R 고글 닦기   ·   V 밀치기   ·   F4 조작표" if world.map_kind == world.MapKind.TOMATINA else "1–5 장비 선택 · F4 조작표"
 	if world.local_holds_tomato():
 		controls = "좌클릭 꾹: 힘 모으기 · 놓기: 던지기   /   우클릭: 먹기"
 		if world._tomato_charge_started.has(world._local.peer_id):
@@ -320,8 +344,44 @@ func _draw_pickup_hint() -> void:
 	var camera := world.get("_camera") as Camera3D
 	if not is_instance_valid(player) or not is_instance_valid(camera):
 		return
+	if player.state != MayoPlayer.State.NORMAL or not is_instance_valid(_pickup_target) or not _pickup_target.visible:
+		return
+	var chosen := _pickup_target.global_position
+	if player.global_position.distance_squared_to(chosen) > 6.25 or camera.is_position_behind(chosen):
+		return
+	if chosen == Vector3.INF:
+		return
+	var text := "[E] 토마토 줍기 · 회복 +%d" % int(world.healing_tomato_amount)
+	if world.item_slots(world._local.peer_id).find(0,1) < 0:
+		text = "인벤토리가 가득 찼어요"
+	var font := ThemeDB.fallback_font
+	var width := font.get_string_size(text,HORIZONTAL_ALIGNMENT_LEFT,-1,18).x
+	var point := camera.unproject_position(chosen)
+	if not frame.has_point(point):
+		return
+	draw_arc(point, 11.0, 0.0, TAU, 24, UI.MINT, 2.0, true)
+	var screen := point + Vector2(-width*0.5,-30)
+	screen.x = clampf(screen.x,frame.position.x+8,frame.end.x-width-8)
+	screen.y = clampf(screen.y,frame.position.y+25,frame.end.y-190)
+	draw_string(font,screen+Vector2(1,2),text,HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color.BLACK)
+	draw_string(font,screen,text,HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color.WHITE)
+
+
+func _refresh_pickups() -> void:
+	_pickup_target = null
+	if not is_instance_valid(world) or world._local == null:
+		return
+	var player := world.get("_player") as MayoPlayer
+	var camera := world.get("_camera") as Camera3D
+	if not is_instance_valid(player) or not is_instance_valid(camera):
+		return
+	if player.state != MayoPlayer.State.NORMAL:
+		_nearby_pickups.clear()
+		return
 	var nearest := 2.5 * 2.5
-	var chosen := Vector3.INF
+	_pickup_target = null
+	_nearby_pickups.clear()
+	pickup_scan_count += 1
 	for id in world._healing_tomatoes:
 		# Negative IDs are held items, large IDs are airborne tomatoes.
 		if id < 0 or id >= 1000000:
@@ -340,16 +400,53 @@ func _draw_pickup_hint() -> void:
 		if not hit.is_empty() and hit.position.distance_to(at) > 0.5:
 			continue
 		nearest = distance
-		chosen = at
-	if chosen == Vector3.INF:
+		_pickup_target = node
+
+	# At most three visible nearby markers; projection follows the camera each frame.
+	var candidates: Array = []
+	for id in world._healing_tomatoes:
+		if id < 0 or id >= 1000000:
+			continue
+		var node = world._healing_tomatoes[id].node
+		var distance := player.global_position.distance_squared_to(node.global_position)
+		if distance <= 144.0:
+			candidates.append({"node": node, "distance": distance})
+			candidates.sort_custom(func(a, b): return a.distance < b.distance)
+			if candidates.size() > 3:
+				candidates.pop_back()
+	for entry in candidates:
+		var node: Node3D = entry.node
+		var query := PhysicsRayQueryParameters3D.create(camera.global_position, node.global_position, 1)
+		query.exclude = [player.get_rid()]
+		var hit := player.get_world_3d().direct_space_state.intersect_ray(query)
+		if hit.is_empty() or hit.position.distance_to(node.global_position) <= 0.5:
+			_nearby_pickups.append(node)
+
+func _draw_context_extras() -> void:
+	if world._local == null or world._local.player.is_incapacitated():
 		return
-	var text := "[E] 토마토 줍기"
-	if world.item_slots(world._local.peer_id).find(0,1) < 0:
-		text = "인벤토리가 가득 찼어요"
-	var font := ThemeDB.fallback_font
-	var width := font.get_string_size(text,HORIZONTAL_ALIGNMENT_LEFT,-1,18).x
-	var screen := camera.unproject_position(chosen) + Vector2(-width*0.5,-30)
-	screen.x = clampf(screen.x,frame.position.x+8,frame.end.x-width-8)
-	screen.y = clampf(screen.y,frame.position.y+25,frame.end.y-190)
-	draw_string(font,screen+Vector2(1,2),text,HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color.BLACK)
-	draw_string(font,screen,text,HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color.WHITE)
+	var camera := world.get("_camera") as Camera3D
+	if is_instance_valid(camera):
+		for node in _nearby_pickups:
+			if not is_instance_valid(node) or node == _pickup_target or not node.visible:
+				continue
+			var at := node.global_position + Vector3.UP * 0.2
+			if camera.is_position_behind(at):
+				continue
+			var screen := camera.unproject_position(at)
+			if frame.grow(-24).has_point(screen):
+				draw_circle(screen, 5.0, Color(0.04, 0.08, 0.1, 0.85))
+				draw_circle(screen, 2.5, UI.MINT)
+	var y := frame.get_center().y + 80.0
+	for row in feedback_rows:
+		var alpha := minf(row.left * 2.5, 1.0)
+		var text: String = row.text
+		if row.count > 1:
+			text += " ×%d" % row.count
+		var width := minf(520.0, ThemeDB.fallback_font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 17).x + 28.0)
+		var rect := Rect2(frame.get_center().x - width * 0.5, y, width, 30.0)
+		draw_style_box(_plate, rect)
+		var tint: Color = row.color
+		tint.a = alpha
+		draw_string(ThemeDB.fallback_font, rect.position + Vector2(0, 21), text, HORIZONTAL_ALIGNMENT_CENTER, width, 17, tint)
+		y += 35.0
