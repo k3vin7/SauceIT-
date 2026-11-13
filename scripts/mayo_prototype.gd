@@ -324,9 +324,14 @@ class Shooter:
 	## How hard this player is shaking the bottle right now, 0 to 1. Read off
 	## the mouse for the local player and off the input packet on the host.
 	var bottle_shake_input := 0.0
-	## What the shaking has built up, 0 to 1. The authority's; it travels in
-	## the state packet beside the tank level. See `bottle_charge_seconds`.
+	## What the shaking has built up, 0 to 1; how long the bottle stays primed
+	## once that reached full; and whether the shot now being fired is the one
+	## the priming bought. The authority's -- all three ride one float in the
+	## state packet, see `bottle_state_code`.
 	var bottle_charge := 0.0
+	var bottle_buff_left := 0.0
+	var bottle_boosting := false
+	var bottle_boost_time := 0.0
 	## The shake as drawn, on the bottle and on the character holding it.
 	var bottle_shake_show := 0.0
 	## How far the bottle has been stood on end for it, 0 level and 1 upright.
@@ -538,20 +543,23 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## squirts the player ended themselves by letting go.
 @export_range(0.0, 3.0, 0.05, "suffix:s") var spent_burst_cooldown := 0.5
 ## **Shaking the bottle.** Hold the right button and shake the mouse: the view
-## stays put, the bottle goes up and down, and it takes on charge. A charged
-## bottle throws further, and it delivers like a full one however little is
-## in it -- no catching, no air, a full-length squirt -- which is what shaking
-## a nearly empty bottle is for. Firing spends the charge.
+## stays put, the bottle goes up and down, and it takes on charge. Shaken all
+## the way, it is *primed* for `bottle_buff_seconds`, and the next shot fired
+## inside that window -- that one shot, a whole squirt of it -- throws further
+## and delivers like a full bottle however little is in it: no catching, no
+## air, a full-length squirt. Let the window run out and it is gone; stop
+## shaking short of full and the charge drains away.
 ##
 ## How fast the mouse has to travel to count as a full-strength shake.
 @export_range(200.0, 10000.0, 50.0, "suffix:px/s") var bottle_shake_full_speed := 2200.0
 ## How long a full-strength shake takes to charge an uncharged bottle.
 @export_range(0.1, 5.0, 0.05, "suffix:s") var bottle_charge_seconds := 0.9
-## How long a full charge lasts while sauce is coming out, and while it is not.
-@export_range(0.2, 20.0, 0.1, "suffix:s") var bottle_charge_spray_seconds := 3.0
-@export_range(1.0, 120.0, 1.0, "suffix:s") var bottle_charge_idle_seconds := 15.0
-## What a full charge adds to the speed the sauce leaves at, and to how far it
-## is carried before the pressure leaves it. Both scale with the charge.
+## How long a fully shaken bottle stays primed for its one better shot.
+@export_range(0.2, 20.0, 0.1, "suffix:s") var bottle_buff_seconds := 3.0
+## How long a charge that never reached full takes to drain away again.
+@export_range(0.1, 5.0, 0.05, "suffix:s") var bottle_charge_fade_seconds := 0.8
+## What the primed shot adds to the speed the sauce leaves at, and to how far
+## it is carried before the pressure leaves it.
 @export_range(0.0, 1.0, 0.01) var bottle_charge_speed_bonus := 0.3
 @export_range(0.0, 2.0, 0.01) var bottle_charge_range_bonus := 0.5
 ## Refills while not firing. Off: the stations hand the sauce out now, so the
@@ -884,6 +892,9 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 @export_range(0.02, 1.0, 0.01, "suffix:s") var flinch_shake_seconds := 0.12
 @export_range(0.0, 30.0, 0.1, "suffix:°") var kill_shake_degrees := 0.0
 @export_range(0.02, 2.0, 0.01, "suffix:s") var kill_shake_seconds := 0.3
+## What a hit from behind is worth, against the same hit from the front. The
+## crosshair marks it the way it marks the boss's weak spot.
+@export_range(1.0, 4.0, 0.05) var backstab_multiplier := 1.5
 ## How fast a tomato blast throws the bodies it hurts. It runs down over
 ## `MayoEnemy.BLAST_PUSH_SECONDS`, so 10 m/s is about 1.25 m for a minion and
 ## half that for a heavy. Short on purpose: a crowd thrown wide is a crowd the
@@ -1583,16 +1594,71 @@ func _physics_process(delta: float) -> void:
 		debug_max_points = maxi(debug_max_points, _points.size())
 
 
-## Builds the charge while the bottle is being shaken and runs it down while it
-## is not -- quickly while sauce is coming out, slowly otherwise. Authority only.
+## The shake's three steps, on the authority: the charge builds while the bottle
+## is shaken and drains while it is not; reaching full primes the bottle for
+## `bottle_buff_seconds`; and the shot that spends the priming is boosted until
+## it is over. The press that spends it is in `_advance_strand` and
+## `_fire_part_volley`.
 func _advance_bottle_charge(shooter: Shooter, delta: float) -> void:
-	if shooter.was_firing:
-		shooter.bottle_charge -= delta / maxf(bottle_charge_spray_seconds, 0.01)
-	elif shooter.bottle_shake_input > 0.0:
+	if shooter.bottle_shake_input > 0.0:
 		shooter.bottle_charge += shooter.bottle_shake_input * delta / maxf(bottle_charge_seconds, 0.01)
 	else:
-		shooter.bottle_charge -= delta / maxf(bottle_charge_idle_seconds, 0.01)
+		shooter.bottle_charge -= delta / maxf(bottle_charge_fade_seconds, 0.01)
 	shooter.bottle_charge = clampf(shooter.bottle_charge, 0.0, 1.0)
+	if shooter.bottle_charge >= 1.0:
+		shooter.bottle_charge = 0.0
+		shooter.bottle_buff_left = bottle_buff_seconds
+	else:
+		shooter.bottle_buff_left = maxf(shooter.bottle_buff_left - delta, 0.0)
+	if not shooter.bottle_boosting:
+		return
+	shooter.bottle_boost_time += delta
+	if SauceParts.PROJECTILES.has(shooter.sauce_part):
+		# One press's worth: until the trigger is let go and any burst it
+		# started has gone, and never longer than a full squirt would run.
+		if (not shooter.firing and shooter.part_shots_left <= 0) \
+				or shooter.bottle_boost_time > full_burst_seconds:
+			shooter.bottle_boosting = false
+	elif shooter.fire_hold <= 0.0 and not shooter.was_firing:
+		shooter.bottle_boosting = false
+
+
+## Spends the priming on the shot now starting, if there is any to spend. Every
+## peer runs this off the same press, so the shot is boosted on every screen;
+## what the authority decided then arrives in the state packet and stands.
+func _spend_bottle_buff(shooter: Shooter) -> void:
+	if shooter.bottle_buff_left <= 0.0:
+		return
+	shooter.bottle_buff_left = 0.0
+	shooter.bottle_boosting = true
+	shooter.bottle_boost_time = 0.0
+
+
+## The shake as one float for the state packet: under 1 the charge, 1 to 2 the
+## priming window running down, 3 the boosted shot under way.
+func bottle_state_code(shooter: Shooter) -> float:
+	if shooter.bottle_boosting:
+		return 3.0
+	if shooter.bottle_buff_left > 0.0:
+		return 1.0 + clampf(shooter.bottle_buff_left / maxf(bottle_buff_seconds, 0.01), 0.001, 1.0)
+	return minf(shooter.bottle_charge, 0.999)
+
+
+## A client's side of the same float. A priming window still on its way down
+## leaves `bottle_boosting` alone: the client may already have spent it on a
+## press the host has not heard about yet.
+func apply_bottle_state_code(shooter: Shooter, code: float) -> void:
+	if code >= 2.5:
+		shooter.bottle_boosting = true
+		shooter.bottle_buff_left = 0.0
+		shooter.bottle_charge = 0.0
+	elif code > 1.0:
+		shooter.bottle_buff_left = (minf(code, 2.0) - 1.0) * bottle_buff_seconds
+		shooter.bottle_charge = 0.0
+	else:
+		shooter.bottle_charge = clampf(code, 0.0, 1.0)
+		shooter.bottle_buff_left = 0.0
+		shooter.bottle_boosting = false
 
 
 ## How far the bottle is tipped up to be shaken, from pointing ahead.
@@ -1648,10 +1714,13 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		shooter.fire_hold = minimum_fire_time
 		shooter.trigger_released = false
 		shooter.burst_time = 0.0
-		# A shaken bottle squirts like a full one, whatever is left in it.
-		shooter.burst_allowance = lerpf(burst_seconds_at(shooter.sauce),
-			maxf(full_burst_seconds, burst_seconds_at(shooter.sauce)),
-			shooter.bottle_charge) * sauce_burst_scale(shooter)
+		# A primed bottle spends its priming on this squirt, and squirts it
+		# like a full one whatever is left in it.
+		_spend_bottle_buff(shooter)
+		shooter.burst_allowance = burst_seconds_at(shooter.sauce) * sauce_burst_scale(shooter)
+		if shooter.bottle_boosting:
+			shooter.burst_allowance = maxf(full_burst_seconds, burst_seconds_at(shooter.sauce)) \
+				* sauce_burst_scale(shooter)
 		firing = true
 
 	# What the trigger is asking for is now separate from what the nozzle does
@@ -1787,6 +1856,12 @@ func _fire_part_volley(shooter: Shooter) -> void:
 	if shooter.sauce_part == SauceParts.Part.ARC:
 		forward = _arc_launch_direction(shooter, origin)
 	shooter.burst_index += 1
+	# The primed shot, for a part: thrown harder, so it carries further. The
+	# speed rides on the length of `forward`, which every peer is sent. Not the
+	# lob -- that one is aimed at a spot, and faster would only overshoot it.
+	_spend_bottle_buff(shooter)
+	if shooter.bottle_boosting and shooter.sauce_part != SauceParts.Part.ARC:
+		forward *= 1.0 + bottle_charge_speed_bonus
 	show_part_volley(shooter.peer_id, shooter.sauce_part, shooter.sauce_kind, origin, forward)
 	if is_instance_valid(_net) and _net.is_online():
 		_net.broadcast_part_volley(shooter.peer_id, shooter.sauce_part, shooter.sauce_kind, origin, forward)
@@ -2036,9 +2111,9 @@ func _decide_nozzle(shooter: Shooter, delta: float, firing: bool) -> void:
 		shooter.catch_roll = 0.0
 		return
 
-	# Shaken: what is left has been knocked down to the nozzle, so it comes out
-	# clean whichever band the level is in. The charge is what it costs.
-	if shooter.bottle_charge > 0.0 and shooter.sauce > 0.0:
+	# Shaken: what is left has been knocked down to the nozzle, so the primed
+	# shot comes out clean whichever band the level is in.
+	if shooter.bottle_boosting and shooter.sauce > 0.0:
 		shooter.nozzle = Nozzle.STREAM
 		shooter.catches_in_a_row = 0
 		return
@@ -2174,7 +2249,7 @@ func _read_local_input() -> void:
 		jump = debug_input_jump
 	elif not shop_open and _input_enabled:
 		move = Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
-		run = Input.is_action_pressed("run")
+		run = _local.player.run_held()
 		jump = Input.is_action_pressed("jump")
 	_net.send_input(move, run, jump, _local.firing, _local.aim_yaw, _local.aim_pitch,
 		_local.requested_character_index, _local.bottle_shake_input)
@@ -5096,6 +5171,8 @@ func _splash_enemy(other: MayoEnemy, centre: Vector3, damage: float, shooter: Sh
 	var crossed_before := other._flinch_crossed
 	if shooter != null:
 		_credit_hit(other, shooter)
+	else:
+		other.hurt_by = 0
 	if single_blast:
 		other.take_sauce_hit(centre, damage)
 	else:
@@ -5759,6 +5836,35 @@ func apply_tutorial_effect(kind: int, at: Vector3) -> void:
 		_local.shake_direction = (at - _local.player.global_position).normalized()
 	if kind == 1 and _tutorial_wreck != null and _tutorial_wreck.has_method("play_impact"):
 		_tutorial_wreck.call("play_impact")
+
+
+## Who did how much, for the result screen: one `[peer id, seat, damage,
+## character]` per player, most first. Authority only -- it is read off the bodies' own books.
+func damage_report() -> Array:
+	var totals := {}
+	for shooter: Shooter in _shooters.values():
+		totals[shooter.peer_id] = 0.0
+	for enemy in _enemies:
+		if not is_instance_valid(enemy):
+			continue
+		for peer_id in enemy.damage_by:
+			if totals.has(peer_id):
+				totals[peer_id] += float(enemy.damage_by[peer_id])
+	var rows: Array = []
+	for peer_id in totals:
+		var who := _shooters[peer_id] as Shooter
+		rows.push_back([peer_id, who.spawn_slot, roundi(totals[peer_id]), who.character_index])
+	rows.sort_custom(func(a, b): return a[2] > b[2])
+	return rows
+
+
+## Where the local player's shake has got to, for the HUD: x the charge still
+## being built, 0 to 1; y the seconds the primed bottle has left; z 1 while
+## the boosted shot is being fired.
+func local_bottle_charge() -> Vector3:
+	if _local == null:
+		return Vector3.ZERO
+	return Vector3(_local.bottle_charge, _local.bottle_buff_left, 1.0 if _local.bottle_boosting else 0.0)
 
 
 func _check_stage_clear() -> void:
@@ -6492,8 +6598,9 @@ func _emit_point(shooter: Shooter = null) -> void:
 		point.range_scale = 1.6
 	# A shaken bottle throws further: faster out of the nozzle, and carried
 	# longer before the pressure leaves it.
-	speed *= 1.0 + bottle_charge_speed_bonus * shooter.bottle_charge
-	point.range_scale *= 1.0 + bottle_charge_range_bonus * shooter.bottle_charge
+	if shooter.bottle_boosting:
+		speed *= 1.0 + bottle_charge_speed_bonus
+		point.range_scale *= 1.0 + bottle_charge_range_bonus
 	var player_velocity := shooter.player.velocity
 	var travel_scale := extend_speed / maxf(emission_speed, 0.001)
 	point.velocity = direction * speed + Vector3(player_velocity.x, 0.0, player_velocity.z) \
@@ -6747,7 +6854,20 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 						apply_enemy_shake(index, recipient, 0.0, 0.0, 3)
 				boss.take_aimed_sauce_hit(hit_position, damage)
 			else:
-				enemy.take_sauce_hit(shooter.player.global_position, damage)
+				# **From behind it hurts more.** A body chasing one player has
+				# its back to the rest, so this is what the rest are for. Not
+				# the boss, whose answer to "where do I hit it" is its weak spot.
+				var dealt := damage
+				if backstab_multiplier > 1.0 and enemy.is_behind(shooter.player.global_position):
+					dealt = (enemy.sauce_damage_per_hit if damage < 0.0 else damage) * backstab_multiplier
+					var now_ms := Time.get_ticks_msec()
+					if now_ms - shooter.last_weak_spot_ms >= 180:
+						shooter.last_weak_spot_ms = now_ms
+						var recipient := PackedInt32Array([shooter.peer_id])
+						if is_instance_valid(_net) and _net.is_online():
+							_net.send_enemy_shake(index, recipient, 0.0, 0.0, 3)
+						apply_enemy_shake(index, recipient, 0.0, 0.0, 3)
+				enemy.take_sauce_hit(shooter.player.global_position, dealt)
 			if was_alive:
 				if not enemy.is_alive():
 					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
@@ -7967,6 +8087,8 @@ func rescale_enemies() -> void:
 
 
 func _credit_hit(enemy: MayoEnemy, shooter: Shooter) -> void:
+	# And theirs is the damage that follows -- see `MayoEnemy.note_damage`.
+	enemy.hurt_by = shooter.peer_id
 	var key := enemy.get_instance_id()
 	var book: Dictionary = _hit_credit.get(key, {})
 	book[shooter.peer_id] = hit_credit_seconds

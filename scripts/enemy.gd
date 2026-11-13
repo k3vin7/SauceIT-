@@ -361,6 +361,12 @@ var _flinch_left := 0.0
 ## index into `flinch_thresholds` rather than as a fraction, because the list is
 ## what the designer edits.
 var _flinch_crossed := 0
+## Whose hit is landing, as a peer id, and what each peer has taken off this
+## body so far. The world names the hitter as it credits the hit; the damage is
+## noted here, at the one place health comes off, so nothing has to be added up
+## at every site that deals it. Zero is a hit nobody owns.
+var hurt_by := 0
+var damage_by := {}
 ## Seconds since the body reached the ground, for the bounce.
 var _settled_for := 0.0
 ## World point the feet were planted on when it died -- the axis it goes over.
@@ -1532,7 +1538,9 @@ func take_sauce_hit(from := Vector3.INF, damage := -1.0) -> bool:
 	# thrown at you, not a thing to fight.
 	if kind == EnemyKind.TOMATO_BALL:
 		return false
+	var before := health
 	health = maxf(health - (damage if damage >= 0.0 else sauce_damage_per_hit), 0.0)
+	note_damage(before - health)
 	# Being hit is being told where you are, whatever the range says.
 	if sauce_alerts:
 		_alerted = true
@@ -1564,6 +1572,22 @@ func take_sauce_hit(from := Vector3.INF, damage := -1.0) -> bool:
 	if thickness > 0.0:
 		_rest_radius = thickness
 	return true
+
+
+## Books health that has just come off against whoever is hitting.
+func note_damage(amount: float) -> void:
+	if amount > 0.0 and hurt_by != 0:
+		damage_by[hurt_by] = float(damage_by.get(hurt_by, 0.0)) + amount
+
+
+## Whether `from` is behind this body: outside the half of the street it is
+## looking down, with a margin, so a hit from square on its flank is not one.
+func is_behind(from: Vector3) -> bool:
+	var toward := Vector3(from.x - global_position.x, 0.0, from.z - global_position.z)
+	if toward.length_squared() < 0.000001:
+		return false
+	var forward := Vector3(-sin(facing_yaw), 0.0, -cos(facing_yaw))
+	return toward.normalized().dot(forward) < -0.35
 
 
 ## True if this hit crossed a threshold, having started the flinch if it did.
