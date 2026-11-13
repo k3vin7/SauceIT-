@@ -186,6 +186,7 @@ class Shooter:
 	var player_collision: CollisionShape3D
 	var body_mesh: MeshInstance3D
 	var player_visual: Node3D
+	var camera_viewmodel: Node3D
 	var first_person_arms: Node3D
 	var procedural_motion: SkeletonModifier3D
 	var player_animation: AnimationPlayer
@@ -1172,7 +1173,7 @@ const FINALE_COUNT_TAG := -999
 const PRESS_KING_LOB_CUE := 7
 const HOSE_COUNTERATTACK_CUE := 8
 const PRESS_KING_RISE_CUE := 9
-const PRESS_KING_RISE_WARNING := 0.85
+const PRESS_KING_RISE_WARNING := 6.2
 const OVERRIPE_BURST_DELAY := 0.65
 const FINALE_SPECIALS := [MayoTutorial.KIND_KETCHUP_SPITTER, MayoTutorial.KIND_CAPRESE_CRAWLER, MayoTutorial.KIND_TOMATO_BRUTE]
 var _press_king_rise_left := 0.0
@@ -1188,6 +1189,7 @@ const HOSE_PENDING_TAG := -997
 const PRESS_KING_WASH_TAG := -996
 var _tomatina_warning_sounds: Dictionary = {}
 var _press_king: PressKing
+var _boss_entrance: Node3D
 var _press_king_hideout: Node3D
 var _finale_remaining := 0
 const ESCAPE_SHOVE_ACTION := 6
@@ -1445,6 +1447,12 @@ func _exit_tree() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if is_instance_valid(_boss_entrance) and _boss_entrance.active:
+		if _is_authority():
+			_advance_press_king_spawn(delta)
+		if is_instance_valid(_net):
+			_net.end_of_frame(PackedInt32Array())
+		return
 	if _local == null:
 		return
 	var frame_started := Time.get_ticks_usec() if debug_profile_enabled else 0
@@ -2183,6 +2191,8 @@ func _is_authority() -> bool:
 
 
 func _process(_delta: float) -> void:
+	if is_instance_valid(_boss_entrance) and not _boss_entrance.played and is_instance_valid(_press_king):
+		_boss_entrance.restore_breached()
 	if map_kind == MapKind.TOMATINA:
 		for thread: CheeseThread in _cheese_threads.values():
 			thread.update_visual()
@@ -2203,6 +2213,7 @@ func _process(_delta: float) -> void:
 	# what the strand does and where the server thinks the body is are untouched.
 	_place_viewmodel()
 	_update_camera()
+	_sync_camera_viewmodel()
 	# Only the short nozzle connection follows render-rate viewmodel motion.
 	# The full simulated ribbons keep their existing physics-rate update budget.
 	_update_nozzle_visual(_local)
@@ -2214,6 +2225,7 @@ func _process(_delta: float) -> void:
 		_update_visor(shooter)
 		_update_sauce_look(shooter)
 	_update_item_views()
+	_sync_camera_viewmodel()
 
 
 ## The capsule lies on its side while the player is down. A capsule is all the
@@ -2962,6 +2974,10 @@ func set_avatar_authority(peer_id: int, authority: bool) -> void:
 
 
 func _free_shooter(shooter: Shooter) -> void:
+	if is_instance_valid(shooter.camera_viewmodel):
+		shooter.camera_viewmodel.queue_free()
+	if is_instance_valid(shooter.first_person_arms) and shooter.first_person_arms.get_parent() == _camera:
+		shooter.first_person_arms.queue_free()
 	var peer := shooter.peer_id
 	for book in [_held_tomatoes, _item_hands]:
 		if book.has(peer):
@@ -3898,16 +3914,6 @@ func _build_tomatina() -> void:
 			_add_tomatina_supply(box)
 	if has_art:
 		art.build(self, debris, parked_trucks, truck)
-	_press_king_hideout = PressKing.make_visual()
-	if _press_king_hideout != null:
-		_press_king_hideout.name = "PressKingHideout"
-		add_child(_press_king_hideout)
-		_press_king_hideout.position = TomatinaMap.at_cell(TomatinaMap.PRESS_KING_CELL)
-		_press_king_hideout.rotate_y(TomatinaMap.PRESS_KING_YAW)
-		var rig := PressKing.rig_player(_press_king_hideout)
-		rig.play(&"Rise")
-		rig.seek(0.0, true)
-		rig.pause()
 	for room in TomatinaMap.SAFE_ROOMS.size():
 		var zone := TomatinaMap.rect_world(TomatinaMap.SAFE_ROOMS[room])
 		_build_zone_marker("Refuge%d" % room, zone, Color(0.2, 0.55, 0.43, 0.26))
@@ -3935,6 +3941,9 @@ func _build_tomatina() -> void:
 	_build_tomatina_route_signs()
 	_fire_truck_zone = TomatinaMap.fire_truck_zone()
 	_plaza_rect = TomatinaMap.plaza_rect()
+	_boss_entrance = load("res://scripts/press_king_entrance.gd").new()
+	add_child(_boss_entrance)
+	_boss_entrance.configure(self)
 	var siren := TomatinaMap.at_cell(TomatinaMap.SIREN_CELL)
 	_siren_zone = Rect2(Vector2(siren.x, siren.z) - Vector2.ONE * 1.7, Vector2.ONE * 3.4)
 	_build_zone_marker("Siren", _siren_zone, Color(1.0, 0.74, 0.18, 0.55))
@@ -4686,6 +4695,8 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 			_press_king.arena = _plaza_rect
 			_press_king.exposure_seconds = 10.0 if party_size() == 1 else PressKing.OPEN_SECONDS
 			_press_king.build_press_king(body_cell_size, contamination_brush_radius)
+			if _local != null:
+				_press_king.configure_combat_speed(_local.player.walk_speed, toast_rusher_speed_fraction)
 			_press_king.slam_hit.connect(_damage_player)
 			_press_king.lob_warning.connect(_warn_press_king_lob)
 			_press_king.lob_release.connect(_launch_press_king_lob)
@@ -4706,6 +4717,10 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 	if kind == MayoTutorial.KIND_PRESS_KING:
 		enemy.facing_yaw = TomatinaMap.PRESS_KING_YAW
 		enemy.rotation.y = enemy.facing_yaw
+		if is_instance_valid(_boss_entrance) and _boss_entrance.played:
+			_press_king._set_act(PressKing.Act.IDLE)
+			enemy.facing_yaw = -PI * 0.5
+			enemy.rotation.y = enemy.facing_yaw
 	_register_enemy(enemy)
 	if kind == MayoTutorial.KIND_BOWLING_TOMATO:
 		for ball_index in MayoEnemy.BALLS_PER_BOWLER:
@@ -5142,7 +5157,7 @@ func _press_king_lob_lands(direct_hit: MayoPlayer, at: Vector3) -> void:
 			if absf(gap.y) > 2.8 or not _nav.line_is_walkable(at, victim.global_position):
 				continue
 		_coat_spit_victim(victim, at)
-		_damage_player(victim, 16.0 if victim == direct_hit else 10.0)
+		_damage_player(victim, PressKing.LOB_DIRECT_DAMAGE if victim == direct_hit else PressKing.LOB_SPLASH_DAMAGE)
 
 
 func _spit_puddle(centre: Vector3, radius := 2.2) -> void:
@@ -5262,6 +5277,8 @@ func _reset_tomatina_finale() -> void:
 	_splash_ripples.clear()
 	_press_king_rise_at = Vector3.INF
 	_press_king_rise_left = 0.0
+	if is_instance_valid(_boss_entrance):
+		_boss_entrance.reset_intro()
 	_finale_special_pending = false
 	for thread: CheeseThread in _cheese_threads.values():
 		thread.queue_free()
@@ -5372,7 +5389,11 @@ func _advance_press_king_spawn(delta: float) -> void:
 		if _horde_spawn_clear(at):
 			tutorial_spawn_enemy(MayoTutorial.KIND_PRESS_KING, at)
 			return
-	for cell: Vector2 in [TomatinaMap.PRESS_KING_CELL, Vector2(33.5, 26.5), Vector2(32.5, 31.5), Vector2(26.5, 32.5)]:
+	var entrance_cell := Vector2(21.5,29.5)
+	if is_instance_valid(_boss_entrance):
+		var entrance_at: Vector3 = _boss_entrance.spawn_point()
+		entrance_cell = Vector2(StreetMap.cell_at(entrance_at)) + Vector2(0.5,0.5)
+	for cell: Vector2 in [entrance_cell, TomatinaMap.PRESS_KING_CELL, Vector2(33.5, 26.5), Vector2(32.5, 31.5), Vector2(26.5, 32.5)]:
 		var at := TomatinaMap.at_cell(cell)
 		if not _nav.is_walkable(StreetMap.cell_at(at)) or not _horde_spawn_clear(at):
 			continue
@@ -5810,6 +5831,8 @@ func _update_tomatina_checkpoint(players: Array) -> void:
 ## nothing cleans the body. Handing back a spotless body on death would make
 ## dying the fastest way to clean your glasses.
 func _damage_player(player: MayoPlayer, amount: float) -> void:
+	if is_instance_valid(_boss_entrance) and _boss_entrance.active:
+		return
 	if map_kind == MapKind.TOMATINA \
 			and TomatinaMap.safe_room_at(StreetMap.cell_at(player.global_position)) >= 0:
 		return
@@ -7758,8 +7781,6 @@ func apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
 			true, _local, 2.0 if accent == 2 else 1.3, true)
 		if _crosshair is Crosshair:
 			(_crosshair as Crosshair).confirm_impact(accent == 2)
-	if accent == 2 and _health_hud != null:
-		_health_hud.notify_action("협동 처치" if peers.size() > 1 else "처치 확인")
 	var toward := enemy.global_position - _local.player.global_position
 	toward.y = 0.0
 	if toward.length_squared() < 0.000001:
@@ -8684,7 +8705,7 @@ func apply_shove_clearance(peer: int, indices: PackedInt32Array) -> void:
 
 
 func _on_special_warning(enemy: MayoEnemy, direction: Vector3, duration: float) -> void:
-	var cue := 3
+	var cue := 7 if enemy.kind == MayoEnemy.EnemyKind.PRESS_KING and not direction.is_zero_approx() else 3
 	if enemy.kind == MayoEnemy.EnemyKind.BOWLING_TOMATO:
 		cue = 4
 	elif enemy.kind == MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
@@ -8699,7 +8720,8 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 		if not muted:
 			_play_combat_warning(at, 220.0, duration, _tomatina_warning_sound(cue))
 		if cue == PRESS_KING_RISE_CUE:
-			_show_rise_rubble(at, duration)
+			if is_instance_valid(_boss_entrance):
+				_boss_entrance.start(at)
 		return
 	if cue == PRESS_KING_LOB_CUE:
 		_play_combat_warning(at, 275.0, duration)
@@ -8718,13 +8740,13 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 		warning.global_position = Vector3(at.x, 0.065, at.z)
 		get_tree().create_timer(duration).timeout.connect(warning.queue_free)
 		return
-	_play_combat_warning(at, [180.0, 230.0, 110.0, 150.0, 310.0, 420.0, 500.0][cue], duration)
+	_play_combat_warning(at, [180.0, 230.0, 110.0, 150.0, 310.0, 420.0, 500.0, 170.0][cue], duration)
 	if direction.is_zero_approx():
 		return
-	var length: float = [0.0, 0.0, 0.0, 9.0, 12.0, 5.0, 10.0][cue]
+	var length: float = [0.0, 0.0, 0.0, 9.0, 12.0, 5.0, 10.0, 22.0][cue]
 	var marker := MeshInstance3D.new()
 	var mesh := BoxMesh.new()
-	mesh.size = Vector3(0.48, 0.035, length)
+	mesh.size = Vector3(3.64 if cue == 7 else 0.48, 0.035, length)
 	marker.mesh = mesh
 	var material := StandardMaterial3D.new()
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -9401,3 +9423,34 @@ func apply_player_motion_state(data: PackedFloat64Array) -> void:
 				motion.reach_left = remaining
 			2: _item_throw_time[peer] = minf(remaining, 0.3)
 			3: motion.eat_left = remaining
+
+
+## Rendered bottle/arms belong to the camera, never to an interpolated body.
+## weapon + muzzle remain under AimPivot for authoritative physics queries.
+func _sync_camera_viewmodel() -> void:
+	if not is_instance_valid(_camera):
+		return
+	for shooter: Shooter in _shooters.values():
+		if not is_instance_valid(shooter.weapon_sway):
+			continue
+		var local_view := shooter == _local
+		if local_view:
+			if not is_instance_valid(shooter.camera_viewmodel):
+				var holder := Node3D.new()
+				holder.name = "CameraBottleVisual"
+				holder.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
+				_camera.add_child(holder)
+				shooter.camera_viewmodel = holder
+			if shooter.weapon_sway.get_parent() != shooter.camera_viewmodel:
+				shooter.weapon_sway.reparent(shooter.camera_viewmodel, false)
+			shooter.camera_viewmodel.transform = shooter.weapon.transform
+			shooter.camera_viewmodel.visible = _first_person and shooter.weapon.visible
+			if is_instance_valid(shooter.first_person_arms) and shooter.first_person_arms.get_parent() != _camera:
+				shooter.first_person_arms.reparent(_camera, false)
+		else:
+			if shooter.weapon_sway.get_parent() != shooter.weapon:
+				shooter.weapon_sway.reparent(shooter.weapon, false)
+			if is_instance_valid(shooter.camera_viewmodel):
+				shooter.camera_viewmodel.hide()
+			if is_instance_valid(shooter.first_person_arms) and shooter.first_person_arms.get_parent() == _camera:
+				shooter.first_person_arms.reparent(shooter.aim_pivot, false)

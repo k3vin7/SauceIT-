@@ -39,9 +39,9 @@ func run() -> void:
 	check(not is_instance_valid(hud._pickup_target), "removed pickup retained its prompt")
 	var peer: int = scene._local.peer_id
 	scene.apply_enemy_shake(0, PackedInt32Array([peer]), 0.0, 0.0, 2)
-	check(hud.feedback_rows.size() == 1, "confirmed kill did not notify local player")
+	check(hud.feedback_rows.is_empty(), "kill displayed an unwanted center notification")
 	scene.apply_enemy_shake(0, PackedInt32Array([peer + 100]), 0.0, 0.0, 2)
-	check(hud.feedback_rows.back().count == 1, "another player's kill leaked into local feedback")
+	check(hud.feedback_rows.is_empty(), "another player's kill leaked into local feedback")
 	check(not scene.show_key_legend, "help panel covers play area by default")
 	var render := "--capture" in OS.get_cmdline_user_args()
 	if render:

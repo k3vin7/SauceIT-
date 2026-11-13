@@ -17,7 +17,7 @@ func _run() -> void:
 	server_world._net.send_enemy_shake(0, PackedInt32Array([peer]), 0.0, 0.0, 2)
 	for i in 12:
 		await physics_frame
-	_check(not client_world._health_hud.feedback_rows.is_empty(), "confirmed kill feedback did not reach contributing client")
+	_check(client_world._health_hud.feedback_rows.is_empty(), "kill displayed an unwanted center notification on client")
 	_check(server_world._health_hud.feedback_rows.is_empty(), "client kill feedback leaked to host")
 	if failures.is_empty():
 		print("CONTEXT_NETWORK_OK")

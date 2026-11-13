@@ -747,7 +747,7 @@ func _run() -> void:
 	scene._hose_wave_pending = 0
 	player.global_position = TomatinaMap.at_cell(TomatinaMap.PRESS_KING_CELL) + Vector3.UP * 1.28
 	scene._advance_press_king_spawn(0.0)
-	_check(scene._press_king == null and scene.get_node_or_null("PressKingRiseRubble") != null,
+	_check(scene._press_king == null and scene._boss_entrance.active,
 		"the boss appeared before its entrance warning")
 	scene._advance_press_king_spawn(scene.PRESS_KING_RISE_WARNING + 0.01)
 	var boss := scene._press_king as MayoEnemy

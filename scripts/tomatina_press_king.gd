@@ -1,8 +1,8 @@
 extends MayoEnemy
 
 const MODEL := "res://assets/enemies/Stage2_PressKing/Stage2_PressKing.glb"
-const CLIPS := [&"Rise", &"Idle", &"Walk", &"Slam", &"ArmorBreak", &"Collapse", &"Lob"]
-enum Act { RISE, IDLE, WALK, SLAM, STAGGER, DEATH, LOB }
+const CLIPS := [&"Rise", &"Idle", &"Walk", &"Slam", &"ArmorBreak", &"Collapse", &"Lob", &"Idle", &"Walk", &"Idle"]
+enum Act { RISE, IDLE, WALK, SLAM, STAGGER, DEATH, LOB, CHARGE_WINDUP, CHARGE, CHARGE_RECOVER }
 
 const SLAM_IMPACT := 38.0 / 30.0
 const SLAM_LENGTH := 69.0 / 30.0
@@ -12,6 +12,21 @@ const LOB_LENGTH := 57.0 / 30.0
 const LOB_FLIGHT := 1.18
 const LOB_GRAVITY := 18.0
 const LOB_RADIUS := 2.6
+const CHARGE_WINDUP_SECONDS := 0.8
+const CHARGE_SECONDS := 0.85
+const CHARGE_RECOVERY := 1.1
+const CHARGE_COOLDOWN := 7.0
+const CHASE_SPEED_FRACTION := 1.65
+const CHARGE_BASE_SPEED_FRACTION := 0.75
+const SLAM_DAMAGE := 30.0
+const ENRAGED_SLAM_DAMAGE := 40.0
+const CHARGE_DAMAGE := 35.0
+const ENRAGED_CHARGE_DAMAGE := 45.0
+const LOB_DIRECT_DAMAGE := 26.0
+const LOB_SPLASH_DAMAGE := 18.0
+var charge_speed := 25.74
+var _boss_charge_direction := Vector3.FORWARD
+var _boss_charge_cooldown := 0.0
 const OPEN_SECONDS := 7.0
 const WASH_SECONDS := 0.75
 const ARENA_MARGIN := 16.0
@@ -33,6 +48,11 @@ var _armor: MeshInstance3D
 var _weak_spot: MeshInstance3D
 var _wave: MeshInstance3D
 var _wave_material: StandardMaterial3D
+var _death_root: Node3D
+var _death_chunks: Array[MeshInstance3D] = []
+var _death_rest := Transform3D.IDENTITY
+var _death_clock := 0.0
+var _death_landed := false
 var _splinters: CPUParticles3D
 
 
@@ -56,11 +76,11 @@ func build_press_king(cell_size: float, brush_radius: float) -> void:
 	grade = Grade.HEAVY
 	radius = 1.82
 	height = 5.75
-	solo_health = 420.0
+	solo_health = 840.0
 	max_health = solo_health
 	health = max_health
 	sauce_damage_per_hit = 1.1
-	move_speed = 3.1
+	move_speed = 8.58
 	turn_speed = 2.6
 	shove_speed = 0.0
 	flinch_thresholds = []
@@ -87,6 +107,8 @@ func build_press_king(cell_size: float, brush_radius: float) -> void:
 		_rig_player.get_animation(loop).loop_mode = Animation.LOOP_LINEAR
 	_build_wave()
 	_build_splinters()
+	_build_death_burst()
+	_death_rest = _visual_root.transform
 	_update_presentation()
 
 
@@ -144,8 +166,15 @@ func _update_presentation() -> void:
 	if _shown_act != act:
 		_shown_act = act
 		var clip: StringName = CLIPS[act]
+		_rig_player.speed_scale = 2.2 if act == Act.CHARGE else 1.0
 		_rig_player.play(clip, 0.09)
 		_rig_player.seek(minf(act_time, _rig_player.get_animation(clip).length), true)
+		if act == Act.DEATH:
+			_death_clock = act_time
+			_death_landed = act_time >= 0.95
+			_death_root.show()
+			if act_time < 0.4:
+				_splinters.restart()
 		if act == Act.STAGGER and act_time < 0.4:
 			_splinters.restart()
 	if _armor != null:
@@ -166,6 +195,9 @@ func _update_presentation() -> void:
 
 func _process(delta: float) -> void:
 	super._process(delta)
+	if act == Act.DEATH:
+		_death_clock = maxf(act_time, _death_clock + delta)
+		_update_death_burst(_death_clock)
 	if not authority:
 		act_time += delta
 		exposed_left = maxf(exposed_left - delta, 0.0)
@@ -251,7 +283,7 @@ func _slam(targets: Array, old_time: float) -> void:
 			target.apply_enemy_impact(direction, 8.5, 2.4)
 			if target.can_slip():
 				target.begin_slip()
-			slam_hit.emit(target, 24.0 if armor_broken else 18.0)
+			slam_hit.emit(target, ENRAGED_SLAM_DAMAGE if armor_broken else SLAM_DAMAGE)
 
 
 signal slam_hit(player: MayoPlayer, damage: float)
@@ -267,6 +299,7 @@ func advance(delta: float, targets: Array, _target_load: Dictionary = {}) -> May
 	exposed_left = maxf(exposed_left - delta, 0.0)
 	_wash = maxf(_wash - delta * 0.16, 0.0)
 	_cooldown = maxf(_cooldown - delta, 0.0)
+	_boss_charge_cooldown = maxf(_boss_charge_cooldown - delta, 0.0)
 	match act:
 		Act.RISE:
 			if act_time >= 2.2:
@@ -274,6 +307,14 @@ func advance(delta: float, targets: Array, _target_load: Dictionary = {}) -> May
 		Act.STAGGER:
 			if act_time >= 1.3:
 				_cooldown = maxf(_cooldown, 0.8)
+				_set_act(Act.IDLE)
+		Act.CHARGE_WINDUP:
+			if act_time >= CHARGE_WINDUP_SECONDS:
+				_set_act(Act.CHARGE)
+		Act.CHARGE:
+			_advance_boss_charge(delta, targets)
+		Act.CHARGE_RECOVER:
+			if act_time >= CHARGE_RECOVERY:
 				_set_act(Act.IDLE)
 		Act.SLAM:
 			_slam(targets, old_time)
@@ -312,6 +353,16 @@ func _chase(delta: float, targets: Array) -> void:
 		facing_yaw = rotate_toward(facing_yaw, atan2(-gap.x, -gap.z), turn_speed * delta)
 		rotation.y = facing_yaw
 	var distance := gap.length()
+	if distance >= 6.0 and distance <= 30.0 and _cooldown <= 0.0 and _boss_charge_cooldown <= 0.0:
+		_boss_charge_direction = gap.normalized()
+		facing_yaw = atan2(-gap.x, -gap.z)
+		rotation.y = facing_yaw
+		_wave_hits.clear()
+		_boss_charge_cooldown = CHARGE_COOLDOWN
+		_cooldown = CHARGE_WINDUP_SECONDS + CHARGE_SECONDS + CHARGE_RECOVERY + 0.8
+		_set_act(Act.CHARGE_WINDUP)
+		special_warning.emit(self, _boss_charge_direction, CHARGE_WINDUP_SECONDS)
+		return
 	if distance <= _wave_range() - 1.1 and _cooldown <= 0.0:
 		_wave_hits.clear()
 		_cooldown = 3.3 if armor_broken else 4.65
@@ -334,7 +385,7 @@ func _chase(delta: float, targets: Array) -> void:
 	var point := Vector3(chase_at.x, global_position.y, chase_at.y)
 	var step := _step_toward(point, delta) - global_position
 	step.y = 0.0
-	var pace := move_speed * (1.36 if armor_broken else 1.0)
+	var pace := move_speed
 	velocity = step.normalized() * pace + Vector3.DOWN * 0.8
 	move_and_slide()
 	_set_act(Act.WALK if get_real_velocity().length_squared() > 0.1 else Act.IDLE)
@@ -359,3 +410,102 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	act_time = float((packed % 100000) / 100) * 0.01
 	exposed_left = float(packed % 100) / 8.0
 	_update_presentation()
+
+
+func configure_combat_speed(player_walk_speed: float, rusher_fraction: float) -> void:
+	move_speed = player_walk_speed * rusher_fraction
+	charge_speed = player_walk_speed * CHARGE_BASE_SPEED_FRACTION * MayoEnemy.BRUTE_CHARGE_SPEED_SCALE
+
+func _advance_boss_charge(delta: float, targets: Array) -> void:
+	var before := global_position
+	var inset := arena.grow(-radius)
+	var wanted := before + _boss_charge_direction * charge_speed * delta
+	var boundary := not inset.has_point(Vector2(wanted.x, wanted.z))
+	velocity = _boss_charge_direction * charge_speed + Vector3.DOWN * 0.8
+	move_and_slide()
+	var after := global_position
+	# Sweep the whole travelled segment so fast charges cannot skip a player.
+	for target: MayoPlayer in targets:
+		if target.state == MayoPlayer.State.DEAD or _wave_hits.has(target.peer_id):
+			continue
+		var flat_target := Vector3(target.global_position.x, before.y, target.global_position.z)
+		var closest := Geometry3D.get_closest_point_to_segment(flat_target, before, Vector3(after.x, before.y, after.z))
+		if closest.distance_to(flat_target) > radius + MayoPlayer.CAPSULE_RADIUS:
+			continue
+		if absf(target.global_position.y - global_position.y) > height * 0.5 + 0.5:
+			continue
+		if nav != null and not nav.line_is_walkable(global_position, target.global_position):
+			continue
+		_wave_hits[target.peer_id] = true
+		target.apply_charge_impact(_boss_charge_direction, MayoEnemy.BRUTE_CHARGE_PUSH_SPEED, MayoEnemy.BRUTE_CHARGE_LIFT_SPEED)
+		slam_hit.emit(target, ENRAGED_CHARGE_DAMAGE if armor_broken else CHARGE_DAMAGE)
+	var flat_move := Vector2(after.x - before.x, after.z - before.z).length()
+	if boundary or flat_move < charge_speed * delta * 0.35 or act_time >= CHARGE_SECONDS:
+		if boundary:
+			var safe := Vector2(after.x, after.z).clamp(inset.position, inset.end)
+			global_position.x = safe.x
+			global_position.z = safe.y
+		velocity = Vector3.ZERO
+		_set_act(Act.CHARGE_RECOVER)
+
+
+func _build_death_burst() -> void:
+	_death_root = Node3D.new()
+	_death_root.name = "BossDeathBurst"
+	_death_root.hide()
+	add_child(_death_root)
+	var wood := StandardMaterial3D.new()
+	wood.albedo_color = Color("b9864d")
+	wood.roughness = 0.95
+	var sauce := StandardMaterial3D.new()
+	sauce.albedo_color = Color("df4329")
+	sauce.roughness = 0.65
+	for i in 24:
+		var chunk := MeshInstance3D.new()
+		var box := BoxMesh.new()
+		box.size = Vector3(0.22 + (i % 3) * 0.11, 0.15, 0.45 + (i % 4) * 0.13)
+		chunk.mesh = box
+		chunk.material_override = wood if i % 3 != 0 else sauce
+		chunk.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_death_root.add_child(chunk)
+		_death_chunks.append(chunk)
+
+func _update_death_burst(time: float) -> void:
+	var t := clampf(time, 0.0, 2.2)
+	# Hold the fatal impact for a beat, recoil upward, then slam the cargo down.
+	var flight := clampf((t - 0.12) / 0.83, 0.0, 1.0)
+	var lift := sin(flight * PI) * 1.35
+	var recoil := sin(clampf(t / 0.22, 0.0, 1.0) * PI * 0.5)
+	var settle := exp(-maxf(t - 0.95, 0.0) * 9.0)
+	_visual_root.transform = _death_rest
+	_visual_root.position += basis.inverse() * (basis.z * recoil * 0.9 + Vector3.UP * lift)
+	_visual_root.rotation.z += sin(flight * PI) * 0.16 + (sin((t - 0.95) * 23.0) * 0.045 * settle if t > 0.95 else 0.0)
+	_visual_root.rotation.y += sin(flight * PI) * 0.20
+	var squash := sin(clampf((t - 0.92) / 0.22, 0.0, 1.0) * PI) * 0.10
+	_visual_root.scale *= Vector3(1.0 + squash, 1.0 - squash, 1.0 + squash)
+	# Sample the existing rigged collapse against the same replicated death clock.
+	_rig_player.pause()
+	_rig_player.seek(clampf(t - 0.12, 0.0, _rig_player.get_animation(&"Collapse").length), true)
+	if t >= 0.95 and not _death_landed:
+		_death_landed = true
+		_splinters.position = Vector3(0.0, -stand_height() + 0.2, 0.8)
+		_splinters.restart()
+	if _armor != null:
+		_armor.hide()
+	var burst_time := maxf(t - 0.12, 0.0)
+	for i in _death_chunks.size():
+		var angle := i * 2.399963
+		var direction := Vector3(cos(angle), 0.0, sin(angle))
+		var speed := 3.8 + float(i % 5) * 0.65
+		var start := direction * 0.9 + Vector3.UP * (0.1 + (i % 4) * 0.38)
+		var point := start + direction * speed * burst_time + Vector3.UP * (5.3 * burst_time - 8.5 * burst_time * burst_time)
+		point.y = maxf(point.y, -stand_height() + 0.12)
+		_death_chunks[i].position = point
+		_death_chunks[i].rotation = Vector3(angle, angle * 0.7, angle * 0.3) * burst_time * 3.0
+		_death_chunks[i].scale = Vector3.ONE * (1.0 - clampf((t - 1.25) / 0.6, 0.0, 1.0))
+	var impact := (t - 0.95) / 0.6
+	_wave.visible = impact >= 0.0 and impact <= 1.0
+	if _wave.visible:
+		_wave.scale = Vector3.ONE * lerpf(1.0, 7.5, impact)
+		_wave.scale.y = 0.3
+		_wave_material.albedo_color = Color(0.86, 0.65, 0.39, (1.0 - impact) * 0.7)
