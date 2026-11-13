@@ -3207,6 +3207,10 @@ func _build_crosshair() -> void:
 		(_crosshair as Crosshair).outline_color = Color("151823")
 	layer.add_child(_crosshair)
 	_hud_layer = layer
+	if map_kind == MapKind.TOMATINA:
+		var briefing = load("res://scripts/boss_doctor_message.gd").new()
+		briefing.world = self
+		layer.add_child(briefing)
 	if stage_mode:
 		# Over the health bar: going down is the one thing that has to be read
 		# through everything else on the screen.
