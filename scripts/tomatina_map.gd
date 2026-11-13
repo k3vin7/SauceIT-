@@ -462,7 +462,6 @@ static func blocked_cells() -> Dictionary:
 			continue
 		props.push_back(box)
 	props.append_array(parked_trucks())
-	props.push_back(fire_truck_box())
 	return _box_cells(props)
 
 
@@ -530,7 +529,8 @@ static func plaza_rect() -> Rect2:
 
 
 static func fire_truck_zone() -> Rect2:
-	return rect_world(FIRE_BAY)
+	var truck := fire_truck_box()
+	return Rect2(Vector2(truck.position.x-truck.size.x*.5-2.8,truck.position.z-truck.size.z*.5-2.8),Vector2(truck.size.x+5.6,truck.size.z+5.6))
 
 
 static func in_rect(rect: Rect2, at: Vector3) -> bool:
@@ -848,7 +848,7 @@ static func _truck_against_wall(wall_cell: Vector2, facing: Vector3, size: Vecto
 
 ## The fire truck itself, parked at the back of its bay.
 static func fire_truck_box() -> Dictionary:
-	return metre_box(Vector2(30.0, 17.6), Vector3(5.5, 4.2, 14.0), "FireTruck", Color("c4231d"))
+	return metre_box(Vector2(30.0, 24.0), Vector3(5.5, 4.2, 14.0), "FireTruck", Color("c4231d"))
 
 
 # --- the floor ----------------------------------------------------------------

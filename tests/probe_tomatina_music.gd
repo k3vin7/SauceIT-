@@ -28,11 +28,22 @@ func run() -> void:
 	boss.health = 100.0
 	stage2._press_king = boss
 	music._process(2.0)
-	assert(music.boss_mix > 0.98 and music.boss_player.playing,"boss music did not start")
-	assert(music.boss_player.stream.loop,"boss music does not loop")
+	music._process(1.0)
+	assert(music.current_mode == 1 and music.playing,"boss music did not start")
+	assert(music.get_child_count() == 0,"secondary music player can overlap tracks")
+	assert(music.stream.loop and music.stream == music.tracks[1],"boss music does not loop")
 	boss.health = 0.0
 	music._process(4.0)
-	assert(music.boss_mix < 0.001 and not music.boss_player.playing,"boss music continued after death")
+	music._process(1.0)
+	assert(music.current_mode == 0 and music.stream == music.tracks[0],"boss music continued after death")
+	# Repeated scene/music initialization must retire the old source immediately.
+	var replacement = load("res://scripts/tomatina_music.gd").new()
+	replacement.world = stage2
+	stage2.add_child(replacement)
+	assert(music.retired and not music.playing,"old music source remained audible")
+	music._process(1.0)
+	assert(not music.playing,"retired source restarted")
+	assert(replacement.playing,"replacement music did not start")
 	boss.free()
 	stage2.queue_free()
 	await process_frame

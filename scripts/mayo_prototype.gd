@@ -1202,6 +1202,9 @@ const HOSE_PENDING_TAG := -997
 const PRESS_KING_WASH_TAG := -996
 var _tomatina_warning_sounds: Dictionary = {}
 var _press_king: PressKing
+const TRUCK_ARRIVAL_CUE := 20
+const TRUCK_ARRIVAL_TAG := -995
+var _truck_arrival: Node3D
 var _boss_entrance: Node3D
 var _truck_exit_requested := false
 var _press_king_hideout: Node3D
@@ -1446,6 +1449,8 @@ func _ready() -> void:
 	_feel_rng.randomize()
 	_ensure_input_actions()
 	_build_world()
+	if is_instance_valid(_truck_arrival):
+		_truck_arrival.sync_navigation()
 	_apply_mute()
 	if map_kind == MapKind.TOMATINA:
 		_stage_music = load("res://scripts/tomatina_music.gd").new()
@@ -1465,6 +1470,10 @@ func _exit_tree() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if is_instance_valid(_truck_arrival) and _truck_arrival.active:
+		if is_instance_valid(_net):
+			_net.end_of_frame(PackedInt32Array())
+		return
 	if is_instance_valid(_boss_entrance) and _boss_entrance.active:
 		if _is_authority():
 			_advance_press_king_spawn(delta)
@@ -2286,21 +2295,21 @@ func _build_sauce_audio() -> void:
 	spray_loop_on_target_sound = _looping_sauce_clip(spray_loop_on_target_sound)
 	_sauce_audio = AudioStreamPlayer.new()
 	_sauce_audio.name = "SauceAudio"
-	_sauce_audio.bus = "Master"
+	_sauce_audio.bus = "SFX"
 	add_child(_sauce_audio)
 	_spray_loop_audio = AudioStreamPlayer.new()
 	_spray_loop_audio.name = "SprayLoopAudio"
-	_spray_loop_audio.bus = "Master"
+	_spray_loop_audio.bus = "SFX"
 	add_child(_spray_loop_audio)
 	_footstep_voice = AudioStreamPlayer3D.new()
 	_footstep_voice.name = "TutorialFootsteps"
-	_footstep_voice.bus = "Master"
+	_footstep_voice.bus = "SFX"
 	_footstep_voice.unit_size = 16.0
 	_footstep_voice.max_distance = 100.0
 	add_child(_footstep_voice)
 	_spray_edge_audio = AudioStreamPlayer.new()
 	_spray_edge_audio.name = "SprayEdgeAudio"
-	_spray_edge_audio.bus = "Master"
+	_spray_edge_audio.bus = "SFX"
 	add_child(_spray_edge_audio)
 	# The splat voices are positional -- a monster being hit across the street
 	# should sound like it is across the street -- which is why they are
@@ -2308,7 +2317,7 @@ func _build_sauce_audio() -> void:
 	for index in splat_voices:
 		var voice := AudioStreamPlayer3D.new()
 		voice.name = "SplatVoice%02d" % index
-		voice.bus = "Master"
+		voice.bus = "SFX"
 		voice.max_distance = splat_audible_distance
 		voice.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
 		add_child(voice)
@@ -4178,7 +4187,6 @@ func _build_tomatina() -> void:
 		shop_sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		shop_sign.pixel_size = 0.012
 		add_child(shop_sign)
-	_create_wall("FireTruck", truck["position"], truck["size"], truck["color"], not has_art)
 	if not tomatina_shortcut_open:
 		var gate := TomatinaMap.market_gate()
 		_create_wall(gate["name"], gate["position"], gate["size"], gate["color"])
@@ -4191,7 +4199,9 @@ func _build_tomatina() -> void:
 	var siren := TomatinaMap.at_cell(TomatinaMap.SIREN_CELL)
 	_siren_zone = Rect2(Vector2(siren.x, siren.z) - Vector2.ONE * 1.7, Vector2.ONE * 3.4)
 	_build_zone_marker("Siren", _siren_zone, Color(1.0, 0.74, 0.18, 0.55))
-	_build_zone_marker("FireTruckBay", _fire_truck_zone, Color(0.9, 0.15, 0.1, 0.22))
+	_truck_arrival = load("res://scripts/fire_truck_arrival.gd").new()
+	add_child(_truck_arrival)
+	_truck_arrival.configure(self)
 	var label := Label3D.new()
 	label.text = "사이렌"
 	_siren_label = label
@@ -5533,6 +5543,8 @@ func _update_juice_kickup(delta: float) -> void:
 
 
 func _reset_tomatina_finale() -> void:
+	if is_instance_valid(_truck_arrival):
+		_truck_arrival.reset_intro()
 	_truck_exit_requested = false
 	_overripe_bursts.clear()
 	_splash_ripples.clear()
@@ -5766,8 +5778,13 @@ func _check_stage_clear() -> void:
 		return
 	if map_kind == MapKind.TOMATINA:
 		_update_stage_objective()
+		if _is_authority() and is_instance_valid(_press_king) and not _press_king.is_alive() and _press_king.act_time >= 1.9 and is_instance_valid(_truck_arrival) and not _truck_arrival.played:
+			show_combat_warning(_truck_arrival.final_at,Vector3.ZERO,6.2,TRUCK_ARRIVAL_CUE)
+			if is_instance_valid(_net) and _net.is_online():
+				_net.broadcast_combat_warning(_truck_arrival.final_at,Vector3.ZERO,6.2,TRUCK_ARRIVAL_CUE)
+			return
 		if is_instance_valid(_press_king) and not _press_king.is_alive() \
-				and _press_king.act_time >= 1.9 and _party_at_fire_truck() and _truck_exit_requested:
+				and _press_king.act_time >= 1.9 and is_instance_valid(_truck_arrival) and _truck_arrival.arrived and _party_at_fire_truck() and _truck_exit_requested:
 			_stage_clear_emitted = true
 			set_gameplay_input_enabled(false)
 			stage_cleared.emit()
@@ -5809,7 +5826,7 @@ func _tomatina_action_hint() -> String:
 		if _can_rescue_teammate(_local.player, teammate.player):
 			return ""
 	var at := _local.player.global_position
-	if is_instance_valid(_press_king) and not _press_king.is_alive() and TomatinaMap.in_rect(_fire_truck_zone,at):
+	if is_instance_valid(_press_king) and not _press_king.is_alive() and is_instance_valid(_truck_arrival) and _truck_arrival.in_reach(_local.player) and TomatinaMap.in_rect(_fire_truck_zone,at):
 		return "[E] 트럭 탑승 · 탈출" if _party_at_fire_truck() else "생존 팀원이 트럭에 모이면 탈출할 수 있어요"
 	if not _horde_spawned and TomatinaMap.in_rect(_siren_zone, at):
 		return "[E] 사이렌 작동"
@@ -5849,7 +5866,7 @@ func _update_stage_objective(alive := -1) -> void:
 				armor = "갑옷 세척 %d%%" % floori(_press_king.wash_progress() * 100.0)
 			objective = "토마토 압착왕  %d%%  |  %s" % [ceili(_press_king.health_fraction() * 100.0), armor]
 		else:
-			objective = "생존 팀원과 소방차로 이동 · [E] 탑승하여 탈출"
+			objective = "생존 팀원과 소방차로 이동 · [E] 탑승하여 탈출" if is_instance_valid(_truck_arrival) and _truck_arrival.arrived else "소방차가 외벽을 뚫고 진입합니다"
 		var refuge := _tomatina_refuge_status()
 		_stage_objective.text = objective
 		_refuge_status_label.text = refuge
@@ -6094,7 +6111,7 @@ func _update_tomatina_checkpoint(players: Array) -> void:
 ## nothing cleans the body. Handing back a spotless body on death would make
 ## dying the fastest way to clean your glasses.
 func _damage_player(player: MayoPlayer, amount: float) -> void:
-	if is_instance_valid(_boss_entrance) and _boss_entrance.active:
+	if is_cinematic_active():
 		return
 	if map_kind == MapKind.TOMATINA \
 			and TomatinaMap.safe_room_at(StreetMap.cell_at(player.global_position)) >= 0:
@@ -9036,6 +9053,10 @@ func _on_special_warning(enemy: MayoEnemy, direction: Vector3, duration: float) 
 
 
 func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: int) -> void:
+	if cue == TRUCK_ARRIVAL_CUE:
+		if is_instance_valid(_truck_arrival):
+			_truck_arrival.start(at)
+		return
 	if map_kind == MapKind.TOMATINA and cue in [0, 1, HOSE_COUNTERATTACK_CUE, PRESS_KING_RISE_CUE]:
 		if not muted:
 			_play_combat_warning(at, 220.0, duration, _tomatina_warning_sound(cue))
@@ -9140,6 +9161,7 @@ func _play_combat_warning(at: Vector3, pitch: float, duration: float, sound: Aud
 	if _warning_sound == null:
 		_warning_sound = _placeholder_tone(220.0, 0.50)
 	var voice := AudioStreamPlayer3D.new()
+	voice.bus = "SFX"
 	voice.stream = sound if sound != null else _warning_sound
 	voice.pitch_scale = pitch / 220.0
 	voice.max_distance = 48.0
@@ -9277,6 +9299,8 @@ func tomatina_status() -> PackedFloat64Array:
 	if map_kind != MapKind.TOMATINA:
 		return data
 	data.append(_finale_elapsed if _horde_spawned else -1.0)
+	if is_instance_valid(_truck_arrival):
+		data.append_array(PackedFloat64Array([TRUCK_ARRIVAL_TAG,-1.0 if not _truck_arrival.played else (100.0 if _truck_arrival.arrived else _truck_arrival.elapsed)]))
 	data.append_array(PackedFloat64Array([FINALE_CHECKPOINT_TAG, _tomatina_checkpoint, HOSE_PENDING_TAG, _hose_wave_pending]))
 	if is_instance_valid(_press_king):
 		data.append_array(PackedFloat64Array([PRESS_KING_WASH_TAG, _press_king.wash_progress()]))
@@ -9311,6 +9335,16 @@ func apply_tomatina_status(data: PackedFloat64Array) -> void:
 	_rescue_attempts.clear()
 	_finale_remaining = 0
 	for at in range(1, data.size() - 1, 2):
+		if data[at] == TRUCK_ARRIVAL_TAG:
+			if is_instance_valid(_truck_arrival):
+				if data[at+1] < 0.0:
+					if _truck_arrival.played: _truck_arrival.reset_intro()
+				elif data[at+1] >= 99.0:
+					_truck_arrival.restore_arrival()
+				elif not _truck_arrival.played:
+					_truck_arrival.start(_truck_arrival.final_at)
+					_truck_arrival.elapsed = data[at+1]
+			continue
 		if data[at] == FINALE_CHECKPOINT_TAG:
 			_tomatina_checkpoint = int(data[at + 1])
 			continue
@@ -9352,6 +9386,8 @@ func _request_tomato_action(action: int) -> void:
 
 
 func tomato_action(peer: int, action: int) -> void:
+	if is_cinematic_active():
+		return
 	if not _is_authority() or not _shooters.has(peer):
 		return
 	var shooter: Shooter = _shooters[peer]
@@ -9773,6 +9809,8 @@ func _sync_camera_viewmodel() -> void:
 func _try_truck_exit(shooter: Shooter) -> bool:
 	if not is_instance_valid(_press_king) or _press_king.is_alive():
 		return false
+	if not is_instance_valid(_truck_arrival) or not _truck_arrival.in_reach(shooter.player):
+		return false
 	if not TomatinaMap.in_rect(_fire_truck_zone,shooter.player.global_position):
 		return false
 	# Consume E in the exit zone even when waiting; do not also take a hose/item.
@@ -9783,3 +9821,7 @@ func _try_truck_exit(shooter: Shooter) -> bool:
 	_truck_exit_requested = true
 	_check_stage_clear()
 	return true
+
+
+func is_cinematic_active() -> bool:
+	return (is_instance_valid(_boss_entrance) and _boss_entrance.active) or (is_instance_valid(_truck_arrival) and _truck_arrival.active)

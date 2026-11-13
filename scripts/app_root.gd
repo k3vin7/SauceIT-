@@ -36,6 +36,8 @@ var _open_room: CheckBox
 ## selection travels with `begin_host_room` instead of a hard-coded id.
 var _stage_select: OptionButton
 var _volume_slider: HSlider
+var _bgm_slider: HSlider
+var _sfx_slider: HSlider
 var _sensitivity_slider: HSlider
 var _active_transition := 0
 var _notice := ""
@@ -503,12 +505,9 @@ func _open_options() -> void:
 	heading.text = "옵션"
 	heading.add_theme_font_size_override("font_size", 32)
 	column.add_child(heading)
-	_volume_slider = HSlider.new()
-	_volume_slider.min_value = 0.0
-	_volume_slider.max_value = 1.0
-	_volume_slider.step = 0.01
-	_volume_slider.value = save_store.master_volume
-	column.add_child(_labeled("전체 음량", _volume_slider))
+	_volume_slider = _audio_slider(column, "전체 음량", save_store.master_volume)
+	_bgm_slider = _audio_slider(column, "BGM", save_store.bgm_volume)
+	_sfx_slider = _audio_slider(column, "효과음", save_store.sfx_volume)
 	_sensitivity_slider = HSlider.new()
 	_sensitivity_slider.min_value = 0.02
 	_sensitivity_slider.max_value = 0.3
@@ -521,7 +520,7 @@ func _open_options() -> void:
 
 
 func _save_options() -> void:
-	save_store.save_options(_volume_slider.value, _sensitivity_slider.value)
+	save_store.save_options(_volume_slider.value, _sensitivity_slider.value, _bgm_slider.value, _sfx_slider.value)
 	_apply_options()
 	if current_space is RecruitmentMap:
 		(current_space as RecruitmentMap).mouse_sensitivity = save_store.mouse_sensitivity
@@ -538,11 +537,25 @@ func _close_options() -> void:
 	_restore_mouse_for_flow()
 
 
+func _audio_slider(column: VBoxContainer, caption: String, value: float) -> HSlider:
+	var slider := HSlider.new()
+	slider.min_value = 0.0
+	slider.max_value = 1.0
+	slider.step = 0.01
+	slider.value = value
+	var row := _labeled(caption + "  %d%%" % roundi(value * 100), slider)
+	column.add_child(row)
+	var label := row.get_child(0) as Label
+	slider.value_changed.connect(func(amount: float): label.text = caption + "  %d%%" % roundi(amount * 100))
+	return slider
+
+
 func _apply_options() -> void:
-	var bus := AudioServer.get_bus_index("Master")
-	if bus >= 0:
-		AudioServer.set_bus_volume_db(bus, linear_to_db(maxf(save_store.master_volume, 0.0001)))
-		AudioServer.set_bus_mute(bus, save_store.master_volume <= 0.001)
+	for entry in [["Master", save_store.master_volume], ["Music", save_store.bgm_volume], ["SFX", save_store.sfx_volume]]:
+		var bus := AudioServer.get_bus_index(entry[0])
+		if bus >= 0:
+			AudioServer.set_bus_volume_db(bus, linear_to_db(maxf(entry[1], 0.0001)))
+			AudioServer.set_bus_mute(bus, entry[1] <= 0.001)
 
 
 func _open_pause() -> void:

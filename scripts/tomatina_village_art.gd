@@ -113,7 +113,6 @@ func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dicti
 				Vector3(1.24, 1.63, 1.21), ember_mesh, ember_process)
 	for box in parked_trucks:
 		_add_debris(box)
-	_add_box_model("FireEngine", fire_truck, Vector3.BACK)
 	for index in TomatinaMap.SAFE_ROOMS.size():
 		var room: Rect2i = TomatinaMap.SAFE_ROOMS[index]
 		var centre := Vector2(float(room.get_center().x) + 0.5, float(room.position.y) + 1.5)
