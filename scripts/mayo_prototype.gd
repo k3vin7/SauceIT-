@@ -1205,6 +1205,7 @@ var _press_king: PressKing
 const TRUCK_ARRIVAL_CUE := 20
 const TRUCK_ARRIVAL_TAG := -995
 var _truck_arrival: Node3D
+var _pump_generator: Node3D
 var _boss_entrance: Node3D
 var _truck_exit_requested := false
 var _press_king_hideout: Node3D
@@ -4202,10 +4203,14 @@ func _build_tomatina() -> void:
 	_truck_arrival = load("res://scripts/fire_truck_arrival.gd").new()
 	add_child(_truck_arrival)
 	_truck_arrival.configure(self)
+	_pump_generator = load("res://assets/props/Stage2_PumpGenerator/Stage2_PumpGenerator.glb").instantiate()
+	_pump_generator.name = "PumpGenerator"
+	_pump_generator.position = siren
+	add_child(_pump_generator)
 	var label := Label3D.new()
-	label.text = "사이렌"
+	label.text = "발전기"
 	_siren_label = label
-	label.position = siren + Vector3.UP * 2.0
+	label.position = siren + Vector3.UP * 2.4
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	label.pixel_size = 0.013
 	add_child(label)
@@ -5579,6 +5584,7 @@ func _reset_tomatina_finale() -> void:
 	if is_instance_valid(_press_king_hideout):
 		_press_king_hideout.show()
 	if is_instance_valid(_siren_label):
+		_siren_label.text = "발전기"
 		_siren_label.show()
 
 
@@ -5587,7 +5593,7 @@ func _start_finale(player: MayoPlayer) -> void:
 			or not TomatinaMap.in_rect(_siren_zone, player.global_position):
 		return
 	_horde_spawned = true
-	_siren_label.hide()
+	_siren_label.text = "발전기 · 가동 중"
 	show_combat_warning(player.global_position, Vector3.ZERO, 0.9, 0)
 	if is_instance_valid(_net) and _net.is_online():
 		_net.broadcast_combat_warning(player.global_position, Vector3.ZERO, 0.9, 0)
@@ -5829,11 +5835,11 @@ func _tomatina_action_hint() -> String:
 	if is_instance_valid(_press_king) and not _press_king.is_alive() and is_instance_valid(_truck_arrival) and _truck_arrival.in_reach(_local.player) and TomatinaMap.in_rect(_fire_truck_zone,at):
 		return "[E] 트럭 탑승 · 탈출" if _party_at_fire_truck() else "생존 팀원이 트럭에 모이면 탈출할 수 있어요"
 	if not _horde_spawned and TomatinaMap.in_rect(_siren_zone, at):
-		return "[E] 사이렌 작동"
+		return "[E] 발전기 켜기"
 	if _hose_slot_of(_local.peer_id) >= 0:
 		return "[E] 호스 끄기"
 	var slot := _hose_slot(at)
-	if slot >= 0 and _finale_elapsed >= FINALE_DURATION and not _hose_users.has(slot):
+	if slot >= 0 and _horde_spawned and not _hose_users.has(slot):
 		return "[E] 물 호스 사용"
 	if _refuge_shower_in_reach(at) >= 0:
 		return "[E] 몸에 묻은 토마토 자국 씻기"
@@ -5848,9 +5854,9 @@ func _update_stage_objective(alive := -1) -> void:
 	if map_kind == MapKind.TOMATINA:
 		var objective := ""
 		if not _horde_spawned:
-			objective = "교회 광장으로 이동 · 사이렌 작동"
+			objective = "교회 광장으로 이동 · 발전기 켜기"
 		elif _finale_elapsed < FINALE_DURATION:
-			objective = "광장 방어 · 급수 압력 확보까지 %d초" % ceili(FINALE_DURATION - _finale_elapsed)
+			objective = "발전기 가동 · 증원 종료까지 %d초" % ceili(FINALE_DURATION - _finale_elapsed)
 		elif not is_instance_valid(_press_king):
 			objective = "광장 방어 · 남은 적 %d" % _finale_remaining if _finale_remaining > 0 \
 				else "광장 방어 · 종소리가 들린다"
@@ -8461,7 +8467,7 @@ func _hose_slot_of(peer: int) -> int:
 ## they fire on every peer off the open/close edge in `_update_hose_visuals`,
 ## since this runs on the authority alone.
 func _toggle_fire_hose(shooter: Shooter) -> void:
-	if not _input_enabled or map_kind != MapKind.TOMATINA or _finale_elapsed < FINALE_DURATION:
+	if not _input_enabled or map_kind != MapKind.TOMATINA or not _horde_spawned:
 		return
 	var held := _hose_slot_of(shooter.peer_id)
 	if held >= 0:
@@ -8919,8 +8925,8 @@ func _update_hose_visuals() -> void:
 		if not stand.is_empty() and is_instance_valid(stand["nozzle"]):
 			stand["nozzle"].visible = shooter == null
 			var label: Label3D = stand["label"]
-			label.text = "급수 대기" if _finale_elapsed < FINALE_DURATION else ("사용 중" if shooter != null else "호스 사용 가능")
-			label.modulate = Color("8bdff4") if _finale_elapsed >= FINALE_DURATION else Color("ddd6ba")
+			label.text = "발전기를 켜세요" if not _horde_spawned else ("사용 중" if shooter != null else "호스 사용 가능")
+			label.modulate = Color("8bdff4") if _horde_spawned else Color("ddd6ba")
 		if shooter == null or not is_instance_valid(shooter.player):
 			if not visual.is_empty():
 				for segment in visual["jet"]:
@@ -9140,8 +9146,8 @@ func _tomatina_warning_sound(cue: int) -> AudioStreamWAV:
 		var sample := 0.0
 		match cue:
 			0:
-				var sweep := TAU * (275.0 * t + 56.0 * t * t)
-				sample = (sin(sweep) + sin(sweep * 2.0) * 0.32) * (1.0 - t / 0.75)
+				var motor := TAU * (65.0*t+20.0*t*t)
+				sample = (sin(motor)+sin(motor*3)*0.25)*(0.65+0.35*sin(TAU*19*t))*(1.0-t/0.75)
 			PRESS_KING_RISE_CUE:
 				sample = sin(TAU * 146.0 * t) * exp(-t * 3.5)
 				sample += sin(TAU * 387.0 * t) * 0.44 * exp(-t * 8.0)
@@ -9329,7 +9335,8 @@ func apply_tomatina_status(data: PackedFloat64Array) -> void:
 		return
 	_horde_spawned = data[0] >= 0.0
 	if is_instance_valid(_siren_label):
-		_siren_label.visible = not _horde_spawned
+		_siren_label.visible = true
+		_siren_label.text = "발전기 · 가동 중" if _horde_spawned else "발전기"
 	_finale_elapsed = maxf(0.0, data[0])
 	_hose_users.clear()
 	_rescue_attempts.clear()
@@ -9406,7 +9413,7 @@ func tomato_action(peer: int, action: int) -> void:
 		if not _horde_spawned and TomatinaMap.in_rect(_siren_zone, player.global_position):
 			_start_finale(player)
 			return
-		if _finale_elapsed >= FINALE_DURATION \
+		if _horde_spawned \
 				and (_hose_slot_of(peer) >= 0 or _hose_slot(player.global_position) >= 0):
 			_toggle_fire_hose(shooter)
 			return

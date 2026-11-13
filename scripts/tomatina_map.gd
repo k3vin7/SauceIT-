@@ -627,7 +627,7 @@ static func debris_boxes() -> Array[Dictionary]:
 			_add_supply_crate(boxes, Vector2(x, room.end.y - 0.74))
 		var centre := Vector2(room.position) + Vector2(room.size) * 0.5
 		boxes.push_back(metre_box(centre, Vector3(1.8, 0.6, 1.8), "RefugeBrazier", Color("b85b28")))
-	boxes.push_back(metre_box(Vector2(25.5, 26.5), Vector3(3.5, 4.8, 3.5), "SirenColumn"))
+	boxes.push_back(metre_box(Vector2(25.5, 26.5), Vector3(3.5, 1.9, 2.5), "SirenColumn"))
 	boxes.push_back(metre_box(Vector2(23.0, 34.5), Vector3(3, 1.1, 3), "PlazaTreeWest"))
 	boxes.push_back(metre_box(Vector2(37.0, 34.5), Vector3(3, 1.1, 3), "PlazaTreeEast"))
 	boxes.push_back(metre_box(Vector2(22.7, 25.0), Vector3(5, 3.4, 3.4), "PlazaStallWest"))

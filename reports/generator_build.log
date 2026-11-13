@@ -1,0 +1,115 @@
+C:\Users\FORYOUCOM\OneDrive\바탕 화면\SauceIt_3D\SauceIT-\assets\props\Stage2_PumpGenerator\Stage2_PumpGenerator_build.py:7: DeprecationWarning: 'Material.use_nodes' is expected to be removed in Blender 6.0
+  m=bpy.data.materials.new(name); m.diffuse_color=(*color,1); m.use_nodes=True
+Info: Saved as "Stage2_PumpGenerator.blend"
+INFO Draco is available, use library at C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.shared\bf_intern_draco_bridge.dll
+INFO MeshOptimizer is available, use library at C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.shared\bf_intern_meshopt_bridge.dll
+22:11:56 | INFO: Starting glTF 2.0 export
+22:11:56 | INFO: Extracting primitive: Cube.019
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.011
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.012
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.013
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.014
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.015
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.016
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.017
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.010
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.022
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder.001
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.002
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.006
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.005
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.009
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.003
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.004
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.007
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.008
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.018
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder.005
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder.006
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder.004
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.020
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.021
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder.003
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder.002
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder.008
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder.009
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder.010
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder.011
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cube.001
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Extracting primitive: Cylinder.007
+22:11:56 | WARNING: The active Vertex Color will not be exported, as it is not used in the node tree of the material
+22:11:56 | INFO: Primitives created: 1
+22:11:56 | INFO: Finished glTF 2.0 export in 0.2179880142211914 s
+00:08.282  blend            | Read blend: "C:\Users\FORYOUCOM\OneDrive\바탕 화면\SauceIt_3D\SauceIT-\assets\props\Stage2_PumpGenerator\Stage2_PumpGenerator.blend"
+
+PUMP_GENERATOR_VALIDATED
+Blender 5.3.0 (hash 02f0899d78e3 built 2026-11-10 01:33:43)
+
+Blender quit

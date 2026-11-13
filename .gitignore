@@ -1,2 +1,5 @@
 .godot/
 .DS_Store
+
+# Local Godot test data: logs, shader caches and editor state.
+reports/runtime_user/

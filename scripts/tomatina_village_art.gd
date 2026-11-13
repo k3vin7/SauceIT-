@@ -348,7 +348,7 @@ func _add_debris(box: Dictionary) -> void:
 	elif name.begins_with("PlazaStall"):
 		key = "MarketStall"
 	elif name == "SirenColumn":
-		key = "FestivalColumn"
+		return # Replaced by the dedicated pump generator model.
 	elif name.ends_with("WreckBody"):
 		key = "WreckBody"
 		if size.x > size.z:

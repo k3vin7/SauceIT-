@@ -783,6 +783,12 @@ func _run() -> void:
 		boss.advance(1.91, [])
 		scene._check_stage_clear()
 		_check(not cleared[0], "boss death automatically ended the stage without interaction")
+		_check(scene._truck_arrival.active, "boss death did not start fire truck arrival")
+		scene.tomato_action(player.peer_id,0)
+		_check(not cleared[0], "truck interaction ended stage during arrival cinematic")
+		scene._truck_arrival.restore_arrival()
+		player.global_position = truck_centre + Vector3(4.0,1.28,0)
+		teammate.global_position = truck_centre + Vector3(-4.0,1.28,0)
 		scene.tomato_action(player.peer_id,0)
 		_check(cleared[0], "truck interaction did not complete extraction")
 

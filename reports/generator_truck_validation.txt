@@ -1,0 +1,26 @@
+Generator + fire truck extraction flow — 2026-11-13
+
+Implemented
+- Replaced the siren prop with an original pump-generator model, labeled 발전기.
+- Activation immediately powers the fire hoses; the existing defense waves retain their timing.
+- Removed the initially parked fire engine and its invisible starting collision.
+- Added a physical external wall and rubble at the extraction bay entrance.
+- Navigation closes the same entrance for players/enemies until breach.
+- Boss death now triggers a 6.2-second fire-engine arrival camera sequence.
+- Vehicle meets the wall at the break beat, drives in and remains as the extraction vehicle.
+- Barrier collision/nav opens, final truck collision/nav becomes active.
+- Players standing in the stopping footprint are moved to a clear side on authority.
+- Controls and player camera return; E interaction with the arrived truck completes the stage.
+- Generator state, arrival progress/final state and checkpoint reset replicate to clients.
+
+Validation
+PUMP_GENERATOR_VALIDATED — saved .blend reopened, materials/mesh and GLB export verified.
+GENERATOR_TRUCK_FLOW_OK — early hose unlock, blocked bay, cinematic, controls, collision, explicit exit.
+GENERATOR_TRUCK_NETWORK_OK / MAYO_NETWORK_OK — two local ENet peers, power, remote hose input,
+arrival on both peers, collision release and checkpoint reset.
+TOMATINA_OK — full existing stage progression regression after updating extraction expectations.
+Rendered and visually inspected the generator and wall-break/arrival shots.
+
+Limitations
+Network checks use localhost; they do not simulate WAN latency or packet loss.
+Headless Godot emits existing dummy-renderer material warnings and shutdown resource warnings.
