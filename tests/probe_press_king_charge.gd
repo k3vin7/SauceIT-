@@ -72,6 +72,17 @@ func run() -> void:
 		var state: Array = boss.network_state()
 		boss.apply_network_state(state[0], state[1], state[2], state[3], state[4])
 		check(boss.act == action and boss.armor_broken, "new charge state failed network roundtrip")
+	boss.act = Boss.Act.IDLE
+	boss.health = boss.max_health
+	boss.armor_broken = true
+	boss.take_aimed_sauce_hit(boss.to_global(Vector3(0,-0.68,-1.0)),100.0)
+	check(is_equal_approx(boss.max_health-boss.health,63.25), "weak spot damage was not reduced")
+	boss.health = boss.max_health
+	boss.armor_broken = false
+	boss.exposed_left = 0.0
+	boss.take_sauce_hit(Vector3.ZERO,100.0)
+	check(is_equal_approx(boss.max_health-boss.health,16.0), "armored damage changed unexpectedly")
+	boss.armor_broken = true
 	boss.health = 1.0
 	boss.take_sauce_hit(Vector3.ZERO, 10.0)
 	check(boss.act == Boss.Act.DEATH, "death did not interrupt charge")
@@ -82,8 +93,9 @@ func run() -> void:
 	for frame in 121:
 		boss._update_death_burst(float(frame) / 60.0)
 		check(boss._visual_root.transform.is_finite(), "death pose became nonfinite")
+		check(boss._visual_root.transform.is_equal_approx(boss._death_rest), "death overlay hops, twists or squashes model")
 		check(boss.global_position.distance_to(death_at) < 0.001, "death effect moved gameplay body")
-	check(boss._death_chunks.size() == 24, "death burst missing debris")
+	check(boss._death_chunks.size() == 8, "death burst missing debris")
 	check(boss._death_chunks[0].scale.length() < 0.001, "death debris did not finish before extraction")
 	print("PRESS_KING_DEATH_OK")
 	for failure in failures:

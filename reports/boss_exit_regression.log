@@ -1,0 +1,13 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+route from the start to the fire truck: 357 waypoints
+market routes: 357 waypoints open, 381 closed
+lattice: 1937 of 1937 open cells reachable from the start
+roster: { 4: 9, 8: 8, 7: 8, 5: 4, 6: 12, 3: 167 }
+400 grunts dealt: 287 small, 95 medium, 18 large
+juice under 36 samples in the first juice alley: 36 painted
+splash: the neighbour lost 7.80 of 40.00 health
+burst of 1.63 m: 431 floor cells painted, 208 ints queued
+debris: 8 pieces
+ball met its wall at (-25.8048, 0.910842, -326.2575), launched from (-25.8048, 0.91, -323.4816)
+TOMATINA_OK

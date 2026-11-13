@@ -1140,6 +1140,7 @@ var _health_hud: HealthHud
 var _rescue_hud: Control
 var _minimap: Minimap
 var _key_legend: Control
+var _stage_music: AudioStreamPlayer
 var _sauce_audio: AudioStreamPlayer
 ## The squirt's own voice, kept on two players rather than one: the loop has to
 ## go on sounding while the start and end one-shots play over it, and a single
@@ -1190,6 +1191,7 @@ const PRESS_KING_WASH_TAG := -996
 var _tomatina_warning_sounds: Dictionary = {}
 var _press_king: PressKing
 var _boss_entrance: Node3D
+var _truck_exit_requested := false
 var _press_king_hideout: Node3D
 var _finale_remaining := 0
 const ESCAPE_SHOVE_ACTION := 6
@@ -1433,6 +1435,10 @@ func _ready() -> void:
 	_ensure_input_actions()
 	_build_world()
 	_apply_mute()
+	if map_kind == MapKind.TOMATINA:
+		_stage_music = load("res://scripts/tomatina_music.gd").new()
+		_stage_music.world = self
+		add_child(_stage_music)
 	set_first_person(start_in_first_person)
 	_capture_mouse()
 	_floor.configure(grid_cell_size, contamination_brush_radius)
@@ -3009,6 +3015,8 @@ func shooter_ids() -> Array:
 
 func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
 	var shooter := Shooter.new()
+	if map_kind == MapKind.TOMATINA:
+		shooter.sauce_kind = ContaminationGrid.KIND_KETCHUP
 	shooter.peer_id = peer_id
 	shooter.is_local = is_local
 	shooter.spawn_slot = slot
@@ -5366,6 +5374,7 @@ func _update_juice_kickup(delta: float) -> void:
 
 
 func _reset_tomatina_finale() -> void:
+	_truck_exit_requested = false
 	_overripe_bursts.clear()
 	_splash_ripples.clear()
 	_press_king_rise_at = Vector3.INF
@@ -5599,7 +5608,7 @@ func _check_stage_clear() -> void:
 	if map_kind == MapKind.TOMATINA:
 		_update_stage_objective()
 		if is_instance_valid(_press_king) and not _press_king.is_alive() \
-				and _press_king.act_time >= 1.9 and _party_at_fire_truck():
+				and _press_king.act_time >= 1.9 and _party_at_fire_truck() and _truck_exit_requested:
 			_stage_clear_emitted = true
 			set_gameplay_input_enabled(false)
 			stage_cleared.emit()
@@ -5641,6 +5650,8 @@ func _tomatina_action_hint() -> String:
 		if _can_rescue_teammate(_local.player, teammate.player):
 			return ""
 	var at := _local.player.global_position
+	if is_instance_valid(_press_king) and not _press_king.is_alive() and TomatinaMap.in_rect(_fire_truck_zone,at):
+		return "[E] 트럭 탑승 · 탈출" if _party_at_fire_truck() else "생존 팀원이 트럭에 모이면 탈출할 수 있어요"
 	if not _horde_spawned and TomatinaMap.in_rect(_siren_zone, at):
 		return "[E] 사이렌 작동"
 	if _hose_slot_of(_local.peer_id) >= 0:
@@ -5679,7 +5690,7 @@ func _update_stage_objective(alive := -1) -> void:
 				armor = "갑옷 세척 %d%%" % floori(_press_king.wash_progress() * 100.0)
 			objective = "토마토 압착왕  %d%%  |  %s" % [ceili(_press_king.health_fraction() * 100.0), armor]
 		else:
-			objective = "생존 팀원과 소방차로 이동"
+			objective = "생존 팀원과 소방차로 이동 · [E] 탑승하여 탈출"
 		var refuge := _tomatina_refuge_status()
 		_stage_objective.text = objective
 		_refuge_status_label.text = refuge
@@ -9138,6 +9149,8 @@ func tomato_action(peer: int, action: int) -> void:
 	if action == 0 and map_kind == MapKind.TOMATINA:
 		if _start_tomatina_rescue(shooter):
 			return
+		if _try_truck_exit(shooter):
+			return
 		if not _horde_spawned and TomatinaMap.in_rect(_siren_zone, player.global_position):
 			_start_finale(player)
 			return
@@ -9547,3 +9560,18 @@ func _sync_camera_viewmodel() -> void:
 				shooter.camera_viewmodel.hide()
 			if is_instance_valid(shooter.first_person_arms) and shooter.first_person_arms.get_parent() == _camera:
 				shooter.first_person_arms.reparent(shooter.aim_pivot, false)
+
+
+func _try_truck_exit(shooter: Shooter) -> bool:
+	if not is_instance_valid(_press_king) or _press_king.is_alive():
+		return false
+	if not TomatinaMap.in_rect(_fire_truck_zone,shooter.player.global_position):
+		return false
+	# Consume E in the exit zone even when waiting; do not also take a hose/item.
+	if not _is_authority() or not _input_enabled or _press_king.act_time < 1.9:
+		return true
+	if shooter.player.state != MayoPlayer.State.NORMAL or not _party_at_fire_truck():
+		return true
+	_truck_exit_requested = true
+	_check_stage_clear()
+	return true

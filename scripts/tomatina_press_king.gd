@@ -27,6 +27,8 @@ const LOB_SPLASH_DAMAGE := 18.0
 var charge_speed := 25.74
 var _boss_charge_direction := Vector3.FORWARD
 var _boss_charge_cooldown := 0.0
+const EXPOSED_DAMAGE_SCALE := 0.55
+const WEAK_SPOT_MULTIPLIER := 1.15
 const OPEN_SECONDS := 7.0
 const WASH_SECONDS := 0.75
 const ARENA_MARGIN := 16.0
@@ -101,6 +103,17 @@ func build_press_king(cell_size: float, brush_radius: float) -> void:
 	_finish_primitive_body(cell_size, brush_radius, mask, visual, Color("ba3123"))
 	_rig_player = rig_player(visual)
 	assert(_rig_player != null, "Press King rig did not import")
+	# The old Collapse scales the torso down to 51%; retain its joint motion,
+	# but preserve the model's volume and bone lengths throughout the death.
+	var collapse := _rig_player.get_animation(&"Collapse").duplicate() as Animation
+	for track in range(collapse.get_track_count()-1,-1,-1):
+		if collapse.track_get_type(track) == Animation.TYPE_SCALE_3D:
+			collapse.remove_track(track)
+	var library := _rig_player.get_animation_library(&"").duplicate() as AnimationLibrary
+	library.remove_animation(&"Collapse")
+	library.add_animation(&"Collapse",collapse)
+	_rig_player.remove_animation_library(&"")
+	_rig_player.add_animation_library(&"",library)
 	_armor = visual.find_child("Armor", true, false) as MeshInstance3D
 	_weak_spot = visual.find_child("WeakSpot", true, false) as MeshInstance3D
 	for loop in [&"Idle", &"Walk"]:
@@ -234,7 +247,7 @@ func is_weak_spot_hit(hit_position: Vector3) -> bool:
 
 
 func take_aimed_sauce_hit(hit_position: Vector3, damage := -1.0) -> bool:
-	var multiplier := 1.35 if is_weak_spot_hit(hit_position) else 1.0
+	var multiplier := WEAK_SPOT_MULTIPLIER if is_weak_spot_hit(hit_position) else 1.0
 	return _take_sauce_damage((sauce_damage_per_hit if damage < 0.0 else damage) * multiplier)
 
 
@@ -242,7 +255,7 @@ func _take_sauce_damage(damage: float) -> bool:
 	if not is_alive() or act == Act.RISE:
 		return false
 	var exposed := armor_broken or exposed_left > 0.0
-	health = maxf(health - damage * (1.0 if exposed else 0.16), 0.0)
+	health = maxf(health - damage * (EXPOSED_DAMAGE_SCALE if exposed else 0.16), 0.0)
 	if not is_alive():
 		collision_layer = 0
 		collision_mask = 0
@@ -460,7 +473,7 @@ func _build_death_burst() -> void:
 	var sauce := StandardMaterial3D.new()
 	sauce.albedo_color = Color("df4329")
 	sauce.roughness = 0.65
-	for i in 24:
+	for i in 8:
 		var chunk := MeshInstance3D.new()
 		var box := BoxMesh.new()
 		box.size = Vector3(0.22 + (i % 3) * 0.11, 0.15, 0.45 + (i % 4) * 0.13)
@@ -472,20 +485,11 @@ func _build_death_burst() -> void:
 
 func _update_death_burst(time: float) -> void:
 	var t := clampf(time, 0.0, 2.2)
-	# Hold the fatal impact for a beat, recoil upward, then slam the cargo down.
-	var flight := clampf((t - 0.12) / 0.83, 0.0, 1.0)
-	var lift := sin(flight * PI) * 1.35
-	var recoil := sin(clampf(t / 0.22, 0.0, 1.0) * PI * 0.5)
-	var settle := exp(-maxf(t - 0.95, 0.0) * 9.0)
+	# One authored collapse, with no second hop, spin or squash layered on top.
 	_visual_root.transform = _death_rest
-	_visual_root.position += basis.inverse() * (basis.z * recoil * 0.9 + Vector3.UP * lift)
-	_visual_root.rotation.z += sin(flight * PI) * 0.16 + (sin((t - 0.95) * 23.0) * 0.045 * settle if t > 0.95 else 0.0)
-	_visual_root.rotation.y += sin(flight * PI) * 0.20
-	var squash := sin(clampf((t - 0.92) / 0.22, 0.0, 1.0) * PI) * 0.10
-	_visual_root.scale *= Vector3(1.0 + squash, 1.0 - squash, 1.0 + squash)
 	# Sample the existing rigged collapse against the same replicated death clock.
 	_rig_player.pause()
-	_rig_player.seek(clampf(t - 0.12, 0.0, _rig_player.get_animation(&"Collapse").length), true)
+	_rig_player.seek(clampf(t, 0.0, _rig_player.get_animation(&"Collapse").length), true)
 	if t >= 0.95 and not _death_landed:
 		_death_landed = true
 		_splinters.position = Vector3(0.0, -stand_height() + 0.2, 0.8)
@@ -496,9 +500,9 @@ func _update_death_burst(time: float) -> void:
 	for i in _death_chunks.size():
 		var angle := i * 2.399963
 		var direction := Vector3(cos(angle), 0.0, sin(angle))
-		var speed := 3.8 + float(i % 5) * 0.65
+		var speed := 1.2 + float(i % 5) * 0.2
 		var start := direction * 0.9 + Vector3.UP * (0.1 + (i % 4) * 0.38)
-		var point := start + direction * speed * burst_time + Vector3.UP * (5.3 * burst_time - 8.5 * burst_time * burst_time)
+		var point := start + direction * speed * burst_time + Vector3.UP * (2.0 * burst_time - 8.5 * burst_time * burst_time)
 		point.y = maxf(point.y, -stand_height() + 0.12)
 		_death_chunks[i].position = point
 		_death_chunks[i].rotation = Vector3(angle, angle * 0.7, angle * 0.3) * burst_time * 3.0
@@ -506,6 +510,6 @@ func _update_death_burst(time: float) -> void:
 	var impact := (t - 0.95) / 0.6
 	_wave.visible = impact >= 0.0 and impact <= 1.0
 	if _wave.visible:
-		_wave.scale = Vector3.ONE * lerpf(1.0, 7.5, impact)
+		_wave.scale = Vector3.ONE * lerpf(1.0, 3.5, impact)
 		_wave.scale.y = 0.3
-		_wave_material.albedo_color = Color(0.86, 0.65, 0.39, (1.0 - impact) * 0.7)
+		_wave_material.albedo_color = Color(0.86, 0.65, 0.39, (1.0 - impact) * 0.3)

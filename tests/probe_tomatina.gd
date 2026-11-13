@@ -750,6 +750,7 @@ func _run() -> void:
 	_check(scene._press_king == null and scene._boss_entrance.active,
 		"the boss appeared before its entrance warning")
 	scene._advance_press_king_spawn(scene.PRESS_KING_RISE_WARNING + 0.01)
+	scene._boss_entrance.finish()
 	var boss := scene._press_king as MayoEnemy
 	_check(boss != null and boss.kind == MayoEnemy.EnemyKind.PRESS_KING, "the Press King did not spawn")
 	if boss != null:
@@ -781,7 +782,9 @@ func _run() -> void:
 		boss.take_sauce_hit()
 		boss.advance(1.91, [])
 		scene._check_stage_clear()
-		_check(cleared[0], "the party could not escape after defeating the Press King")
+		_check(not cleared[0], "boss death automatically ended the stage without interaction")
+		scene.tomato_action(player.peer_id,0)
+		_check(cleared[0], "truck interaction did not complete extraction")
 
 	scene.free()
 	await process_frame
