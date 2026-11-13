@@ -104,7 +104,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 9
+const PROTOCOL_VERSION := 10
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
@@ -1622,7 +1622,7 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			velocity.x, velocity.z,
 			1.0 if shooter.firing else 0.0, shooter.aim_pitch,
 			float(state[3]), state[4], state[5], state[6], state[7],
-			shooter.sauce, float(shooter.nozzle), shooter.bottle_charge,
+			shooter.sauce, float(shooter.nozzle), world.bottle_state_code(shooter),
 			shooter.bottle_shake_input, float(shooter.character_index)]))
 	return data
 
@@ -1669,7 +1669,7 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		# catch at different moments from the screen next to it.
 		shooter.sauce = clampf(data[index + 13], 0.0, 1.0)
 		shooter.nozzle = clampi(int(round(data[index + 14])), 0, 3)
-		shooter.bottle_charge = clampf(data[index + 15], 0.0, 1.0)
+		world.apply_bottle_state_code(shooter, clampf(data[index + 15], 0.0, 3.0))
 		# The local player's own aim is never taken back from the server: it is
 		# already ahead of this packet. Nor is their character: a `C` press
 		# rebuilds the visual at once, and the packet already in flight still

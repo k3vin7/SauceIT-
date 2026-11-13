@@ -415,7 +415,22 @@ func run_held() -> bool:
 		return false
 	if use_injected_input:
 		return input_run
+	return run_key_down()
+
+
+## The run key. Now and again the run stayed on with the key up until it was
+## pressed and let go again: the key had come up and the action had not heard.
+## The engine keeps the raw key and the action in separate books, so the key
+## coming up is told to the action directly -- see `_input` -- and a release
+## the action missed no longer leaves the player running.
+static func run_key_down() -> bool:
 	return Input.is_action_pressed("run")
+
+
+func _input(event: InputEvent) -> void:
+	var key := event as InputEventKey
+	if key != null and not key.pressed and key.physical_keycode == KEY_SHIFT 			and Input.is_action_pressed("run"):
+		Input.action_release("run")
 
 
 func jump_wanted() -> bool:

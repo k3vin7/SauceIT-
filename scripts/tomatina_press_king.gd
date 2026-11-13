@@ -255,7 +255,9 @@ func _take_sauce_damage(damage: float) -> bool:
 	if not is_alive() or act == Act.RISE:
 		return false
 	var exposed := armor_broken or exposed_left > 0.0
+	var before := health
 	health = maxf(health - damage * (EXPOSED_DAMAGE_SCALE if exposed else 0.16), 0.0)
+	note_damage(before - health)
 	if not is_alive():
 		collision_layer = 0
 		collision_mask = 0

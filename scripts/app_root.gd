@@ -412,9 +412,12 @@ func _on_transition_failed(reason: String) -> void:
 func _on_stage_cleared() -> void:
 	if flow != Flow.STAGE or not session.is_server():
 		return
-	session.finish_stage({"title": "STAGE CLEAR",
+	var summary := {"title": "STAGE CLEAR",
 		"stage": StageRegistry.display_name(session.selected_stage),
-		"players": session.seat_assignments().size()})
+		"players": session.seat_assignments().size()}
+	if current_space != null and current_space.has_method("damage_report"):
+		summary["damage"] = current_space.call("damage_report")
+	session.finish_stage(summary)
 
 
 func _on_result_ready(summary: Dictionary) -> void:
@@ -434,7 +437,7 @@ func _on_result_ready(summary: Dictionary) -> void:
 	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_result_layer.add_child(centre)
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(440.0, 0.0)
+	panel.custom_minimum_size = Vector2(520.0, 0.0)
 	centre.add_child(panel)
 	var margin := _margin(28)
 	panel.add_child(margin)
@@ -451,6 +454,7 @@ func _on_result_ready(summary: Dictionary) -> void:
 	detail.text = "%s\n참가자 %d명" % [summary.get("stage", ""), summary.get("players", 1)]
 	detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(detail)
+	_add_damage_lineup(column, summary.get("damage", []))
 	if session.is_server():
 		column.add_child(_button("전원 트럭 복귀", func(): session.return_to_truck(), true))
 	else:
@@ -459,6 +463,115 @@ func _on_result_ready(summary: Dictionary) -> void:
 		column.add_child(waiting)
 	column.add_child(_button("세션 나가기", _leave_session))
 	_set_mouse_visible(true)
+
+
+## The party stood in a row, each over what they dealt: their own character,
+## the number, and a bar against the best of them, most damage first. The rows
+## come from the host -- see `MayoPrototype.damage_report` -- and anything that
+## is not the numbers it should be is passed over rather than trusted.
+func _add_damage_lineup(column: VBoxContainer, rows) -> void:
+	if not rows is Array:
+		return
+	var best := 1.0
+	var total := 0.0
+	var clean: Array = []
+	for row in rows:
+		if not row is Array or (row as Array).size() < 3:
+			continue
+		var amount := maxf(float(row[2]), 0.0)
+		var character := int(row[3]) if (row as Array).size() > 3 else int(row[1])
+		clean.push_back([int(row[0]), int(row[1]), amount,
+			posmod(character, TruckLobby.CHARACTER_SCENES.size())])
+		best = maxf(best, amount)
+		total += amount
+	if clean.is_empty():
+		return
+	column.add_child(UI.eyebrow("딜량", UI.MINT))
+	var lineup := HBoxContainer.new()
+	lineup.alignment = BoxContainer.ALIGNMENT_CENTER
+	lineup.add_theme_constant_override("separation", 14)
+	column.add_child(lineup)
+	for row in clean:
+		var card := VBoxContainer.new()
+		card.add_theme_constant_override("separation", 4)
+		card.custom_minimum_size = Vector2(150.0, 0.0)
+		lineup.add_child(card)
+		var holder := SubViewportContainer.new()
+		holder.stretch = true
+		holder.custom_minimum_size = Vector2(150.0, 190.0)
+		holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card.add_child(holder)
+		var view := SubViewport.new()
+		view.own_world_3d = true
+		view.transparent_bg = true
+		view.msaa_3d = Viewport.MSAA_4X
+		view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		holder.add_child(view)
+		_stand_character(view, int(row[3]))
+		var who := Label.new()
+		who.text = "플레이어 %d%s" % [int(row[1]) + 1, " (나)" if int(row[0]) == session.local_id() else ""]
+		who.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		card.add_child(who)
+		var amount_label := Label.new()
+		amount_label.text = str(roundi(float(row[2])))
+		amount_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		amount_label.add_theme_font_size_override("font_size", 26)
+		amount_label.add_theme_color_override("font_color", UI.GOLD if float(row[2]) >= best else UI.CREAM)
+		card.add_child(amount_label)
+		var bar := ProgressBar.new()
+		bar.max_value = best
+		bar.value = float(row[2])
+		bar.show_percentage = false
+		bar.custom_minimum_size = Vector2(0.0, 10.0)
+		card.add_child(bar)
+		var share := Label.new()
+		share.text = "%d%%" % roundi(float(row[2]) / maxf(total, 1.0) * 100.0)
+		share.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		share.add_theme_color_override("font_color", UI.MUTED)
+		card.add_child(share)
+
+
+## One character, stood facing the camera in a little world of its own -- the
+## same light and the same first frame of its walk the character select uses.
+func _stand_character(view: SubViewport, index: int) -> void:
+	var environment := WorldEnvironment.new()
+	var settings := Environment.new()
+	settings.background_mode = Environment.BG_COLOR
+	settings.background_color = Color(0.0, 0.0, 0.0, 0.0)
+	settings.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	settings.ambient_light_color = Color("d8dccb")
+	settings.ambient_light_energy = 0.75
+	environment.environment = settings
+	view.add_child(environment)
+	var key := DirectionalLight3D.new()
+	key.rotation_degrees = Vector3(-38.0, 28.0, 0.0)
+	key.light_energy = 1.25
+	view.add_child(key)
+	var camera := Camera3D.new()
+	camera.fov = 34.0
+	camera.near = 0.05
+	camera.position = Vector3(0.0, 1.45, 5.3)
+	view.add_child(camera)
+	camera.look_at_from_position(camera.position, Vector3(0.0, 1.22, 0.0), Vector3.UP)
+	camera.current = true
+	var model := TruckLobby.CHARACTER_SCENES[index].instantiate() as Node3D
+	if model == null:
+		return
+	model.scale = Vector3.ONE * (CharacterSelectScript.PREVIEW_HEIGHT
+		/ float(TruckLobby.CHARACTER_HEIGHTS[index]) * float(CharacterSelectScript.PREVIEW_SCALE[index]))
+	model.rotation.y = deg_to_rad(-18.0)
+	view.add_child(model)
+	var players := model.find_children("*", "AnimationPlayer", true, false)
+	if players.is_empty():
+		return
+	var animator := players[0] as AnimationPlayer
+	var suffix: String = TruckLobby.CHARACTER_WALKS[index]
+	for candidate in animator.get_animation_list():
+		if String(candidate).ends_with(suffix):
+			animator.play(candidate)
+			animator.seek(0.0, true)
+			animator.pause()
+			break
 
 
 func _leave_session() -> void:
