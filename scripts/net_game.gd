@@ -104,7 +104,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 8
+const PROTOCOL_VERSION := 9
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
@@ -128,7 +128,7 @@ const MAX_CLIENTS := 3
 ## a different fight. The host tosses it and sends the answer; the level rides
 ## along rather than being derived, so nobody has to guess which band a bottle
 ## is in either.
-const STATE_STRIDE := 17
+const STATE_STRIDE := 18
 ## Where one occupant is standing in the truck: x, y, z and the yaw they are
 ## facing. The truck carries no bottle, no health and no aim pitch, so it needs
 ## none of the sixteen floats a stage body does -- four, four times a frame at
@@ -1370,7 +1370,9 @@ func _request_refill(sauce: int) -> void:
 		dropped_packets += 1
 		return
 	_refill_budget[sender] = _refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND) - 1.0
-	world.refill_for(sender, sauce)
+	# Which sauce is the station's to say, not the client's: every station
+	# hands out one, and the host knows which it is standing the body at.
+	world.refill_for(sender, world.STATION_SAUCE_HERE)
 
 
 ## The host telling everyone a fresh bottle was selected. An event, not a value in the
@@ -1621,7 +1623,7 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			1.0 if shooter.firing else 0.0, shooter.aim_pitch,
 			float(state[3]), state[4], state[5], state[6], state[7],
 			shooter.sauce, float(shooter.nozzle), shooter.bottle_charge,
-			float(shooter.character_index)]))
+			shooter.bottle_shake_input, float(shooter.character_index)]))
 	return data
 
 
@@ -1677,8 +1679,11 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		# nothing it could correct.
 		if not shooter.is_local:
 			world.set_character_variant(ids[slot],
-				clampi(int(round(data[index + 16])), 0, world.PLAYER_CHARACTERS.size() - 1))
+				clampi(int(round(data[index + 17])), 0, world.PLAYER_CHARACTERS.size() - 1))
 			shooter.firing = data[index + 6] > 0.5
+			# How hard they are shaking the bottle: theirs to say, and the
+			# local player already knows their own.
+			shooter.bottle_shake_input = clampf(data[index + 16], 0.0, 1.0)
 			shooter.aim_pitch = data[index + 7]
 			# The yaw has to land on the aim, not only on the body: _update_aim
 			# rewrites the body from the aim every frame, and the strand leaves

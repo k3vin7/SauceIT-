@@ -4,7 +4,7 @@ enum Part { STANDARD, FAN, FOCUS, BURST, ARC, CANNON }
 
 const CATALOG := [
 	["기본 노즐", "기본 연속 분사", 0, 0],
-	["부채꼴 노즐", "정면 부채꼴로 다섯 갈래 분사 · 가까울수록 강함", 0, 5],
+	["부채꼴 노즐", "정면 부채꼴로 다섯 갈래 짧은 소스 줄기 · 가까울수록 강함", 0, 5],
 	["집중 노즐", "가늘고 멀리 뻗는 연속 분사", 0, 5],
 	["점사 밸브", "한 번 누를 때 짧게 세 발 분사", 1, 5],
 	["곡사 캡", "조준한 곳에 포물선으로 떨어져 터지는 소스 덩어리", 1, 6],
@@ -15,7 +15,7 @@ const PROJECTILES := {
 		"cost": 0.010, "cooldown": 0.14},
 	Part.BURST: {"speed": 32.0, "gravity": 0.0, "life": 0.29, "size": 0.14, "damage": 9.5, "blast": 0.0,
 		"cost": 0.040, "cooldown": 0.48},
-	Part.ARC: {"speed": 13.0, "gravity": 15.0, "life": 2.3, "size": 0.23, "damage": 22.0, "blast": 1.8,
+	Part.ARC: {"speed": 13.0, "gravity": 15.0, "life": 2.3, "size": 0.36, "damage": 22.0, "blast": 1.8,
 		"cost": 0.045, "cooldown": 0.72},
 	Part.CANNON: {"speed": 34.0, "gravity": 0.0, "life": 0.60, "size": 0.32, "damage": 120.0, "blast": 2.7,
 		"cost": 0.25, "cooldown": 3.6},
@@ -45,6 +45,10 @@ var _coin_serial := 0
 var _projectiles: Array[Dictionary] = []
 var _coin_mesh: CylinderMesh
 var _sauce_mesh := SphereMesh.new()
+## The fan's five are drawn as streams, not lumps: each shot drags a tapered
+## streak behind it as long as the gap to the shot after it, so a held trigger
+## reads as five short unbroken streams. One unit tall along +Y, head at the top.
+var _streak_mesh := CylinderMesh.new()
 var _sauce_materials: Array[StandardMaterial3D] = []
 
 
@@ -103,6 +107,11 @@ func _ready() -> void:
 	_coin_mesh.material = gold
 	_sauce_mesh.radial_segments = 10
 	_sauce_mesh.rings = 5
+	_streak_mesh.height = 1.0
+	_streak_mesh.top_radius = 0.5
+	_streak_mesh.bottom_radius = 0.32
+	_streak_mesh.radial_segments = 8
+	_streak_mesh.rings = 1
 	for color: Color in world.SAUCE_TINTS:
 		var material := StandardMaterial3D.new()
 		material.albedo_color = color
@@ -198,14 +207,37 @@ func show_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vec
 	for angle: float in angles:
 		var direction := forward.rotated(Vector3.UP, deg_to_rad(angle))
 		var glob := MeshInstance3D.new()
-		glob.mesh = _sauce_mesh
+		glob.mesh = _streak_mesh if part == Part.FAN else _sauce_mesh
 		glob.material_override = _sauce_materials[sauce]
 		glob.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		glob.scale = Vector3.ONE * (2.0 * float(profile.size))
 		add_child(glob)
 		glob.global_position = origin
-		_projectiles.append({"node": glob, "peer": peer, "part": part, "sauce": sauce,
-			"velocity": direction * float(profile.speed), "left": profile.life})
+		var shot := {"node": glob, "peer": peer, "part": part, "sauce": sauce,
+			"velocity": direction * float(profile.speed), "left": profile.life}
+		if part == Part.FAN:
+			# Where the shot really is travels apart from the node, which is
+			# now the streak behind it. See `_draw_streak`.
+			shot["head"] = origin
+			shot["origin"] = origin
+			shot["trail"] = float(profile.speed) * float(profile.cooldown)
+			_draw_streak(shot, profile)
+		_projectiles.append(shot)
+
+
+## Lays a fan shot's streak from its head back towards the nozzle, no longer
+## than the distance the shot after it has yet to cover.
+func _draw_streak(shot: Dictionary, profile: Dictionary) -> void:
+	var node: MeshInstance3D = shot.node
+	var head: Vector3 = shot.head
+	var velocity: Vector3 = shot.velocity
+	if velocity.length_squared() < 0.000001:
+		return
+	var along := velocity.normalized()
+	var length := clampf(head.distance_to(shot.origin), 0.02, float(shot.trail))
+	var width := float(profile.size) * 1.5
+	var basis := Basis(Quaternion(Vector3.UP, along)).scaled_local(Vector3(width, length, width))
+	node.global_transform = Transform3D(basis, head - along * length * 0.5)
 
 
 func advance_projectiles(delta: float, authority: bool) -> void:
@@ -213,7 +245,7 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 		var shot: Dictionary = _projectiles[i]
 		var profile: Dictionary = PROJECTILES[shot.part]
 		var node: MeshInstance3D = shot.node
-		var from := node.global_position
+		var from: Vector3 = shot.get("head", node.global_position)
 		shot.velocity += Vector3.DOWN * float(profile.gravity) * delta
 		var to: Vector3 = from + shot.velocity * delta
 		var query := PhysicsRayQueryParameters3D.create(from, to)
@@ -227,7 +259,11 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 		if not hit.is_empty():
 			world._part_projectile_impact(hit, shot, profile, shooter, authority)
 		elif shot.left > 0.0:
-			node.global_position = to
+			if shot.has("head"):
+				shot.head = to
+				_draw_streak(shot, profile)
+			else:
+				node.global_position = to
 			continue
 		node.queue_free()
 		_projectiles.remove_at(i)

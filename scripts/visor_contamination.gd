@@ -49,6 +49,10 @@ var _lens: MeshInstance3D
 ## rotation is the base that faces it forward, and an animation writing to the
 ## same axis would wipe that out every frame.
 var _hinge: Node3D
+## What the hinge hangs on. Left where the visor is, the lenses sit in front of
+## the aim pivot as they always did; `place_lens` moves it onto a character's
+## face instead, and the hinge then swings from the top edge of the lenses.
+var _mount: Node3D
 
 
 ## Uses the same cell size and brush radius as the body. Both are in metres.
@@ -142,6 +146,20 @@ func wipe_lift() -> float:
 	return 0.0 if _hinge == null else absf(_hinge.rotation.x)
 
 
+## Puts the lenses on a face. `top_centre` is where the middle of their top edge
+## goes, in world space, looking out along its -Z with +X to the wearer's right;
+## `width` is how wide they are in that transform's own units, and the height
+## follows from the mask's shape. Only where the lenses are *drawn* -- what lands
+## on them is still worked out through the wearer's camera, see `paint_from_hit`.
+func place_lens(top_centre: Transform3D, width: float) -> void:
+	if _mount == null or _lens == null:
+		return
+	_mount.global_transform = top_centre
+	var scale := width / LENS_SIZE.x
+	_lens.scale = Vector3(scale, scale, 1.0)
+	_lens.position = Vector3(0.0, -LENS_SIZE.y * scale * 0.5, 0.0)
+
+
 ## The lenses as another player sees them: a small quad on the face carrying the
 ## same mask. Its own UVs are used, so the grid's (0,0) corner has to be the
 ## quad's (-u, -v) corner, which is the convention ContaminationGrid.cell_of
@@ -151,9 +169,12 @@ func wipe_lift() -> float:
 ## cells put a near-black 1.0 x 0.6 m pane on the face, which in third person
 ## the wearer's own camera looks straight through at their own head.
 func _build_lens() -> void:
+	_mount = Node3D.new()
+	_mount.name = "LensMount"
+	add_child(_mount)
 	_hinge = Node3D.new()
 	_hinge.name = "LensHinge"
-	add_child(_hinge)
+	_mount.add_child(_hinge)
 
 	_lens = MeshInstance3D.new()
 	_lens.name = "Lenses"

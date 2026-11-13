@@ -1140,11 +1140,23 @@ func _advance_spitter(delta: float, target: MayoPlayer) -> Dictionary:
 		target.global_position.z - global_position.z).length()
 	var sees := gap <= SPIT_RANGE and (_spit_cooldown <= 0.0 or gap <= SPIT_HOLD_RANGE) \
 		and _has_clear_shot(target, global_position + Vector3.UP * (height * 0.3))
+	var toward := Vector3(target.global_position.x - global_position.x, 0.0,
+		target.global_position.z - global_position.z)
 	if _spit_cooldown <= 0.0 and gap <= SPIT_RANGE and sees:
 		_spit_request = target
 		_spit_cooldown = SPIT_INTERVAL
-	# Close enough and in sight: stand and spit rather than walk into reach.
+		# It spits where it is looking. Snapped rather than turned: the lump
+		# leaves this frame, and one that came out of the side of its head
+		# while it finished turning is what this replaced.
+		if toward.length_squared() > 0.000001:
+			facing_yaw = atan2(-toward.x, -toward.z)
+			_apply_pose()
+	# Close enough and in sight: stand and spit rather than walk into reach --
+	# and keep facing whoever it is spitting at. `flat` with no pace turns the
+	# body without moving it, the way the brute's wind-up does.
 	if gap <= SPIT_HOLD_RANGE and sees:
+		if toward.length_squared() > 0.000001:
+			return {"flat": toward.normalized(), "pace": 0.0}
 		return {"pace": 0.0}
 	return {}
 

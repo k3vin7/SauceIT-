@@ -26,12 +26,13 @@ func _run() -> void:
 	world.debug_set_input(Vector2.ZERO, false, false)
 	await process_frame
 	check(world.local_sauce_kind() >= -1 and world.local_sauce_kind() <= 2, "HUD has an invalid initial sauce")
-	check(not InputMap.has_action("refill_sauce"), "E refill action still exists")
-	check(HealthHud.PROMPT_LINES == ["[Shift+1]  마요네즈", "[Shift+2]  머스타드", "[Shift+3]  케찹"],
-		"stall menu is not the requested three choices")
+	check(not InputMap.has_action("pick_sauce_1"), "the Shift+number refill actions still exist")
+	check(HealthHud.PROMPT_LINES == ["[E]  마요네즈", "[E]  머스타드", "[E]  케찹"],
+		"the stall prompt does not name E")
 	var shooter = world._local
 	var expected := [ContaminationGrid.KIND_MAYO, ContaminationGrid.KIND_MUSTARD, ContaminationGrid.KIND_KETCHUP]
 	var stations: Array = world.refill_stations()
+	var seen := {}
 	for station in stations:
 		world._player.global_position = station.position + station.facing * 1.5
 		world._player.global_position.y = 1.28
@@ -40,22 +41,33 @@ func _run() -> void:
 		press(KEY_2, false)
 		check(world.selected_item_slot(shooter.peer_id) == 1, "plain 2 did not select slot")
 		check(is_equal_approx(shooter.sauce, 0.15), "plain number refilled sauce")
+		# One sauce a station, and it is the station's to say which.
+		var offered: int = station.sauce
+		check(offered >= 0 and offered < 3 and world.local_station_sauce() == offered,
+			"a stall does not say which one sauce it hands out")
+		seen[offered] = true
 		for choice in 3:
 			shooter.sauce = 0.15
 			press(KEY_1 + choice)
-			check(shooter.sauce_kind == expected[choice], "number key selected wrong sauce")
-			check(is_equal_approx(shooter.sauce, 1.0), "new bottle is not full")
-			check(world.local_sauce_kind() == choice, "HUD does not mark selected bottle")
-			check(shooter.bottle_pickup_left > 0.0, "bottle pickup animation did not start")
-		shooter.sauce = 0.25
-		press(KEY_E)
-		check(is_equal_approx(shooter.sauce, 0.25), "E still fills the bottle")
+			check(is_equal_approx(shooter.sauce, 0.15), "Shift+number still fills the bottle")
+		shooter.bottle_pickup_left = 0.0
+		press(KEY_E, false)
+		check(shooter.sauce_kind == expected[offered], "E took a sauce the stall does not hand out")
+		check(is_equal_approx(shooter.sauce, 1.0), "new bottle is not full")
+		check(world.local_sauce_kind() == offered, "HUD does not mark the bottle taken")
+		check(shooter.bottle_pickup_left > 0.0, "bottle pickup animation did not start")
+		# Full of what this stall hands out: E is left to whatever else is near.
+		shooter.bottle_pickup_left = 0.0
+		press(KEY_E, false)
+		check(shooter.bottle_pickup_left == 0.0, "E took a second bottle with the first still full")
+	check(seen.size() == 3, "the street's stalls do not hand out all three sauces between them")
 	# The same selection also means a fresh bottle, not a no-op or a top-up
 	# which retains an empty bottle's catch/trigger state.
 	shooter.catch_hold = 0.5
 	shooter.catches_in_a_row = 2
 	shooter.fire_hold = 0.2
-	press(KEY_3)
+	shooter.sauce = 0.5
+	press(KEY_E, false)
 	check(shooter.sauce == 1.0 and shooter.catch_hold == 0.0 and shooter.fire_hold == 0.0,
 		"same-sauce pickup kept the old bottle's state")
 	check(shooter.weapon_sway.position.y < -0.1, "fresh bottle did not come up from below")
@@ -68,12 +80,13 @@ func _run() -> void:
 	world._advance_strand(shooter, 0.3)
 	check(shooter.bottle_pickup_left == 0.0 and is_zero_approx(shooter.weapon_sway.position.y),
 		"pickup pose did not settle")
-	check(not world.refill_for(1, -1) and not world.refill_for(1, 3), "invalid sauce choice accepted")
+	check(not world.refill_for(1, -2) and not world.refill_for(1, 3), "invalid sauce choice accepted")
 	world._player.global_position = Vector3(0, 1.28, 0)
 	shooter.sauce = 0.25
-	press(KEY_1)
-	check(shooter.sauce == 0.25 and shooter.sauce_kind == ContaminationGrid.KIND_KETCHUP,
-		"number key swaps bottles away from a stall")
+	var held: int = shooter.sauce_kind
+	press(KEY_E, false)
+	check(shooter.sauce == 0.25 and shooter.sauce_kind == held,
+		"E swaps bottles away from a stall")
 	var station: Dictionary = stations.back()
 	world._player.global_position = station.position - station.facing * 1.5
 	world._player.global_position.y = 1.28
@@ -84,14 +97,15 @@ func _run() -> void:
 		var look_at: Vector3 = station.position
 		look_at.y = 1.7
 		world.debug_aim_at(look_at)
-		press(KEY_2)
+		shooter.sauce = 0.5
+		press(KEY_E, false)
 		world._advance_strand(shooter, 0.4)
 		shooter.weapon.visible = true
 		await RenderingServer.frame_post_draw
 		var picture := root.get_texture().get_image()
 		picture.resize(1280, 720, Image.INTERPOLATE_LANCZOS)
 		picture.save_png("res://reports/bottle_selection_2026_10_04.png")
-	print("Checked three choices and disabled E at %d stalls" % stations.size())
+	print("Checked one sauce and E at %d stalls" % stations.size())
 	world.free()
 	for failure in failures:
 		push_error(failure)

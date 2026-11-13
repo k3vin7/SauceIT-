@@ -38,9 +38,9 @@ const LOW_AT := 0.35
 ## Keep the usual key list visible and mark unavailable sauces for this stage.
 ## The arrow marks the sauce currently in the bottle.
 const PROMPT_LINES: Array[String] = [
-	"[Shift+1]  마요네즈",
-	"[Shift+2]  머스타드",
-	"[Shift+3]  케찹",
+	"[E]  마요네즈",
+	"[E]  머스타드",
+	"[E]  케찹",
 ]
 const PROMPT_LINE_GAP := 22.0
 ## What marks the line for the sauce already in the bottle.
@@ -244,11 +244,9 @@ func _draw_prompt() -> void:
 	var held: int = world.local_sauce_kind()
 	# Every line is laid out against the widest of them, so the block is a block
 	# rather than a ragged edge that shifts as the marker moves down it.
-	var lines := PROMPT_LINES.duplicate()
-	var first_sauce := 0
-	if world.map_kind == world.MapKind.TOMATINA:
-		lines = PackedStringArray([PROMPT_LINES[2]])
-		first_sauce = 2
+	# One line: a station hands out one sauce, and E takes it.
+	var first_sauce: int = clampi(world.local_station_sauce(), 0, PROMPT_LINES.size() - 1)
+	var lines := PackedStringArray([PROMPT_LINES[first_sauce]])
 	for index in lines.size():
 		if not world.can_select_refill_sauce(first_sauce + index):
 			lines[index] += "  ·  보급 불가"

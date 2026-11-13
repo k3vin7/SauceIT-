@@ -68,6 +68,10 @@ func _process_modification() -> void:
 	# Move the tube socket and BOTH palm targets together so recoil never breaks grip.
 	var socket: int = bones["SauceTubeSocket"]
 	var displacement: Vector3 = body.global_basis * Vector3(0.0, kick * 0.08 + pressure * 0.035, kick * 0.09 + pressure * 0.025)
+	# Shaking the bottle: the tube and both hands go up and down together.
+	if shooter.bottle_shake_show > 0.001:
+		displacement += body.global_basis * Vector3(0.0, sin(clock * 42.0) * 0.16, 0.0) \
+			* shooter.bottle_shake_show
 	var slot: int = world.selected_item_slot(shooter.peer_id)
 	if slot != previous_slot:
 		equip_left = 0.3

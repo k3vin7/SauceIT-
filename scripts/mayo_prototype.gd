@@ -169,6 +169,11 @@ class MayoPoint:
 	var severed := false
 	var burst_index := 0
 	var range_scale := 1.0
+	## Where the point is drawn from, relative to where it really is, when it
+	## was emitted: nothing for your own stream, the gap from the launch point
+	## to the tube in the character's hands for anybody else's. Faded out over
+	## `MUZZLE_DRAW_BLEND` -- see `_emit_point`.
+	var draw_offset := Vector3.ZERO
 
 class RibbonPoint:
 	var position := Vector3.ZERO
@@ -199,6 +204,12 @@ class Shooter:
 	var run_animation := StringName()
 	var death_animation := StringName()
 	var character_muzzle: Node3D
+	## The character's head bone, and where on it the glasses go: the middle of
+	## their top edge in that bone's own space, and how wide they are in the
+	## model's units. See `_measure_face`.
+	var face_anchor: BoneAttachment3D
+	var face_frame := Transform3D.IDENTITY
+	var face_width := 0.0
 	var viewmodel_muzzle: Marker3D
 	var character_gauge: MeshInstance3D
 	var character_gauge_scale := Vector3.ONE
@@ -316,10 +327,8 @@ class Shooter:
 	## What the shaking has built up, 0 to 1. The authority's; it travels in
 	## the state packet beside the tank level. See `bottle_charge_seconds`.
 	var bottle_charge := 0.0
-	## The shake as drawn on the bottle, and the charge last frame -- a peer
-	## that is told neither the mouse nor the packet sees the charge rising.
+	## The shake as drawn, on the bottle and on the character holding it.
 	var bottle_shake_show := 0.0
-	var bottle_charge_seen := 0.0
 	var recoil_pitch := 0.0
 	## The fire main opening: a pitch the nozzle and (for the local player)
 	## the view are thrown up by, fed in over `HOSE_KICK_ATTACK` and settled
@@ -1511,6 +1520,11 @@ func _physics_process(delta: float) -> void:
 		_advance_strand(shooter, delta)
 		if _is_authority():
 			_advance_bottle_charge(shooter, delta)
+		# The shake everyone sees, on the bottle and in the character's hands.
+		# How hard the hand is going travels in the state packet, so it is the
+		# same on every screen; eased out so it does not stop dead.
+		shooter.bottle_shake_show = maxf(shooter.bottle_shake_input,
+			shooter.bottle_shake_show - delta * 4.0)
 	if _sauce_parts != null:
 		_sauce_parts.advance_projectiles(delta, _is_authority())
 		_sauce_parts.advance_coins(delta, _is_authority())
@@ -1921,14 +1935,6 @@ func _advance_spray_feel(shooter: Shooter, delta: float, delivering: bool) -> vo
 	var wanted := 1.0 if (shooter.on_target_left > 0.0 and delivering) else 0.0
 	var fade := 1.0 - exp(-delta / maxf(connection_fade_seconds, 0.001))
 	shooter.connection = lerpf(shooter.connection, wanted, fade)
-
-	# The shake everyone sees. The local player and the host know how hard the
-	# hand is going; any other peer sees only that the charge is climbing.
-	var shaking := shooter.bottle_shake_input
-	if not shooter.is_local and not _is_authority():
-		shaking = 1.0 if shooter.bottle_charge > shooter.bottle_charge_seen + 0.0001 else 0.0
-	shooter.bottle_charge_seen = shooter.bottle_charge
-	shooter.bottle_shake_show = maxf(shaking, shooter.bottle_shake_show - delta * 4.0)
 
 	_apply_nozzle_sway(shooter)
 	if shooter.is_local and _crosshair is Crosshair:
@@ -2378,6 +2384,11 @@ func _update_visor(shooter: Shooter) -> void:
 	if shooter.player.visor == null:
 		return
 	shooter.player.visor.set_wipe_progress(shooter.player.wipe_progress())
+	# On the face of whoever is wearing them -- see `_fit_glasses_to_face`.
+	if is_instance_valid(shooter.face_anchor) and shooter.face_width > 0.0 \
+			and shooter.player.visor.visible:
+		shooter.player.visor.place_lens(
+			shooter.face_anchor.global_transform * shooter.face_frame, shooter.face_width)
 
 
 func _update_fallen_body(shooter: Shooter) -> void:
@@ -2453,12 +2464,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var number: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
-		if number >= KEY_1 and number <= KEY_5:
-			if event.shift_pressed:
-				if number <= KEY_3:
-					_request_refill(number - KEY_1)
-			else:
-				_request_tomato_action(10 + number - KEY_1)
+		if number >= KEY_1 and number <= KEY_5 and not event.shift_pressed:
+			_request_tomato_action(10 + number - KEY_1)
 			get_viewport().set_input_as_handled()
 			return
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -2468,6 +2475,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if interact:
 			if _try_open_refuge_shop():
+				get_viewport().set_input_as_handled()
+				return
+			# **E at a supply point takes its bottle.** Each one hands out a
+			# single sauce, so there is nothing to choose and no second key:
+			# this replaced Shift+1..3. A bottle that is already full of it
+			# leaves the key to whatever else is in reach.
+			if _wants_station_refill():
+				_request_refill(STATION_SAUCE_HERE)
 				get_viewport().set_input_as_handled()
 				return
 			_request_tomato_action(0)
@@ -2491,10 +2506,6 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("wipe_screen"):
 		_request_wipe()
 		return
-	for index in STATION_SAUCES.size():
-		if event.is_action_pressed("pick_sauce_%d" % (index + 1)):
-			_request_refill(index)
-			return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		# With the shake button down the mouse moves the bottle, not the view:
 		# a shake that also threw the camera about would be unusable in first
@@ -2582,15 +2593,6 @@ func _ensure_input_actions() -> void:
 		var wipe := InputEventKey.new()
 		wipe.physical_keycode = KEY_R
 		InputMap.action_add_event("wipe_screen", wipe)
-	# Every stall offers a fresh bottle: 1 mayo, 2 mustard, 3 ketchup.
-	for index in STATION_SAUCES.size():
-		var action := "pick_sauce_%d" % (index + 1)
-		if not InputMap.has_action(action):
-			InputMap.add_action(action)
-			var key := InputEventKey.new()
-			key.physical_keycode = KEY_1 + index
-			key.shift_pressed = true
-			InputMap.action_add_event(action, key)
 	if not InputMap.has_action("toggle_key_legend"):
 		InputMap.add_action("toggle_key_legend")
 		var legend := InputEventKey.new()
@@ -3484,6 +3486,7 @@ func _build_player_visual(shooter: Shooter) -> void:
 		skeleton.add_child(motion)
 		motion.configure(shooter, self)
 		shooter.procedural_motion = motion
+		_fit_glasses_to_face(shooter, visual, skeleton, index)
 		if skeleton.find_bone("SauceTubeMuzzle") >= 0:
 			var attachment := BoneAttachment3D.new()
 			attachment.name = "SauceTubeMuzzle"
@@ -3501,6 +3504,132 @@ func _build_player_visual(shooter: Shooter) -> void:
 		if source_material is StandardMaterial3D:
 			shooter.character_gauge_material = source_material.duplicate() as StandardMaterial3D
 			shooter.character_gauge.material_override = shooter.character_gauge_material
+
+
+## Where the eyes are up each character's head, as a share of the way from the
+## bottom of everything skinned to the head to the top of it -- hat included,
+## which is why it is a figure per character and not one for all four -- and how
+## much of the head's width the glasses span.
+const PLAYER_CHARACTER_EYE_LEVELS := [-0.62, 0.42, 0.48, 0.80]
+## How far out from the head the glasses stand, as a share of their width. Big
+## where the face is on the body and bulges out past the hat above it.
+const PLAYER_CHARACTER_GLASSES_FORWARD := [0.55, 0.03, 0.03, 0.03]
+const PLAYER_CHARACTER_GLASSES_WIDTHS := [1.60, 0.86, 0.86, 0.86]
+## character index -> [frame in head-bone space, width], measured once.
+var _face_cache := {}
+
+
+## Hangs the glasses on the character's own face.
+##
+## They used to float at a fixed spot in front of the aim pivot, sized for the
+## capsule, and so sat wherever each model's face happened not to be. Now they
+## are placed from the model: the part of the mesh skinned to the head says how
+## wide the head is and how far forward the face comes at eye level, and the
+## glasses ride the head bone from there -- nodding and turning with it.
+func _fit_glasses_to_face(shooter: Shooter, visual: Node3D, skeleton: Skeleton3D, index: int) -> void:
+	var head := skeleton.find_bone("mixamorig_Head")
+	if head < 0:
+		return
+	if not _face_cache.has(index):
+		_face_cache[index] = _measure_face(visual, skeleton, head, index)
+	var measured: Array = _face_cache[index]
+	if measured.is_empty():
+		return
+	var anchor := BoneAttachment3D.new()
+	anchor.name = "FaceAnchor"
+	anchor.bone_name = "mixamorig_Head"
+	skeleton.add_child(anchor)
+	shooter.face_anchor = anchor
+	shooter.face_frame = measured[0]
+	shooter.face_width = measured[1]
+
+
+## The face, off the mesh: every vertex skinned mostly to the head bone or to
+## anything below it, taken to the model's own space at rest. The model looks
+## along its +Z with +Y up, so the face is the +Z side of that cloud.
+func _measure_face(visual: Node3D, skeleton: Skeleton3D, head: int, index: int) -> Array:
+	var head_bones := {head: true}
+	var queue: Array[int] = [head]
+	while not queue.is_empty():
+		for child in skeleton.get_bone_children(queue.pop_back()):
+			head_bones[child] = true
+			queue.push_back(child)
+	# Skeleton space to the model's.
+	var to_model := skeleton.transform
+	var above := skeleton.get_parent()
+	while above != null and above != visual:
+		to_model = (above as Node3D).transform * to_model
+		above = above.get_parent()
+	var cloud := PackedVector3Array()
+	for found in visual.find_children("*", "MeshInstance3D", true, false):
+		var part := found as MeshInstance3D
+		if part.skin == null or part.mesh == null or String(part.name).contains("Sauce"):
+			continue
+		var bind_bone := PackedInt32Array()
+		for bind in part.skin.get_bind_count():
+			var bone := part.skin.get_bind_bone(bind)
+			if bone < 0:
+				bone = skeleton.find_bone(part.skin.get_bind_name(bind))
+			bind_bone.push_back(bone)
+		for surface in part.mesh.get_surface_count():
+			var arrays := part.mesh.surface_get_arrays(surface)
+			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+			var bones = arrays[Mesh.ARRAY_BONES]
+			var weights = arrays[Mesh.ARRAY_WEIGHTS]
+			if bones == null or weights == null or vertices.is_empty():
+				continue
+			var per: int = bones.size() / vertices.size()
+			for vertex in vertices.size():
+				var share := 0.0
+				var strongest := -1
+				var strongest_weight := 0.0
+				for slot in per:
+					var bind: int = bones[vertex * per + slot]
+					var weight: float = weights[vertex * per + slot]
+					if bind < 0 or bind >= bind_bone.size() or weight <= 0.0:
+						continue
+					if head_bones.has(bind_bone[bind]):
+						share += weight
+						if weight > strongest_weight:
+							strongest_weight = weight
+							strongest = bind
+				if share < 0.6 or strongest < 0:
+					continue
+				cloud.push_back(to_model * (skeleton.get_bone_global_rest(bind_bone[strongest])
+					* (part.skin.get_bind_pose(strongest) * vertices[vertex])))
+	if cloud.size() < 8:
+		return []
+	var low := cloud[0]
+	var high := cloud[0]
+	for point in cloud:
+		low = low.min(point)
+		high = high.max(point)
+	var tall := high.y - low.y
+	var eye_y := low.y + tall * float(PLAYER_CHARACTER_EYE_LEVELS[index])
+	# How far forward the face comes, and how wide the head is, in a band
+	# about the eyes -- not at the brim of a hat or the tip of a chin.
+	var front := -INF
+	var left := INF
+	var right := -INF
+	# The band is kept inside the cloud: on a character whose face is skinned
+	# to the body, the eyes sit below everything the head bone owns.
+	var band_y := clampf(eye_y, low.y + tall * 0.12, high.y - tall * 0.12)
+	for point in cloud:
+		if absf(point.y - band_y) > tall * 0.12:
+			continue
+		front = maxf(front, point.z)
+		left = minf(left, point.x)
+		right = maxf(right, point.x)
+	if front == -INF:
+		return []
+	var width := (right - left) * float(PLAYER_CHARACTER_GLASSES_WIDTHS[index])
+	var lens_height := width * VisorContamination.LENS_SIZE.y / VisorContamination.LENS_SIZE.x
+	# Top-centre of the lenses, just clear of the face; turned half round so
+	# its -Z is the way the model looks and its +X the wearer's right.
+	var frame := Transform3D(Basis(Vector3.UP, PI),
+		Vector3((left + right) * 0.5, eye_y + lens_height * 0.5, front + width * float(PLAYER_CHARACTER_GLASSES_FORWARD[index])))
+	var head_rest := to_model * skeleton.get_bone_global_rest(head)
+	return [head_rest.affine_inverse() * frame, width]
 
 
 func _find_player_animation(player: AnimationPlayer, suffix: String,
@@ -3530,6 +3659,8 @@ func set_character_variant(peer_id: int, requested_index: int) -> void:
 		shooter.player_visual.queue_free()
 	shooter.player_visual = null
 	shooter.procedural_motion = null
+	shooter.face_anchor = null
+	shooter.face_width = 0.0
 	shooter.player_animation = null
 	shooter.player_animation_name = StringName()
 	shooter.walk_animation = StringName()
@@ -3875,11 +4006,11 @@ func _build_tutorial_space() -> void:
 		"size": station_size, "facing": Vector3.BACK}
 	_create_vending_machine("TutorialSauceStation", start_box)
 	_tutorial_start_station = _refill_stations.size()
-	_add_refill_station(start_box)
+	_add_refill_station(start_box, 0)
 	var refill_box := {"position": TutorialCourseScript.REFILL_STATION,
 		"size": station_size, "facing": Vector3.BACK}
 	_create_vending_machine("TutorialRefillStation", refill_box)
-	_add_refill_station(refill_box)
+	_add_refill_station(refill_box, 0)
 
 	# Colour bands on the floor identify the lesson areas without extra UI.
 	for entry in [
@@ -3971,7 +4102,7 @@ func _build_street() -> void:
 			"size": Vector3(bay, 5.6, bay), "facing": Vector3.BACK, "bays": 1}
 		_create_stall("TutorialSauceStall", opening, 1, false)
 		_tutorial_start_station = _refill_stations.size()
-		_add_refill_station(opening)
+		_add_refill_station(opening, 0)
 	_build_stage()
 	_build_tower()
 	_build_start_marker()
@@ -4112,6 +4243,10 @@ func _apply_refuge_shower(peer: int, room: int) -> void:
 	var shooter: Shooter = _shooters.get(peer)
 	if shooter != null and shooter.player.contamination != null:
 		shooter.player.contamination.wash_sauce(ContaminationGrid.KIND_KETCHUP)
+	# And the glasses: standing under running water with sauce still on your
+	# lenses made no sense. This runs on every peer, so the mask stays in step.
+	if shooter != null and shooter.player.visor != null:
+		shooter.player.visor.clear()
 	_refuge_shower_sprays[room].restart()
 	_refuge_shower_sprays[room].emitting = true
 
@@ -4140,6 +4275,8 @@ func _add_tomatina_supply(box: Dictionary) -> void:
 		"position": box["position"],
 		"facing": Vector3.ZERO,
 		"half_footprint": Vector2(size.x, size.z) * 0.5,
+		# Tomatoes, so ketchup.
+		"sauce": STATION_SAUCES.find(ContaminationGrid.KIND_KETCHUP),
 	})
 
 
@@ -4403,13 +4540,21 @@ func _make_contaminable(holder: Node3D, part_name: String, at: Vector3,
 ## Kept as plain data rather than as nodes with Area3Ds: the test is one dot
 ## product each, and an overlap body would also have to be kept out of the
 ## strand's way.
-func _add_refill_station(box: Dictionary) -> void:
+##
+## **One sauce each.** `sauce` is an index into `STATION_SAUCES`; left out, the
+## stalls along a street take them in turn -- mayo, mustard, ketchup -- so all
+## three are on every street and which one you carry is where you chose to
+## walk. The tutorial's are mayo, the one the lesson is written around.
+func _add_refill_station(box: Dictionary, sauce := -1) -> void:
 	var size: Vector3 = box["size"]
 	var facing: Vector3 = box["facing"]
 	var depth: float = size.x if absf(facing.x) > 0.5 else size.z
+	if sauce < 0:
+		sauce = _refill_stations.size() % STATION_SAUCES.size()
 	_refill_stations.push_back({
 		"position": box["position"] + facing * (depth * 0.5),
 		"facing": facing,
+		"sauce": sauce,
 	})
 
 
@@ -6291,7 +6436,21 @@ func _emit_point(shooter: Shooter = null) -> void:
 	var focused := shooter.sauce_part == SauceParts.Part.FOCUS
 	var spread := 0.28 if focused else 1.0
 	var jitter := shooter.rng.randf_range(-lateral_position_jitter, lateral_position_jitter) * spread
-	point.position = shooter.muzzle.global_position + shooter.attack_direction * muzzle_forward_offset \
+	# **Every peer launches from the same place**: the bottle under the aim
+	# pivot, which is where the player holding it sees it leave. Another
+	# player's stream used to be launched from the tube in their character's
+	# hands instead -- 1.3 m under the aim line and 2 m out -- and a point sent
+	# from there at the convergence point leaves about 29 degrees above the
+	# aim. Their own screen showed the stream on the crosshair while the host,
+	# who decides where it lands, sent it over the target's head.
+	#
+	# The character's tube is still where it is *drawn* leaving from: the gap
+	# rides on the point as `draw_offset` and fades as it flies.
+	var launch: Node3D = shooter.viewmodel_muzzle if is_instance_valid(shooter.viewmodel_muzzle) \
+		else shooter.muzzle
+	if launch != shooter.muzzle and is_instance_valid(shooter.muzzle):
+		point.draw_offset = shooter.muzzle.global_position - launch.global_position
+	point.position = launch.global_position + shooter.attack_direction * muzzle_forward_offset \
 		+ aim_basis.x * jitter
 	# The nozzle is held off to the side, so the strand is launched at the point
 	# the crosshair marks rather than parallel to the view axis.
@@ -6910,9 +7069,39 @@ func can_select_refill_sauce(sauce: int) -> bool:
 		and (map_kind != MapKind.TOMATINA or STATION_SAUCES[sauce] == ContaminationGrid.KIND_KETCHUP)
 
 
-## A number key selects a fresh bottle. The server checks the stall's reach.
+## Passed for `sauce` to mean "whatever this station hands out".
+const STATION_SAUCE_HERE := -1
+
+
+## Which sauce the station this player is standing at hands out, as an index
+## into `STATION_SAUCES`, or -1 away from one.
+func station_sauce_for(player: MayoPlayer) -> int:
+	var station := station_in_reach(player)
+	if station < 0:
+		return -1
+	return int(_refill_stations[station].get("sauce", 0))
+
+
+## The same for the local player, for the prompt.
+func local_station_sauce() -> int:
+	return -1 if _local == null else station_sauce_for(_local.player)
+
+
+## Whether E should be a refill: at a station, and not already holding a full
+## bottle of what it hands out.
+func _wants_station_refill() -> bool:
+	var sauce := local_station_sauce()
+	if sauce < 0 or not can_select_refill_sauce(sauce):
+		return false
+	return _local.sauce < 0.999 or _local.sauce_kind != STATION_SAUCES[sauce]
+
+
+## E takes the station's bottle. The server checks the stall's reach, and it
+## is the server that says which sauce that is.
 func _request_refill(sauce: int) -> void:
-	if _local == null or not can_select_refill_sauce(sauce):
+	if _local == null:
+		return
+	if sauce != STATION_SAUCE_HERE and not can_select_refill_sauce(sauce):
 		return
 	if _is_authority():
 		refill_for(_local.peer_id, sauce)
@@ -6923,15 +7112,18 @@ func _request_refill(sauce: int) -> void:
 ## The authority's side of a refill request, wherever it came from. A client
 ## asking is not proof it is standing at a station, so the reach is tested here
 ## against the body the server is simulating.
-## `sauce` must explicitly select one of `STATION_SAUCES`.
+## `sauce` is one of `STATION_SAUCES`, or `STATION_SAUCE_HERE` for the one the
+## station in reach hands out -- which is all a player's key can ask for.
 func refill_for(peer_id: int, sauce: int) -> bool:
-	if not can_select_refill_sauce(sauce):
-		return false
 	var shooter: Shooter = _shooters.get(peer_id)
 	if shooter == null:
 		return false
 	var station := station_in_reach(shooter.player)
 	if station < 0:
+		return false
+	if sauce == STATION_SAUCE_HERE:
+		sauce = int(_refill_stations[station].get("sauce", 0))
+	if not can_select_refill_sauce(sauce):
 		return false
 	apply_refill(peer_id, sauce)
 	# The tutorial counts this one. Read off the top-up the game already did
@@ -7172,6 +7364,10 @@ func _is_near_camera(point: MayoPoint, camera_position: Vector3) -> bool:
 		< strand_near_cull_distance * strand_near_cull_distance
 
 
+## How long a point takes to be drawn where it really is. See `draw_offset`.
+const MUZZLE_DRAW_BLEND := 0.22
+
+
 func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: Shooter = null) -> Array:
 	if shooter == null:
 		shooter = _local
@@ -7194,6 +7390,12 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: S
 				current = []
 		var visual_point := RibbonPoint.new()
 		visual_point.position = point.position
+		# Somebody else's stream is drawn leaving their character's tube and
+		# joins its real path over the first moment of flight. Drawing only.
+		if phase == PointPhase.AIR and point.age < MUZZLE_DRAW_BLEND \
+				and point.draw_offset != Vector3.ZERO:
+			visual_point.position += point.draw_offset \
+				* (1.0 - smoothstep(0.0, MUZZLE_DRAW_BLEND, point.age))
 		visual_point.width_scale = 0.62 if point.range_scale > 1.0 else 1.0
 		if phase == PointPhase.LANDING:
 			var progress := clampf(point.landing_age / landing_transition_time, 0.0, 1.0)
@@ -9265,21 +9467,13 @@ func _advance_thrown_tomatoes(delta: float) -> void:
 		if hit.is_empty():
 			entry.node.global_position = end
 			continue
+		# **It goes off where it lands, at once** -- floor, wall or body. It used
+		# to sit on the ground for `THROWN_TOMATO_FUSE` behind a warning ring and
+		# bounce off everything else first; now the throw is the whole warning.
 		var point: Vector3 = hit.position
-		var normal: Vector3 = hit.normal
-		if hit.collider is StaticBody3D and normal.y >= 0.65:
-			entry.ground_hit = point
-			entry.fuse = THROWN_TOMATO_FUSE
-			if map_kind == MapKind.TOMATINA:
-				_show_tomato_fuse(point)
-				if is_instance_valid(_net) and _net.is_online():
-					_net.broadcast_tomato_fuse(point)
-			entry.node.global_position = point + normal * 0.275
-		else:
-			# A wall or a body can deflect the tomato, but the fuse starts on landing.
-			var velocity: Vector3 = entry.velocity
-			entry.velocity = velocity.bounce(normal) * 0.35
-			entry.node.global_position = point + normal * 0.025
+		_explode_thrown_tomato(point + (hit.normal as Vector3) * 0.05, _shooters.get(entry.owner))
+		entry.node.queue_free()
+		_thrown_tomatoes.erase(id)
 
 
 func _tomato_blast_reaches(at: Vector3, body: PhysicsBody3D) -> bool:

@@ -80,12 +80,10 @@ func run():
 	target.global_position = flying.node.global_position + Vector3(1.0, 0.0, 0.0)
 	target.global_position.y = target.stand_height()
 	var target_health: float = target.health
-	flying.velocity = Vector3.DOWN * 200.0
-	scene._advance_thrown_tomatoes(0.02)
-	assert(flying.has("ground_hit"), "the tomato did not land")
-	assert(target.health == target_health, "the tomato damaged a target before the fuse expired")
-	assert(scene.get_node_or_null("TomatoFuseWarning") != null, "the landing warning was not built")
-	var landing: Vector3 = flying.ground_hit
+	# It goes off where it lands, at once -- so the cover and the body behind
+	# it are stood up before it comes down, straight under where it is now.
+	var landing: Vector3 = flying.node.global_position
+	landing.y = 0.0
 	var protected: MayoEnemy = scene.enemy_at(scene.enemy_count() - 1)
 	protected.global_position = landing + Vector3.LEFT * 3.4 + Vector3.UP * protected.stand_height()
 	var protected_health := protected.health
@@ -93,8 +91,10 @@ func run():
 		Vector3(0.5, 2.8, 3.0), Color.GRAY)
 	player.global_position = clear_ground + Vector3.LEFT * 9.0
 	await physics_frame
-	scene._advance_thrown_tomatoes(scene.THROWN_TOMATO_FUSE + 0.01)
-	assert(scene._thrown_tomatoes.is_empty(), "the tomato did not explode after the fuse")
+	flying.velocity = Vector3.DOWN * 200.0
+	scene._advance_thrown_tomatoes(0.02)
+	assert(scene._thrown_tomatoes.is_empty(), "the tomato did not explode on landing")
+	assert(scene.get_node_or_null("TomatoFuseWarning") == null, "a landing warning was built for an instant blast")
 	print("splash: the grunt beside the landing lost %.2f health" % (target_health - target.health))
 	assert(target.health < target_health, "a grunt beside the landing was not hurt by the splash")
 	assert(protected.health == protected_health, "the explosion damaged a target through cover")
