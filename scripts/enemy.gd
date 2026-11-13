@@ -344,6 +344,10 @@ var _attack_lock_left := 0.0
 ## needs nothing added to the state packet: the angle already travels.
 ## Where the stream is currently pushing it, in metres a second, decaying.
 var _shove := Vector3.ZERO
+## Where a blast is throwing it, and how fast that runs down. See `take_blast`.
+const BLAST_PUSH_SECONDS := 0.25
+var _blast_push := Vector3.ZERO
+var _blast_push_decay := 0.0
 var _pressure_left := 0.0
 var _pressure_pose := 0.0
 var _contact_kick_left := 0.0
@@ -1599,6 +1603,42 @@ func take_shove(from: Vector3, strength := 1.0) -> void:
 	_shove = away.normalized() * shove_speed * clampf(strength, 0.0, 1.0)
 
 
+## A blast went off at `from` and threw it back at `speed` metres a second.
+##
+## **An impulse, where `take_shove` is a pressure.** The stream sets its shove
+## every landing and lets go the moment it comes off; a blast happens once, so
+## this is given once and runs itself down over `BLAST_PUSH_SECONDS` -- about
+## `speed * BLAST_PUSH_SECONDS / 2` metres for a minion, half that for a heavy,
+## and nothing at all for the boss, whose patterns are placed.
+##
+## It also knocks a brute out of its charge, wind-up included. Returns whether
+## the body was actually thrown. Authority only -- the position travels.
+func take_blast(from: Vector3, speed: float) -> bool:
+	if not authority or not is_alive() or tutorial_trapped or _attack_lock_left > 0.0:
+		return false
+	var share := blast_push_share()
+	if share <= 0.0 or speed <= 0.0:
+		return false
+	var away := Vector3(global_position.x - from.x, 0.0, global_position.z - from.z)
+	if away.length_squared() < 0.000001:
+		return false
+	_blast_push = away.normalized() * speed * share
+	_blast_push_decay = _blast_push.length() / BLAST_PUSH_SECONDS
+	if kind == EnemyKind.TOMATO_BRUTE and (_charge_left > 0.0 or _windup > 0.0):
+		_charge_left = 0.0
+		_windup = 0.0
+		_charge_cooldown = BRUTE_CHARGE_COOLDOWN
+	return true
+
+
+## How much of a blast's throw this body takes: all of it for a minion, half
+## for a heavy, none for the boss or for a bowled tomato.
+func blast_push_share() -> float:
+	if kind == EnemyKind.PRESS_KING or kind == EnemyKind.TOMATO_BALL:
+		return 0.0
+	return 1.0 if grade == Grade.MINION else 0.5
+
+
 ## Whether it has noticed a player and is coming for them.
 func push_for_escape(source: MayoPlayer, direction: Vector3) -> void:
 	open_escape_clearance(source)
@@ -2187,6 +2227,7 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 		global_position = _trap_position
 		velocity = Vector3.ZERO
 		_shove = Vector3.ZERO
+		_blast_push = Vector3.ZERO
 		facing_yaw = 0.0
 		fall_angle = sin(_trap_clock * 7.0) * 0.045
 		_apply_pose()
@@ -2225,6 +2266,7 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 	# movement to resolve. A hit, a remembered target or bait wakes it here.
 	if kind == EnemyKind.TOMATO_GRUNT and target == null and _last_seen == Vector3.INF \
 			and not baited and _escape_left <= 0.0 and _shove.is_zero_approx() \
+			and _blast_push.is_zero_approx() \
 			and velocity.is_zero_approx() and is_on_floor():
 		return pending_hit
 
@@ -2283,11 +2325,18 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 	if _attack_lock_left <= 0.0:
 		velocity.x += _shove.x
 		velocity.z += _shove.z
+		# A blast replaces the walk where the shove rides on it: a body that
+		# kept walking at you through the throw covers most of it back before
+		# it is over, and the knockback reads as a twitch.
+		if not _blast_push.is_zero_approx():
+			velocity.x = _blast_push.x
+			velocity.z = _blast_push.z
 	else:
 		velocity.x = 0.0
 		velocity.z = 0.0
 	_shove = _shove.move_toward(Vector3.ZERO,
 		shove_speed / maxf(shove_decay_seconds, 0.01) * delta)
+	_blast_push = _blast_push.move_toward(Vector3.ZERO, _blast_push_decay * delta)
 	if _escape_left > 0.0:
 		velocity.x = _escape_push.x
 		velocity.z = _escape_push.z

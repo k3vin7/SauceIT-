@@ -418,6 +418,11 @@ func _run() -> void:
 		scene._record_splat(grunt, hit_at, Vector3.BACK, scene._local)
 		_check(not grunt.is_alive(), "the last hit did not kill the grunt")
 		if neighbour != null:
+			# The juice travels: nothing lands in the frame of the burst, and all
+			# of it has landed once `chain_burst_delay` has run.
+			_check(is_equal_approx(neighbour.health, neighbour_health),
+				"the splash landed before its juice could travel")
+			scene._advance_splash_ripples(scene.chain_burst_delay + 0.01)
 			var hits := maxi(1, int(round(scene.tomato_burst_damage / neighbour.sauce_damage_per_hit)))
 			var splash := neighbour_health - neighbour.health
 			print("splash: the neighbour lost %.2f of %.2f health" % [splash, neighbour_health])

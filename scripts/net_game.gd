@@ -104,7 +104,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 7
+const PROTOCOL_VERSION := 8
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
@@ -128,7 +128,7 @@ const MAX_CLIENTS := 3
 ## a different fight. The host tosses it and sends the answer; the level rides
 ## along rather than being derived, so nobody has to guess which band a bottle
 ## is in either.
-const STATE_STRIDE := 16
+const STATE_STRIDE := 17
 ## Where one occupant is standing in the truck: x, y, z and the yaw they are
 ## facing. The truck carries no bottle, no health and no aim pitch, so it needs
 ## none of the sixteen floats a stage body does -- four, four times a frame at
@@ -1550,14 +1550,14 @@ func _apply_lobby_poses(ids: PackedInt32Array, data: PackedFloat32Array) -> void
 
 
 func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
-		yaw: float, pitch: float, character_index := 0) -> void:
+		yaw: float, pitch: float, character_index := 0, shake := 0.0) -> void:
 	if not _online or multiplayer.is_server() or not _world_ready():
 		return
 	# The handshake takes a few frames, and the keys sent during it have nowhere
 	# to go yet.
 	if not _joined or _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
-	_submit_input.rpc_id(1, move, run, jump, firing, yaw, pitch, character_index)
+	_submit_input.rpc_id(1, move, run, jump, firing, yaw, pitch, character_index, shake)
 
 
 ## The server applies the last input it heard from each client before running
@@ -1604,6 +1604,7 @@ func apply_client_input() -> void:
 		shooter.aim_yaw = packet[3]
 		shooter.aim_pitch = packet[4]
 		world.set_character_variant(id, packet[6])
+		shooter.bottle_shake_input = packet[7] if not shooter.player.is_incapacitated() else 0.0
 
 
 func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
@@ -1619,26 +1620,28 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			velocity.x, velocity.z,
 			1.0 if shooter.firing else 0.0, shooter.aim_pitch,
 			float(state[3]), state[4], state[5], state[6], state[7],
-			shooter.sauce, float(shooter.nozzle), float(shooter.character_index)]))
+			shooter.sauce, float(shooter.nozzle), shooter.bottle_charge,
+			float(shooter.character_index)]))
 	return data
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
 func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
-		yaw: float, pitch: float, character_index := 0) -> void:
+		yaw: float, pitch: float, character_index := 0, shake := 0.0) -> void:
 	if not multiplayer.is_server() or not _world_ready():
 		return
 	if not _within_budget(multiplayer.get_remote_sender_id()):
 		return
 	# The bools need no range check -- there is no wrong value for a key being
 	# down -- but the floats do, and they go through the same helpers as before.
-	if not all_finite([move, yaw, pitch]):
+	if not all_finite([move, yaw, pitch, shake]):
 		rejected_packets += 1
 		return
 	_client_input[multiplayer.get_remote_sender_id()] = [
 		clamp_direction(move), run, firing, wrap_angle(yaw),
 		clamp_angle(pitch, deg_to_rad(world.pitch_limit_degrees)), jump,
-		clampi(character_index, 0, world.PLAYER_CHARACTERS.size() - 1)]
+		clampi(character_index, 0, world.PLAYER_CHARACTERS.size() - 1),
+		clamp_range(shake, 0.0, 1.0)]
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
@@ -1664,6 +1667,7 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		# catch at different moments from the screen next to it.
 		shooter.sauce = clampf(data[index + 13], 0.0, 1.0)
 		shooter.nozzle = clampi(int(round(data[index + 14])), 0, 3)
+		shooter.bottle_charge = clampf(data[index + 15], 0.0, 1.0)
 		# The local player's own aim is never taken back from the server: it is
 		# already ahead of this packet. Nor is their character: a `C` press
 		# rebuilds the visual at once, and the packet already in flight still
@@ -1673,7 +1677,7 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		# nothing it could correct.
 		if not shooter.is_local:
 			world.set_character_variant(ids[slot],
-				clampi(int(round(data[index + 15])), 0, world.PLAYER_CHARACTERS.size() - 1))
+				clampi(int(round(data[index + 16])), 0, world.PLAYER_CHARACTERS.size() - 1))
 			shooter.firing = data[index + 6] > 0.5
 			shooter.aim_pitch = data[index + 7]
 			# The yaw has to land on the aim, not only on the body: _update_aim
@@ -1726,7 +1730,7 @@ func _apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
 		rejected_packets += 1
 		return
 	world.apply_enemy_shake(enemy_index, peers,
-		clamp_range(degrees, 0.0, 90.0), clamp_range(seconds, 0.0, 5.0), clampi(accent, 0, 2))
+		clamp_range(degrees, 0.0, 90.0), clamp_range(seconds, 0.0, 5.0), clampi(accent, 0, 4))
 
 
 # ---------------------------------------------------------------------------

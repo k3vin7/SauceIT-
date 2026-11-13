@@ -309,6 +309,16 @@ class Shooter:
 	var bottle_kick_pending := 0.0
 	var bottle_pressure := 0.0
 	var bottle_pickup_left := 0.0
+	## How hard this player is shaking the bottle right now, 0 to 1. Read off
+	## the mouse for the local player and off the input packet on the host.
+	var bottle_shake_input := 0.0
+	## What the shaking has built up, 0 to 1. The authority's; it travels in
+	## the state packet beside the tank level. See `bottle_charge_seconds`.
+	var bottle_charge := 0.0
+	## The shake as drawn on the bottle, and the charge last frame -- a peer
+	## that is told neither the mouse nor the packet sees the charge rising.
+	var bottle_shake_show := 0.0
+	var bottle_charge_seen := 0.0
 	var recoil_pitch := 0.0
 	## The fire main opening: a pitch the nozzle and (for the local player)
 	## the view are thrown up by, fed in over `HOSE_KICK_ATTACK` and settled
@@ -514,6 +524,23 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## Longer than `fire_cooldown_time`, which is the much shorter gap between two
 ## squirts the player ended themselves by letting go.
 @export_range(0.0, 3.0, 0.05, "suffix:s") var spent_burst_cooldown := 0.5
+## **Shaking the bottle.** Hold the right button and shake the mouse: the view
+## stays put, the bottle goes up and down, and it takes on charge. A charged
+## bottle throws further, and it delivers like a full one however little is
+## in it -- no catching, no air, a full-length squirt -- which is what shaking
+## a nearly empty bottle is for. Firing spends the charge.
+##
+## How fast the mouse has to travel to count as a full-strength shake.
+@export_range(200.0, 10000.0, 50.0, "suffix:px/s") var bottle_shake_full_speed := 2200.0
+## How long a full-strength shake takes to charge an uncharged bottle.
+@export_range(0.1, 5.0, 0.05, "suffix:s") var bottle_charge_seconds := 0.9
+## How long a full charge lasts while sauce is coming out, and while it is not.
+@export_range(0.2, 20.0, 0.1, "suffix:s") var bottle_charge_spray_seconds := 3.0
+@export_range(1.0, 120.0, 1.0, "suffix:s") var bottle_charge_idle_seconds := 15.0
+## What a full charge adds to the speed the sauce leaves at, and to how far it
+## is carried before the pressure leaves it. Both scale with the charge.
+@export_range(0.0, 1.0, 0.01) var bottle_charge_speed_bonus := 0.3
+@export_range(0.0, 2.0, 0.01) var bottle_charge_range_bonus := 0.5
 ## Refills while not firing. Off: the stations hand the sauce out now, so the
 ## tank is a thing you walk back to fill rather than something that quietly
 ## fills itself while you stand around. Left exported because turning it up is
@@ -844,6 +871,18 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 @export_range(0.02, 1.0, 0.01, "suffix:s") var flinch_shake_seconds := 0.12
 @export_range(0.0, 30.0, 0.1, "suffix:°") var kill_shake_degrees := 0.0
 @export_range(0.02, 2.0, 0.01, "suffix:s") var kill_shake_seconds := 0.3
+## How fast a tomato blast throws the bodies it hurts. It runs down over
+## `MayoEnemy.BLAST_PUSH_SECONDS`, so 10 m/s is about 1.25 m for a minion and
+## half that for a heavy. Short on purpose: a crowd thrown wide is a crowd the
+## next ketchup burst no longer covers.
+@export_range(0.0, 30.0, 0.5, "suffix:m/s") var blast_knockback_speed := 10.0
+## How long a bursting tomato's juice takes to reach a body at the rim of its
+## ring; one beside it is reached almost at once. This is the beat of a chain
+## of bursts. Zero lands it all in the frame of the burst, as it used to.
+@export_range(0.0, 0.5, 0.01, "suffix:s") var chain_burst_delay := 0.12
+## How hard a tomato blast rocks the view of a player standing on it. The
+## ketchup burst does not: that is sauce landing, not a blast.
+@export_range(0.0, 10.0, 0.1, "suffix:°") var blast_shake_degrees := 1.6
 
 @export_group("Sound")
 ## Everything this prototype makes a noise with goes through here: the squirt,
@@ -1139,6 +1178,10 @@ const FINALE_SPECIALS := [MayoTutorial.KIND_KETCHUP_SPITTER, MayoTutorial.KIND_C
 var _press_king_rise_left := 0.0
 var _press_king_rise_at := Vector3.INF
 var _overripe_bursts: Dictionary = {}
+## Juice from an ordinary burst that has not reached its body yet. See
+## `_splash_enemies` and `chain_burst_delay`.
+const CHAIN_BURST_MIN_DELAY := 0.04
+var _splash_ripples: Array = []
 var _finale_special_pending := false
 const FINALE_CHECKPOINT_TAG := -998
 const HOSE_PENDING_TAG := -997
@@ -1349,6 +1392,9 @@ var debug_input_move := Vector2.ZERO
 var debug_input_run := false
 var debug_input_firing := false
 var debug_input_jump := false
+var debug_input_shake := 0.0
+## Pixels the mouse has moved with the shake button held, since the last tick.
+var _shake_travel := 0.0
 var debug_profile_enabled := false
 var debug_profile_frames := 0
 var debug_raycast_count := 0
@@ -1430,6 +1476,7 @@ func _physics_process(delta: float) -> void:
 			_advance_tomatina_rescues(delta)
 			_advance_overripe_bursts(delta)
 			_advance_cheese_threads(delta)
+		_advance_splash_ripples(delta)
 		_advance_player_respawns()
 		_advance_healing_tomatoes(delta)
 		for shooter in _shooters.values():
@@ -1448,6 +1495,8 @@ func _physics_process(delta: float) -> void:
 			_advance_press_king_spawn(delta)
 	for shooter in _shooters.values():
 		_advance_strand(shooter, delta)
+		if _is_authority():
+			_advance_bottle_charge(shooter, delta)
 	if _sauce_parts != null:
 		_sauce_parts.advance_projectiles(delta, _is_authority())
 		_sauce_parts.advance_coins(delta, _is_authority())
@@ -1501,6 +1550,26 @@ func _physics_process(delta: float) -> void:
 		debug_max_points = maxi(debug_max_points, _points.size())
 
 
+## Builds the charge while the bottle is being shaken and runs it down while it
+## is not -- quickly while sauce is coming out, slowly otherwise. Authority only.
+func _advance_bottle_charge(shooter: Shooter, delta: float) -> void:
+	if shooter.was_firing:
+		shooter.bottle_charge -= delta / maxf(bottle_charge_spray_seconds, 0.01)
+	elif shooter.bottle_shake_input > 0.0:
+		shooter.bottle_charge += shooter.bottle_shake_input * delta / maxf(bottle_charge_seconds, 0.01)
+	else:
+		shooter.bottle_charge -= delta / maxf(bottle_charge_idle_seconds, 0.01)
+	shooter.bottle_charge = clampf(shooter.bottle_charge, 0.0, 1.0)
+
+
+## Whether the local player is holding the shake button with the bottle out.
+## The right button is the tomato's while one is in the hand.
+func _bottle_shake_held() -> bool:
+	return _local != null and selected_item_slot(_local.peer_id) == 0 \
+		and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
+		and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
+
+
 ## Emission and the trigger edges, for one shooter. Split out of the frame loop
 ## so remote shooters go through exactly the same path as the local one.
 func _advance_strand(shooter: Shooter, delta: float) -> void:
@@ -1542,7 +1611,10 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		shooter.fire_hold = minimum_fire_time
 		shooter.trigger_released = false
 		shooter.burst_time = 0.0
-		shooter.burst_allowance = burst_seconds_at(shooter.sauce) * sauce_burst_scale(shooter)
+		# A shaken bottle squirts like a full one, whatever is left in it.
+		shooter.burst_allowance = lerpf(burst_seconds_at(shooter.sauce),
+			maxf(full_burst_seconds, burst_seconds_at(shooter.sauce)),
+			shooter.bottle_charge) * sauce_burst_scale(shooter)
 		firing = true
 
 	# What the trigger is asking for is now separate from what the nozzle does
@@ -1836,6 +1908,14 @@ func _advance_spray_feel(shooter: Shooter, delta: float, delivering: bool) -> vo
 	var fade := 1.0 - exp(-delta / maxf(connection_fade_seconds, 0.001))
 	shooter.connection = lerpf(shooter.connection, wanted, fade)
 
+	# The shake everyone sees. The local player and the host know how hard the
+	# hand is going; any other peer sees only that the charge is climbing.
+	var shaking := shooter.bottle_shake_input
+	if not shooter.is_local and not _is_authority():
+		shaking = 1.0 if shooter.bottle_charge > shooter.bottle_charge_seen + 0.0001 else 0.0
+	shooter.bottle_charge_seen = shooter.bottle_charge
+	shooter.bottle_shake_show = maxf(shaking, shooter.bottle_shake_show - delta * 4.0)
+
 	_apply_nozzle_sway(shooter)
 	if shooter.is_local and _crosshair is Crosshair:
 		(_crosshair as Crosshair).connection = shooter.connection
@@ -1867,6 +1947,11 @@ func _apply_nozzle_sway(shooter: Shooter) -> void:
 	var pickup := pow(shooter.bottle_pickup_left / BOTTLE_PICKUP_SECONDS, 2.0)
 	shooter.weapon_sway.position += Vector3(0.0, -0.42, 0.12) * pickup
 	shooter.weapon_sway.rotation.x += deg_to_rad(-25.0) * pickup
+	# Being shaken: up and down along its own length, nose bobbing with it.
+	if shooter.bottle_shake_show > 0.001:
+		var wave := sin(Time.get_ticks_msec() * 0.001 * 42.0) * shooter.bottle_shake_show
+		shooter.weapon_sway.position.y += wave * 0.06
+		shooter.weapon_sway.rotation.x += wave * deg_to_rad(14.0)
 
 
 ## Volume and pitch follow the pressure behind the squirt, and both are a small
@@ -1913,6 +1998,13 @@ func _decide_nozzle(shooter: Shooter, delta: float, firing: bool) -> void:
 		# A fresh press is tested straight away rather than after a wait, so a
 		# low bottle is late off the mark.
 		shooter.catch_roll = 0.0
+		return
+
+	# Shaken: what is left has been knocked down to the nozzle, so it comes out
+	# clean whichever band the level is in. The charge is what it costs.
+	if shooter.bottle_charge > 0.0 and shooter.sauce > 0.0:
+		shooter.nozzle = Nozzle.STREAM
+		shooter.catches_in_a_row = 0
 		return
 
 	if stage == SauceStage.EMPTY:
@@ -2011,7 +2103,21 @@ func _read_local_input() -> void:
 	var allowed := _tutorial == null or _tutorial.allows_firing()
 	var live := _input_enabled and not shop_open and allowed and not _local.player.is_incapacitated() \
 		and not _local.player.is_wiping()
-	_local.firing = live and _fire_held()
+	# The shake: how fast the mouse went this tick, against the speed that
+	# counts as full. Held up for a moment between mouse events, which arrive
+	# with the rendered frames rather than with these ticks. A hand that is
+	# shaking the bottle is not squeezing it.
+	var tick := get_physics_process_delta_time()
+	var shaking := live and _bottle_shake_held()
+	var shake := 0.0
+	if shaking:
+		shake = clampf(_shake_travel / maxf(tick, 0.001) / maxf(bottle_shake_full_speed, 1.0), 0.0, 1.0)
+		shake = maxf(shake, _local.bottle_shake_input - tick * 5.0)
+	_shake_travel = 0.0
+	if debug_input_override:
+		shake = clampf(debug_input_shake, 0.0, 1.0)
+	_local.bottle_shake_input = shake
+	_local.firing = live and _fire_held() and not shaking
 	if debug_input_override:
 		# The checks have no keyboard, so the same keys reach the body and the
 		# packet through here rather than through Input.
@@ -2035,7 +2141,7 @@ func _read_local_input() -> void:
 		run = Input.is_action_pressed("run")
 		jump = Input.is_action_pressed("jump")
 	_net.send_input(move, run, jump, _local.firing, _local.aim_yaw, _local.aim_pitch,
-		_local.requested_character_index)
+		_local.requested_character_index, _local.bottle_shake_input)
 
 
 func _fire_held() -> bool:
@@ -2372,7 +2478,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			_request_refill(index)
 			return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		apply_look((event as InputEventMouseMotion).relative)
+		# With the shake button down the mouse moves the bottle, not the view:
+		# a shake that also threw the camera about would be unusable in first
+		# person.
+		if _bottle_shake_held():
+			_shake_travel += (event as InputEventMouseMotion).relative.length()
+		else:
+			apply_look((event as InputEventMouseMotion).relative)
 
 
 ## Mouse-look. Both camera modes feed the same yaw/pitch, so aiming is
@@ -4688,22 +4800,63 @@ func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Sho
 		_stain_body_with_ketchup(other, centre)
 		if damage <= 0.0 or not other.is_alive():
 			continue
-		var crossed_before := other._flinch_crossed
-		if shooter != null:
-			_credit_hit(other, shooter)
-		if single_blast:
-			other.take_sauce_hit(centre, damage)
+		# **A burst's juice takes a moment to arrive**, longer the further out
+		# the body stands. It is what makes a chain read as one going off after
+		# another rather than as a crowd deleted in a frame: every tomato this
+		# kills bursts when it is reached, and its own juice then travels too.
+		# A blast -- thrown, or overripe -- lands at once; it has had its fuse.
+		if not single_blast and source != null and chain_burst_delay > 0.0:
+			var along := other.global_position.distance_to(centre) / maxf(radius, 0.01)
+			_splash_ripples.push_back({"enemy": other, "centre": centre, "damage": damage,
+				"peer": shooter.peer_id if shooter != null else -1,
+				"left": lerpf(CHAIN_BURST_MIN_DELAY, maxf(chain_burst_delay, CHAIN_BURST_MIN_DELAY), along)})
+			continue
+		_splash_enemy(other, centre, damage, shooter, single_blast)
+
+
+## The splash landing on one body: the damage, the throw, the hit everyone sees,
+## and the burst in turn if that was what killed it.
+func _splash_enemy(other: MayoEnemy, centre: Vector3, damage: float, shooter: Shooter,
+		single_blast: bool) -> void:
+	var crossed_before := other._flinch_crossed
+	if shooter != null:
+		_credit_hit(other, shooter)
+	if single_blast:
+		other.take_sauce_hit(centre, damage)
+	else:
+		var hits := maxi(1, int(round(damage / maxf(other.sauce_damage_per_hit, 0.001))))
+		for _hit in hits:
+			if not other.is_alive():
+				break
+			other.take_sauce_hit(centre)
+	# Whatever the blast hurt is thrown back from it and shows the hit.
+	other.take_blast(centre, blast_knockback_speed)
+	_broadcast_blast_hit(other)
+	if not other.is_alive():
+		_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
+		_finish_tomato_kill(other, shooter)
+	elif other._flinch_crossed > crossed_before:
+		_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
+
+
+## Runs the travelling juice down and lands what has arrived. Authority only.
+## Bodies a landing kills burst here and queue their own, which is the chain.
+func _advance_splash_ripples(delta: float) -> void:
+	if _splash_ripples.is_empty():
+		return
+	var due: Array = []
+	var waiting: Array = []
+	for ripple: Dictionary in _splash_ripples:
+		ripple.left -= delta
+		if ripple.left > 0.0:
+			waiting.push_back(ripple)
 		else:
-			var hits := maxi(1, int(round(damage / maxf(other.sauce_damage_per_hit, 0.001))))
-			for _hit in hits:
-				if not other.is_alive():
-					break
-				other.take_sauce_hit(centre)
-		if not other.is_alive():
-			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
-			_finish_tomato_kill(other, shooter)
-		elif other._flinch_crossed > crossed_before:
-			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
+			due.push_back(ripple)
+	_splash_ripples = waiting
+	for ripple: Dictionary in due:
+		var other: MayoEnemy = ripple.enemy
+		if is_instance_valid(other) and other.is_alive():
+			_splash_enemy(other, ripple.centre, ripple.damage, _shooters.get(ripple.peer), false)
 
 
 ## A blast reaching the party. Every standing player inside `radius` of `at`
@@ -4759,6 +4912,7 @@ func _advance_overripe_bursts(delta: float) -> void:
 		if not is_instance_valid(enemy):
 			continue
 		_burst_tomato(enemy, fuse.at, _shooters.get(fuse.peer))
+		_shake_from_blast(fuse.at, enemy.burst_radius)
 		_leave_debris(fuse.at, enemy.radius, TomatoVisuals.OVERRIPE)
 		if is_instance_valid(_net) and _net.is_online():
 			_net.broadcast_overripe_burst(fuse.at, enemy.burst_radius, false)
@@ -4766,6 +4920,7 @@ func _advance_overripe_bursts(delta: float) -> void:
 
 func show_overripe_burst(at: Vector3, radius: float, priming: bool) -> void:
 	if not priming:
+		_shake_from_blast(at, radius)
 		_tomato_fragments(at, radius)
 		_leave_debris(at, 0.91, TomatoVisuals.OVERRIPE)
 		return
@@ -5104,6 +5259,7 @@ func _update_juice_kickup(delta: float) -> void:
 
 func _reset_tomatina_finale() -> void:
 	_overripe_bursts.clear()
+	_splash_ripples.clear()
 	_press_king_rise_at = Vector3.INF
 	_press_king_rise_left = 0.0
 	_finale_special_pending = false
@@ -6034,6 +6190,10 @@ func _emit_point(shooter: Shooter = null) -> void:
 	if focused:
 		speed *= 1.28
 		point.range_scale = 1.6
+	# A shaken bottle throws further: faster out of the nozzle, and carried
+	# longer before the pressure leaves it.
+	speed *= 1.0 + bottle_charge_speed_bonus * shooter.bottle_charge
+	point.range_scale *= 1.0 + bottle_charge_range_bonus * shooter.bottle_charge
 	var player_velocity := shooter.player.velocity
 	var travel_scale := extend_speed / maxf(emission_speed, 0.001)
 	point.velocity = direction * speed + Vector3(player_velocity.x, 0.0, player_velocity.z) \
@@ -6473,6 +6633,11 @@ func _burst_ketchup(enemy: MayoEnemy, shooter: Shooter) -> void:
 			if not other.is_alive():
 				break
 			killed = other.take_sauce_hit(centre)
+		# **Sauce landing, not a blast**: the stack going off is ketchup thrown
+		# outwards, so what it does to a body is what a stream does -- the same
+		# shove, once -- and not the throw a tomato gives.
+		other.take_shove(centre)
+		_broadcast_blast_hit(other)
 		if killed or not other.is_alive():
 			_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
 			_finish_tomato_kill(other, shooter)
@@ -7504,12 +7669,78 @@ func _broadcast_enemy_shake(enemy: MayoEnemy, degrees: float, seconds: float, ac
 	apply_enemy_shake(index, peers, degrees, seconds, accent)
 
 
+## A blast or a ketchup burst hurt this body, and every peer should see it land.
+## Rides the shake message as accent 4, with nobody listed: it is not a shake.
+func _broadcast_blast_hit(enemy: MayoEnemy) -> void:
+	var index := _enemies.find(enemy)
+	if index < 0:
+		return
+	var nobody := PackedInt32Array()
+	if is_instance_valid(_net) and _net.is_online():
+		_net.send_enemy_shake(index, nobody, 0.0, 0.0, 4)
+	apply_enemy_shake(index, nobody, 0.0, 0.0, 4)
+
+
+## The hit itself: a white flash the size of the body, gone in a tenth of a
+## second, and ketchup thrown off it. Presentation only, on every peer.
+##
+## A shell round the body rather than a tint on it: the body's overlay slot is
+## the stain's -- see `BodyContamination` -- and the hit must not wipe it.
+func _show_blast_hit(enemy: MayoEnemy) -> void:
+	if not is_instance_valid(enemy):
+		return
+	var at := enemy.global_position
+	_tomato_fragments(at, 0.0)
+	var flash := MeshInstance3D.new()
+	flash.name = "BlastHitFlash"
+	var ball := SphereMesh.new()
+	ball.radial_segments = 10
+	ball.rings = 5
+	ball.radius = enemy.radius * 1.1
+	ball.height = maxf(enemy.height, enemy.radius * 2.0) * 1.05
+	flash.mesh = ball
+	flash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var tint := StandardMaterial3D.new()
+	tint.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	tint.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	tint.albedo_color = Color(1.0, 1.0, 1.0, 0.6)
+	flash.material_override = tint
+	add_child(flash)
+	flash.global_position = at
+	var fade := create_tween()
+	fade.tween_property(tint, "albedo_color:a", 0.0, 0.1)
+	fade.tween_callback(flash.queue_free)
+
+
+## A blast near the local player rocks their view: `blast_shake_degrees` at the
+## centre, fading to nothing at twice the radius. Called wherever the blast is
+## drawn, so it needs no message of its own.
+func _shake_from_blast(at: Vector3, radius: float) -> void:
+	if _local == null or not is_instance_valid(_local.player) or blast_shake_degrees <= 0.0:
+		return
+	var gap := at - _local.player.global_position
+	var strength := 1.0 - gap.length() / maxf(radius * 2.0, 0.01)
+	if strength <= 0.0:
+		return
+	gap.y = 0.0
+	if gap.length_squared() < 0.000001:
+		gap = -_aim_basis(_local).z
+	_local.shake_span = 0.3
+	_local.shake_left = 0.3
+	_local.shake_degrees = blast_shake_degrees * strength
+	_local.shake_direction = gap.normalized()
+
+
 ## Starts the shake on this peer, for the listed players. Everybody runs it and
 ## each keeps only its own: the list is short and the alternative is a message
 ## per player.
 func apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
 		degrees: float, seconds: float, accent := 0) -> void:
 	if enemy_index < 0 or enemy_index >= _enemies.size():
+		return
+	# A blast landing on a body is for every screen, not just the credited ones.
+	if accent == 4:
+		_show_blast_hit(_enemies[enemy_index])
 		return
 	if _local == null or not peers.has(_local.peer_id):
 		return
@@ -8983,6 +9214,7 @@ func _pulse_blast_radius(at: Vector3, radius: float, duration: float, color: Col
 
 
 func show_tomato_blast(at: Vector3, radius: float) -> void:
+	_shake_from_blast(at, radius)
 	_tomato_fragments(at, radius)
 	_leave_debris(at, 0.48, TomatoVisuals.TOMATO)
 	if not muted:
