@@ -3759,6 +3759,92 @@ func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3,
 	_walls.push_back(wall)
 
 
+## Closes the slots a player cannot stand in but can fall into.
+##
+## The props are set down beside the walls by eye, and a crate a metre off a
+## wall leaves a slot narrower than the player's 1.28 m. Nobody walks into one
+## -- but stepping off the top of the crate towards the wall drops the capsule
+## onto the crate's edge with its side against the wall: resting on a corner is
+## not standing on a floor, so there is no jump, and a body thrown into the slot
+## itself overlaps both sides and cannot move at all.
+##
+## So every such slot gets an unseen block as tall as the lower of its two
+## sides, flush with both: the top of the crate simply runs on to the wall.
+## Between a prop and a wall, and between two props. Slots a player fits through
+## are left alone, as is anything low enough to be stepped over.
+const SLOT_WIDEST := 1.45
+const SLOT_LOWEST_SIDE := 0.5
+func _fill_narrow_slots(props: Array) -> void:
+	var solids: Array = []
+	for box in StreetMap.wall_boxes():
+		var wall_size: Vector3 = box["size"]
+		var wall_at: Vector3 = box["position"]
+		solids.push_back([Vector3(wall_at.x - wall_size.x * 0.5, 0.0, wall_at.z - wall_size.z * 0.5),
+			Vector3(wall_at.x + wall_size.x * 0.5, TomatinaMap.BOUNDARY_HEIGHT, wall_at.z + wall_size.z * 0.5)])
+	var first_prop := solids.size()
+	for box in props:
+		var size: Vector3 = box["size"]
+		var at: Vector3 = box["position"]
+		solids.push_back([at - size * 0.5, at + size * 0.5])
+	var filled := 0
+	for index in range(first_prop, solids.size()):
+		var low: Vector3 = solids[index][0]
+		var high: Vector3 = solids[index][1]
+		if high.y < SLOT_LOWEST_SIDE:
+			continue
+		for other in solids.size():
+			# Walls against every prop; props against the props after them, so a
+			# pair is looked at once.
+			if other >= first_prop and other <= index:
+				continue
+			var other_low: Vector3 = solids[other][0]
+			var other_high: Vector3 = solids[other][1]
+			if other_high.y < SLOT_LOWEST_SIDE:
+				continue
+			for axis in [Vector3.AXIS_X, Vector3.AXIS_Z]:
+				var across: int = Vector3.AXIS_Z if axis == Vector3.AXIS_X else Vector3.AXIS_X
+				var from := maxf(low[across], other_low[across])
+				var to := minf(high[across], other_high[across])
+				if to - from < 0.05:
+					continue
+				var near := 0.0
+				var far := 0.0
+				if other_low[axis] >= high[axis]:
+					near = high[axis]
+					far = other_low[axis]
+				elif other_high[axis] <= low[axis]:
+					near = other_high[axis]
+					far = low[axis]
+				else:
+					continue
+				if far - near < 0.02 or far - near > SLOT_WIDEST:
+					continue
+				var top := minf(high.y, other_high.y)
+				var block_size := Vector3.ZERO
+				block_size[axis] = far - near
+				block_size[across] = to - from
+				block_size.y = top
+				var block_at := Vector3.ZERO
+				block_at[axis] = (near + far) * 0.5
+				block_at[across] = (from + to) * 0.5
+				block_at.y = top * 0.5
+				var body := StaticBody3D.new()
+				body.name = "SlotFill%03d" % filled
+				var collision := CollisionShape3D.new()
+				var shape := BoxShape3D.new()
+				shape.size = block_size
+				collision.shape = shape
+				body.add_child(collision)
+				add_child(body)
+				body.position = block_at
+				filled += 1
+	debug_slot_fills = filled
+
+
+## How many slots `_fill_narrow_slots` closed, for the checks.
+var debug_slot_fills := 0
+
+
 ## The standalone tutorial is deliberately a small authored rectangle. It uses
 ## the same contaminable floor, player, bottle and enemies as the festival
 ## stage, but none of StreetMap's roads, stalls or pixel coordinates.
@@ -3916,6 +4002,7 @@ func _build_tomatina() -> void:
 			box["size"], box["color"], not has_art, false, 0.14)
 		if TomatinaMap.is_supply_prop(box):
 			_add_tomatina_supply(box)
+	_fill_narrow_slots(debris + parked_trucks)
 	if has_art:
 		art.build(self, debris, parked_trucks, truck)
 	for room in TomatinaMap.SAFE_ROOMS.size():
