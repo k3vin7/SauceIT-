@@ -329,6 +329,9 @@ class Shooter:
 	var bottle_charge := 0.0
 	## The shake as drawn, on the bottle and on the character holding it.
 	var bottle_shake_show := 0.0
+	## How far the bottle has been stood on end for it, 0 level and 1 upright.
+	## Eased, where the shake itself follows the hand.
+	var bottle_shake_pose := 0.0
 	var recoil_pitch := 0.0
 	## The fire main opening: a pitch the nozzle and (for the local player)
 	## the view are thrown up by, fed in over `HOSE_KICK_ATTACK` and settled
@@ -1525,6 +1528,8 @@ func _physics_process(delta: float) -> void:
 		# same on every screen; eased out so it does not stop dead.
 		shooter.bottle_shake_show = maxf(shooter.bottle_shake_input,
 			shooter.bottle_shake_show - delta * 4.0)
+		shooter.bottle_shake_pose = move_toward(shooter.bottle_shake_pose,
+			1.0 if shooter.bottle_shake_show > 0.05 else 0.0, delta * 7.0)
 	if _sauce_parts != null:
 		_sauce_parts.advance_projectiles(delta, _is_authority())
 		_sauce_parts.advance_coins(delta, _is_authority())
@@ -1588,6 +1593,10 @@ func _advance_bottle_charge(shooter: Shooter, delta: float) -> void:
 	else:
 		shooter.bottle_charge -= delta / maxf(bottle_charge_idle_seconds, 0.01)
 	shooter.bottle_charge = clampf(shooter.bottle_charge, 0.0, 1.0)
+
+
+## How far the bottle is tipped up to be shaken, from pointing ahead.
+const BOTTLE_SHAKE_UPRIGHT_DEGREES := 78.0
 
 
 ## Whether the local player is holding the shake button with the bottle out.
@@ -1693,6 +1702,10 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 
 func _advance_part_trigger(shooter: Shooter, delta: float) -> void:
 	shooter.was_firing = false
+	# The bottle's own motion runs whatever is screwed onto it. Left to the
+	# stream's path alone, a projectile part never ran its pickup down -- a
+	# fresh bottle stayed below the screen for good -- and never drew the shake.
+	_advance_spray_feel(shooter, delta, false)
 	if not _is_authority():
 		return
 	_decide_nozzle(shooter, delta, false)
@@ -1967,11 +1980,14 @@ func _apply_nozzle_sway(shooter: Shooter) -> void:
 	var pickup := pow(shooter.bottle_pickup_left / BOTTLE_PICKUP_SECONDS, 2.0)
 	shooter.weapon_sway.position += Vector3(0.0, -0.42, 0.12) * pickup
 	shooter.weapon_sway.rotation.x += deg_to_rad(-25.0) * pickup
-	# Being shaken: up and down along its own length, nose bobbing with it.
-	if shooter.bottle_shake_show > 0.001:
+	# Being shaken: stood on end, nozzle up, and pumped up and down -- the way
+	# a bottle is shaken, rather than waggled where it was pointing.
+	if shooter.bottle_shake_pose > 0.001:
+		var upright := smoothstep(0.0, 1.0, shooter.bottle_shake_pose)
 		var wave := sin(Time.get_ticks_msec() * 0.001 * 42.0) * shooter.bottle_shake_show
-		shooter.weapon_sway.position.y += wave * 0.06
-		shooter.weapon_sway.rotation.x += wave * deg_to_rad(14.0)
+		shooter.weapon_sway.rotation.x += deg_to_rad(BOTTLE_SHAKE_UPRIGHT_DEGREES) * upright
+		shooter.weapon_sway.position += Vector3(0.0, -0.10, -0.06) * upright
+		shooter.weapon_sway.position.y += wave * 0.09
 
 
 ## Volume and pitch follow the pressure behind the squirt, and both are a small
@@ -3050,6 +3066,10 @@ func _build_shooter_visuals(shooter: Shooter) -> void:
 	# drawn in the other's sauce.
 	shooter.air_material = _mayo_material.duplicate() as StandardMaterial3D
 	shooter.landing_material = _landing_material.duplicate() as StandardMaterial3D
+	# In the sauce the bottle starts with, not in the material's own mayo: on
+	# the Tomatina streets everyone starts on ketchup, and until the first
+	# refill the stream was drawn as mayo out of a ketchup bottle.
+	_apply_sauce_look(shooter)
 	shooter.air_visual = _make_stream_visual("AirRibbon" + suffix, shooter.air_material)
 	shooter.nozzle_visual = _make_stream_visual("NozzleRibbon" + suffix, shooter.air_material, 4)
 	shooter.landing_visual = _make_stream_visual("LandingRibbon" + suffix, shooter.landing_material)
@@ -3868,18 +3888,12 @@ func _update_bottle_gauge(shooter: Shooter) -> void:
 	shooter.bottle_contents.scale = fill_scale
 	shooter.bottle_contents.visible = level > 0.004
 
-	var stage := sauce_stage_of(level)
-	# PLACEHOLDER colours. The three bands are what matters, not the swatches.
-	# The steady swatch is the sauce's own, because at a glance the bottle is the
-	# only thing on screen that says what is loaded; the two unreliable bands
-	# stay as they were, since what they are reporting is the nozzle rather than
-	# the contents and reading them as a fourth sauce would be worse than
-	# losing the colour for a second.
+	# **Always the sauce's own colour.** The two low bands used to repaint the
+	# contents amber and then red to report the nozzle, and a ketchup bottle
+	# running low turned yellow -- which reads as a different sauce, not as a
+	# warning. How much is left is the height of the fill and the bar on the
+	# HUD; what is in it is the one thing the colour is for.
 	var tint: Color = SAUCE_TINTS[shooter.sauce_kind]
-	if stage == SauceStage.SPLUTTERING:
-		tint = Color("e8a33c")
-	elif stage == SauceStage.EMPTY:
-		tint = Color("c0392b")
 	if shooter.bottle_material != null:
 		shooter.bottle_material.albedo_color = tint.darkened(0.21) if map_kind == MapKind.TOMATINA else tint
 func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3, color: Color,
