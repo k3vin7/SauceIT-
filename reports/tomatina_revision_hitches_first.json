@@ -1,0 +1,70 @@
+{
+	"elapsed_frame_ms": 26497.0583333334,
+	"frames": 2774,
+	"hitches": [
+		{
+			"enemies": 365,
+			"frame_ms": 37.09,
+			"fuses": 0,
+			"ripples": 0,
+			"seconds": 6.58333333333332,
+			"splats": 0
+		},
+		{
+			"enemies": 365,
+			"frame_ms": 143.459,
+			"fuses": 0,
+			"ripples": 0,
+			"seconds": 11.1833333333335,
+			"splats": 0
+		},
+		{
+			"enemies": 365,
+			"frame_ms": 44.294,
+			"fuses": 0,
+			"ripples": 0,
+			"seconds": 11.2333333333335,
+			"splats": 0
+		},
+		{
+			"enemies": 365,
+			"frame_ms": 133.14,
+			"fuses": 0,
+			"ripples": 0,
+			"seconds": 11.3666666666668,
+			"splats": 0
+		},
+		{
+			"enemies": 365,
+			"frame_ms": 51.59,
+			"fuses": 0,
+			"ripples": 0,
+			"seconds": 11.4166666666668,
+			"splats": 0
+		},
+		{
+			"enemies": 365,
+			"frame_ms": 146.359333333333,
+			"fuses": 0,
+			"ripples": 0,
+			"seconds": 11.9500000000002,
+			"splats": 0
+		},
+		{
+			"enemies": 365,
+			"frame_ms": 54.537,
+			"fuses": 0,
+			"ripples": 0,
+			"seconds": 12.0166666666668,
+			"splats": 0
+		},
+		{
+			"enemies": 365,
+			"frame_ms": 60.962,
+			"fuses": 0,
+			"ripples": 0,
+			"seconds": 20.8333333333334,
+			"splats": 0
+		}
+	]
+}

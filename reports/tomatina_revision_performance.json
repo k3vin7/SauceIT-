@@ -1,0 +1,65 @@
+{
+	"adapter": "NVIDIA GeForce RTX 4060 Ti",
+	"renderer": "gl_compatibility",
+	"resolution": [
+		1280,
+		720
+	],
+	"results": [
+		{
+			"average_fps": 120.457915015942,
+			"frames": 964,
+			"max_ms": 17.653,
+			"one_percent_low_fps": 69.0540969795738,
+			"p95_ms": 11.539,
+			"scenario": "start_idle_324_grunts",
+			"static_memory_bytes": 260169655.0
+		},
+		{
+			"average_fps": 100.996781289522,
+			"frames": 1011,
+			"max_ms": 135.028,
+			"one_percent_low_fps": 32.37322204793,
+			"p95_ms": 14.058,
+			"scenario": "alley_spraying",
+			"static_memory_bytes": 261077986.0
+		},
+		{
+			"average_fps": 102.050658506612,
+			"frames": 1021,
+			"max_ms": 23.414,
+			"one_percent_low_fps": 50.0628060657916,
+			"p95_ms": 13.765,
+			"scenario": "synthetic_chain_burst",
+			"static_memory_bytes": 261597879.0
+		}
+	],
+	"scope": "single rendered world, 31 seconds, no four-player/long-session claim",
+	"vsync": false,
+	"wall_hitches": [
+		{
+			"scenario": "alley_spraying",
+			"script_sections_ms": {
+				"constraint": 0.454,
+				"emit_follow": 20.976,
+				"net_send": 0.096,
+				"point_physics": 3.984,
+				"ribbon_update": 2.515,
+				"total": 28.071
+			},
+			"wall_frame_ms": 135.028
+		},
+		{
+			"scenario": "alley_spraying",
+			"script_sections_ms": {
+				"constraint": 0.232,
+				"emit_follow": 7.717,
+				"net_send": 0.038,
+				"point_physics": 1.144,
+				"ribbon_update": 1.237,
+				"total": 10.38
+			},
+			"wall_frame_ms": 38.002
+		}
+	]
+}

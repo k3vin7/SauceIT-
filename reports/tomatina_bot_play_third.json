@@ -1,0 +1,257 @@
+{
+	"autoplay": true,
+	"cleared": false,
+	"events": [
+		{
+			"kind": "team_started",
+			"peer": 0,
+			"route_index": 0,
+			"seconds": 0.0
+		},
+		{
+			"kind": "route_point",
+			"peer": 1,
+			"route_index": 0,
+			"seconds": 5.1
+		},
+		{
+			"kind": "route_point",
+			"peer": 1,
+			"route_index": 1,
+			"seconds": 10.5
+		},
+		{
+			"kind": "refill",
+			"peer": 1,
+			"route_index": 2,
+			"seconds": 37.6
+		},
+		{
+			"kind": "refill",
+			"peer": 9002,
+			"route_index": 2,
+			"seconds": 47.4
+		},
+		{
+			"kind": "refill",
+			"peer": 9001,
+			"route_index": 2,
+			"seconds": 61.1
+		},
+		{
+			"kind": "refill",
+			"peer": 9003,
+			"route_index": 2,
+			"seconds": 63.0
+		},
+		{
+			"kind": "downed",
+			"peer": 9001,
+			"route_index": 2,
+			"seconds": 67.7
+		},
+		{
+			"kind": "no_route",
+			"peer": 9003,
+			"route_index": 2,
+			"seconds": 79.2
+		},
+		{
+			"kind": "no_route",
+			"peer": 1,
+			"route_index": 2,
+			"seconds": 98.8
+		},
+		{
+			"kind": "downed",
+			"peer": 1,
+			"route_index": 2,
+			"seconds": 100.6
+		},
+		{
+			"kind": "downed",
+			"peer": 9001,
+			"route_index": 2,
+			"seconds": 103.1
+		},
+		{
+			"kind": "no_route",
+			"peer": 1,
+			"route_index": 2,
+			"seconds": 105.9
+		},
+		{
+			"kind": "downed",
+			"peer": 9002,
+			"route_index": 2,
+			"seconds": 106.5
+		},
+		{
+			"kind": "no_route",
+			"peer": 1,
+			"route_index": 2,
+			"seconds": 110.0
+		},
+		{
+			"kind": "refill",
+			"peer": 1,
+			"route_index": 2,
+			"seconds": 111.7
+		},
+		{
+			"kind": "no_route",
+			"peer": 9002,
+			"route_index": 2,
+			"seconds": 114.1
+		},
+		{
+			"kind": "no_route",
+			"peer": 9002,
+			"route_index": 2,
+			"seconds": 118.2
+		}
+	],
+	"mission": {
+		"players": [
+			{
+				"chain_kills": 0,
+				"character": 0,
+				"damage": 843,
+				"damage_taken": 156.0,
+				"downs": 1,
+				"kills": 17,
+				"peer": 1,
+				"rescues": 2,
+				"seat": 0,
+				"specials": 0
+			},
+			{
+				"chain_kills": 1,
+				"character": 1,
+				"damage": 945,
+				"damage_taken": 146.0,
+				"downs": 2,
+				"kills": 14,
+				"peer": 9001,
+				"rescues": 0,
+				"seat": 1,
+				"specials": 3
+			},
+			{
+				"chain_kills": 14,
+				"character": 2,
+				"damage": 1552,
+				"damage_taken": 100.0,
+				"downs": 1,
+				"kills": 31,
+				"peer": 9002,
+				"rescues": 0,
+				"seat": 2,
+				"specials": 2
+			},
+			{
+				"chain_kills": 1,
+				"character": 3,
+				"damage": 674,
+				"damage_taken": 84.0,
+				"downs": 0,
+				"kills": 9,
+				"peer": 9003,
+				"rescues": 2,
+				"seat": 3,
+				"specials": 0
+			}
+		],
+		"seconds": 120
+	},
+	"players": [
+		{
+			"distance_m": 349.7,
+			"downs": 2,
+			"fire_seconds": 16.1,
+			"heals": 0,
+			"name": "전위",
+			"navigation_stuck": 0,
+			"no_path": 0,
+			"path_goal": [
+				9.81429290771484,
+				500.682769775391
+			],
+			"peer": 9001,
+			"position": [
+				14.4317321777344,
+				497.508209228516
+			],
+			"refills": 1,
+			"rescues_started": 6,
+			"state": "대형 유지"
+		},
+		{
+			"distance_m": 382.0,
+			"downs": 1,
+			"fire_seconds": 17.2,
+			"heals": 0,
+			"name": "지원",
+			"navigation_stuck": 0,
+			"no_path": 2,
+			"path_goal": [
+				10.2654666900635,
+				497.870147705078
+			],
+			"peer": 9002,
+			"position": [
+				16.6275405883789,
+				494.652862548828
+			],
+			"refills": 1,
+			"rescues_started": 0,
+			"state": "경로 확인"
+		},
+		{
+			"distance_m": 403.2,
+			"downs": 0,
+			"fire_seconds": 15.7,
+			"heals": 1,
+			"name": "후위",
+			"navigation_stuck": 0,
+			"no_path": 1,
+			"path_goal": [
+				17.8068466186523,
+				502.744445800781
+			],
+			"peer": 9003,
+			"position": [
+				18.90869140625,
+				496.776397705078
+			],
+			"refills": 1,
+			"rescues_started": 11,
+			"state": "대형 유지"
+		},
+		{
+			"distance_m": 400.0,
+			"downs": 1,
+			"fire_seconds": 19.3,
+			"heals": 2,
+			"name": "리더",
+			"navigation_stuck": 0,
+			"no_path": 3,
+			"path_goal": [
+				-13.8240003585815,
+				560.793579101563
+			],
+			"peer": 1,
+			"position": [
+				15.1436061859131,
+				495.711456298828
+			],
+			"refills": 2,
+			"rescues_started": 3,
+			"state": "진행"
+		}
+	],
+	"route_index": 2,
+	"route_points": 43,
+	"scope": "offline input-driven bots; not four network clients or human playtest",
+	"seconds": 119.983333333328
+}

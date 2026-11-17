@@ -266,6 +266,8 @@ var _ketchup_at := -1000.0
 @export var procedural_gait := false
 
 var health := 240.0
+var attack_permission := Callable()
+var contact_permission := Callable()
 ## Clients simulate no enemies at all, exactly as they simulate no bodies.
 var authority := true
 var contamination: BodyContamination
@@ -1100,6 +1102,8 @@ func _advance_brute(delta: float, target: MayoPlayer) -> Dictionary:
 		target.global_position.z - global_position.z)
 	if gap.length() > BRUTE_CHARGE_RANGE or gap.length() < 0.5 or not _can_see_straight(target):
 		return {}
+	if attack_permission.is_valid() and not attack_permission.call(self, target):
+		return {}
 	_start_warning(gap.normalized())
 	return {"flat": _charge_direction, "pace": 0.0}
 
@@ -1127,6 +1131,8 @@ func _advance_bowler(delta: float, target: MayoPlayer) -> Dictionary:
 	var ball := _free_ball()
 	if ball == null:
 		return hold
+	if attack_permission.is_valid() and not attack_permission.call(self, target):
+		return hold
 	_start_warning(gap.normalized())
 	return {"flat": _charge_direction, "pace": 0.0}
 
@@ -1149,6 +1155,8 @@ func _advance_spitter(delta: float, target: MayoPlayer) -> Dictionary:
 	var toward := Vector3(target.global_position.x - global_position.x, 0.0,
 		target.global_position.z - global_position.z)
 	if _spit_cooldown <= 0.0 and gap <= SPIT_RANGE and sees:
+		if attack_permission.is_valid() and not attack_permission.call(self, target):
+			return {"pace": 0.0}
 		_spit_request = target
 		_spit_cooldown = SPIT_INTERVAL
 		# It spits where it is looking. Snapped rather than turned: the lump
@@ -2436,6 +2444,8 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 	# them. `contact_reach` stands in for the unmodelled arms here exactly as it
 	# does flat.
 	if not _reaches_height(target):
+		return null
+	if contact_permission.is_valid() and not contact_permission.call(self, target):
 		return null
 	_contact_cooldown = maxf(contact_interval, attack_lock_seconds)
 	_attack_lock_left = attack_lock_seconds

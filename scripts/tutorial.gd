@@ -64,7 +64,7 @@ const LINES := [
 	"Shift를 누르고 포장마차 사이로 뛰세요! 저 덩치는 못 지나올 거예요!",
 	"걸렸다…! 괜찮아요?",
 	"마요네즈 위에서는 뛰지 말고 걸어요!",
-	"저쪽 매대에서 1, 2, 3으로 새 소스통을 골라 드세요!",
+	"저쪽 매대에 가까이 가서 E를 누르면 소스를 보충할 수 있어요!",
 	"새 소스통도 챙겼겠다, 저것부터 치우자.",
 	"다른 먹거리 구역에서도 신고가 들어왔어요. 같이 가주실 수 있나요?",
 	"아, 거긴 아직 못 먹어봤는데.",
@@ -470,27 +470,29 @@ func threat_position() -> Vector3:
 	return Vector3.INF
 
 func objective_text() -> String:
+	var interact := preload("res://scripts/game_options.gd").key_label("interact", "E")
+	var run_key := preload("res://scripts/game_options.gd").key_label("run", "Shift")
 	match stage:
 		Stage.IDLE, Stage.GET_SAUCE:
 			if world._local != null and acquired.has(world._local.peer_id):
 				return "소스통을 챙겼습니다 · 동료가 소스통을 고를 때까지 기다리세요"
-			return "앞 포장마차에서 1 마요네즈 · 2 머스타드 · 3 케찹 선택"
+			return "앞 포장마차에 가까이 가서 [%s] 소스통 받기" % interact
 		Stage.FIRST_FIGHT:
 			return "마우스 왼쪽 버튼을 눌러 토스트에 소스를 뿌리세요"
 		Stage.MONSTER_CUE, Stage.MONSTER_ARRIVES:
 			return "뒤에서 큰 발소리가 들립니다 · 마우스로 뒤를 확인하세요"
 		Stage.RUN:
 			if world._local != null and slipped.has(world._local.peer_id):
-				return "Shift를 놓고 마요네즈 위를 걸어서 빠져나가세요"
-			return "Shift를 누른 채 포장마차 사이로 달리세요"
+				return "%s를 놓고 마요네즈 위를 걸어서 빠져나가세요" % run_key
+			return "%s를 누른 채 포장마차 사이로 달리세요" % run_key
 		Stage.TRAPPED:
 			if _refill_open:
-				return "1 / 2 / 3으로 새 소스통 선택"
+				return "표시된 매대에서 [%s] 소스 보충" % interact
 			return "괴물이 끼었습니다 · 마요네즈 위에서는 걷기" if monster_trapped else "마요네즈 위에서는 걷기"
 		Stage.REFILL:
 			if world._local != null and supplied.has(world._local.peer_id):
 				return "교체 완료 · 동료가 소스통을 고를 때까지 기다리세요 (%d/%d)" % [supplied.size(), world.party_size()]
-			return "표시된 매대에서 1 / 2 / 3으로 새 소스통 선택 (%d/%d)" % [supplied.size(), world.party_size()]
+			return "표시된 매대에서 [%s] 소스 보충 (%d/%d)" % [interact, supplied.size(), world.party_size()]
 		Stage.COOP_FIGHT:
 			return "소스를 뿌려 포장마차에 낀 괴물을 처치하세요"
 		Stage.OUTRO, Stage.COMPLETE:
@@ -506,7 +508,8 @@ func current_line_id() -> int:
 	return _line
 
 func current_line() -> String:
-	return LINES[_line] if _line >= 0 and _line < LINES.size() else ""
+	var text: String = LINES[_line] if _line >= 0 and _line < LINES.size() else ""
+	return text.replace("E를", preload("res://scripts/game_options.gd").key_label("interact", "E") + "를")
 
 func current_line_alpha() -> float:
 	return clampf(_line_left / 0.35, 0.0, 1.0)

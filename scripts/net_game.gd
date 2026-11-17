@@ -10,9 +10,9 @@ extends Node
 ##   * Movement is the server's. Clients send keys and aim and nothing else;
 ##     the server runs both bodies and sends back where they ended up, along
 ##     with the fall state and its timer, so a fall plays out identically on
-##     both screens. There is no prediction: on a LAN the round trip is a frame
-##     or two. The one exception is the local player's aim, which is applied
-##     the moment the mouse moves, or the view would lag the hand.
+##     both screens. Tomatina predicts the local player's movement and replays
+##     unacknowledged inputs after server correction. Other maps keep snapshot
+##     movement. Aim is always immediate; damage and kills remain authoritative.
 ##   * The mid-air strand is not synchronised at all. Every peer simulates
 ##     every shooter from the aim it already has for them, so a burst costs a
 ##     boolean and a pitch per tick rather than a point cloud. The strands
@@ -104,7 +104,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 10
+const PROTOCOL_VERSION := 12
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
@@ -128,7 +128,7 @@ const MAX_CLIENTS := 3
 ## a different fight. The host tosses it and sends the answer; the level rides
 ## along rather than being derived, so nobody has to guess which band a bottle
 ## is in either.
-const STATE_STRIDE := 18
+const STATE_STRIDE := 23
 ## Where one occupant is standing in the truck: x, y, z and the yaw they are
 ## facing. The truck carries no bottle, no health and no aim pitch, so it needs
 ## none of the sixteen floats a stage body does -- four, four times a frame at
@@ -164,6 +164,7 @@ signal transition_failed(reason: String)
 signal result_ready(summary: Dictionary)
 signal truck_returned
 signal session_ended(reason: String)
+signal late_join_waiting
 
 enum SessionPhase { OFFLINE, TRUCK, LOADING, STAGE, RESULT }
 const BUSY_PREFIX := "mayo1-busy:"
@@ -282,6 +283,10 @@ var _refused_full := false
 var _refused_version := false
 var hosted_port := DEFAULT_PORT
 var _lobby_broadcast_at := 0.0
+var _waiting_peers := {}
+var _late_loading := {}
+var _receiving_late_snapshot := false
+var _late_syncing := {}
 
 
 func bind(new_world: Node) -> void:
@@ -289,7 +294,7 @@ func bind(new_world: Node) -> void:
 
 
 func _world_ready() -> bool:
-	return world != null and (not lobby_flow or session_phase == SessionPhase.STAGE)
+	return world != null and (not lobby_flow or session_phase == SessionPhase.STAGE or _receiving_late_snapshot)
 
 
 ## The truck tells the session it exists, and takes it back on the way out. A
@@ -453,6 +458,9 @@ func finish_stage(summary := {}) -> void:
 	if not lobby_flow or not multiplayer.is_server() or session_phase != SessionPhase.STAGE:
 		return
 	session_phase = SessionPhase.RESULT
+	_waiting_peers.clear()
+	_late_loading.clear()
+	_late_syncing.clear()
 	_show_result.rpc(summary)
 	result_ready.emit(summary)
 
@@ -470,6 +478,20 @@ func return_to_truck() -> bool:
 	return true
 
 
+func replay_stage() -> bool:
+	if not lobby_flow or not is_server() or session_phase != SessionPhase.RESULT:
+		return false
+	_transition_id += 1
+	_transition_roster = PackedInt32Array(_slots.keys())
+	_transition_roster.sort()
+	_loaded_peers.clear()
+	_load_clock = 0.0
+	session_phase = SessionPhase.LOADING
+	_begin_stage_transition.rpc(selected_stage, _transition_id, _transition_roster)
+	transition_requested.emit(selected_stage, _transition_id)
+	return true
+
+
 func report_lobby_initialized() -> void:
 	if not lobby_flow or session_phase != SessionPhase.TRUCK:
 		return
@@ -478,6 +500,112 @@ func report_lobby_initialized() -> void:
 		_broadcast_lobby()
 	else:
 		_report_lobby_ready.rpc_id(1)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _accept_waiting(stage_id: String, roster: PackedInt32Array) -> void:
+	if is_server() or not lobby_flow or not _apply_roster_packet(roster):
+		return
+	_joined = true
+	_refused_for_code = false
+	selected_stage = stage_id
+	session_phase = SessionPhase.STAGE
+	late_join_waiting.emit()
+
+
+func _admit_waiting_peers() -> void:
+	if not lobby_flow or session_phase != SessionPhase.STAGE or world == null:
+		return
+	for id in _late_loading.keys():
+		if _now() - float(_late_loading[id]) > LOAD_TIMEOUT:
+			_late_loading.erase(id)
+			_late_syncing.erase(id)
+			if _peer_can_receive(id):
+				multiplayer.multiplayer_peer.disconnect_peer(id)
+	if _waiting_peers.is_empty() or not world.can_admit_waiting_player():
+		return
+	# One snapshot at a time; other waiting players stay out of the active roster.
+	if not _late_loading.is_empty():
+		return
+	var id: int = _waiting_peers.keys()[0]
+	_waiting_peers.erase(id)
+	_late_loading[id] = _now()
+	var active := PackedInt32Array(world.shooter_ids())
+	active.append(id)
+	_load_late_stage.rpc_id(id, selected_stage, _transition_id, active, _character_packet())
+
+
+@rpc("authority", "call_remote", "reliable")
+func _load_late_stage(stage_id: String, transition: int, active: PackedInt32Array,
+		characters: PackedInt32Array) -> void:
+	if is_server() or not _joined or session_phase != SessionPhase.STAGE:
+		return
+	_apply_character_packet(characters)
+	var filtered := {}
+	for id in active:
+		if _slots.has(id):
+			filtered[id] = _slots[id]
+	_slots = filtered
+	_transition_id = transition
+	session_phase = SessionPhase.LOADING
+	transition_requested.emit(stage_id, transition)
+
+
+func _finish_late_join(id: int) -> void:
+	if world == null or not _peer_can_receive(id):
+		return
+	_late_syncing[id] = true
+	var shooter = world.create_avatar(id, int(_slots[id]), false)
+	shooter.player.finish_respawn(world.waiting_player_spawn(int(_slots[id])))
+	shooter.sauce = 1.0
+	_spawn_avatar.rpc(id, int(_slots[id]))
+	_begin_late_snapshot.rpc_id(id)
+	var ids := PackedInt32Array()
+	var state := _collect_state(ids)
+	_apply_state.rpc_id(id, ids, state)
+	for spawn in world.tutorial_spawned():
+		_add_tutorial_enemy.rpc_id(id, spawn[0], spawn[1])
+	var snapshot: Array = world.grid_snapshot()
+	for index in snapshot.size():
+		var cells: PackedByteArray = snapshot[index]
+		var packed := cells.compress(FileAccess.COMPRESSION_ZSTD)
+		_load_grid.rpc_id(id, index, packed, cells.size())
+	for peer_id in world.shooter_ids():
+		_load_body_grid.rpc_id(id, peer_id, world.body_snapshot(peer_id))
+		_load_visor_grid.rpc_id(id, peer_id, world.visor_snapshot(peer_id))
+	_apply_sauce_shop_state.rpc_id(id, world.sauce_shop_state(), world._sauce_parts.coin_state())
+	for start in range(0, world.enemy_count(), ENEMY_SNAPSHOT_BATCH_SIZE):
+		_apply_enemy_state.rpc_id(id, world.enemy_state(start, ENEMY_SNAPSHOT_BATCH_SIZE), start, false)
+	_apply_tomatina_status.rpc_id(id, world.tomatina_status(), world.cheese_thread_state())
+	_complete_late_snapshot.rpc_id(id, _transition_id)
+	_broadcast_lobby()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _begin_late_snapshot() -> void:
+	if not is_server() and session_phase == SessionPhase.LOADING:
+		_receiving_late_snapshot = true
+
+
+@rpc("authority", "call_remote", "reliable")
+func _complete_late_snapshot(transition: int) -> void:
+	if is_server() or not _receiving_late_snapshot or transition != _transition_id:
+		return
+	_receiving_late_snapshot = false
+	session_phase = SessionPhase.STAGE
+	play_authorized.emit(transition)
+	_set_status("joined stage at safe point")
+	_late_snapshot_ack.rpc_id(1)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _late_snapshot_ack() -> void:
+	if not is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if _late_syncing.has(sender):
+		_late_syncing.erase(sender)
+		_late_loading.erase(sender)
 
 
 func is_online() -> bool:
@@ -572,6 +700,10 @@ func leave() -> void:
 	# leave() again must see an already-closed session instead of sending a
 	# second disconnect packet on a zero-channel ENet peer.
 	_online = false
+	_receiving_late_snapshot = false
+	_late_syncing.clear()
+	_waiting_peers.clear()
+	_late_loading.clear()
 	_peer = null
 	multiplayer.multiplayer_peer = null
 	_client_input.clear()
@@ -648,7 +780,7 @@ func _on_peer_authenticating(id: int) -> void:
 	# A blocked address is not asked for the code at all: it is told how long it
 	# has left and dropped, before either side has said anything else.
 	if multiplayer.is_server():
-		if lobby_flow and session_phase != SessionPhase.TRUCK:
+		if lobby_flow and session_phase != SessionPhase.TRUCK and not (session_phase == SessionPhase.STAGE and selected_stage == "stage_2"):
 			scene_multiplayer.send_auth(id,
 				(BUSY_PREFIX + "session already started").to_utf8_buffer())
 			_queue_drop(id)
@@ -847,6 +979,11 @@ func _on_peer_connected(id: int) -> void:
 	var slot := _free_slot()
 	_slots[id] = slot
 	if lobby_flow:
+		if session_phase == SessionPhase.STAGE:
+			_waiting_peers[id] = true
+			_accept_waiting.rpc_id(id, selected_stage, _roster_packet())
+			_broadcast_lobby()
+			return
 		_accept_lobby.rpc_id(id, id, slot, selected_stage, _roster_packet())
 		_broadcast_lobby()
 		_set_status("player %d joined the truck" % id)
@@ -908,6 +1045,9 @@ func _free_slot() -> int:
 
 
 func _on_peer_disconnected(id: int) -> void:
+	_late_syncing.erase(id)
+	_waiting_peers.erase(id)
+	_late_loading.erase(id)
 	_client_input.erase(id)
 	_lobby_input.erase(id)
 	_input_this_tick.erase(id)
@@ -1133,7 +1273,7 @@ func _choose_character(index: int) -> void:
 @rpc("authority", "call_remote", "reliable")
 func _begin_stage_transition(stage_id: String, transition: int,
 		participants: PackedInt32Array) -> void:
-	if multiplayer.is_server() or not lobby_flow or session_phase != SessionPhase.TRUCK:
+	if multiplayer.is_server() or not lobby_flow or session_phase not in [SessionPhase.TRUCK, SessionPhase.RESULT]:
 		return
 	if not participants.has(local_id()) or transition <= _transition_id:
 		return
@@ -1151,7 +1291,11 @@ func _begin_stage_transition(stage_id: String, transition: int,
 func _report_world_loaded(transition: int) -> void:
 	if not lobby_flow or not multiplayer.is_server():
 		return
-	_mark_loaded(multiplayer.get_remote_sender_id(), transition)
+	var sender := multiplayer.get_remote_sender_id()
+	if _late_loading.has(sender) and not _late_syncing.has(sender) and transition == _transition_id:
+		_finish_late_join(sender)
+		return
+	_mark_loaded(sender, transition)
 
 
 func _mark_loaded(peer_id: int, transition: int) -> void:
@@ -1206,9 +1350,10 @@ func _loading_failed(reason: String) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _show_result(summary: Dictionary) -> void:
-	if multiplayer.is_server() or session_phase != SessionPhase.STAGE:
+	if multiplayer.is_server() or session_phase not in [SessionPhase.STAGE, SessionPhase.LOADING]:
 		return
 	session_phase = SessionPhase.RESULT
+	_receiving_late_snapshot = false
 	result_ready.emit(summary)
 
 
@@ -1288,6 +1433,7 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 	if not _online or not multiplayer.is_server() or not _world_ready():
 		return
 	var guests := multiplayer.get_peers().size()
+	_admit_waiting_peers()
 	if not splats.is_empty():
 		_apply_splats.rpc(splats)
 		splat_bytes_sent += splats.size() * 4 * guests
@@ -1559,7 +1705,8 @@ func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
 	# to go yet.
 	if not _joined or _peer == null or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
-	_submit_input.rpc_id(1, move, run, jump, firing, yaw, pitch, character_index, shake)
+	var sequence: int = world._local.player.prediction_sequence
+	_submit_input.rpc_id(1, move, run, jump, firing, yaw, pitch, character_index, shake, sequence)
 
 
 ## The server applies the last input it heard from each client before running
@@ -1601,6 +1748,7 @@ func apply_client_input() -> void:
 		shooter.player.input_move = packet[0]
 		shooter.player.input_run = packet[1]
 		shooter.player.input_jump = packet[5]
+		shooter.player.server_input_sequence = int(packet[8]) if packet.size() > 8 else 0
 		shooter.firing = packet[2] and not shooter.player.is_incapacitated() \
 			and not shooter.player.is_wiping()
 		shooter.aim_yaw = packet[3]
@@ -1623,13 +1771,16 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			1.0 if shooter.firing else 0.0, shooter.aim_pitch,
 			float(state[3]), state[4], state[5], state[6], state[7],
 			shooter.sauce, float(shooter.nozzle), world.bottle_state_code(shooter),
-			shooter.bottle_shake_input, float(shooter.character_index)]))
+			shooter.bottle_shake_input, float(shooter.character_index),
+			float(shooter.player.server_input_sequence), velocity.y,
+			shooter.player.mustard_slow, shooter.player.cheese_snag_left,
+			1.0 if shooter.player.in_mustard else 0.0]))
 	return data
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
 func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
-		yaw: float, pitch: float, character_index := 0, shake := 0.0) -> void:
+		yaw: float, pitch: float, character_index := 0, shake := 0.0, sequence := 0) -> void:
 	if not multiplayer.is_server() or not _world_ready():
 		return
 	if not _within_budget(multiplayer.get_remote_sender_id()):
@@ -1643,7 +1794,7 @@ func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
 		clamp_direction(move), run, firing, wrap_angle(yaw),
 		clamp_angle(pitch, deg_to_rad(world.pitch_limit_degrees)), jump,
 		clampi(character_index, 0, world.PLAYER_CHARACTERS.size() - 1),
-		clamp_range(shake, 0.0, 1.0)]
+		clamp_range(shake, 0.0, 1.0), clampi(sequence, 0, 16000000)]
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
@@ -1661,9 +1812,10 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		shooter.player.apply_network_state(
 			Vector3(data[index], data[index + 1], data[index + 2]),
 			data[index + 3],
-			Vector3(data[index + 4], 0.0, data[index + 5]),
+			Vector3(data[index + 4], data[index + 19], data[index + 5]),
 			int(data[index + 8]), data[index + 9], data[index + 10],
-			data[index + 11], data[index + 12])
+			data[index + 11], data[index + 12], int(data[index + 18]),
+			data[index + 20], data[index + 21], data[index + 22] > 0.5)
 		# The bottle and what its nozzle is doing are the host's, for everyone
 		# including the peer holding it: a client that decided its own would
 		# catch at different moments from the screen next to it.
@@ -2015,6 +2167,34 @@ func broadcast_combat_warning(at: Vector3, direction: Vector3, duration: float, 
 func _show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: int) -> void:
 	if _world_ready():
 		world.show_combat_warning(at, direction, duration, cue)
+
+
+func send_contact_confirmation(peer: int) -> void:
+	if _online and is_server() and _peer_can_receive(peer):
+		_confirm_contact.rpc_id(peer)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _confirm_contact() -> void:
+	if _world_ready() and world._crosshair is Crosshair:
+		world._confirmed_contact_until = Time.get_ticks_msec() + 180
+		world._crosshair.confirm_impact(false)
+
+
+func request_context_action(kind: String, target: int) -> void:
+	if _online and _joined:
+		_context_action.rpc_id(1, kind, target)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _context_action(kind: String, target: int) -> void:
+	if not is_server() or not _world_ready() or kind.length() > 16:
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if float(_refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND)) < 1.0:
+		return
+	_refill_budget[sender] = float(_refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND)) - 1.0
+	world.perform_context_action(sender, kind, target)
 
 
 func request_tomato_action(action: int) -> void:

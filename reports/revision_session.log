@@ -1,0 +1,5 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+late join state: loading stage_2 / connected as player 930141739 stage=stage_2 phase=3 online=true slots={ 1: 0, 930141739: 1 } late_loading={  }
+prediction gap=1.01666259765625 client=(37.88666, 1.28, 456.396) server=(36.87, 1.28, 456.396) seq=255 ack=242 history=13
+TOMATINA_SESSION_REVISION_OK

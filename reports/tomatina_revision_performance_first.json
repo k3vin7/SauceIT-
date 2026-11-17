@@ -1,0 +1,39 @@
+{
+	"adapter": "NVIDIA GeForce RTX 4060 Ti",
+	"renderer": "gl_compatibility",
+	"resolution": [
+		1280,
+		720
+	],
+	"results": [
+		{
+			"average_fps": 114.724051828806,
+			"frames": 919,
+			"max_ms": 44.586,
+			"one_percent_low_fps": 38.640025656977,
+			"p95_ms": 13.33,
+			"scenario": "start_idle_324_grunts",
+			"static_memory_bytes": 260169459.0
+		},
+		{
+			"average_fps": 80.2881976349477,
+			"frames": 803,
+			"max_ms": 1560.99,
+			"one_percent_low_fps": 4.10556596139126,
+			"p95_ms": 14.403,
+			"scenario": "alley_spraying",
+			"static_memory_bytes": 261078679.0
+		},
+		{
+			"average_fps": 105.291629315469,
+			"frames": 1053,
+			"max_ms": 57.198,
+			"one_percent_low_fps": 45.6998516832086,
+			"p95_ms": 13.331,
+			"scenario": "synthetic_chain_burst",
+			"static_memory_bytes": 261632590.0
+		}
+	],
+	"scope": "single rendered world, 31 seconds, no four-player/long-session claim",
+	"vsync": false
+}

@@ -152,10 +152,10 @@ const ALLEY_ELITES := [
 ]
 # Each group is centred on a distance along its leg.
 const GRUNT_PACKS := [
-	[0, 0.19, 8], [0, 0.46, 10], [0, 0.77, 12],
-	[1, 0.13, 7], [1, 0.34, 8], [1, 0.53, 8], [1, 0.72, 9], [1, 0.89, 8],
-	[2, 0.21, 8], [2, 0.51, 10], [2, 0.81, 9],
-	[3, 0.36, 8], [3, 0.73, 9],
+	[0, 0.19, 16], [0, 0.46, 20], [0, 0.77, 24],
+	[1, 0.13, 14], [1, 0.34, 16], [1, 0.53, 16], [1, 0.72, 18], [1, 0.89, 16],
+	[2, 0.21, 16], [2, 0.51, 20], [2, 0.81, 18],
+	[3, 0.36, 16], [3, 0.73, 18],
 ]
 # Leg, trip point past the mouth of a side alley, then the forward and rear threats.
 const ALLEY_AMBUSHES := [
@@ -191,7 +191,7 @@ const ALLEY_REINFORCEMENTS := [
 	[3, 0.11, "CAPRESE_CRAWLER"],
 	[3, 0.79, "KETCHUP_SPITTER"],
 ]
-const REINFORCEMENT_GRUNTS := 4
+const REINFORCEMENT_GRUNTS := 8
 
 
 static func refuge_shower_at(room: int) -> Vector3:
@@ -216,7 +216,7 @@ static func encounter_at(cell: Vector2i) -> int:
 	return int(_floor_legs.get(cell, -1))
 
 
-static func roster() -> Array:
+static func roster(changes: Array = []) -> Array:
 	var props := debris_boxes()
 	props.append_array(parked_trucks())
 	props.push_back(fire_truck_box())
@@ -252,6 +252,90 @@ static func roster() -> Array:
 			taken[cell] = true
 			out.push_back([entry[0], Vector2(cell) + Vector2.ONE * 0.5, group])
 	_add_alley_reinforcements(out, taken)
+	return _align_roster_to_route(out, props, changes)
+
+
+## Do not scatter combatants into the dead ends carved for scenery. Keep
+## encounter/ambush tags and ordering identical on every network peer.
+const ROSTER_ROUTE_REACH := 3.25
+
+static func route_distance(at: Vector2, leg: int) -> float:
+	_ensure_layout()
+	if leg < 0 or leg >= _routes.size():
+		return INF
+	var closest := INF
+	var curve := _routes[leg]
+	for index in range(1, curve.size()):
+		closest = minf(closest, at.distance_to(Geometry2D.get_closest_point_to_segment(
+			at, curve[index - 1], curve[index])))
+	return closest
+
+
+static func _align_roster_to_route(entries: Array, props: Array,
+		changes: Array = []) -> Array:
+	_ensure_layout()
+	var blocked := _box_cells(props)
+	blocked.merge(market_gate_cells())
+	blocked[Vector2i(PRESS_KING_CELL)] = true
+	var candidates := {}
+	for cell: Vector2i in _floor_legs:
+		var at := Vector2(cell) + Vector2.ONE * 0.5
+		var leg: int = _floor_legs[cell]
+		if blocked.has(cell) or safe_room_at(cell) >= 0:
+			continue
+		if PLAZA.has_point(cell) or route_distance(at, leg) <= ROSTER_ROUTE_REACH:
+			candidates[cell] = true
+	# Restrict cells to connected road space, using the same cardinal movement
+	# as StreetNav. Near-centre road cells seed the flood; props remain solid.
+	var reachable := {}
+	var queue: Array[Vector2i] = []
+	for cell: Vector2i in candidates:
+		if route_distance(Vector2(cell) + Vector2.ONE * 0.5, _floor_legs[cell]) <= 1.0:
+			reachable[cell] = true
+			queue.append(cell)
+	var cursor := 0
+	while cursor < queue.size():
+		var cell := queue[cursor]
+		cursor += 1
+		for step in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+			var next: Vector2i = cell + step
+			if candidates.has(next) and not reachable.has(next) and _floor_legs[next] == _floor_legs[cell]:
+				reachable[next] = true
+				queue.append(next)
+	# Reserve valid existing positions first, so moving one stray cannot
+	# displace another correctly placed pack. Duplicate cells are relocated too.
+	var used := {}
+	var keep := {}
+	for index in entries.size():
+		var cell := Vector2i((entries[index][1] as Vector2).floor())
+		if reachable.has(cell) and not used.has(cell):
+			used[cell] = true
+			keep[index] = true
+	var out: Array = []
+	for index in entries.size():
+		var entry: Array = entries[index].duplicate()
+		if keep.has(index):
+			out.append(entry)
+			continue
+		var original: Vector2 = entry[1]
+		var leg := encounter_at(Vector2i(original.floor()))
+		var best := Vector2i.ZERO
+		var best_distance := INF
+		for cell: Vector2i in reachable:
+			if used.has(cell) or _floor_legs[cell] != leg:
+				continue
+			var distance := original.distance_squared_to(Vector2(cell) + Vector2.ONE * 0.5)
+			if distance < best_distance:
+				best_distance = distance
+				best = cell
+		# Avoid moving a stray into a different fight far along the same leg.
+		if best_distance <= 8.0 * 8.0:
+			entry[1] = Vector2(best) + Vector2.ONE * 0.5
+			used[best] = true
+			out.append(entry)
+			changes.append({"kind": entry[0], "from": str(original), "to": str(entry[1])})
+		else:
+			changes.append({"kind": entry[0], "from": str(original), "removed": true})
 	return out
 
 
@@ -292,7 +376,7 @@ static func _grunt_cells(taken: Dictionary) -> Array[Vector2]:
 	var plaza := _nearby_open_cells(3, Vector2(30, 29), taken, 11.0)
 	plaza = plaza.filter(func(cell: Vector2i) -> bool:
 		return PLAZA.has_point(cell) and cell.y >= 24 and cell.y < 34)
-	_add_grunt_pack(out, plaza, 20, taken)
+	_add_grunt_pack(out, plaza, 36, taken)
 	return out
 
 

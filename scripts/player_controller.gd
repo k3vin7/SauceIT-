@@ -85,6 +85,17 @@ const CAPSULE_HEIGHT := 2.56
 @export_range(0.0, 3.0, 0.05, "suffix:s") var recovery_window := 0.7
 
 var health := 100.0
+var recovery_protection := false
+var damage_grace := 0.0
+var slip_grace := 0.0
+var predict_local := false
+var prediction_sequence := 0
+var server_input_sequence := 0
+var _prediction_history: Array[Dictionary] = []
+var _prediction_error := Vector3.ZERO
+var _last_ack := -1
+var _pending_reconciliation: Array = []
+var _reconciling := false
 var frame_movement := Vector3.ZERO
 var cheese_snag_left := 0.0
 ## False on a client for every player including their own: the body is placed
@@ -164,7 +175,11 @@ func _ready() -> void:
 func take_damage(amount: float) -> bool:
 	if health <= 0.0:
 		return false
+	if recovery_protection and damage_grace > 0.0:
+		return false
 	health = maxf(health - amount, 0.0)
+	if recovery_protection and amount > 0.0:
+		damage_grace = 0.65 if amount >= 18.0 else 0.18
 	return health <= 0.0
 
 
@@ -219,6 +234,9 @@ func reset_state() -> void:
 	_pending_enemy_impact = Vector3.ZERO
 	_charge_knockdown = false
 	cheese_snag_left = 0.0
+	if recovery_protection:
+		slip_grace = 1.2
+		damage_grace = 0.8
 
 
 ## How long the body has been in its current state, for the respawn timer.
@@ -246,6 +264,8 @@ func health_fraction() -> float:
 ## they have no way to read off the screen. The worse of the two wins instead,
 ## which is what a player can actually follow: mustard is on you, or it is not.
 func mustard_factor() -> float:
+	if recovery_protection and slip_grace > 0.0:
+		return 1.0
 	if mustard_slow > 0.0 or in_mustard:
 		return mustard_slow_scale
 	return 1.0
@@ -254,11 +274,15 @@ func mustard_factor() -> float:
 ## A mustard hit landed. Authority only: the drag changes this body's velocity,
 ## and the position that comes out of it is what travels.
 func splash_mustard() -> void:
+	if recovery_protection and (state != State.NORMAL or slip_grace > 0.0):
+		return
 	mustard_slow = mustard_slow_seconds
 
 
 func apply_enemy_impact(flat_direction: Vector3, push_speed: float,
 		lift_speed: float) -> void:
+	if recovery_protection and (state != State.NORMAL or slip_grace > 0.0 or damage_grace > 0.0):
+		return
 	if _charge_knockdown:
 		return
 	var direction := Vector3(flat_direction.x, 0.0, flat_direction.z)
@@ -281,6 +305,8 @@ func apply_enemy_impact(flat_direction: Vector3, push_speed: float,
 
 
 func apply_charge_impact(direction: Vector3, push_speed: float, lift_speed: float) -> void:
+	if recovery_protection and (state != State.NORMAL or slip_grace > 0.0 or damage_grace > 0.0):
+		return
 	if state == State.DEAD or _charge_knockdown:
 		return
 	# Replace the current run momentum so the hit carries the player away
@@ -307,12 +333,30 @@ func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> voi
 
 
 func _physics_process(delta: float) -> void:
-	if not authority:
+	if predict_local and not _pending_reconciliation.is_empty():
+		var snapshot := _pending_reconciliation
+		_pending_reconciliation = []
+		_reconciling = true
+		callv("apply_network_state", snapshot)
+		_reconciling = false
+	damage_grace = maxf(damage_grace - delta, 0.0)
+	slip_grace = maxf(slip_grace - delta, 0.0)
+	if not authority and not (predict_local and state == State.NORMAL):
 		# The strand's inertial follow still needs to know how far the body
 		# moved, and on a client that is whatever the last sync moved it by.
 		frame_movement = global_position - _network_previous_position
 		_network_previous_position = global_position
 		return
+	if predict_local and not authority:
+		prediction_sequence += 1
+		_prediction_history.append({"sequence": prediction_sequence, "delta": delta,
+			"move": movement_input(), "run": run_held(), "jump": jump_wanted(), "yaw": rotation.y})
+		if _prediction_history.size() > 120:
+			_prediction_history.pop_front()
+	_simulate_movement(delta)
+
+
+func _simulate_movement(delta: float) -> void:
 	if state != State.NORMAL:
 		_advance_fall(delta)
 	else:
@@ -355,7 +399,7 @@ func _physics_process(delta: float) -> void:
 			top = maxf(top, minf(Vector2(velocity.x, velocity.z).length(), _air_carry))
 		desired *= top
 		desired *= mustard_factor()
-		if cheese_snag_left > 0.0:
+		if cheese_snag_left > 0.0 and (not recovery_protection or slip_grace <= 0.0):
 			desired *= 0.40
 		if state == State.NORMAL:
 			desired += Vector3(external_drift.x, 0.0, external_drift.z)
@@ -429,7 +473,7 @@ static func run_key_down() -> bool:
 
 func _input(event: InputEvent) -> void:
 	var key := event as InputEventKey
-	if key != null and not key.pressed and key.physical_keycode == KEY_SHIFT 			and Input.is_action_pressed("run"):
+	if key != null and not key.pressed and InputMap.event_is_action(key, "run") and Input.is_action_pressed("run"):
 		Input.action_release("run")
 
 
@@ -477,7 +521,53 @@ func _advance_wipe(delta: float) -> void:
 ## standing up line up frame for frame on both machines.
 func apply_network_state(new_position: Vector3, yaw: float, new_velocity: Vector3,
 		new_state: int, timer: float, direction: float, wipe: float,
-		new_health: float) -> void:
+		new_health: float, acknowledged := -1, slow := 0.0, snag := 0.0, field_slow := false) -> void:
+	# move_and_slide uses the engine's current step. Replaying inside an RPC
+	# callback would use a variable render delta instead of the fixed physics tick.
+	if predict_local and acknowledged >= 0 and not _reconciling:
+		_pending_reconciliation = [new_position, yaw, new_velocity, new_state, timer,
+			direction, wipe, new_health, acknowledged, slow, snag, field_slow]
+		return
+	if predict_local and acknowledged >= 0:
+		if acknowledged < _last_ack:
+			return
+		_last_ack = acknowledged
+		var rendered := global_position + _prediction_error
+		var old_yaw := rotation.y
+		var was_dead := state == State.DEAD
+		global_position = new_position
+		velocity = new_velocity
+		state = new_state as State
+		_state_timer = timer
+		fall_direction = direction
+		wipe_timer = wipe
+		health = new_health
+		mustard_slow = slow
+		cheese_snag_left = snag
+		in_mustard = field_slow
+		_prediction_history = _prediction_history.filter(func(entry): return entry.sequence > acknowledged)
+		if state == State.NORMAL and not was_dead and rendered.distance_to(new_position) < 8.0:
+			var injected := use_injected_input
+			var saved_move := input_move
+			var saved_run := input_run
+			var saved_jump := input_jump
+			use_injected_input = true
+			for entry in _prediction_history:
+				input_move = entry.move
+				input_run = entry.run
+				input_jump = entry.jump
+				rotation.y = entry.yaw
+				_simulate_movement(entry.delta)
+			use_injected_input = injected
+			input_move = saved_move
+			input_run = saved_run
+			input_jump = saved_jump
+			_prediction_error = (rendered - global_position).limit_length(1.5)
+		else:
+			_prediction_history.clear()
+			_prediction_error = Vector3.ZERO
+		rotation.y = old_yaw
+		return
 	global_position = new_position
 	rotation.y = yaw
 	velocity = new_velocity
@@ -512,7 +602,7 @@ func is_crawling() -> bool:
 ## back down, which is the point. Being in the air is the one reprieve: mayo
 ## underneath you is not underfoot.
 func can_slip() -> bool:
-	return state == State.NORMAL and is_on_floor()
+	return state == State.NORMAL and is_on_floor() and (not recovery_protection or slip_grace <= 0.0)
 
 
 ## Slipping starts with a stumble, not the fall itself -- unless the player is
@@ -521,6 +611,8 @@ func can_slip() -> bool:
 ## no balance to catch: the stumble is skipped and the fall starts immediately.
 func begin_slip() -> void:
 	if state != State.NORMAL:
+		return
+	if recovery_protection and slip_grace > 0.0:
 		return
 	if _recovery_timer > 0.0:
 		fall_direction = 1.0
@@ -576,11 +668,18 @@ func _advance_fall(delta: float) -> void:
 		_state_timer = 0.0
 		fall_direction = 1.0
 		_recovery_timer = recovery_window
+		if recovery_protection:
+			slip_grace = 1.2
+			mustard_slow = minf(mustard_slow, 0.5)
+			cheese_snag_left = 0.0
 
 
 var _render_snap_until := 0
 
 func render_position() -> Vector3:
+	if predict_local and not authority:
+		_prediction_error = _prediction_error.move_toward(Vector3.ZERO, 8.0 * get_process_delta_time())
+		return global_position + _prediction_error
 	if Engine.get_physics_frames() <= _render_snap_until:
 		return global_position
 	var rendered := get_global_transform_interpolated().origin

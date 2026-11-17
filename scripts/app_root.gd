@@ -41,9 +41,11 @@ var _sfx_slider: HSlider
 var _sensitivity_slider: HSlider
 var _active_transition := 0
 var _notice := ""
+var bot_team: Node
 
 
 func _ready() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	save_store = SauceSaveStore.new(save_path_override)
 	save_store.load_data()
 	_apply_options()
@@ -55,6 +57,9 @@ func _ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _options_layer != null and save_store.game_options.capture_key(event):
+		get_viewport().set_input_as_handled()
+		return
 	if not event.is_action_pressed("ui_cancel"):
 		return
 	if _options_layer != null and is_instance_valid(_options_layer):
@@ -73,6 +78,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _connect_session() -> void:
+	session.late_join_waiting.connect(_on_late_join_waiting)
 	session.lobby_joined.connect(_on_lobby_joined)
 	session.status_changed.connect(_on_session_status)
 	session.transition_requested.connect(_on_transition_requested)
@@ -81,6 +87,17 @@ func _connect_session() -> void:
 	session.result_ready.connect(_on_result_ready)
 	session.truck_returned.connect(_show_truck)
 	session.session_ended.connect(_on_session_ended)
+
+
+func _on_late_join_waiting() -> void:
+	flow = Flow.LOADING
+	_clear_space()
+	_show_loading("진행 중인 토마티나에 참가했어요.\n팀이 안전지점에 도착하면 합류합니다.")
+	var cancel := Button.new()
+	cancel.text = "합류 취소 · 모집 장소로"
+	cancel.position = Vector2(40, 40)
+	cancel.pressed.connect(_leave_session)
+	_loading_layer.add_child(cancel)
 
 
 func _show_title() -> void:
@@ -134,11 +151,31 @@ func _show_title() -> void:
 	column.add_theme_constant_override("separation", 14)
 	margin.add_child(column)
 	column.add_child(UI.eyebrow("출격 메뉴"))
+	column.add_child(_button("봇 3명과 토마티나 연습", _show_bot_practice))
 	column.add_child(_button("게임 시작", _start_game, true))
 	if save_store.tutorial_completed:
 		column.add_child(_button("튜토리얼 다시 하기", _show_tutorial))
 	column.add_child(_button("옵션", _open_options))
 	column.add_child(_button("종료", func(): get_tree().quit()))
+
+
+func _show_bot_practice() -> void:
+	if session.is_online():
+		session.leave()
+	_clear_space()
+	_clear_all_ui()
+	flow = Flow.STAGE
+	session.selected_stage = "stage_2"
+	var world = load("res://stage_2_tomatina.tscn").instantiate()
+	world.mouse_sensitivity = save_store.mouse_sensitivity
+	world.stage_cleared.connect(_on_stage_cleared)
+	world.menu_requested.connect(_open_pause)
+	space_root.add_child(world)
+	current_space = world
+	save_store.game_options.apply_world(world)
+	bot_team = preload("res://scripts/player_bot_team.gd").new()
+	world.add_child(bot_team)
+	bot_team.configure(world, false)
 
 
 func _start_game() -> void:
@@ -391,6 +428,7 @@ func _on_transition_requested(stage_id: String, transition: int) -> void:
 	world.menu_requested.connect(_open_pause)
 	space_root.add_child(world)
 	current_space = world
+	save_store.game_options.apply_world(world)
 	session.attach_play_world(world)
 	session.report_world_loaded(transition)
 
@@ -415,8 +453,15 @@ func _on_stage_cleared() -> void:
 	var summary := {"title": "STAGE CLEAR",
 		"stage": StageRegistry.display_name(session.selected_stage),
 		"players": session.seat_assignments().size()}
+	if current_space != null and current_space.has_method("party_size"):
+		summary.players = current_space.party_size()
 	if current_space != null and current_space.has_method("damage_report"):
 		summary["damage"] = current_space.call("damage_report")
+	if current_space != null and current_space.has_method("mission_report"):
+		summary["statistics"] = current_space.call("mission_report")
+	if is_instance_valid(bot_team):
+		_on_result_ready(summary)
+		return
 	session.finish_stage(summary)
 
 
@@ -454,9 +499,16 @@ func _on_result_ready(summary: Dictionary) -> void:
 	detail.text = "%s\n참가자 %d명" % [summary.get("stage", ""), summary.get("players", 1)]
 	detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(detail)
-	_add_damage_lineup(column, summary.get("damage", []))
+	if not summary.get("statistics", {}).is_empty():
+		preload("res://scripts/mission_statistics.gd").build(column, summary.statistics)
+	else:
+		_add_damage_lineup(column, summary.get("damage", []))
 	if session.is_server():
-		column.add_child(_button("전원 트럭 복귀", func(): session.return_to_truck(), true))
+		column.add_child(_button("같은 임무 바로 재시도", _retry_current_stage, true))
+		if is_instance_valid(bot_team):
+			column.add_child(_button("타이틀로", _show_title))
+		else:
+			column.add_child(_button("전원 트럭 복귀", func(): session.return_to_truck(), true))
 	else:
 		var waiting := Label.new()
 		waiting.text = "방장이 트럭 복귀를 선택할 때까지 기다리는 중…"
@@ -469,6 +521,13 @@ func _on_result_ready(summary: Dictionary) -> void:
 ## the number, and a bar against the best of them, most damage first. The rows
 ## come from the host -- see `MayoPrototype.damage_report` -- and anything that
 ## is not the numbers it should be is passed over rather than trusted.
+func _retry_current_stage() -> void:
+	if is_instance_valid(bot_team):
+		_show_bot_practice()
+	else:
+		session.replay_stage()
+
+
 func _add_damage_lineup(column: VBoxContainer, rows) -> void:
 	if not rows is Array:
 		return
@@ -613,7 +672,11 @@ func _open_options() -> void:
 	panel.add_child(margin)
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 12)
-	margin.add_child(column)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(460, 500)
+	margin.add_child(scroll)
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(column)
 	var heading := Label.new()
 	heading.text = "옵션"
 	heading.add_theme_font_size_override("font_size", 32)
@@ -627,14 +690,17 @@ func _open_options() -> void:
 	_sensitivity_slider.step = 0.005
 	_sensitivity_slider.value = save_store.mouse_sensitivity
 	column.add_child(_labeled("마우스 감도", _sensitivity_slider))
+	save_store.game_options.build(column)
 	column.add_child(_button("적용 및 저장", _save_options, true))
 	column.add_child(_button("취소", _close_options))
 	_set_mouse_visible(true)
 
 
 func _save_options() -> void:
+	save_store.game_options.commit()
 	save_store.save_options(_volume_slider.value, _sensitivity_slider.value, _bgm_slider.value, _sfx_slider.value)
 	_apply_options()
+	save_store.game_options.apply_world(current_space)
 	if current_space is RecruitmentMap:
 		(current_space as RecruitmentMap).mouse_sensitivity = save_store.mouse_sensitivity
 	elif current_space is TruckLobby:
@@ -664,6 +730,7 @@ func _audio_slider(column: VBoxContainer, caption: String, value: float) -> HSli
 
 
 func _apply_options() -> void:
+	save_store.game_options.apply_window(get_window())
 	for entry in [["Master", save_store.master_volume], ["Music", save_store.bgm_volume], ["SFX", save_store.sfx_volume]]:
 		var bus := AudioServer.get_bus_index(entry[0])
 		if bus >= 0:
@@ -675,7 +742,12 @@ func _open_pause() -> void:
 	if _pause_layer != null or flow in [Flow.TITLE, Flow.LOADING, Flow.RESULT]:
 		return
 	if current_space != null:
-		if current_space.has_method("set_gameplay_input_enabled"):
+		if session.seat_assignments().size() <= 1:
+			current_space.process_mode = Node.PROCESS_MODE_PAUSABLE
+			get_tree().paused = true
+		if current_space.has_method("set_menu_input_enabled"):
+			current_space.call("set_menu_input_enabled", false)
+		elif current_space.has_method("set_gameplay_input_enabled"):
 			current_space.call("set_gameplay_input_enabled", false)
 		elif current_space.has_method("set_input_locked"):
 			current_space.call("set_input_locked", true)
@@ -702,6 +774,10 @@ func _open_pause() -> void:
 	heading.text = "메뉴"
 	heading.add_theme_font_size_override("font_size", 30)
 	column.add_child(heading)
+	if session.seat_assignments().size() > 1:
+		var warning := Label.new()
+		warning.text = "멀티플레이는 메뉴 중에도 계속됩니다."
+		column.add_child(warning)
 	column.add_child(_button("계속", _close_pause, true))
 	column.add_child(_button("옵션", _open_options))
 	if session.is_online():
@@ -712,10 +788,13 @@ func _open_pause() -> void:
 
 
 func _close_pause() -> void:
+	get_tree().paused = false
 	_clear_ui(_pause_layer)
 	_pause_layer = null
 	if current_space != null:
-		if current_space.has_method("set_gameplay_input_enabled"):
+		if current_space.has_method("set_menu_input_enabled"):
+			current_space.call("set_menu_input_enabled", true)
+		elif current_space.has_method("set_gameplay_input_enabled"):
 			current_space.call("set_gameplay_input_enabled", true)
 		elif current_space.has_method("set_input_locked"):
 			current_space.call("set_input_locked", false)
@@ -748,6 +827,8 @@ func _port() -> int:
 
 
 func _clear_space() -> void:
+	bot_team = null
+	get_tree().paused = false
 	session.bind(null)
 	if current_space != null and is_instance_valid(current_space):
 		# A space can request its own replacement from inside `_physics_process`

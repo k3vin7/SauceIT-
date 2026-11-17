@@ -10,6 +10,7 @@ shader_type canvas_item;
 // note in contamination.gdshader.
 uniform sampler2D mask_texture : filter_linear, repeat_disable, hint_default_black;
 uniform vec4 mayo_color : source_color;
+uniform bool protect_centre = false;
 
 // Half a single splat's worth, normalised. **Not 0.5.** The mask holds a
 // thickness now, 0 to 255, rather than a painted flag that was either 0 or 255
@@ -70,6 +71,11 @@ vec3 sauce_tint(vec2 at) {
 
 void fragment() {
 	float coverage = texture(mask_texture, vec2(UV.x, 1.0 - UV.y)).r;
+	float alpha_limit = 1.0;
+	if (protect_centre) {
+		float central = 1.0 - smoothstep(0.07, 0.23, length((UV - vec2(0.5)) * vec2(1.7778, 1.0)));
+		alpha_limit = mix(0.82, 0.22, central);
+	}
 	COLOR = vec4(mayo_color.rgb * sauce_tint(vec2(UV.x, 1.0 - UV.y)),
-		step(paint_threshold, coverage) * mayo_color.a);
+		step(paint_threshold, coverage) * mayo_color.a * alpha_limit);
 }

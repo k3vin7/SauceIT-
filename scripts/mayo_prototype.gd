@@ -869,11 +869,7 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## carries the same bottle -- so what a team does that one player cannot is
 ## arrive together, and this is where that pays.
 @export_range(1, 8, 1) var shove_full_party := 4
-## And how many more minions a wave puts out per extra player, on the same
-## shape. **Worked out but not wired to anything**: there is no wave system in
-## this prototype -- the three enemies are placed once when the street is built
-## -- so `minion_spawn_count` is the answer a spawner would ask for when there
-## is one to ask.
+## Legacy maps' minion curve. Tomatina uses its own gentler wave curve below.
 @export_range(0.0, 3.0, 0.05) var minion_spawn_per_player := 0.75
 
 @export_group("Enemy Feedback")
@@ -1418,6 +1414,15 @@ var _splat_voice_cursor := 0
 ## shooter's fixed-seed strand jitter, which `probe_determinism` rests on.
 var _feel_rng := RandomNumberGenerator.new()
 var _first_person := true
+var play_support: Node
+var camera_motion_scale := 1.0
+var viewmodel_scale := 0.88
+var _viewmodel_inertia = preload("res://scripts/viewmodel_inertia.gd").new()
+var _viewmodel_animation: Node3D
+var _preview_fire_down := false
+var _preview_fire_ms := -10000
+var _confirmed_contact_until := 0
+var _contact_feedback_clock := {}
 var debug_input_override := false
 var debug_input_move := Vector2.ZERO
 var debug_input_run := false
@@ -1461,6 +1466,15 @@ func _ready() -> void:
 	_feel_rng.randomize()
 	_ensure_input_actions()
 	_build_world()
+	if map_kind == MapKind.TOMATINA:
+		play_support = preload("res://scripts/tomatina_play_support.gd").new()
+		play_support.world = self
+		add_child(play_support)
+		for enemy in _enemies:
+			enemy.attack_permission = play_support.request_special
+			enemy.contact_permission = play_support.request_contact
+		if is_instance_valid(_visor_overlay) and _visor_overlay.material is ShaderMaterial:
+			_visor_overlay.material.set_shader_parameter("protect_centre", true)
 	if is_instance_valid(_truck_arrival):
 		_truck_arrival.sync_navigation()
 	_apply_mute()
@@ -1497,6 +1511,8 @@ func _physics_process(delta: float) -> void:
 	var frame_started := Time.get_ticks_usec() if debug_profile_enabled else 0
 	var step_started := frame_started
 	_read_local_input()
+	if is_instance_valid(play_support):
+		play_support.advance(delta)
 	# Every peer simulates every strand off the aim it has for that shooter, so
 	# nothing about the strand itself goes over the wire. Only the server's copy
 	# is allowed to paint, and it broadcasts the cells it painted.
@@ -1928,16 +1944,18 @@ func _spray_pressure(shooter: Shooter) -> float:
 
 ## One squirt starting: the view noses up, and the bottle is heard.
 func _begin_spray_feel(shooter: Shooter) -> void:
+	var previewed := shooter.is_local and not _is_authority() and Time.get_ticks_msec() - _preview_fire_ms < 250
 	# Queued rather than applied: `_advance_spray_feel` lets it in over the
 	# attack. Replaced rather than added to, so a burst restarting on a held
 	# trigger cannot stack two kicks into one lurch.
 	shooter.recoil_pending = deg_to_rad(recoil_kick_degrees)
-	shooter.bottle_kick_pending = 1.0
+	if not previewed:
+		shooter.bottle_kick_pending = 1.0
 	_draw_sway_target(shooter)
 	if not shooter.is_local:
 		return
 	# Clearing the exported clips leaves this layer silent.
-	if spray_start_sound != null:
+	if spray_start_sound != null and not previewed:
 		_spray_edge_audio.stream = spray_start_sound
 		_spray_edge_audio.volume_db = spray_volume_db
 		_spray_edge_audio.play()
@@ -2036,7 +2054,8 @@ func _advance_spray_feel(shooter: Shooter, delta: float, delivering: bool) -> vo
 
 	_apply_nozzle_sway(shooter)
 	if shooter.is_local and _crosshair is Crosshair:
-		(_crosshair as Crosshair).connection = shooter.connection
+		(_crosshair as Crosshair).connection = shooter.connection if _is_authority() \
+			else (1.0 if Time.get_ticks_msec() < _confirmed_contact_until else 0.0)
 	if delivering and shooter.is_local:
 		_update_spray_loop(shooter)
 
@@ -2060,6 +2079,10 @@ func _apply_nozzle_sway(shooter: Shooter) -> void:
 	shooter.weapon_sway.rotation = Vector3(
 		shooter.sway_pitch + deg_to_rad(bottle_recoil_degrees) * kick,
 		shooter.sway_yaw, -deg_to_rad(bottle_recoil_degrees) * kick * 0.15)
+	if map_kind == MapKind.TOMATINA and shooter.is_local:
+		# First-person bottle remains steady while shooting; locomotion and
+		# intentional bottle shaking provide the only ongoing visual movement.
+		shooter.weapon_sway.transform = Transform3D.IDENTITY
 	# A fresh bottle comes up into the hand, including when picking the same
 	# sauce again. Only the meshes move; aiming and the physical muzzle do not.
 	var pickup := pow(shooter.bottle_pickup_left / BOTTLE_PICKUP_SECONDS, 2.0)
@@ -2093,6 +2116,8 @@ func _update_spray_loop(shooter: Shooter) -> void:
 	_spray_loop_audio.volume_db = spray_volume_db \
 		+ spray_pressure_volume_db * (pressure - 0.5) * 2.0 \
 		+ on_target_volume_db * connected
+	if is_instance_valid(play_support):
+		_spray_loop_audio.volume_db += play_support.sound_duck_db()
 	_spray_loop_audio.pitch_scale = (1.0 + spray_pressure_pitch * (pressure - 0.5) * 2.0) \
 		* lerpf(1.0, on_target_pitch, connected)
 
@@ -2239,6 +2264,15 @@ func _read_local_input() -> void:
 		shake = clampf(debug_input_shake, 0.0, 1.0)
 	_local.bottle_shake_input = shake
 	_local.firing = live and _fire_held() and not shaking
+	if map_kind == MapKind.TOMATINA and not _is_authority():
+		if _local.firing and not _preview_fire_down and _local.sauce > 0.0 and selected_item_slot(_local.peer_id) == 0:
+			_preview_fire_ms = Time.get_ticks_msec()
+			_local.bottle_kick_pending = 1.0
+			if spray_start_sound != null:
+				_spray_edge_audio.stream = spray_start_sound
+				_spray_edge_audio.volume_db = spray_volume_db
+				_spray_edge_audio.play()
+		_preview_fire_down = _local.firing
 	if debug_input_override:
 		# The checks have no keyboard, so the same keys reach the body and the
 		# packet through here rather than through Input.
@@ -2326,6 +2360,16 @@ func _process(_delta: float) -> void:
 	# what the strand does and where the server thinks the body is are untouched.
 	_place_viewmodel()
 	_update_camera()
+	if not is_instance_valid(_viewmodel_animation):
+		_viewmodel_animation = preload("res://scripts/viewmodel_animation.gd").new()
+		_viewmodel_animation.name = "FirstPersonAnimation"
+		add_child(_viewmodel_animation)
+	_viewmodel_animation.advance(_delta, _local,
+		map_kind == MapKind.TOMATINA and _first_person and _input_enabled
+		and _local.player.state == MayoPlayer.State.NORMAL, camera_motion_scale)
+	_viewmodel_inertia.advance(_delta, _local,
+		map_kind == MapKind.TOMATINA and _first_person and _input_enabled
+		and _local.player.state == MayoPlayer.State.NORMAL, camera_motion_scale)
 	_sync_camera_viewmodel()
 	# Only the short nozzle connection follows render-rate viewmodel motion.
 	# The full simulated ribbons keep their existing physics-rate update budget.
@@ -2525,8 +2569,7 @@ func _update_fallen_body(shooter: Shooter) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if _local == null:
 		return
-	var interact: bool = event is InputEventKey and event.pressed and not event.echo \
-		and (event.physical_keycode == KEY_E or event.keycode == KEY_E)
+	var interact: bool = event.is_action_pressed("interact") and not event.is_echo()
 	if _refuge_shop_room >= 0:
 		if interact or event.is_action_pressed("ui_cancel"):
 			_close_refuge_shop()
@@ -2563,6 +2606,20 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if not _input_enabled:
 		return
+	if interact and map_kind == MapKind.TOMATINA and _local.player.state == MayoPlayer.State.DEAD:
+		_request_tomato_action(7)
+		return
+	if interact and is_instance_valid(play_support):
+		var target: Dictionary = play_support.context_target(_local)
+		if not target.is_empty():
+			if target.kind == "shop":
+				_try_open_refuge_shop()
+			elif _is_authority():
+				perform_context_action(_local.peer_id, target.kind, target.id)
+			else:
+				_net.request_context_action(target.kind, target.id)
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var number: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 		if number >= KEY_1 and number <= KEY_5 and not event.shift_pressed:
@@ -2570,7 +2627,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 	if event is InputEventKey and event.pressed and not event.echo:
-		if event.physical_keycode == KEY_V and stage_mode and map_kind == MapKind.TOMATINA:
+		if event.is_action_pressed("shove") and stage_mode and map_kind == MapKind.TOMATINA:
 			_request_tomato_action(ESCAPE_SHOVE_ACTION)
 			get_viewport().set_input_as_handled()
 			return
@@ -2667,6 +2724,12 @@ func set_first_person(enabled: bool) -> void:
 
 
 func _ensure_input_actions() -> void:
+	for entry in [["interact", KEY_E], ["shove", KEY_V]]:
+		if not InputMap.has_action(entry[0]):
+			InputMap.add_action(entry[0])
+			var event := InputEventKey.new()
+			event.physical_keycode = entry[1]
+			InputMap.action_add_event(entry[0], event)
 	# Registered in code so the toggle works without editing the input map.
 	if InputMap.has_action("toggle_camera_mode"):
 		return
@@ -2891,6 +2954,8 @@ func create_avatar(peer_id: int, slot: int, is_local: bool) -> Shooter:
 	# is placed by the server. Set here rather than at each call site so no
 	# ordering of the join messages can leave a body simulating itself.
 	shooter.player.authority = _is_authority()
+	shooter.player.predict_local = is_local and not shooter.player.authority and map_kind == MapKind.TOMATINA
+	shooter.player.recovery_protection = map_kind == MapKind.TOMATINA
 	if is_local:
 		_adopt_local(shooter)
 	# Somebody arrived: the heavies get tougher, keeping how ruined they already
@@ -3429,6 +3494,8 @@ func _rebind_visor_overlay() -> void:
 	if _visor_overlay == null or _local == null or _local.player.visor == null:
 		return
 	_visor_overlay.bind(_local.player.visor)
+	if map_kind == MapKind.TOMATINA:
+		_visor_overlay.material.set_shader_parameter("protect_centre", true)
 
 
 func set_network_panel_open(open: bool) -> void:
@@ -3439,6 +3506,20 @@ func set_network_panel_open(open: bool) -> void:
 	if DisplayServer.get_name() == "headless":
 		return
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if open else Input.MOUSE_MODE_CAPTURED
+
+
+func set_menu_input_enabled(enabled: bool) -> void:
+	_input_enabled = enabled
+	if _local != null:
+		_local.player.frozen = not enabled
+		if not enabled:
+			_local.firing = false
+			_local.fire_hold = 0.0
+			_local.player.input_move = Vector2.ZERO
+			_local.player.input_run = false
+			_local.player.input_jump = false
+	if DisplayServer.get_name() != "headless":
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if enabled else Input.MOUSE_MODE_VISIBLE
 
 
 func set_gameplay_input_enabled(enabled: bool) -> void:
@@ -4982,9 +5063,9 @@ func _deal_grunt_burst(index: int) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = TomatinaMap.SEED ^ (index * 0x9E3779B1)
 	var roll := rng.randf()
-	if roll < 0.70:
+	if roll < 0.50:
 		return {"tier": 0, "radius": rng.randf_range(1.2, 2.0)}
-	if roll < 0.95:
+	if roll < 0.78:
 		return {"tier": 1, "radius": rng.randf_range(2.5, 3.5)}
 	return {"tier": 2, "radius": rng.randf_range(5.0, 6.5)}
 
@@ -5067,6 +5148,9 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 	enemy.sense_left = float(index % 6) / 60.0
 	enemy.repath_interval += float(index % 7) * 0.022
 	enemy.special_warning.connect(_on_special_warning)
+	if is_instance_valid(play_support):
+		enemy.attack_permission = play_support.request_special
+		enemy.contact_permission = play_support.request_contact
 	enemy.position = Vector3(at.x, enemy.stand_height(), at.z)
 	if kind == MayoTutorial.KIND_PRESS_KING:
 		enemy.facing_yaw = TomatinaMap.PRESS_KING_YAW
@@ -5204,6 +5288,8 @@ func _splash_enemy(other: MayoEnemy, centre: Vector3, damage: float, shooter: Sh
 	other.take_blast(centre, blast_knockback_speed)
 	_broadcast_blast_hit(other)
 	if not other.is_alive():
+		if is_instance_valid(play_support) and shooter != null:
+			play_support.note_chain(shooter.peer_id)
 		_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
 		_finish_tomato_kill(other, shooter)
 	elif other._flinch_crossed > crossed_before:
@@ -5224,7 +5310,12 @@ func _advance_splash_ripples(delta: float) -> void:
 		else:
 			due.push_back(ripple)
 	_splash_ripples = waiting
+	var processed := 0
 	for ripple: Dictionary in due:
+		if map_kind == MapKind.TOMATINA and processed >= 48:
+			_splash_ripples.push_back(ripple)
+			continue
+		processed += 1
 		var other: MayoEnemy = ripple.enemy
 		if is_instance_valid(other) and other.is_alive():
 			_splash_enemy(other, ripple.centre, ripple.damage, _shooters.get(ripple.peer), false)
@@ -5259,6 +5350,9 @@ func _is_overripe(enemy: MayoEnemy) -> bool:
 
 
 func _finish_tomato_kill(enemy: MayoEnemy, shooter: Shooter) -> void:
+	if enemy.has_meta("kill_finished"):
+		return
+	enemy.set_meta("kill_finished", true)
 	if _sauce_parts != null:
 		_sauce_parts.drop_for(enemy)
 	if _is_overripe(enemy):
@@ -5274,11 +5368,15 @@ func _finish_tomato_kill(enemy: MayoEnemy, shooter: Shooter) -> void:
 
 
 func _advance_overripe_bursts(delta: float) -> void:
+	var processed := 0
 	for enemy: MayoEnemy in _overripe_bursts.keys():
 		var fuse: Dictionary = _overripe_bursts[enemy]
 		fuse.left -= delta
 		if fuse.left > 0.0:
 			continue
+		if processed >= 6:
+			continue
+		processed += 1
 		_overripe_bursts.erase(enemy)
 		if not is_instance_valid(enemy):
 			continue
@@ -5703,7 +5801,7 @@ func _advance_horde_spawn(delta: float) -> void:
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() \
 				and (enemy.has_meta("horde") or TomatinaMap.in_rect(_plaza_rect, enemy.global_position)):
 			active += 1
-	var remaining := mini(HORDE_SPAWN_PER_TICK, mini(_horde_pending, tomatina_active_grunt_cap - active))
+	var remaining := mini(HORDE_SPAWN_PER_TICK, mini(_horde_pending, active_grunt_limit() - active))
 	var edges: Array = TomatinaMap.HORDE_EDGES[_finale_wave]
 	for attempt in edges.size():
 		if remaining <= 0:
@@ -5936,6 +6034,8 @@ func _tomatina_refuge_status() -> String:
 
 
 func _tomatina_action_hint() -> String:
+	if is_instance_valid(play_support) and _local != null:
+		return play_support.interaction_hint()
 	if _local == null or _local.player.state != MayoPlayer.State.NORMAL:
 		return ""
 	for teammate: Shooter in _shooters.values():
@@ -5964,7 +6064,9 @@ func _update_stage_objective(alive := -1) -> void:
 	if map_kind == MapKind.TOMATINA:
 		var objective := ""
 		if not _horde_spawned:
-			objective = "교회 광장으로 이동 · 발전기 켜기"
+			objective = "교회 광장으로 이동"
+			if _local != null and TomatinaMap.in_rect(_plaza_rect, _local.player.global_position):
+				objective = "발전기를 켜세요"
 		elif _finale_elapsed < FINALE_DURATION:
 			objective = "발전기 가동 · 증원 종료까지 %d초" % ceili(FINALE_DURATION - _finale_elapsed)
 		elif not is_instance_valid(_press_king):
@@ -6232,7 +6334,11 @@ func _damage_player(player: MayoPlayer, amount: float) -> void:
 	if map_kind == MapKind.TOMATINA \
 			and TomatinaMap.safe_room_at(StreetMap.cell_at(player.global_position)) >= 0:
 		return
-	if not player.take_damage(amount):
+	var before := player.health
+	var died := player.take_damage(amount)
+	if is_instance_valid(play_support):
+		play_support.note_damage(player.peer_id, before - player.health, died)
+	if not died:
 		return
 	player.begin_death()
 	# Where a teammate can pick them up they can also drag themselves toward
@@ -6263,6 +6369,8 @@ func _advance_player_respawns() -> void:
 			spawn = TomatinaMap.at_cell(centre) + Vector3(
 				-2.1 if slot % 2 == 0 else 2.1, 1.28, -2.1 if slot < 2 else 2.1)
 		player.finish_respawn(spawn)
+		if map_kind == MapKind.TOMATINA:
+			_clear_respawn_visor(shooter)
 		if not tomatina:
 			shooter.sauce = 1.0
 		shooter.player_animation_name = StringName()
@@ -6279,6 +6387,42 @@ func _advance_player_respawns() -> void:
 		_wiping.erase(player.peer_id)
 
 
+func _clear_respawn_visor(shooter: Shooter) -> void:
+	if shooter.player.visor != null:
+		shooter.player.visor.clear()
+	_pending_splats.append_array(PackedInt32Array([SPLAT_VISOR_CLEAR, shooter.peer_id, 0, 0]))
+	shooter.player.damage_grace = 0.8
+	shooter.player.slip_grace = 1.2
+
+
+func mission_report() -> Dictionary:
+	return play_support.report() if is_instance_valid(play_support) else {}
+
+
+func can_admit_waiting_player() -> bool:
+	if map_kind != MapKind.TOMATINA or _horde_spawned or is_cinematic_active():
+		return false
+	var room := -2
+	var standing := 0
+	for shooter: Shooter in _shooters.values():
+		if shooter.player.state == MayoPlayer.State.DEAD:
+			continue
+		var current := TomatinaMap.safe_room_at(StreetMap.cell_at(shooter.player.global_position))
+		if current < 0 or (room != -2 and room != current):
+			return false
+		room = current
+		standing += 1
+	return standing > 0
+
+
+func waiting_player_spawn(slot: int) -> Vector3:
+	if _tomatina_checkpoint < 0:
+		return spawn_position_for(slot)
+	var room: Rect2i = TomatinaMap.SAFE_ROOMS[_tomatina_checkpoint]
+	return TomatinaMap.at_cell(Vector2(room.position) + Vector2(room.size) * 0.5) \
+		+ Vector3(-2.1 if slot % 2 == 0 else 2.1, 1.28, -2.1 if slot < 2 else 2.1)
+
+
 func _shooter_of(player: MayoPlayer) -> Shooter:
 	for id in _shooters:
 		var shooter: Shooter = _shooters[id]
@@ -6288,8 +6432,8 @@ func _shooter_of(player: MayoPlayer) -> Shooter:
 
 
 ## Share of the painted floor thick enough to slip on, refreshed a few times a
-## second rather than every frame: it walks the whole grid, which on this map is
-## fourteen million cells. -1 while it has never been asked.
+## second rather than every frame. FloorContamination now maintains counts
+## incrementally; reading this ratio does not scan the floor. -1 before first read.
 var debug_deep_fraction := -1.0
 var _deep_refresh := 0.0
 
@@ -6510,7 +6654,7 @@ func _update_camera() -> void:
 	# what the strand is fired along and what the network state carries, and
 	# neither is touched here -- the view moves off the aim, the aim does not
 	# move. Both camera modes get it, since both are built from this basis.
-	var shake := _shake_offset(_local)
+	var shake := _shake_offset(_local) * camera_motion_scale
 	var kick := _local.recoil_pitch + _local.sway_pitch * camera_sway_fraction + shake.x \
 		+ _local.hose_kick_pitch + _hose_rumble(_local)
 	if kick != 0.0:
@@ -6524,8 +6668,8 @@ func _update_camera() -> void:
 			# pitches back rather than down; going over forwards mirrors it and
 			# ends up staring at the floor. Crude on purpose; timing matters more.
 			var fall_sign := _player.fall_direction
-			aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(fall_camera_roll_degrees) * tilt * fall_sign)
-			aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(fall_camera_pitch_degrees) * tilt * fall_sign)
+			aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(fall_camera_roll_degrees) * tilt * fall_sign * camera_motion_scale)
+			aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(fall_camera_pitch_degrees) * tilt * fall_sign * camera_motion_scale)
 			eye.y = lerpf(eye.y, fall_camera_height, tilt)
 		_camera.global_transform = Transform3D(aim_basis, eye)
 		return
@@ -6896,6 +7040,7 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 						apply_enemy_shake(index, recipient, 0.0, 0.0, 3)
 				enemy.take_sauce_hit(shooter.player.global_position, dealt)
 			if was_alive:
+				_confirm_server_contact(shooter)
 				if not enemy.is_alive():
 					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
 					_finish_tomato_kill(enemy, shooter)
@@ -8019,12 +8164,25 @@ func _note_stream_contact(enemy: MayoEnemy, at: Vector3, normal: Vector3,
 		_spawn_impact_spray(at, normal, direction, true, shooter, 1.6 if first else 1.0, true)
 		_enemy_impact_clock[key] = impact_min_interval
 	if first:
-		if shooter.is_local and _crosshair is Crosshair:
+		if _is_authority() and shooter.is_local and _crosshair is Crosshair:
 			(_crosshair as Crosshair).confirm_impact(false)
 		_play_contact_accent(first_contact_sound, at, 1.0, 2.0)
 		_enemy_splat_clock[key] = splat_interval_max
 	else:
 		_play_enemy_splat(enemy, at)
+
+
+func _confirm_server_contact(shooter: Shooter) -> void:
+	if not _is_authority() or shooter == null:
+		return
+	var now := Time.get_ticks_msec()
+	if now - int(_contact_feedback_clock.get(shooter.peer_id, -1000)) < 80:
+		return
+	_contact_feedback_clock[shooter.peer_id] = now
+	if shooter.is_local:
+		_confirmed_contact_until = now + 180
+	elif is_instance_valid(_net):
+		_net.send_contact_confirmation(shooter.peer_id)
 
 
 func _play_contact_accent(clip: AudioStream, at: Vector3, pitch: float, gain: float) -> void:
@@ -8039,6 +8197,8 @@ func _play_contact_accent(clip: AudioStream, at: Vector3, pitch: float, gain: fl
 	voice.stream = clip
 	voice.pitch_scale = pitch
 	voice.volume_db = splat_volume_db + gain
+	if is_instance_valid(play_support):
+		voice.volume_db += play_support.sound_duck_db()
 	voice.play()
 
 
@@ -8059,6 +8219,8 @@ func _play_enemy_splat(enemy: MayoEnemy, at: Vector3) -> void:
 		return
 	voice.global_position = at
 	voice.volume_db = splat_volume_db
+	if is_instance_valid(play_support):
+		voice.volume_db += play_support.sound_duck_db()
 	voice.pitch_scale = _feel_rng.randf_range(
 		minf(splat_pitch_min, splat_pitch_max), maxf(splat_pitch_min, splat_pitch_max))
 	voice.stream = splat_sounds[_feel_rng.randi_range(0, splat_sounds.size() - 1)]
@@ -8076,17 +8238,34 @@ func party_size() -> int:
 ## What a heavy's maximum contamination should be for the party as it stands.
 func heavy_health_for(solo_health: float, players := -1) -> float:
 	var count := players if players > 0 else party_size()
+	if map_kind == MapKind.TOMATINA:
+		return solo_health * (1.0 + 0.35 * float(count - 1))
 	return solo_health * (1.0 + heavy_health_per_player * float(count - 1))
+
+
+## Separate boss curve: concentrated team fire should matter without making
+## ordinary tomatoes harder to burst. Only connected combat avatars count.
+func boss_health_for(solo_health: float, players := -1) -> float:
+	var count := clampi(players if players > 0 else party_size(), 1, 4)
+	return solo_health * (1.0 + 0.60 * float(count - 1))
+
+
+func active_grunt_limit(players := -1) -> int:
+	if map_kind != MapKind.TOMATINA:
+		return tomatina_active_grunt_cap
+	var count := clampi(players if players > 0 else party_size(), 1, 4)
+	return tomatina_active_grunt_cap + 4 * (count - 1)
 
 
 ## How many minions a wave of `base_count` should put out for the party.
 ##
-## **Nothing calls this to spawn anything.** There is no wave system here, and
-## inventing one to hang this off would be a much larger change than the scaling
-## it is meant to serve. It is the arithmetic, tested and ready, for the spawner
-## that will exist.
+## Used by finale waves and the hose counterattack. Existing waves keep their
+## allocated total when somebody joins/leaves; the next wave uses the new party.
 func minion_spawn_count(base_count: int, players := -1) -> int:
 	var count := players if players > 0 else party_size()
+	if map_kind == MapKind.TOMATINA:
+		count = clampi(count, 1, 4)
+		return int(round(float(base_count) * (1.0 + 0.35 * float(count - 1))))
 	return int(round(float(base_count) * (1.0 + minion_spawn_per_player * float(count - 1))))
 
 
@@ -8109,7 +8288,7 @@ func rescale_enemies() -> void:
 		if enemy.grade != MayoEnemy.Grade.HEAVY:
 			continue
 		var fraction := enemy.health_fraction()
-		enemy.max_health = heavy_health_for(enemy.solo_health, count)
+		enemy.max_health = boss_health_for(enemy.solo_health, count) if map_kind == MapKind.TOMATINA and enemy is PressKing else heavy_health_for(enemy.solo_health, count)
 		enemy.health = enemy.max_health * fraction
 
 
@@ -8379,6 +8558,11 @@ func _make_healing_tomato(at: Vector3) -> MeshInstance3D:
 	material.emission_enabled = true
 	material.emission = Color("85301b")
 	item.material_override = material
+	if map_kind == MapKind.TOMATINA:
+		var matte := ShaderMaterial.new()
+		matte.shader = preload("res://assets/enemies/Stage2_PressKing/press_king_toon.gdshader")
+		matte.set_shader_parameter("pigment", TomatoVisuals.TOMATO)
+		item.material_override = matte
 	add_child(item)
 	item.global_position = at
 	var stem := MeshInstance3D.new()
@@ -8390,6 +8574,11 @@ func _make_healing_tomato(at: Vector3) -> MeshInstance3D:
 	var green := StandardMaterial3D.new()
 	green.albedo_color = Color("66dcd0") if map_kind == MapKind.TOMATINA else Color("65b840")
 	stem.material_override = green
+	if map_kind == MapKind.TOMATINA:
+		var matte := ShaderMaterial.new()
+		matte.shader = preload("res://assets/enemies/Stage2_PressKing/press_king_toon.gdshader")
+		matte.set_shader_parameter("pigment", Color("3a9e87"))
+		stem.material_override = matte
 	item.add_child(stem)
 	stem.position.y = 0.32
 	return item
@@ -8511,6 +8700,12 @@ func rescue_hud_state() -> Dictionary:
 		state["left"] = maxf(TOMATINA_RESCUE_WINDOW - me.state_time(), 0.0)
 		state["standing_teammate"] = _has_standing_teammate(me)
 		state["crawling"] = me.is_crawling()
+		state["can_return"] = me.state_time() >= 5.0
+		var nearest := INF
+		for teammate: Shooter in _shooters.values():
+			if teammate != _local and teammate.player.state != MayoPlayer.State.DEAD:
+				nearest = minf(nearest, me.global_position.distance_to(teammate.player.global_position))
+		state["nearest_teammate"] = nearest
 		state["rescue_progress"] = -1.0
 		for rescuer in _rescue_attempts:
 			var attempt: Dictionary = _rescue_attempts[rescuer]
@@ -8559,6 +8754,7 @@ func _advance_tomatina_rescues(delta: float) -> void:
 		if rescuer == null or target == null or rescuer.player.is_incapacitated() \
 				or rescuer.player.health < float(attempt.health) or rescuer.firing \
 				or target.player.state != MayoPlayer.State.DEAD \
+				or (attempt.has("position") and rescuer.player.global_position.distance_to(attempt.position) > 0.45) \
 				or not _rescue_in_reach(rescuer.player, target.player):
 			_rescue_attempts.erase(peer)
 			continue
@@ -8566,6 +8762,9 @@ func _advance_tomatina_rescues(delta: float) -> void:
 		if attempt.left <= 0.0:
 			target.player.finish_respawn(target.player.global_position)
 			target.player.health = target.player.max_health * 0.40
+			_clear_respawn_visor(target)
+			if is_instance_valid(play_support):
+				play_support.note_rescue(int(peer))
 			_wiping.erase(target.peer_id)
 			_rescue_attempts.erase(peer)
 
@@ -8759,7 +8958,7 @@ func _queue_hose_wave() -> void:
 	if _hose_wave_called or not _is_authority() or is_instance_valid(_press_king):
 		return
 	_hose_wave_called = true
-	_hose_wave_pending = HOSE_WAVE_COUNT
+	_hose_wave_pending = minion_spawn_count(HOSE_WAVE_COUNT)
 	_hose_wave_wait = 1.2
 	var entry := TomatinaMap.at_cell(TomatinaMap.HORDE_EDGES[2][0])
 	show_combat_warning(entry, Vector3.ZERO, 1.2, HOSE_COUNTERATTACK_CUE)
@@ -8784,7 +8983,7 @@ func _advance_hose_wave(delta: float) -> void:
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() \
 				and (enemy.has_meta("horde") or TomatinaMap.in_rect(_plaza_rect, enemy.global_position)):
 			active += 1
-	var remaining := mini(HORDE_SPAWN_PER_TICK, mini(_hose_wave_pending, tomatina_active_grunt_cap - active))
+	var remaining := mini(HORDE_SPAWN_PER_TICK, mini(_hose_wave_pending, active_grunt_limit() - active))
 	var edges: Array = TomatinaMap.HORDE_EDGES[2]
 	for attempt in edges.size():
 		if remaining <= 0:
@@ -9174,6 +9373,8 @@ func apply_shove_clearance(peer: int, indices: PackedInt32Array) -> void:
 
 
 func _on_special_warning(enemy: MayoEnemy, direction: Vector3, duration: float) -> void:
+	if is_instance_valid(play_support):
+		play_support.prioritize_sound(duration + 0.3)
 	var cue := 7 if enemy.kind == MayoEnemy.EnemyKind.PRESS_KING and not direction.is_zero_approx() else 3
 	if enemy.kind == MayoEnemy.EnemyKind.BOWLING_TOMATO:
 		cue = 4
@@ -9318,6 +9519,8 @@ func _try_cast_cheese_thread(index: int, enemy: MayoEnemy, delta: float) -> void
 	if flat.length_squared() < 2.5 ** 2 or flat.length_squared() > CHEESE_THROW_RANGE ** 2:
 		return
 	if not _tomatina_static_hit(enemy.global_position, target.global_position).is_empty():
+		return
+	if is_instance_valid(play_support) and not play_support.request_special(enemy, target):
 		return
 	var heading := flat.normalized()
 	var side := heading.cross(Vector3.UP)
@@ -9505,6 +9708,53 @@ func apply_tomatina_status(data: PackedFloat64Array) -> void:
 	_update_stage_objective()
 
 
+func perform_context_action(peer: int, kind: String, target_id: int) -> void:
+	if not _is_authority() or not is_instance_valid(play_support) or not _shooters.has(peer) or is_cinematic_active():
+		return
+	var shooter: Shooter = _shooters[peer]
+	var valid := false
+	for candidate in play_support.context_candidates(shooter):
+		if candidate.kind == kind and int(candidate.id) == target_id:
+			valid = true
+			break
+	if not valid:
+		return
+	match kind:
+		"rescue":
+			if not _rescue_attempts.has(peer):
+				_rescue_attempts[peer] = {"peer": target_id, "left": TOMATINA_RESCUE_TIME,
+					"health": shooter.player.health, "position": shooter.player.global_position}
+		"truck":
+			_try_truck_exit(shooter)
+		"generator":
+			_start_finale(shooter.player)
+		"hose":
+			_toggle_fire_hose(shooter)
+		"shower":
+			_apply_refuge_shower(peer, target_id)
+			_pending_splats.append_array(PackedInt32Array([SPLAT_BODY_WASH, peer, target_id, 0]))
+		"refill":
+			refill_for(peer, STATION_SAUCE_HERE)
+		"pickup":
+			if not _healing_tomatoes.has(target_id):
+				return
+			var slots := item_slots(peer)
+			var empty := slots.find(0, 1)
+			if empty < 0:
+				return
+			var node: Node3D = _healing_tomatoes[target_id].node
+			_record_motion_event(peer, 1, node.global_position)
+			if _held_tomatoes.has(peer):
+				node.queue_free()
+			else:
+				_held_tomatoes[peer] = node
+			slots[empty] = 1
+			_item_selected[peer] = empty
+			_healing_tomatoes.erase(target_id)
+			shooter.firing = false
+			shooter.fire_hold = 0.0
+
+
 func _request_tomato_action(action: int) -> void:
 	if not _is_authority() and _local != null:
 		if action == 3:
@@ -9525,6 +9775,10 @@ func tomato_action(peer: int, action: int) -> void:
 		return
 	var shooter: Shooter = _shooters[peer]
 	var player := shooter.player
+	if action == 7 and map_kind == MapKind.TOMATINA and player.state == MayoPlayer.State.DEAD and player.state_time() >= 5.0:
+		player.finish_respawn(waiting_player_spawn(shooter.spawn_slot))
+		_clear_respawn_visor(shooter)
+		return
 	if player.state != MayoPlayer.State.NORMAL:
 		_tomato_charge_started.erase(peer)
 		return
@@ -9826,7 +10080,9 @@ func _update_item_views() -> void:
 				basis = _camera.global_basis
 				origin = _camera.global_position
 			var charge := tomato_charge_fraction(peer)
-			node.global_transform = Transform3D(basis.scaled(Vector3.ONE * 0.55), origin + basis * Vector3(0.37 + charge * 0.06,-0.25 - charge * 0.08,-0.95 + charge * 0.4))
+			var size_scale := viewmodel_scale if shooter.is_local and map_kind == MapKind.TOMATINA else 1.0
+			var pullback := 0.18 if map_kind == MapKind.TOMATINA else 0.4
+			node.global_transform = Transform3D(basis.scaled(Vector3.ONE * 0.55 * size_scale), origin + basis * Vector3(0.37 + charge * 0.06,-0.25 - charge * 0.08,-0.95 + charge * pullback))
 			if not _item_hands.has(peer):
 				var hand := Node3D.new()
 				add_child(hand)
@@ -9910,6 +10166,16 @@ func apply_player_motion_state(data: PackedFloat64Array) -> void:
 
 ## Rendered bottle/arms belong to the camera, never to an interpolated body.
 ## weapon + muzzle remain under AimPivot for authoritative physics queries.
+func first_person_visual_transform(shooter: Shooter) -> Transform3D:
+	var visual := shooter.weapon.transform
+	if map_kind == MapKind.TOMATINA:
+		visual = _viewmodel_inertia.pose * visual
+		if is_instance_valid(_viewmodel_animation):
+			visual = _viewmodel_animation.pose * visual
+		visual.basis = visual.basis.scaled_local(Vector3.ONE * viewmodel_scale * 0.94)
+	return visual
+
+
 func _sync_camera_viewmodel() -> void:
 	if not is_instance_valid(_camera):
 		return
@@ -9926,7 +10192,7 @@ func _sync_camera_viewmodel() -> void:
 				shooter.camera_viewmodel = holder
 			if shooter.weapon_sway.get_parent() != shooter.camera_viewmodel:
 				shooter.weapon_sway.reparent(shooter.camera_viewmodel, false)
-			shooter.camera_viewmodel.transform = shooter.weapon.transform
+			shooter.camera_viewmodel.transform = first_person_visual_transform(shooter)
 			shooter.camera_viewmodel.visible = _first_person and shooter.weapon.visible
 			if is_instance_valid(shooter.first_person_arms) and shooter.first_person_arms.get_parent() != _camera:
 				shooter.first_person_arms.reparent(_camera, false)

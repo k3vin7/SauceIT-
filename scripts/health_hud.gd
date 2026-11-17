@@ -76,6 +76,9 @@ var _pickup_target: Node3D
 var _nearby_pickups: Array[Node3D] = []
 var pickup_scan_count := 0
 var feedback_rows: Array[Dictionary] = []
+var _occlusion_cache := {}
+var _occlusion_frame := -1
+var _occlusion_budget := 0
 
 func notify_action(text: String, accent := Color("ffd46a")) -> void:
 	if not feedback_rows.is_empty() and feedback_rows.back().text == text and feedback_rows.back().left > 2.3:
@@ -107,6 +110,7 @@ func _draw() -> void:
 	if world._local == null:
 		return
 	_draw_player()
+	_draw_team()
 	_draw_context_extras()
 	_draw_slots()
 	_draw_prompt()
@@ -115,16 +119,47 @@ func _draw() -> void:
 	if not action.is_empty():
 		_draw_action_chip(action)
 	var controls := "R 고글 닦기   ·   V 밀치기   ·   F4 조작표" if world.map_kind == world.MapKind.TOMATINA else "1–5 장비 선택 · F4 조작표"
+	if world.map_kind == world.MapKind.TOMATINA:
+		var options := preload("res://scripts/game_options.gd")
+		controls = "%s 고글 닦기 · %s 밀치기 · F4 조작표" % [options.key_label("wipe_screen", "R"), options.key_label("shove", "V")]
 	if world.local_holds_tomato():
 		controls = "좌클릭 꾹: 힘 모으기 · 놓기: 던지기   /   우클릭: 먹기"
 		if world._tomato_charge_started.has(world._local.peer_id):
 			var charge: float = world.tomato_charge_fraction(world._local.peer_id)
 			var meter := Rect2(frame.get_center() + Vector2(-60.0, 36.0), Vector2(120.0, 7.0))
 			_draw_bar(meter, charge, UI.GOLD, UI.ACCENT, 1.0)
-	var footer := Rect2(frame.get_center().x - 192.0, frame.end.y - 21.0, 384.0, 17.0)
+	var footer := Rect2(frame.get_center().x - 210.0, frame.end.y - 30.0, 420.0, 22.0)
 	draw_style_box(_slot_idle, footer)
-	draw_string(ThemeDB.fallback_font, footer.position + Vector2(0.0, 13.0), controls,
-		HORIZONTAL_ALIGNMENT_CENTER, footer.size.x, 13, UI.CREAM)
+	draw_string(ThemeDB.fallback_font, footer.position + Vector2(0.0, 16.0), controls,
+		HORIZONTAL_ALIGNMENT_CENTER, footer.size.x, 14, UI.CREAM)
+
+
+func _draw_team() -> void:
+	if world.map_kind != world.MapKind.TOMATINA or world._shooters.size() < 2:
+		return
+	var players: Array = world._shooters.values()
+	players.sort_custom(func(a, b): return a.spawn_slot < b.spawn_slot)
+	var top := frame.position.y + 104.0
+	if is_instance_valid(world._objective_card):
+		top = maxf(top, world._objective_card.position.y + world._objective_card.size.y + 12.0)
+	var practice: bool = world.get_meta("bot_practice", false)
+	var panel := Rect2(frame.position.x + 20, top, 270, 34 + players.size() * 40 + (24 if practice else 0))
+	draw_style_box(_plate, panel)
+	var font := ThemeDB.fallback_font
+	draw_string(font, panel.position + Vector2(12, 21), "팀 상태", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, UI.MUTED)
+	for index in players.size():
+		var shooter = players[index]
+		var at := panel.position + Vector2(12, 34 + index * 40)
+		var own: bool = shooter == world._local
+		var hp: float = shooter.player.health_fraction()
+		var down: bool = shooter.player.state == MayoPlayer.State.DEAD
+		draw_string(font, at + Vector2(0, 14), "P%d" % (shooter.spawn_slot + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, UI.MINT if own else UI.CREAM)
+		var status := "구조 필요" if down else "체력 %d" % ceili(shooter.player.health)
+		draw_string(font, at + Vector2(40, 12), status, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, PLAYER_LOW if down or hp < LOW_AT else UI.CREAM)
+		draw_string(font, at + Vector2(158, 12), "소스 %d%%" % roundi(shooter.sauce * 100), HORIZONTAL_ALIGNMENT_RIGHT, 88, 13, UI.GOLD if shooter.sauce < 0.25 else UI.MUTED)
+		_draw_bar(Rect2(at + Vector2(40, 20), Vector2(206, 7)), hp, PLAYER_FULL, PLAYER_LOW, 1.0)
+	if practice:
+		draw_string(font, Vector2(panel.position.x + 12, panel.end.y - 10), "F6 내 자동조작 %s" % ("ON" if world.get_meta("bot_autoplay", false) else "OFF"), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, UI.MUTED)
 
 
 func _draw_slots() -> void:
@@ -134,8 +169,11 @@ func _draw_slots() -> void:
 	var gap := 8.0
 	var left := frame.get_center().x - (width * 5.0 + gap * 4.0) * 0.5
 	for slot in 5:
-		var rect := Rect2(left + slot * (width + gap), frame.end.y - 151.0, width, 48.0)
+		var rect := Rect2(left + slot * (width + gap), frame.end.y - 163.0, width, 48.0)
 		draw_style_box(_slot_active if selected == slot else _slot_idle, rect)
+		if selected == slot:
+			draw_style_box(UI.box(Color.TRANSPARENT, UI.MINT, 7), rect.grow(1.0))
+			draw_line(rect.position + Vector2(10, 44), rect.position + Vector2(width - 10, 44), UI.MINT, 3.0, true)
 		draw_string(ThemeDB.fallback_font, rect.position + Vector2(6.0, 14.0), str(slot + 1),
 			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 11, UI.ACCENT if selected == slot else UI.MUTED)
 		if slot == 0:
@@ -149,7 +187,7 @@ func _draw_slots() -> void:
 
 func _draw_player() -> void:
 	var player: MayoPlayer = world._local.player
-	var panel := Rect2(frame.get_center().x - HUD_WIDTH * 0.5, frame.end.y - 96.0, HUD_WIDTH, 73.0)
+	var panel := Rect2(frame.get_center().x - HUD_WIDTH * 0.5, frame.end.y - 108.0, HUD_WIDTH, 73.0)
 	draw_style_box(_plate, panel)
 	var font := ThemeDB.fallback_font
 	var at := panel.position + Vector2(12.0, 19.0)
@@ -164,11 +202,11 @@ func _draw_player() -> void:
 	else:
 		draw_string(font, at, "장비 상태", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 14, UI.CREAM)
 
-	var hp := Rect2(panel.position + Vector2(57.0, 28.0), Vector2(207.0, 12.0))
+	var hp := Rect2(panel.position + Vector2(57.0, 27.0), Vector2(207.0, 15.0))
 	var tank := Rect2(hp.position + Vector2(0.0, 22.0), hp.size)
 	var sauce_color: Color = [UI.CREAM, UI.GOLD, UI.ACCENT][clampi(world.local_sauce_kind(), 0, 2)]
 	_draw_bar(hp, player.health_fraction(), PLAYER_FULL, PLAYER_LOW, 1.0)
-	_draw_bar(tank, level, sauce_color, sauce_color.darkened(0.35), 1.0)
+	_draw_bar(tank, level, UI.GOLD if level < 0.25 else sauce_color, sauce_color.darkened(0.35), 1.0)
 	var markers: Array = [0.25, 0.5, 0.75] if cannon else [world.get("burst_midpoint")]
 	for fraction: float in markers:
 		var notch := tank.position.x + tank.size.x * fraction
@@ -191,12 +229,12 @@ func _draw_player() -> void:
 			# The boosted shot is going out now.
 			fill = 1.0
 			tint = UI.GOLD
-			note = "강화 발사!"
+			note = "강화 분사 %.1f초" % maxf(0.0, float(world.full_burst_seconds) - world._local.bottle_boost_time)
 		elif charge.y > 0.0:
 			# Primed: the strip is the window running down.
 			fill = charge.y / maxf(float(world.bottle_buff_seconds), 0.01)
 			tint = UI.MINT
-			note = "강화 준비 %.1f초" % charge.y
+			note = "강화 유지 %.1f초" % charge.y
 		draw_rect(strip, BACKING, true)
 		draw_rect(Rect2(strip.position, Vector2(strip.size.x * clampf(fill, 0.0, 1.0), strip.size.y)), tint, true)
 		draw_string(font, at + Vector2(104.0, 0.0), note,
@@ -205,13 +243,14 @@ func _draw_player() -> void:
 
 func _draw_action_chip(text: String) -> void:
 	var font := ThemeDB.fallback_font
-	var message := text.trim_prefix("[E] ")
+	var key_label := preload("res://scripts/game_options.gd").key_label("interact", "E")
+	var message := text.trim_prefix("[%s] " % key_label)
 	var width := font.get_string_size(message, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17).x
 	var card := Rect2(frame.get_center().x - (width + 62.0) * 0.5, frame.end.y - 201.0, width + 62.0, 38.0)
 	draw_style_box(_plate, card)
 	var key := Rect2(card.position + Vector2(8.0, 7.0), Vector2(25.0, 24.0))
 	draw_style_box(_slot_active, key)
-	draw_string(font, key.position + Vector2(0.0, 17.0), "E", HORIZONTAL_ALIGNMENT_CENTER, key.size.x, 15, UI.CREAM)
+	draw_string(font, key.position + Vector2(0.0, 17.0), key_label, HORIZONTAL_ALIGNMENT_CENTER, key.size.x, 15, UI.CREAM)
 	draw_string(font, card.position + Vector2(43.0, 25.0), message,
 		HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, UI.CREAM)
 
@@ -260,6 +299,8 @@ func _draw_enemies() -> void:
 ## is a blue box that silently does nothing until you happen to be in the right
 ## spot with the right key down.
 func _draw_prompt() -> void:
+	if is_instance_valid(world.play_support):
+		return # Tomatina uses the same selected target for prompt and action.
 	if not world.local_at_station():
 		return
 	var font := ThemeDB.fallback_font
@@ -316,6 +357,23 @@ func enemy_bar_rect(enemy: MayoEnemy, camera: Camera3D) -> Rect2:
 	var at: Vector2 = camera.unproject_position(head)
 	if not frame.has_point(at):
 		return Rect2()
+	if world.map_kind == world.MapKind.TOMATINA:
+		var tick := Engine.get_physics_frames()
+		if _occlusion_frame != tick:
+			_occlusion_frame = tick
+			_occlusion_budget = 4
+		var key := enemy.get_instance_id()
+		var cached: Dictionary = _occlusion_cache.get(key, {})
+		if _occlusion_budget > 0 and (cached.is_empty() or tick - int(cached.tick) >= 8):
+			_occlusion_budget -= 1
+			var query := PhysicsRayQueryParameters3D.create(camera.global_position,
+				enemy.global_position, 1)
+			query.exclude = [player.get_rid()]
+			var hit := world.get_world_3d().direct_space_state.intersect_ray(query)
+			cached = {"tick": tick, "visible": hit.is_empty() or hit.collider == enemy}
+			_occlusion_cache[key] = cached
+		if cached.is_empty() or not cached.visible:
+			return Rect2()
 	return Rect2(at - Vector2(ENEMY_BAR.x * 0.5, ENEMY_BAR.y), ENEMY_BAR)
 
 

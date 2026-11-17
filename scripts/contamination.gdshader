@@ -161,8 +161,8 @@ void fragment() {
 		float large = tomato_splat(pavement_position, 2.7, 0.69);
 		float small = tomato_splat(pavement_position + vec2(3.7, 1.1), 1.12, 0.46);
 		tomato_marks = max(large, small * 0.81) * on_street;
-		vec3 ketchup = mix(vec3(0.43, 0.037, 0.021), vec3(0.68, 0.082, 0.035), grain);
-		stone = mix(stone, ketchup, tomato_marks * 0.65);
+		vec3 ketchup = mix(vec3(0.32, 0.16, 0.12), vec3(0.45, 0.23, 0.16), grain);
+		stone = mix(stone, ketchup, tomato_marks * 0.42);
 		clean = mix(vec3(0.18, 0.135, 0.102), stone, on_street);
 	}
 	vec3 stained = mix(clean, mayo_color.rgb * tint, painted);
@@ -187,7 +187,12 @@ void fragment() {
 		ROUGHNESS = mix(ROUGHNESS, 0.22, painted * 0.86);
 	}
 	if (paved && kind > 1.5 && kind < 2.5) {
-		ROUGHNESS = max(ROUGHNESS, 0.66);
+		ROUGHNESS = mix(ROUGHNESS, 0.28, painted);
+	}
+	if (paved && painted > 0.5 && kind < 1.5 && floor(own / 4.0) >= (kind > 0.5 ? 2.0 : 3.0)) {
+		float stripe = smoothstep(0.55, 0.72, sin((pavement_position.x + pavement_position.y) * 9.0));
+		ALBEDO = mix(ALBEDO, vec3(0.95, 0.72, 0.15), stripe * 0.16);
+		ROUGHNESS = min(ROUGHNESS, 0.12);
 	}
 	METALLIC = 0.0;
 }

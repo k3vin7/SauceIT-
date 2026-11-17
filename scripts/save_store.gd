@@ -8,6 +8,7 @@ var master_volume := 0.8
 var bgm_volume := 1.0
 var sfx_volume := 1.0
 var mouse_sensitivity := 0.09
+var game_options := preload("res://scripts/game_options.gd").new()
 
 
 func _init(custom_path := "") -> void:
@@ -18,7 +19,9 @@ func _init(custom_path := "") -> void:
 func load_data() -> void:
 	var config := ConfigFile.new()
 	if config.load(path) != OK:
+		game_options.load_config(config)
 		return
+	game_options.load_config(config)
 	tutorial_completed = bool(config.get_value("progress", "tutorial_completed", false))
 	master_volume = clampf(float(config.get_value("options", "master_volume", 0.8)), 0.0, 1.0)
 	bgm_volume = clampf(float(config.get_value("options", "bgm_volume", 1.0)), 0.0, 1.0)
@@ -46,4 +49,5 @@ func _write() -> int:
 	config.set_value("options", "bgm_volume", bgm_volume)
 	config.set_value("options", "sfx_volume", sfx_volume)
 	config.set_value("options", "mouse_sensitivity", mouse_sensitivity)
+	game_options.write_config(config)
 	return config.save(path)

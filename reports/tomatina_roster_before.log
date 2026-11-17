@@ -1,0 +1,109 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+[
+  {
+    "cell": "(24.5, 205.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 4.42333889007568
+  },
+  {
+    "cell": "(24.5, 203.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 4.30682945251465
+  },
+  {
+    "cell": "(23.5, 202.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 5.1902813911438
+  },
+  {
+    "cell": "(32.5, 203.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 3.64424085617065
+  },
+  {
+    "cell": "(32.5, 204.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 3.53380942344666
+  },
+  {
+    "cell": "(23.5, 201.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 5.08582639694214
+  },
+  {
+    "cell": "(22.5, 201.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 6.08421182632446
+  },
+  {
+    "cell": "(7.5, 173.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 3.42929792404175
+  },
+  {
+    "cell": "(7.5, 174.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 3.32854723930359
+  },
+  {
+    "cell": "(40.5, 140.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 4.32685661315918
+  },
+  {
+    "cell": "(40.5, 139.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 4.05526828765869
+  },
+  {
+    "cell": "(40.5, 138.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 3.91331505775452
+  },
+  {
+    "cell": "(28.5, 70.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 3.38480186462402
+  },
+  {
+    "cell": "(28.5, 72.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 4.52065801620483
+  },
+  {
+    "cell": "(25.5, 60.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 3.30790185928345
+  },
+  {
+    "cell": "(25.5, 206.5)",
+    "kind": "CAPRESE_CRAWLER",
+    "route_distance_cells": 3.27876400947571
+  },
+  {
+    "cell": "(24.5, 203.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 4.30682945251465
+  },
+  {
+    "cell": "(10.5, 161.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 4.41956758499146
+  },
+  {
+    "cell": "(39.5, 125.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 4.79087209701538
+  },
+  {
+    "cell": "(21.5, 95.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 5.31479644775391
+  },
+  {
+    "cell": "(36.5, 54.5)",
+    "kind": "TOMATO_GRUNT",
+    "route_distance_cells": 5.0912880897522
+  }
+]

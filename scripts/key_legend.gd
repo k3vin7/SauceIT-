@@ -67,22 +67,28 @@ func _rows() -> Array:
 	if world == null or not is_instance_valid(world):
 		return rows
 	if world.map_kind == world.MapKind.TOMATINA:
-		return [
+		var stage_rows := [
 			["WASD", "이동", ""], ["Shift", "달리기", ""], ["Space", "점프", ""],
 			["좌클릭", "소스 분사 / 토마토 던지기", ""], ["우클릭", "토마토 먹기", ""],
 			["1~5 / 휠", "장비 선택", ""], ["E", "가까운 대상과 상호작용", ""],
 			["E", "보급 지점에서 케첩 보충", ""], ["R", "고글 닦기", ""],
-			["V", "밀치기", ""], ["F4", "조작표 닫기", ""], ["Esc", "일시 정지", ""],
+			["V", "밀치기", ""], ["우클릭 + 마우스", "소스통 흔들기", ""],
+			["F4", "조작표 닫기", ""], ["Esc", "메뉴", ""],
 		]
+		var settings := preload("res://scripts/game_options.gd")
+		stage_rows[0][0] = "%s%s%s%s" % [settings.key_label("move_forward", "W"), settings.key_label("move_left", "A"), settings.key_label("move_backward", "S"), settings.key_label("move_right", "D")]
+		for entry in [[1, "run"], [2, "jump"], [6, "interact"], [7, "interact"], [8, "wipe_screen"], [9, "shove"]]:
+			stage_rows[entry[0]][0] = settings.key_label(entry[1], stage_rows[entry[0]][0])
+		return stage_rows
 	if world._local != null:
-		rows[8][2] = world.character_name_for(world._local)
+		rows[7][2] = world.character_name_for(world._local)
 	rows.append(["F1", "카메라", "1인칭" if world._first_person else "3인칭"])
 	var panel_open: bool = world._net_panel != null and world._net_panel.visible
 	rows.append(["F2", "연결 메뉴", "열림" if panel_open else "닫힘"])
 	rows.append(["F3", "적 감지 범위", "켜짐" if world.show_enemy_sight else "꺼짐"])
 	rows.append(["F4", "조작표 닫기", ""])
 	rows.append(["M", "소리", "음소거" if world.muted else "켜짐"])
-	rows.append(["Esc", "일시 정지", ""])
+	rows.append(["Esc", "메뉴", ""])
 	return rows
 
 

@@ -8,6 +8,7 @@ var tracks: Array[AudioStreamOggVorbis] = []
 var current_mode := 0
 var music_gain := 0.0
 var retired := false
+var priority_duck := false
 
 func _ready() -> void:
 	name = "TomatinaFestivalMusic"
@@ -56,6 +57,8 @@ func _process(delta: float) -> void:
 	else:
 		music_gain = move_toward(music_gain,1.0,delta/0.45)
 	var target := MIX_DB - float(current_mode)
+	if priority_duck:
+		target -= 7.0
 	if cinematic:
 		target -= 8.0
 	elif is_instance_valid(world) and not world._input_enabled:

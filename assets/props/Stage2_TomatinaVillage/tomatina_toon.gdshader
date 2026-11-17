@@ -66,7 +66,7 @@ void fragment() {
 		float mask = max(blot, dots * 0.83) * height * wall;
 		vec3 ketchup = mix(vec3(0.32, 0.032, 0.016), vec3(0.57, 0.063, 0.029),
 			tomato_hash(floor(at * 0.69)));
-		ALBEDO = mix(ALBEDO, ketchup, mask * 0.91);
+		ALBEDO = mix(ALBEDO, mix(ketchup, vec3(0.31, 0.18, 0.13), 0.40), mask * 0.66);
 	}
 	ROUGHNESS = 1.0;
 	EMISSION = ALBEDO * bounce;

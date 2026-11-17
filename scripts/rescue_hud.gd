@@ -89,6 +89,13 @@ func _draw_downed(state: Dictionary) -> void:
 	_bar(bar, fraction, colour)
 	if state.get("crawling", false):
 		_text(Vector2(centre.x, centre.y + 32.0), "WASD · 팀원 쪽으로 기어가기", LINE_SIZE, WAIT)
+	var distance: float = state.get("nearest_teammate", INF)
+	if is_finite(distance):
+		_text(Vector2(centre.x, centre.y + 61.0), "가장 가까운 팀원 · %.0fm" % distance, TAG_SIZE, WAIT)
+	if state.get("can_return", false):
+		var events := InputMap.action_get_events("interact")
+		var key := events[0].as_text().replace(" (Physical)", "") if not events.is_empty() else "E"
+		_text(Vector2(centre.x, centre.y + 91.0), "[%s] 체크포인트로 복귀" % key, LINE_SIZE, RESCUE)
 
 
 func _draw_standing(state: Dictionary) -> void:
@@ -114,7 +121,8 @@ func _draw_standing(state: Dictionary) -> void:
 		var bar := Rect2(Vector2(centre.x - BAR.x * 0.5, centre.y + 84.0), BAR)
 		_bar(bar, float(state["rescue_progress"]), RESCUE)
 	elif state.get("in_reach", false):
-		_text(Vector2(centre.x, centre.y + 70.0), "[E] 구조 (1초, 사격·이동 금지)", LINE_SIZE, RESCUE)
+		var key := preload("res://scripts/game_options.gd").key_label("interact", "E")
+		_text(Vector2(centre.x, centre.y + 70.0), "[%s] 구조 (1초, 사격·이동 금지)" % key, LINE_SIZE, RESCUE)
 
 
 func _text(at: Vector2, text: String, size: int, colour: Color) -> void:

@@ -9,10 +9,15 @@ func configure(owner_shooter, owner_world) -> void:
 	world = owner_world
 	var sleeve := StandardMaterial3D.new()
 	sleeve.albedo_color = Color("e3ddd1")
+	if world.map_kind == world.MapKind.TOMATINA:
+		sleeve.albedo_color = Color("618580")
 	sleeve.roughness = 0.9
 	var skin := StandardMaterial3D.new()
 	skin.albedo_color = Color("dca780")
 	skin.roughness = 0.85
+	if world.map_kind == world.MapKind.TOMATINA:
+		sleeve.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		skin.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	for side in 2:
 		for segment in 2:
 			var mesh := MeshInstance3D.new()
@@ -46,13 +51,16 @@ func _process(_dt: float) -> void:
 	visible = shooter.is_local and world._first_person and shooter.player.state == MayoPlayer.State.NORMAL
 	if not visible:
 		return
-	transform = shooter.weapon.transform
+	transform = world.first_person_visual_transform(shooter)
 	var sway: Transform3D = shooter.weapon_sway.transform
 	for side in 2:
 		var sign_x := -1.0 if side == 0 else 1.0
 		var shoulder := Vector3(sign_x * 0.32, -0.52, 0.36)
 		var elbow := Vector3(sign_x * 0.24, -0.28, 0.16)
 		var hand := sway * Vector3(sign_x * 0.07, -0.035, -0.12)
+		# Let the elbows follow the grip while the upper arms retain a stable
+		# shoulder line. Fingers rotate with the tube instead of staying rigid.
+		elbow += (hand - Vector3(sign_x * 0.07, -0.035, -0.12)) * 0.35
 		var motion = shooter.procedural_motion
 		if side == 1 and is_instance_valid(motion):
 			var held = world._held_tomatoes.get(shooter.peer_id)
@@ -73,6 +81,7 @@ func _process(_dt: float) -> void:
 		_segment(limbs[side * 2], shoulder, elbow)
 		_segment(limbs[side * 2 + 1], elbow, hand)
 		palms[side].position = hand
+		palms[side].basis = sway.basis.orthonormalized()
 func _segment(mesh: MeshInstance3D, start: Vector3, end: Vector3) -> void:
 	mesh.position = (start + end) * 0.5
 	mesh.quaternion = Quaternion(Vector3.UP, (end - start).normalized())

@@ -1,0 +1,30 @@
+{
+	"elapsed_frame_ms": 28015.918,
+	"frames": 2995,
+	"hitches": [
+		{
+			"enemies": 365,
+			"frame_ms": 109.48,
+			"fuses": 0,
+			"ripples": 0,
+			"seconds": 11.2833333333335,
+			"splats": 0
+		},
+		{
+			"enemies": 365,
+			"frame_ms": 39.453,
+			"fuses": 0,
+			"ripples": 0,
+			"seconds": 11.3333333333335,
+			"splats": 0
+		},
+		{
+			"enemies": 365,
+			"frame_ms": 36.085,
+			"fuses": 0,
+			"ripples": 0,
+			"seconds": 11.8333333333335,
+			"splats": 0
+		}
+	]
+}

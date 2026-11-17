@@ -8,7 +8,7 @@ extends Control
 @export_range(0.0, 30.0, 1.0, "suffix:px") var centre_gap := 5.0
 @export_range(1.0, 6.0, 1.0, "suffix:px") var thickness := 2.0
 @export var arm_color := Color(1.0, 1.0, 1.0, 0.9)
-@export var outline_color := Color(0.0, 0.0, 0.0, 0.65)
+@export var outline_color := Color(0.0, 0.0, 0.0, 0.9)
 ## What it turns into while the stream is actually landing on something alive.
 ##
 ## This is the cheapest honest answer to "am I hitting it". The weapon is a
@@ -33,6 +33,12 @@ var connection := 0.0:
 
 
 var impact_left := 0.0
+var trajectory_segments := PackedVector2Array()
+var effective_range := false:
+	set(value):
+		if effective_range != value:
+			effective_range = value
+			queue_redraw()
 var impact_kill := false
 var impact_weak_spot := false
 
@@ -62,12 +68,20 @@ func _ready() -> void:
 
 func _draw() -> void:
 	var centre := size * 0.5
+	for index in range(0, trajectory_segments.size() - 1, 2):
+		var from := trajectory_segments[index]
+		var to := trajectory_segments[index + 1]
+		draw_line(from, to, Color(0.06, 0.08, 0.09, 0.6), 4.0, true)
+		draw_line(from, to, Color("f4db82"), 2.0, true)
 	# Opening outwards rather than closing in: the arms pull back off what they
 	# are marking, so the thing being hit is less obscured exactly when it is
 	# worth looking at.
 	var gap := centre_gap + connected_spread * connection
 	var width := thickness + connected_thickness * connection
-	var tint := arm_color.lerp(connected_color, connection)
+	var tint := (Color("75e3bc") if effective_range else arm_color).lerp(connected_color, connection)
+	if effective_range:
+		draw_circle(centre, 3.5, outline_color)
+		draw_circle(centre, 2.0, Color("75e3bc"))
 	# Vertical then horizontal arm pairs, drawn from the gap outwards.
 	var arms := [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]
 	for arm in arms:
