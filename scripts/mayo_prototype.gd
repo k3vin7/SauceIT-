@@ -5802,6 +5802,11 @@ func _advance_horde_spawn(delta: float) -> void:
 				and (enemy.has_meta("horde") or TomatinaMap.in_rect(_plaza_rect, enemy.global_position)):
 			active += 1
 	var remaining := mini(HORDE_SPAWN_PER_TICK, mini(_horde_pending, active_grunt_limit() - active))
+	# The grunt cap counts grunts. The plaza guard alone can already fill it
+	# (36 against a solo cap of 32), and the wave's special is not a grunt, so it
+	# still gets its one place.
+	if _finale_special_pending:
+		remaining = maxi(remaining, 1)
 	var edges: Array = TomatinaMap.HORDE_EDGES[_finale_wave]
 	for attempt in edges.size():
 		if remaining <= 0:

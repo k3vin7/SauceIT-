@@ -5,12 +5,12 @@ class ConfirmationProbe:
 	var flinches := 0
 	var defeats := 0
 
-	func confirm_impact(killed: bool) -> void:
+	func confirm_impact(killed: bool, weak_spot := false) -> void:
 		if killed:
 			defeats += 1
 		else:
 			flinches += 1
-		super.confirm_impact(killed)
+		super.confirm_impact(killed, weak_spot)
 
 # Reliable impact accents must reach the contributing client exactly once,
 # even before the enemy's unreliable health snapshot arrives.

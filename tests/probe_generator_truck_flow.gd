@@ -62,6 +62,12 @@ func run() -> void:
 			await RenderingServer.frame_post_draw
 			root.get_texture().get_image().save_png("res://reports/truck_arrival_%d.png" % frame)
 		frame += 1
+	# finish() waits for the bumper to physically meet the wall, which only the
+	# physics step detects; this probe drives the cinematic by hand, so it breaks
+	# the wall the way that contact does. probe_generator_truck_network covers
+	# the real contact.
+	check(not arrival.breached, "wall broke without the truck reaching it")
+	arrival._break_wall(Vector3(0, 0, 10), false)
 	arrival.finish()
 	check(arrival.arrived and arrival.barrier.collision_layer == 0,"barricade was not opened")
 	check(arrival.truck_body.collision_layer == 1 and is_instance_valid(arrival.actor),"truck did not remain after cinematic")

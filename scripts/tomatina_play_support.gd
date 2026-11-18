@@ -309,6 +309,7 @@ func interaction_hint() -> String:
 	var target := context_target(world._local)
 	if target.is_empty():
 		return ""
-	var events := InputMap.action_get_events("interact")
-	var key := events[0].as_text() if not events.is_empty() else "E"
-	return "[%s] %s" % [key.replace(" (Physical)", ""), target.text]
+	# Same label as the key legend and the tutorial; InputEvent.as_text() reads
+	# "E - Physical" for a physical binding.
+	var key := preload("res://scripts/game_options.gd").key_label("interact", "E")
+	return "[%s] %s" % [key, target.text]

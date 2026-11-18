@@ -221,15 +221,21 @@ func _run() -> void:
 	cancel.pressed = true
 	scene._unhandled_input(interact)
 	_check(not scene._refuge_shop.visible, "a distant shop opened")
+	var aim_before := Vector2(scene._local.aim_yaw, scene._local.aim_pitch)
 	for room in TomatinaMap.SAFE_ROOMS.size():
 		refill_player.global_position = TomatinaMap.refuge_shop_at(room) + Vector3.UP * 1.28
-		_check(scene._tomatina_action_hint() == "[E] 상점 열기", "a refuge shop lacks its prompt")
+		# The context prompt needs the player facing the counter, and it is
+		# cached once per physics frame; this loop teleports within one frame.
+		scene.debug_aim_at(TomatinaMap.refuge_shop_at(room))
+		scene.play_support._context_results.clear()
+		_check(scene._tomatina_action_hint() == "[E] 장비 개조", "a refuge shop lacks its prompt")
 		scene._unhandled_input(interact)
 		_check(scene._refuge_shop.visible and scene._refuge_shop_room == room
 			and refill_player.frozen and scene.is_physics_processing(),
 			"the shop did not open locally while keeping the world active")
 		scene._unhandled_input(cancel if room % 2 == 0 else interact)
 		_check(not scene._refuge_shop.visible and not refill_player.frozen, "the shop did not close")
+	scene.debug_set_aim(rad_to_deg(aim_before.x), rad_to_deg(aim_before.y))
 	_probe_sauce_parts(scene, refill_player)
 	refill_player.global_position = original_position
 	var stain := refill_player.contamination
@@ -242,14 +248,17 @@ func _run() -> void:
 	_check(stain.snapshot_cells() == stained_body, "a distant shower washed the player")
 	for room in TomatinaMap.SAFE_ROOMS.size():
 		refill_player.global_position = TomatinaMap.refuge_shower_at(room) + Vector3.UP * 1.28
+		scene.debug_aim_at(TomatinaMap.refuge_shower_at(room))
+		scene.play_support._context_results.clear()
 		_check(scene._refuge_shower_in_reach(refill_player.global_position) == room
-			and scene._tomatina_action_hint().begins_with("[E]"), "shower is missing its interaction prompt")
+			and scene._tomatina_action_hint().begins_with("[E] "), "shower is missing its interaction prompt")
 		stain.restore_cells(stained_body.duplicate())
 		scene.tomato_action(refill_player.peer_id, 0)
 		var washed := stain.snapshot_cells()
 		_check(washed[0] == 0 and washed[1] == stained_body[1],
 			"shower should remove ketchup from the body and retain other sauces")
 	stain.restore_cells(clean_body)
+	scene.debug_set_aim(rad_to_deg(aim_before.x), rad_to_deg(aim_before.y))
 	var trucks := TomatinaMap.parked_trucks()
 	var truck: Dictionary = trucks[0]
 	refill_player.global_position = truck["position"] + Vector3.LEFT * 2.5
@@ -316,15 +325,20 @@ func _run() -> void:
 				"an ambusher spawned outside its alley")
 	print("roster: %s" % str(counts))
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) == TomatinaMap.grunt_cells().size(), "encounter pack grunt count differs from plan")
-	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) - reinforcement_grunts <= 140,
+	# 2026-11-17 revision: every grunt pack doubled (114 -> 228 planned) and
+	# REINFORCEMENT_GRUNTS went 4 -> 8. A pack is capped by the open cells near
+	# its pose, so the narrow first alley holds 7 of its 8.
+	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) - reinforcement_grunts <= 280,
 		"the original grunt packs grew")
-	_check(reinforced_legs == [5, 10, 10, 10] and reinforcement_grunts == 28,
-		"the alley reinforcement packs are incomplete")
+	var planned_reinforcements: int = TomatinaMap.ALLEY_REINFORCEMENTS.size() * TomatinaMap.REINFORCEMENT_GRUNTS
+	_check(not reinforced_legs.has(0) and reinforcement_grunts <= planned_reinforcements
+		and reinforcement_grunts >= planned_reinforcements - 2,
+		"the alley reinforcement packs are incomplete: %s, %d grunts" % [str(reinforced_legs), reinforcement_grunts])
 	for group in TomatinaMap.ALLEY_AMBUSHES.size():
 		_check(groups.get(group, 0) == 3, "alley ambush %d is missing an attacker" % group)
 	_check(plaza_guards == {MayoEnemy.EnemyKind.TOMATO_BRUTE: 2,
 		MayoEnemy.EnemyKind.CAPRESE_CRAWLER: 1, MayoEnemy.EnemyKind.KETCHUP_SPITTER: 2,
-		MayoEnemy.EnemyKind.TOMATO_GRUNT: 20}, "the alley ambushes changed the plaza guard")
+		MayoEnemy.EnemyKind.TOMATO_GRUNT: 36}, "the alley ambushes changed the plaza guard: %s" % str(plaza_guards))
 	var bowlers := int(counts.get(MayoEnemy.EnemyKind.BOWLING_TOMATO, 0))
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_BALL, 0)) == bowlers * MayoEnemy.BALLS_PER_BOWLER,
 		"the bowler did not bring its balls")
@@ -353,8 +367,9 @@ func _run() -> void:
 			1: _check(radius >= 2.5 and radius <= 3.5, "a medium burst of %.2f m" % radius)
 			2: _check(radius >= 5.0 and radius <= 6.5, "a large burst of %.2f m" % radius)
 	print("400 grunts dealt: %d small, %d medium, %d large" % tiers)
-	_check(tiers[0] > 220, "fewer than 55%% of grunts burst small")
-	_check(tiers[2] >= 4 and tiers[2] <= 60, "the large burst is dealt %d times in 400" % tiers[2])
+	# _deal_grunt_burst: 50% small, 28% medium, 22% large since the 11-17 revision.
+	_check(tiers[0] > 160, "fewer than 40%% of grunts burst small")
+	_check(tiers[2] >= 60 and tiers[2] <= 120, "the large burst is dealt %d times in 400" % tiers[2])
 
 	# --- the floor ---
 	var floor_body: FloorContamination = scene._floor
@@ -560,6 +575,10 @@ func _run() -> void:
 	scene._check_stage_clear()
 	_check(not scene.horde_spawned(), "entering the plaza armed the siren")
 	var before_horde: int = scene.enemy_count()
+	var guard_grunts := 0
+	for enemy in scene._enemies:
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() 				and TomatinaMap.in_rect(plaza, enemy.global_position):
+			guard_grunts += 1
 	var peer: int = scene._local.peer_id
 	scene.tomato_action(peer, 0)
 	_check(scene.horde_spawned(), "using the siren did not start the finale")
@@ -580,7 +599,10 @@ func _run() -> void:
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() \
 				and (enemy.has_meta("horde") or TomatinaMap.in_rect(plaza, enemy.global_position)):
 			active_grunts += 1
-	_check(active_grunts <= scene.tomatina_active_grunt_cap, "the finale exceeded the active grunt cap")
+	# The plaza guard alone (36) is above the solo cap (32); the horde may not
+	# add grunts past whichever is higher.
+	_check(active_grunts <= maxi(scene.active_grunt_limit(), guard_grunts),
+		"the finale exceeded the active grunt cap (%d active, %d guard, limit %d)" % [active_grunts, guard_grunts, scene.active_grunt_limit()])
 
 	var nearby := TomatinaMap.at_cell(Vector2(26.5, 30.5)) + Vector3.UP * 1.28
 	player.global_position = nearby
@@ -730,7 +752,8 @@ func _run() -> void:
 	_check(scene._hose_slot_of(peer) < 0, "[E] again did not close the hose")
 	var queued: int = scene._hose_wave_pending
 	scene.tomato_action(peer, 0)
-	_check(queued == scene.HOSE_WAVE_COUNT and scene._hose_wave_pending == queued,
+	# Scaled to the party since the 11-17 revision; a teammate joined above.
+	_check(queued == scene.minion_spawn_count(scene.HOSE_WAVE_COUNT) and scene._hose_wave_pending == queued,
 		"reopening the hose queued a second counterattack")
 	player.global_position = hose + Vector3.RIGHT * 6.0
 	scene._advance_fire_hoses(0.016)
