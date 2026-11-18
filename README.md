@@ -463,7 +463,7 @@ godot --headless --path . --script res://tests/probe_character_switch.gd       #
 godot --headless --path . --script res://tests/probe_character_select.gd       # real ENet, two apps: pick at the door, same character in truck and stage
 godot --headless --path . --script res://tests/probe_blast.gd                  # overripe and thrown-tomato blasts hurt both sides, walls are cover
 godot --headless --path . --script res://tests/probe_run_carry.gd              # a run jump keeps its pace; held Space without Shift does not
-godot --headless --path . --script res://tests/probe_tomatina_party_sync.gd -- --players=4   # real ENet, 2-4 peers: lobby to Tomatina, party scaling, every screen agrees on positions/health/sauce
+godot --headless --path . --script res://tests/probe_tomatina_party_sync.gd -- --players=4   # real ENet, 2-4 peers: lobby to Tomatina, scaling, walk, refill, kill, rescue, leave/rejoin, generator, hose; every screen agrees
 ```
 
 `probe_determinism.gd` prints `MAYO_GRID_HASH`; run it twice and compare, since a difference between two processes is exactly what would break the grid sync.

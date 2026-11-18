@@ -8647,7 +8647,9 @@ func apply_healing_tomato_state(data: PackedFloat64Array) -> void:
 		active[id] = true
 		var at := Vector3(data[offset+1], data[offset+2], data[offset+3])
 		if not _healing_tomatoes.has(id):
-			_healing_tomatoes[id] = {"node": _make_healing_tomato(at)}
+			# With an age like the host's own entries: a peer that drops offline
+			# becomes the authority and ages whatever it still holds.
+			_healing_tomatoes[id] = {"node": _make_healing_tomato(at), "age": 0.0}
 		_healing_tomatoes[id].node.global_position = at
 	for id in _healing_tomatoes.keys():
 		if not active.has(id):
