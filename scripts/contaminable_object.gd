@@ -87,6 +87,33 @@ func paint_mayo_cell(face: int, cell: Vector2i, kind := ContaminationGrid.KIND_M
 	_queue_face_upload(face)
 
 
+## Strips every sauce off a square patch of the face `world_normal` points out
+## of, `radius_meters` either side of the hit. Returns (face, cell_x, cell_y)
+## when there was anything there to wash, so the patch can be replayed on the
+## peers with `wash_cell`; (-1, -1, -1) when it was already clean or missed.
+func wash_at(world_position: Vector3, world_normal: Vector3, radius_meters: float) -> Vector3i:
+	if grids.is_empty():
+		return Vector3i(-1, -1, -1)
+	var face := _face_for_normal((global_transform.basis.inverse() * world_normal).normalized())
+	if face < 0:
+		return Vector3i(-1, -1, -1)
+	var local := to_local(world_position)
+	var cell := grids[face].cell_of(Vector2(local.dot(FACE_BASIS[face][1]), local.dot(FACE_BASIS[face][2])))
+	if not grids[face].has_cell(cell) or grids[face].painted_cell_count() == 0:
+		return Vector3i(-1, -1, -1)
+	wash_cell(face, cell, radius_meters)
+	return Vector3i(face, cell.x, cell.y)
+
+
+func wash_cell(face: int, cell: Vector2i, radius_meters: float) -> void:
+	if face < 0 or face >= grids.size():
+		return
+	var reach := maxi(1, ceili(radius_meters / grids[face].cell_size))
+	grids[face].fill_rect(cell - Vector2i.ONE * reach, cell + Vector2i.ONE * reach, 0,
+		ContaminationGrid.KIND_MAYO)
+	_queue_face_upload(face)
+
+
 func _queue_face_upload(face: int) -> void:
 	if paint_only and visible_surface:
 		(get_child(face) as MeshInstance3D).visible = grids[face].painted_cell_count() > 0

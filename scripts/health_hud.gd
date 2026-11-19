@@ -217,24 +217,27 @@ func _draw_player() -> void:
 	var sauce := "%d / 4발" % floori(level * 4.0) if cannon else "%d%%" % roundi(level * 100.0)
 	draw_string(font, at + Vector2(256.0, 19.0), health, HORIZONTAL_ALIGNMENT_RIGHT, 64.0, 13, UI.CREAM)
 	draw_string(font, at + Vector2(256.0, 41.0), sauce, HORIZONTAL_ALIGNMENT_RIGHT, 64.0, 13, sauce_color)
-	# The shake: how much of it is left, as a strip under the tank that runs
-	# down, and in seconds beside the name of what is fitted.
+	# The shake gauge: a strip under the tank, filling while the bottle is
+	# shaken, holding, then running down; and what it is doing, beside it.
+	# (x the gauge, y seconds of hold left, z the strength of a boost under way.)
 	var charge: Vector3 = world.local_bottle_charge()
-	if charge != Vector3.ZERO:
+	if charge.x > 0.0 or charge.z > 0.0:
 		var strip := Rect2(tank.position + Vector2(0.0, tank.size.y + 3.0), Vector2(tank.size.x, 4.0))
 		var fill := charge.x
-		var tint := UI.MUTED
-		var note := "흔드는 중"
-		if charge.z > 0.5:
-			# The boosted shot is going out now.
-			fill = 1.0
+		var tint := UI.MINT
+		var note := "강화 게이지 %d%%" % roundi(charge.x * 100.0)
+		if charge.z > 0.0:
+			# The boosted shot is going out now, at the strength it was spent at.
+			fill = charge.z
 			tint = UI.GOLD
-			note = "강화 분사 %.1f초" % maxf(0.0, float(world.full_burst_seconds) - world._local.bottle_boost_time)
+			note = "강화 분사 %d%%" % roundi(charge.z * 100.0)
+		elif world._local.bottle_shake_input > 0.0:
+			note = "흔드는 중 %d%%" % roundi(charge.x * 100.0)
 		elif charge.y > 0.0:
-			# Primed: the strip is the window running down.
-			fill = charge.y / maxf(float(world.bottle_buff_seconds), 0.01)
-			tint = UI.MINT
 			note = "강화 유지 %.1f초" % charge.y
+		else:
+			tint = UI.MUTED
+			note = "강화 감소 중 %d%%" % roundi(charge.x * 100.0)
 		draw_rect(strip, BACKING, true)
 		draw_rect(Rect2(strip.position, Vector2(strip.size.x * clampf(fill, 0.0, 1.0), strip.size.y)), tint, true)
 		draw_string(font, at + Vector2(104.0, 0.0), note,

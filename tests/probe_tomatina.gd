@@ -732,6 +732,13 @@ func _run() -> void:
 	if swept != null and bystander != null:
 		swept.global_position = hose + Vector3.BACK * 15.0 + Vector3.DOWN * 1.0
 		bystander.global_position = hose + Vector3.BACK * 8.0 + Vector3.RIGHT * 2.0 + Vector3.DOWN * 0.58
+	# The jet is a hitscan line along the aim now, not a drooping arc: aim it
+	# down the street at the grunt 15 m out, and it carries on to the ground
+	# past it.
+	if swept != null:
+		var eye: Vector3 = player.global_position + Vector3.UP * scene.eye_height
+		var to_swept: Vector3 = swept.global_position - eye
+		scene._local.aim_pitch = atan2(to_swept.y, Vector2(to_swept.x, to_swept.z).length())
 	scene.tomato_action(peer, 0)
 	_check(scene._hose_slot_of(peer) == 0, "[E] at the hose stand did not open the hose")
 	scene._advance_fire_hoses(0.016)
@@ -749,6 +756,7 @@ func _run() -> void:
 		_check(bystander.is_alive() and bystander._shove.length_squared() > 0.0,
 			"a grunt in the water spray was not pushed safely out of the jet")
 	scene.tomato_action(peer, 0)
+	scene._local.aim_pitch = 0.0
 	_check(scene._hose_slot_of(peer) < 0, "[E] again did not close the hose")
 	var queued: int = scene._hose_wave_pending
 	scene.tomato_action(peer, 0)

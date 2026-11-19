@@ -1,0 +1,20 @@
+[gd_resource type="Environment" load_steps=4 format=3]
+
+[ext_resource type="Shader" path="res://assets/cartoon/festival_sky.gdshader" id="1_sky"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_sky"]
+resource_name = "Festival Sky"
+shader = ExtResource("1_sky")
+
+[sub_resource type="Sky" id="Sky_festival"]
+sky_material = SubResource("ShaderMaterial_sky")
+
+[resource]
+resource_name = "Festival Daylight"
+background_mode = 2
+sky = SubResource("Sky_festival")
+ambient_light_source = 2
+ambient_light_color = Color(0.78, 0.87, 1, 1)
+ambient_light_sky_contribution = 0.0
+ambient_light_energy = 0.64
+reflected_light_source = 1

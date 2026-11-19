@@ -341,6 +341,7 @@ func _physics_process(delta: float) -> void:
 		_reconciling = false
 	damage_grace = maxf(damage_grace - delta, 0.0)
 	slip_grace = maxf(slip_grace - delta, 0.0)
+	_trace_run_tick(delta)
 	if not authority and not (predict_local and state == State.NORMAL):
 		# The strand's inertial follow still needs to know how far the body
 		# moved, and on a client that is whatever the last sync moved it by.
@@ -467,14 +468,107 @@ func run_held() -> bool:
 ## The engine keeps the raw key and the action in separate books, so the key
 ## coming up is told to the action directly -- see `_input` -- and a release
 ## the action missed no longer leaves the player running.
+##
+## The run still sticks now and again (2026-11), so the action is also checked
+## against the raw key book on every read: an action that says "held" while the
+## key it is bound to is up is released on the spot, and the moment is written
+## to `RUN_TRACE_PATH` -- see `trace_run`.
 static func run_key_down() -> bool:
-	return Input.is_action_pressed("run")
+	if not Input.is_action_pressed("run"):
+		return false
+	# Only once a real key has been seen: the headless checks hold the action
+	# down through the API with no key behind it at all.
+	var key := _run_physical_key()
+	if _run_key_seen and key != KEY_NONE and not Input.is_physical_key_pressed(key):
+		trace_run("action 'run' held while its key %s is up -- released" % OS.get_keycode_string(key))
+		Input.action_release("run")
+		return false
+	return true
+
+
+static func _run_physical_key() -> Key:
+	for event in InputMap.action_get_events("run"):
+		var key := event as InputEventKey
+		if key != null and key.physical_keycode != KEY_NONE:
+			return key.physical_keycode
+	return KEY_NONE
 
 
 func _input(event: InputEvent) -> void:
 	var key := event as InputEventKey
-	if key != null and not key.pressed and InputMap.event_is_action(key, "run") and Input.is_action_pressed("run"):
+	if key == null or key.echo or not InputMap.event_is_action(key, "run"):
+		return
+	_run_key_seen = true
+	_run_events.append("%d %s" % [Time.get_ticks_msec(), "down" if key.pressed else "up"])
+	if _run_events.size() > 8:
+		_run_events.pop_front()
+	if not key.pressed and Input.is_action_pressed("run"):
+		trace_run("run key came up with the action still held -- released")
 		Input.action_release("run")
+
+
+# --- run diagnostics -----------------------------------------------------------
+#
+# Where a stuck run is written down, with what the body, the keys and the
+# network looked like at that moment. On Windows `user://` is
+# %APPDATA%/Godot/app_userdata/Sauce IT!/.
+const RUN_TRACE_PATH := "user://run_trace.log"
+static var _run_trace_lines := 0
+## Whether a real run key has been pressed this session -- see `run_key_down`.
+static var _run_key_seen := false
+## The last few presses and releases of the run key this body heard.
+var _run_events: Array[String] = []
+## How long the body has been moving faster than a walk with the run key up.
+var _running_unheld := 0.0
+var _run_trace_reported := false
+var _run_trace_correction_ms := 0
+
+
+static func trace_run(message: String) -> void:
+	# A runaway loop must not fill the disk: a few hundred lines a session is
+	# plenty to see what happened.
+	if _run_trace_lines >= 400:
+		return
+	_run_trace_lines += 1
+	var line := "[%s %d] %s" % [Time.get_datetime_string_from_system(), Time.get_ticks_msec(), message]
+	print("RUN_TRACE ", line)
+	var file := FileAccess.open(RUN_TRACE_PATH, FileAccess.READ_WRITE)
+	if file == null:
+		file = FileAccess.open(RUN_TRACE_PATH, FileAccess.WRITE)
+	if file == null:
+		return
+	file.seek_end()
+	file.store_line(line)
+
+
+## Once a tick, for the body the keyboard drives: notes it moving at a run with
+## the run key up for longer than a landing's braking takes, and -- for a
+## predicted client -- the server pulling it a long way, which is what a host
+## still running this player on an old packet would look like.
+func _trace_run_tick(delta: float) -> void:
+	if use_injected_input or frozen:
+		return
+	var key_down := run_key_down()
+	var speed := Vector2(velocity.x, velocity.z).length()
+	if state == State.NORMAL and is_on_floor() and not key_down and external_drift.is_zero_approx() \
+			and speed > walk_speed * 1.15:
+		_running_unheld += delta
+	else:
+		_running_unheld = 0.0
+		_run_trace_reported = false
+	if _running_unheld > 0.4 and not _run_trace_reported:
+		_run_trace_reported = true
+		var key := _run_physical_key()
+		trace_run("running %.1f m/s with the run key up for %.2f s | authority=%s predict=%s action=%s raw=%s focus=%s mustard=%.2f snag=%.2f | keys: %s" % [
+			speed, _running_unheld, authority, predict_local, Input.is_action_pressed("run"),
+			Input.is_physical_key_pressed(key) if key != KEY_NONE else false,
+			DisplayServer.window_is_focused(), mustard_slow, cheese_snag_left, ", ".join(_run_events)])
+	if predict_local and not authority and _prediction_error.length() > 0.6:
+		var now := Time.get_ticks_msec()
+		if now - _run_trace_correction_ms > 1000:
+			_run_trace_correction_ms = now
+			trace_run("server corrected this body by %.2f m | run key=%s speed=%.1f" % [
+				_prediction_error.length(), key_down, speed])
 
 
 func jump_wanted() -> bool:

@@ -93,8 +93,9 @@ func _draw_downed(state: Dictionary) -> void:
 	if is_finite(distance):
 		_text(Vector2(centre.x, centre.y + 61.0), "가장 가까운 팀원 · %.0fm" % distance, TAG_SIZE, WAIT)
 	if state.get("can_return", false):
-		var events := InputMap.action_get_events("interact")
-		var key := events[0].as_text().replace(" (Physical)", "") if not events.is_empty() else "E"
+		# "E - Physical" is what InputEvent.as_text() gives a physical binding;
+		# the legend's own label is the bare key.
+		var key := preload("res://scripts/game_options.gd").key_label("interact", "E")
 		_text(Vector2(centre.x, centre.y + 91.0), "[%s] 체크포인트로 복귀" % key, LINE_SIZE, RESCUE)
 
 

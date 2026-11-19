@@ -193,7 +193,7 @@ func _think(shooter, brain: Dictionary) -> void:
 		if world._hose_slot_of(shooter.peer_id) >= 0:
 			brain.fire = true
 			return
-		if shooter.sauce > 0.0 and shooter.sauce < world.steady_level and shooter.bottle_buff_left <= 0.0 and not shooter.bottle_boosting:
+		if shooter.sauce > 0.0 and shooter.sauce < world.steady_level and shooter.bottle_charge < 1.0 and not shooter.bottle_boosting:
 			brain.state = "소스통 흔들기"
 			brain.shake = 1.0
 		elif gap < (5.2 if world._is_overripe(target) else 4.6) and absf(wrapf(shooter.aim_yaw - _yaw_to(player.global_position, aim), -PI, PI)) < 0.15:

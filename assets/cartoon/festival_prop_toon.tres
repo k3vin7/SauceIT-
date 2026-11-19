@@ -1,0 +1,110 @@
+[gd_resource type="VisualShader" load_steps=16 format=3]
+
+[sub_resource type="VisualShaderNodeColorParameter" id="BaseColor"]
+parameter_name = "BaseColor"
+default_value_enabled = true
+
+[sub_resource type="VisualShaderNodeTexture2DParameter" id="BaseTexture"]
+parameter_name = "BaseTexture"
+texture_type = 1
+texture_filter = 4
+
+[sub_resource type="VisualShaderNodeInput" id="VertexColor"]
+input_name = "color"
+
+[sub_resource type="VisualShaderNodeFloatParameter" id="VertexColorWeight"]
+parameter_name = "VertexColorWeight"
+hint = 1
+default_value_enabled = true
+
+[sub_resource type="VisualShaderNodeExpression" id="Paint"]
+
+[sub_resource type="VisualShaderNodeTexture" id="SampleBaseTexture"]
+source = 5
+
+[sub_resource type="VisualShaderNodeExpression" id="CelBands"]
+
+[sub_resource type="VisualShaderNodeInput" id="Normal"]
+input_name = "normal"
+
+[sub_resource type="VisualShaderNodeInput" id="LightDirection"]
+input_name = "light"
+
+[sub_resource type="VisualShaderNodeDotProduct" id="LightFacing"]
+
+[sub_resource type="VisualShaderNodeFloatParameter" id="MidtoneEdge"]
+parameter_name = "MidtoneEdge"
+hint = 1
+default_value_enabled = true
+default_value = 0.14
+
+[sub_resource type="VisualShaderNodeFloatParameter" id="HighlightEdge"]
+parameter_name = "HighlightEdge"
+hint = 1
+default_value_enabled = true
+default_value = 0.52
+
+[sub_resource type="VisualShaderNodeFloatParameter" id="EdgeSoftness"]
+parameter_name = "EdgeSoftness"
+hint = 1
+min = 0.001
+max = 0.12
+default_value_enabled = true
+default_value = 0.024
+
+[sub_resource type="VisualShaderNodeInput" id="LightColor"]
+input_name = "light_color"
+
+[sub_resource type="VisualShaderNodeInput" id="Attenuation"]
+input_name = "attenuation"
+
+[resource]
+resource_name = "Festival Prop Cel Shading"
+modes/cull = 2
+modes/specular = 2
+nodes/fragment/0/position = Vector2(280, 0)
+nodes/fragment/2/node = SubResource("BaseColor")
+nodes/fragment/2/position = Vector2(-740, -230)
+nodes/fragment/3/node = SubResource("BaseTexture")
+nodes/fragment/3/position = Vector2(-895, 15)
+nodes/fragment/4/node = SubResource("VertexColor")
+nodes/fragment/4/position = Vector2(-740, 310)
+nodes/fragment/5/node = SubResource("VertexColorWeight")
+nodes/fragment/5/position = Vector2(-740, 420)
+nodes/fragment/6/node = SubResource("Paint")
+nodes/fragment/6/position = Vector2(-280, -20)
+nodes/fragment/6/size = Vector2(400, 250)
+nodes/fragment/6/input_ports = "0,4,base_color;1,4,base_texture;2,4,vertex_color;3,0,vertex_weight;"
+nodes/fragment/6/output_ports = "0,4,albedo;"
+nodes/fragment/6/expression = "albedo = base_color * base_texture * mix(vec3(1.0), vertex_color, vertex_weight);"
+nodes/fragment/8/node = SubResource("SampleBaseTexture")
+nodes/fragment/8/position = Vector2(-555, 10)
+nodes/fragment/connections = PackedInt32Array(2, 0, 6, 0, 3, 0, 8, 2, 8, 0, 6, 1, 4, 0, 6, 2, 5, 0, 6, 3, 6, 0, 0, 0)
+nodes/light/0/position = Vector2(470, -95)
+nodes/light/2/node = SubResource("Normal")
+nodes/light/2/position = Vector2(-800, -265)
+nodes/light/3/node = SubResource("LightDirection")
+nodes/light/3/position = Vector2(-800, -140)
+nodes/light/4/node = SubResource("LightFacing")
+nodes/light/4/position = Vector2(-490, -205)
+nodes/light/5/node = SubResource("MidtoneEdge")
+nodes/light/5/position = Vector2(-830, 15)
+nodes/light/6/node = SubResource("HighlightEdge")
+nodes/light/6/position = Vector2(-830, 210)
+nodes/light/7/node = SubResource("EdgeSoftness")
+nodes/light/7/position = Vector2(-830, 405)
+nodes/light/8/node = SubResource("LightColor")
+nodes/light/8/position = Vector2(-430, 300)
+nodes/light/9/node = SubResource("Attenuation")
+nodes/light/9/position = Vector2(-430, 445)
+nodes/light/10/node = SubResource("CelBands")
+nodes/light/10/position = Vector2(-90, -125)
+nodes/light/10/size = Vector2(455, 325)
+nodes/light/10/input_ports = "0,0,facing;1,0,midtone_edge;2,0,highlight_edge;3,0,edge_softness;4,4,light_color;5,0,attenuation;"
+nodes/light/10/output_ports = "0,4,diffuse;"
+nodes/light/10/expression = "float width = max(edge_softness, 0.001);
+float high_edge = max(highlight_edge, midtone_edge + width);
+float mid = smoothstep(midtone_edge - width, midtone_edge + width, facing);
+float high = smoothstep(high_edge - width, high_edge + width, facing);
+diffuse = DIFFUSE_LIGHT + light_color * attenuation * (0.20 * mid + 0.24 * high) / PI;"
+nodes/light/connections = PackedInt32Array(2, 0, 4, 0, 3, 0, 4, 1, 4, 0, 10, 0, 5, 0, 10, 1, 6, 0, 10, 2, 7, 0, 10, 3, 8, 0, 10, 4, 9, 0, 10, 5, 10, 0, 0, 0)

@@ -42,6 +42,8 @@ const TutorialScript := preload("res://scripts/tutorial.gd")
 const TutorialWreckScript := preload("res://scripts/tutorial_wreck.gd")
 const TutorialCourseScript := preload("res://scripts/tutorial_course.gd")
 const TutorialHudScript := preload("res://scripts/tutorial_hud.gd")
+const FESTIVAL_ENVIRONMENT := preload("res://assets/cartoon/festival_environment.tres")
+const FESTIVAL_PROP_SHADER := preload("res://assets/cartoon/festival_prop_toon.tres")
 const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 	preload("res://assets/food_booths/food_booth_s1.glb"),
 	preload("res://assets/food_booths/food_booth_s2.glb"),
@@ -72,6 +74,11 @@ const SPLAT_ENEMY := 5
 const SPLAT_ROOF := 6
 const SPLAT_FLOOR_CLEAR := 7
 const SPLAT_BODY_WASH := 8
+## The fire hose's core passing over a teammate: everything off the body and
+## the glasses. Target is the peer; the cell is unused.
+const SPLAT_BODY_HOSE := 9
+## The fire hose stripping a patch of wall. Target and cell as for SPLAT_WALL.
+const SPLAT_WALL_CLEAR := 10
 
 ## What the nozzle is doing this frame. The **authority decides it and it
 ## travels in the state packet**, because it is the one part of firing that
@@ -213,6 +220,11 @@ class Shooter:
 	var viewmodel_muzzle: Marker3D
 	var character_gauge: MeshInstance3D
 	var character_gauge_scale := Vector3.ONE
+	## Where the gauge sits at full, and the depth of the tube's base along the
+	## axis it shrinks on, so it can shrink towards the base rather than towards
+	## its own origin. See `_rigid_sauce_fill`.
+	var character_gauge_origin := Vector3.ZERO
+	var character_gauge_base := 0.0
 	var character_gauge_material: StandardMaterial3D
 	var spawn_slot := 0
 	var aim_pivot: Node3D
@@ -230,6 +242,11 @@ class Shooter:
 	var part_cooldown := 0.0
 	var part_tip: Node3D
 	var part_shown := 0
+	## The same part on the bottle in the character's hands, which is the one
+	## everybody else sees -- `part_tip` hangs off the first-person bottle, and
+	## that is only ever drawn on its owner's screen.
+	var character_part_tip: Node3D
+	var character_part_shown := 0
 	var emit_distance := 0.0
 	var attack_direction := Vector3.FORWARD
 	var burst_index := 0
@@ -324,14 +341,15 @@ class Shooter:
 	## How hard this player is shaking the bottle right now, 0 to 1. Read off
 	## the mouse for the local player and off the input packet on the host.
 	var bottle_shake_input := 0.0
-	## What the shaking has built up, 0 to 1; how long the bottle stays primed
-	## once that reached full; and whether the shot now being fired is the one
-	## the priming bought. The authority's -- all three ride one float in the
-	## state packet, see `bottle_state_code`.
+	## The shake gauge, 0 to 1; how long it holds before it starts to drain;
+	## whether the shot now being fired is the one it was spent on, and how full
+	## it was when spent. The authority's -- the gauge and the boost ride one
+	## float in the state packet, see `bottle_state_code`.
 	var bottle_charge := 0.0
-	var bottle_buff_left := 0.0
+	var bottle_charge_hold := 0.0
 	var bottle_boosting := false
 	var bottle_boost_time := 0.0
+	var bottle_boost_strength := 0.0
 	## The shake as drawn, on the bottle and on the character holding it.
 	var bottle_shake_show := 0.0
 	## How far the bottle has been stood on end for it, 0 level and 1 upright.
@@ -543,23 +561,24 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## squirts the player ended themselves by letting go.
 @export_range(0.0, 3.0, 0.05, "suffix:s") var spent_burst_cooldown := 0.5
 ## **Shaking the bottle.** Hold the right button and shake the mouse: the view
-## stays put, the bottle goes up and down, and it takes on charge. Shaken all
-## the way, it is *primed* for `bottle_buff_seconds`, and the next shot fired
-## inside that window -- that one shot, a whole squirt of it -- throws further
-## and delivers like a full bottle however little is in it: no catching, no
-## air, a full-length squirt. Let the window run out and it is gone; stop
-## shaking short of full and the charge drains away.
+## stays put, the bottle goes up and down, and a gauge fills from the first
+## shake -- all the way after `bottle_charge_seconds` of full-strength shaking.
+## Stop, and the gauge holds for `bottle_charge_hold_seconds`, then runs down at
+## the rate that would empty a full one in `bottle_charge_fade_seconds`; shake
+## again while it is running down and it climbs from whatever is left. The next
+## shot spends the whole gauge, whatever it holds, and is boosted by that much:
+## it throws further, and delivers like a full bottle however little is in it.
 ##
 ## How fast the mouse has to travel to count as a full-strength shake.
 @export_range(200.0, 10000.0, 50.0, "suffix:px/s") var bottle_shake_full_speed := 2200.0
-## How long a full-strength shake takes to charge an uncharged bottle.
-@export_range(0.1, 5.0, 0.05, "suffix:s") var bottle_charge_seconds := 0.9
-## How long a fully shaken bottle stays primed for its one better shot.
-@export_range(0.2, 20.0, 0.1, "suffix:s") var bottle_buff_seconds := 3.0
-## How long a charge that never reached full takes to drain away again.
-@export_range(0.1, 5.0, 0.05, "suffix:s") var bottle_charge_fade_seconds := 0.8
-## What the primed shot adds to the speed the sauce leaves at, and to how far
-## it is carried before the pressure leaves it.
+## How long a full-strength shake takes to fill an empty gauge.
+@export_range(0.1, 10.0, 0.05, "suffix:s") var bottle_charge_seconds := 3.0
+## How long the gauge holds once the shaking stops, before it starts to drain.
+@export_range(0.0, 20.0, 0.1, "suffix:s") var bottle_charge_hold_seconds := 3.0
+## How long a full gauge takes to drain; a part-full one drains at the same rate.
+@export_range(0.1, 10.0, 0.05, "suffix:s") var bottle_charge_fade_seconds := 3.0
+## What a full gauge adds to the speed the sauce leaves at, and to how far it
+## is carried before the pressure leaves it. A part-full one adds its share.
 @export_range(0.0, 1.0, 0.01) var bottle_charge_speed_bonus := 0.3
 @export_range(0.0, 2.0, 0.01) var bottle_charge_range_bonus := 0.5
 ## Refills while not firing. Off: the stations hand the sauce out now, so the
@@ -605,9 +624,10 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## hit, flat to the rim, stopped by a wall -- is more than a grunt has, so
 ## popping one inside a pack takes the pack with it.
 @export_range(0.0, 200.0, 0.5) var overripe_burst_damage := 45.0
-## And what it takes off a player standing on it. Falls off to about a
-## quarter at the rim, like a thrown tomato's blast -- see `_blast_players`.
-@export_range(0.0, 100.0, 0.5) var overripe_burst_player_damage := 25.0
+## And what it takes off a player standing in it: this share of that player's
+## own maximum health, the same anywhere inside the radius. The throw still
+## falls off towards the rim -- see `_blast_players`.
+@export_range(0.0, 1.0, 0.01) var overripe_burst_player_health_share := 0.4
 ## How many pieces fly, and how fast. Decoration and a warning: what the blast
 ## marks is decided by the blast, not by where a fragment happens to land.
 @export_range(0, 64, 1) var ketchup_fragments := 28
@@ -1086,6 +1106,7 @@ var _net: MayoNet
 ## replaceable world preserves ENet and the RPC path through truck/stage swaps.
 var external_net: MayoNet
 var _net_panel: Control
+var _festival_prop_materials: Dictionary[BaseMaterial3D, ShaderMaterial] = {}
 var _input_enabled := true
 ## Splat centre cells found this frame, flushed to the peers at the end of it.
 ## Four ints each: kind, target, cell x, cell y. See MayoNet.apply_splats.
@@ -1238,13 +1259,18 @@ const HOSE_TETHER := 5.0
 ## the body's desired velocity. Just under half a walk: standing still on the
 ## hose means being walked off the end of it, holding it means leaning in.
 const HOSE_RECOIL_SPEED := 2.4
-## The jet is a parabola, not a ray: it leaves the nozzle at this speed along
-## the full aim (pitch included, like the bottle) and drops under this gravity,
-## so a jet aimed up comes down somewhere and the floor there gets the water.
-const HOSE_JET_SPEED := 30.0
-const HOSE_JET_GRAVITY := 9.8
+## The jet is a straight hitscan line along the aim -- see `_hose_line`.
+## Sampled every `HOSE_STEP` metres for the floor it washes on the way.
 const HOSE_STEP := 0.5
 const HOSE_GROUND_Y := 0.1
+## The patch of wall one tick of water strips clean, in metres.
+const HOSE_WALL_WASH_RADIUS := 0.9
+## How the drawn jet is cut up, and how far from the nozzle its mist begins.
+const HOSE_VISUAL_STEP := 1.0
+const HOSE_MIST_START := 4.0
+## Where the nozzle is held in the aim's frame: low on the right, beside the
+## view rather than under the crosshair.
+const HOSE_HOLD := Vector3(0.42, -0.34, -0.32)
 ## The lurch when the main opens: the nozzle and the view are thrown up
 ## together over the attack, and settle while the hose runs. The rumble is
 ## what the view does for as long as it is open.
@@ -1269,6 +1295,10 @@ const TOMATO_DEBRIS_CAP := 120
 var _debris: Array[TomatoDebris] = []
 ## A player running through juice takes a drop on the glasses this often.
 const JUICE_SPLASH_INTERVAL := 0.35
+## How many coats of ketchup have to be on the street before running or landing
+## in it flicks it back up onto the body. Counted the way the grid counts them:
+## every pass that went over the spot adds one.
+const JUICE_SPLASH_MIN_COATS := 3
 ## The roster's kind names, as `TomatinaMap.roster()` writes them.
 const TOMATINA_KINDS := {
 	"TOMATO_GRUNT": MayoTutorial.KIND_TOMATO_GRUNT,
@@ -1314,6 +1344,8 @@ var _siren_label: Label3D
 var _burst_ground_budget := TOMATO_BURST_TICK_CAP
 ## peer id -> seconds until the next juice drop may land on their glasses.
 var _juice_splash_clock: Dictionary = {}
+## Peer -> whether that body was on the floor last tick, for the landing splash.
+var _juice_grounded: Dictionary = {}
 ## Peer id -> the player's vertical speed last tick, so a jump is the edge
 ## between not rising and rising. Read off the velocity rather than the key:
 ## a client never sees the key, but the velocity is in every player packet.
@@ -1560,6 +1592,13 @@ func _physics_process(delta: float) -> void:
 		_advance_strand(shooter, delta)
 		if _is_authority():
 			_advance_bottle_charge(shooter, delta)
+		else:
+			if shooter.bottle_boosting:
+				shooter.bottle_boost_time += delta
+			# Only the gauge comes over the wire. The hold before it drains is
+			# kept here off the shake input every peer already has, for the HUD.
+			shooter.bottle_charge_hold = bottle_charge_hold_seconds if shooter.bottle_shake_input > 0.0 \
+				else maxf(shooter.bottle_charge_hold - delta, 0.0)
 		# The shake everyone sees, on the bottle and in the character's hands.
 		# How hard the hand is going travels in the state packet, so it is the
 		# same on every screen; eased out so it does not stop dead.
@@ -1620,22 +1659,19 @@ func _physics_process(delta: float) -> void:
 		debug_max_points = maxi(debug_max_points, _points.size())
 
 
-## The shake's three steps, on the authority: the charge builds while the bottle
-## is shaken and drains while it is not; reaching full primes the bottle for
-## `bottle_buff_seconds`; and the shot that spends the priming is boosted until
-## it is over. The press that spends it is in `_advance_strand` and
-## `_fire_part_volley`.
+## The shake, on the authority: the gauge climbs while the bottle is shaken,
+## holds for `bottle_charge_hold_seconds` once it stops, then drains; and the
+## shot that spent it is boosted until it is over. The press that spends it is
+## in `_advance_strand` and `_fire_part_volley`.
 func _advance_bottle_charge(shooter: Shooter, delta: float) -> void:
 	if shooter.bottle_shake_input > 0.0:
 		shooter.bottle_charge += shooter.bottle_shake_input * delta / maxf(bottle_charge_seconds, 0.01)
+		shooter.bottle_charge_hold = bottle_charge_hold_seconds
+	elif shooter.bottle_charge_hold > 0.0:
+		shooter.bottle_charge_hold = maxf(shooter.bottle_charge_hold - delta, 0.0)
 	else:
 		shooter.bottle_charge -= delta / maxf(bottle_charge_fade_seconds, 0.01)
 	shooter.bottle_charge = clampf(shooter.bottle_charge, 0.0, 1.0)
-	if shooter.bottle_charge >= 1.0:
-		shooter.bottle_charge = 0.0
-		shooter.bottle_buff_left = bottle_buff_seconds
-	else:
-		shooter.bottle_buff_left = maxf(shooter.bottle_buff_left - delta, 0.0)
 	if not shooter.bottle_boosting:
 		return
 	shooter.bottle_boost_time += delta
@@ -1649,42 +1685,44 @@ func _advance_bottle_charge(shooter: Shooter, delta: float) -> void:
 		shooter.bottle_boosting = false
 
 
-## Spends the priming on the shot now starting, if there is any to spend. Every
+## Spends the whole gauge on the shot now starting, if there is any in it. Every
 ## peer runs this off the same press, so the shot is boosted on every screen;
 ## what the authority decided then arrives in the state packet and stands.
 func _spend_bottle_buff(shooter: Shooter) -> void:
-	if shooter.bottle_buff_left <= 0.0:
+	if shooter.bottle_charge <= 0.0:
 		return
-	shooter.bottle_buff_left = 0.0
+	shooter.bottle_boost_strength = shooter.bottle_charge
+	shooter.bottle_charge = 0.0
+	shooter.bottle_charge_hold = 0.0
 	shooter.bottle_boosting = true
 	shooter.bottle_boost_time = 0.0
 
 
-## The shake as one float for the state packet: under 1 the charge, 1 to 2 the
-## priming window running down, 3 the boosted shot under way.
+## The shake as one float for the state packet: 0 to 1 the gauge, over 2 a
+## boosted shot under way, 2 plus how full the gauge was when it was spent.
 func bottle_state_code(shooter: Shooter) -> float:
 	if shooter.bottle_boosting:
-		return 3.0
-	if shooter.bottle_buff_left > 0.0:
-		return 1.0 + clampf(shooter.bottle_buff_left / maxf(bottle_buff_seconds, 0.01), 0.001, 1.0)
-	return minf(shooter.bottle_charge, 0.999)
+		return 2.0 + clampf(shooter.bottle_boost_strength, 0.001, 1.0)
+	return clampf(shooter.bottle_charge, 0.0, 1.0)
 
 
-## A client's side of the same float. A priming window still on its way down
-## leaves `bottle_boosting` alone: the client may already have spent it on a
-## press the host has not heard about yet.
+## A client's side of the same float. A boost the client started on its own
+## press a moment ago is left running while the host's packet still shows the
+## gauge it spent: the host has not heard about the press yet.
+const BOTTLE_BOOST_PREDICT_SECONDS := 0.3
+## How full the gauge has to have been for the shot it buys to come out clean
+## whatever the level -- see `_decide_nozzle`.
+const BOTTLE_UNCLOG_SHARE := 0.3
 func apply_bottle_state_code(shooter: Shooter, code: float) -> void:
-	if code >= 2.5:
+	if code > 2.0:
 		shooter.bottle_boosting = true
-		shooter.bottle_buff_left = 0.0
+		shooter.bottle_boost_strength = clampf(code - 2.0, 0.0, 1.0)
 		shooter.bottle_charge = 0.0
-	elif code > 1.0:
-		shooter.bottle_buff_left = (minf(code, 2.0) - 1.0) * bottle_buff_seconds
-		shooter.bottle_charge = 0.0
-	else:
-		shooter.bottle_charge = clampf(code, 0.0, 1.0)
-		shooter.bottle_buff_left = 0.0
-		shooter.bottle_boosting = false
+		return
+	if shooter.bottle_boosting and shooter.bottle_boost_time < BOTTLE_BOOST_PREDICT_SECONDS:
+		return
+	shooter.bottle_charge = clampf(code, 0.0, 1.0)
+	shooter.bottle_boosting = false
 
 
 ## How far the bottle is tipped up to be shaken, from pointing ahead.
@@ -1745,8 +1783,9 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		_spend_bottle_buff(shooter)
 		shooter.burst_allowance = burst_seconds_at(shooter.sauce) * sauce_burst_scale(shooter)
 		if shooter.bottle_boosting:
-			shooter.burst_allowance = maxf(full_burst_seconds, burst_seconds_at(shooter.sauce)) \
-				* sauce_burst_scale(shooter)
+			shooter.burst_allowance = lerpf(shooter.burst_allowance,
+				maxf(full_burst_seconds, burst_seconds_at(shooter.sauce)) * sauce_burst_scale(shooter),
+				shooter.bottle_boost_strength)
 		firing = true
 
 	# What the trigger is asking for is now separate from what the nozzle does
@@ -1887,7 +1926,7 @@ func _fire_part_volley(shooter: Shooter) -> void:
 	# lob -- that one is aimed at a spot, and faster would only overshoot it.
 	_spend_bottle_buff(shooter)
 	if shooter.bottle_boosting and shooter.sauce_part != SauceParts.Part.ARC:
-		forward *= 1.0 + bottle_charge_speed_bonus
+		forward *= 1.0 + bottle_charge_speed_bonus * shooter.bottle_boost_strength
 	show_part_volley(shooter.peer_id, shooter.sauce_part, shooter.sauce_kind, origin, forward)
 	if is_instance_valid(_net) and _net.is_online():
 		_net.broadcast_part_volley(shooter.peer_id, shooter.sauce_part, shooter.sauce_kind, origin, forward)
@@ -2148,7 +2187,11 @@ func _decide_nozzle(shooter: Shooter, delta: float, firing: bool) -> void:
 
 	# Shaken: what is left has been knocked down to the nozzle, so the primed
 	# shot comes out clean whichever band the level is in.
-	if shooter.bottle_boosting and shooter.sauce > 0.0:
+	# Only a real shake earns it: `BOTTLE_UNCLOG_SHARE` of the gauge is about the
+	# 0.9 s of hard shaking that used to prime the bottle, so a flick of the
+	# mouse does not switch the clogging off for a whole squirt.
+	if shooter.bottle_boosting and shooter.bottle_boost_strength >= BOTTLE_UNCLOG_SHARE \
+			and shooter.sauce > 0.0:
 		shooter.nozzle = Nozzle.STREAM
 		shooter.catches_in_a_row = 0
 		return
@@ -2908,7 +2951,8 @@ func _build_world() -> void:
 	_update_stage_objective()
 	_build_sauce_audio()
 	# After the street, because it bakes the street's own cells into a texture.
-	if map_kind == MapKind.FESTIVAL_STREET:
+	# The tomato stage gets one too, in the same top-right corner.
+	if map_kind == MapKind.FESTIVAL_STREET or map_kind == MapKind.TOMATINA:
 		_minimap.build()
 	else:
 		_minimap.visible = false
@@ -3542,13 +3586,15 @@ func gameplay_input_enabled() -> bool:
 func _build_environment() -> void:
 	var world_environment := WorldEnvironment.new()
 	world_environment.name = "WorldEnvironment"
-	var environment := Environment.new()
-	environment.background_mode = Environment.BG_COLOR
-	environment.background_color = Color("18212a")
-	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	environment.ambient_light_color = Color("b5c5d4")
-	environment.ambient_light_energy = 0.72
-	environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	var environment: Environment = FESTIVAL_ENVIRONMENT
+	if map_kind != MapKind.FESTIVAL_STREET:
+		environment = Environment.new()
+		environment.background_mode = Environment.BG_COLOR
+		environment.background_color = Color("18212a")
+		environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+		environment.ambient_light_color = Color("b5c5d4")
+		environment.ambient_light_energy = 0.72
+		environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	if map_kind == MapKind.TOMATINA:
 		environment.background_color = Color("b5cdd2")
 		environment.ambient_light_color = Color("e0e4ec")
@@ -3562,7 +3608,11 @@ func _build_environment() -> void:
 	sun.light_color = Color("fff1d1")
 	sun.light_energy = 1.15
 	sun.shadow_enabled = true
-	if map_kind == MapKind.TOMATINA:
+	if map_kind == MapKind.FESTIVAL_STREET:
+		sun.rotation_degrees = Vector3(-42.0, -38.0, 0.0)
+		sun.light_color = Color("fff5e0")
+		sun.light_energy = 0.95
+	elif map_kind == MapKind.TOMATINA:
 		sun.light_color = Color("fff5e6")
 		sun.light_energy = 0.98
 		sun.directional_shadow_max_distance = 95.0
@@ -3688,12 +3738,66 @@ func _build_player_visual(shooter: Shooter) -> void:
 
 	var gauge_node := visual.find_child("*SauceFill*", true, false)
 	if gauge_node is MeshInstance3D:
-		shooter.character_gauge = gauge_node as MeshInstance3D
+		shooter.character_gauge = _rigid_sauce_fill(gauge_node as MeshInstance3D)
 		shooter.character_gauge_scale = shooter.character_gauge.scale
-		var source_material := shooter.character_gauge.get_active_material(0)
+		shooter.character_gauge_origin = shooter.character_gauge.position
+		shooter.character_gauge_base = 0.0 if shooter.character_gauge == gauge_node \
+			else shooter.character_gauge.mesh.get_aabb().position.z
+		var source_material := (gauge_node as MeshInstance3D).get_active_material(0)
 		if source_material is StandardMaterial3D:
 			shooter.character_gauge_material = source_material.duplicate() as StandardMaterial3D
 			shooter.character_gauge.material_override = shooter.character_gauge_material
+
+
+## **The sauce in the character's bottle, made rigid.** The imported SauceFill
+## is skinned -- rigidly, to the one `SauceTubeSocket` bone, like the shell
+## around it -- and the gauge used to be run by scaling that MeshInstance. A
+## skinned mesh's node transform is applied after the skinning, in the
+## skeleton's space, so the scale shrank the sauce towards the character's
+## feet rather than towards the base of the tube. Held level in the rest pose
+## the two nearly agree; stood on end and pumped to be shaken, the socket is
+## somewhere else entirely and the whole column slid out through the shell.
+##
+## So the skinned copy is hidden and the same mesh is hung, unskinned, on a
+## BoneAttachment3D for that bone with the bone's bind pose in between --
+## exactly where the skin put it -- and now its own scale is in the tube's own
+## frame. Falls back to the skinned mesh if the rig is not the expected one.
+const SAUCE_TUBE_SOCKET := "SauceTubeSocket"
+func _rigid_sauce_fill(source: MeshInstance3D) -> MeshInstance3D:
+	if source.skin == null or source.mesh == null:
+		return source
+	var skeleton := source.get_node_or_null(source.skeleton) as Skeleton3D
+	if skeleton == null:
+		skeleton = source.get_parent() as Skeleton3D
+	if skeleton == null:
+		return source
+	var socket := skeleton.find_bone(SAUCE_TUBE_SOCKET)
+	if socket < 0:
+		return source
+	var bind := -1
+	for index in source.skin.get_bind_count():
+		var bone := source.skin.get_bind_bone(index)
+		if bone == socket or (bone < 0 and source.skin.get_bind_name(index) == SAUCE_TUBE_SOCKET):
+			bind = index
+			break
+	if bind < 0:
+		return source
+	var mount := BoneAttachment3D.new()
+	mount.name = "SauceFillMount"
+	mount.bone_name = SAUCE_TUBE_SOCKET
+	skeleton.add_child(mount)
+	var frame := Node3D.new()
+	frame.name = "SauceFillBind"
+	frame.transform = source.skin.get_bind_pose(bind) * source.transform
+	mount.add_child(frame)
+	var fill := MeshInstance3D.new()
+	fill.name = source.name
+	fill.mesh = source.mesh
+	fill.cast_shadow = source.cast_shadow
+	fill.layers = source.layers
+	frame.add_child(fill)
+	source.visible = false
+	return fill
 
 
 ## Where the eyes are up each character's head, as a share of the way from the
@@ -3947,6 +4051,9 @@ func _update_character_gauge(shooter: Shooter) -> void:
 	var fill_scale := shooter.character_gauge_scale
 	fill_scale.z *= maxf(level, 0.001)
 	shooter.character_gauge.scale = fill_scale
+	# Shrunk towards the base of the tube rather than towards the mesh origin.
+	shooter.character_gauge.position = shooter.character_gauge_origin \
+		+ Vector3(0.0, 0.0, shooter.character_gauge_base * (1.0 - maxf(level, 0.001)))
 	shooter.character_gauge.visible = level > 0.004
 	var tint := SAUCE_TINTS[clampi(shooter.sauce_kind, 0, SAUCE_TINTS.size() - 1)]
 	var stage := sauce_stage_of(level)
@@ -4567,6 +4674,30 @@ func _build_tower() -> void:
 	tower.add_child(roof)
 
 
+func _apply_festival_prop_materials(prop: Node3D) -> void:
+	var meshes := prop.find_children("*", "MeshInstance3D", true, false)
+	if prop is MeshInstance3D:
+		meshes.push_front(prop)
+	for node in meshes:
+		var instance := node as MeshInstance3D
+		if instance.mesh == null:
+			continue
+		for surface in instance.mesh.get_surface_count():
+			var source := instance.get_active_material(surface) as BaseMaterial3D
+			if source == null or source.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
+				continue
+			var toon: ShaderMaterial = _festival_prop_materials.get(source)
+			if toon == null:
+				toon = ShaderMaterial.new()
+				toon.resource_name = source.resource_name + " (Cel)"
+				toon.shader = FESTIVAL_PROP_SHADER
+				toon.set_shader_parameter("BaseColor", source.albedo_color)
+				toon.set_shader_parameter("BaseTexture", source.albedo_texture)
+				toon.set_shader_parameter("VertexColorWeight", 1.0 if source.vertex_color_use_as_albedo else 0.0)
+				_festival_prop_materials[source] = toon
+			instance.set_surface_override_material(surface, toon)
+
+
 ## One market stall: a 3 m x 3 m pop-up gazebo, which is what a festival pitch
 ## actually is. Four legs, a pointed canopy over them, and a serving counter
 ## across the front -- rather than the solid block that stood here while the
@@ -4634,6 +4765,7 @@ func _create_stall(stall_name: String, box: Dictionary, variant: int,
 		truck.rotation.y = atan2(facing.x, facing.z)
 		truck.scale = Vector3.ONE * StreetMap.PROP_SCALE
 		truck.add_to_group("food_truck_visual")
+		_apply_festival_prop_materials(truck)
 		holder.add_child(truck)
 	for index in bays:
 		var offset := (float(index) - (float(bays) - 1.0) * 0.5) * bay
@@ -4649,6 +4781,7 @@ func _create_stall(stall_name: String, box: Dictionary, variant: int,
 			booth.rotation.y = atan2(facing.x, facing.z)
 			booth.scale = Vector3.ONE * StreetMap.PROP_SCALE
 			booth.add_to_group("food_booth_visual")
+			_apply_festival_prop_materials(booth)
 			holder.add_child(booth)
 
 		# The roof, and the only thing up there: the pointed shape both blocks
@@ -5217,7 +5350,7 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 	_splash_enemies(centre, radius,
 		overripe_burst_damage if overripe else tomato_burst_damage, shooter, enemy, overripe)
 	if overripe:
-		_blast_players(centre, radius, overripe_burst_player_damage)
+		_blast_players(centre, radius, 0.0, overripe_burst_player_health_share)
 	for other_shooter in _shooters.values():
 		var player: MayoPlayer = other_shooter.player
 		if not is_instance_valid(player):
@@ -5327,8 +5460,10 @@ func _advance_splash_ripples(delta: float) -> void:
 ## streets a wall between the blast and the player is cover, as it is for the
 ## tomatoes -- see `_tomato_blast_reaches`. A safe room is still safe; that
 ## is `_damage_player`'s rule and it holds here too.
-func _blast_players(at: Vector3, radius: float, damage: float) -> void:
-	if damage <= 0.0 or radius <= 0.0:
+## `health_share`, when given, replaces `damage`: that fraction of each victim's
+## maximum health, flat across the radius.
+func _blast_players(at: Vector3, radius: float, damage: float, health_share := 0.0) -> void:
+	if (damage <= 0.0 and health_share <= 0.0) or radius <= 0.0:
 		return
 	for shooter: Shooter in _shooters.values():
 		var player := shooter.player
@@ -5342,7 +5477,10 @@ func _blast_players(at: Vector3, radius: float, damage: float) -> void:
 			continue
 		var strength := 1.0 - distance / radius
 		player.apply_enemy_impact(gap, 5.0 * strength, 1.8 * strength)
-		_damage_player(player, damage * lerpf(0.27, 1.0, strength))
+		if health_share > 0.0:
+			_damage_player(player, player.max_health * health_share)
+		else:
+			_damage_player(player, damage * lerpf(0.27, 1.0, strength))
 
 
 func _is_overripe(enemy: MayoEnemy) -> bool:
@@ -5626,23 +5764,30 @@ func _spit_puddle(centre: Vector3, radius := 2.2) -> void:
 				floor_cell.x, floor_cell.y]))
 
 
-## Running through juice flicks it up: a drop on the glasses every so often and
-## a mark low on the body. Authority only, through the splat batch. Only the
-## tomato stage has juice, and only running does it -- walking through a stain
-## is what the shallow floor is for.
+## Running through deep juice, or landing in it, flicks it up: a mark low on
+## the body and, about half the time, a drop on the glasses. Authority only,
+## through the splat batch. Only the tomato stage has juice, and only ketchup
+## that has been laid down `JUICE_SPLASH_MIN_COATS` deep or more does it --
+## walking, or running over a thin stain, is what the shallow floor is for.
 func _update_juice_splash(shooter: Shooter, delta: float) -> void:
 	if map_kind != MapKind.TOMATINA or _floor == null:
 		return
 	var player := shooter.player
+	if not is_instance_valid(player):
+		return
+	var grounded := player.is_on_floor()
+	var landed := grounded and not bool(_juice_grounded.get(shooter.peer_id, true)) \
+		and player.state == MayoPlayer.State.NORMAL
+	_juice_grounded[shooter.peer_id] = grounded
 	var left := float(_juice_splash_clock.get(shooter.peer_id, 0.0)) - delta
-	if left > 0.0:
+	if left > 0.0 and not landed:
 		_juice_splash_clock[shooter.peer_id] = left
 		return
 	_juice_splash_clock[shooter.peer_id] = 0.0
-	if not is_instance_valid(player) or not player.is_running() or not player.is_on_floor():
+	if not grounded or not (landed or player.is_running()):
 		return
 	var under := player.global_position
-	if _floor.thickness_at(under) <= 0 \
+	if _floor.thickness_at(under) < JUICE_SPLASH_MIN_COATS \
 			or _floor.sauce_kind_at(under) != ContaminationGrid.KIND_KETCHUP:
 		return
 	_juice_splash_clock[shooter.peer_id] = JUICE_SPLASH_INTERVAL
@@ -5989,7 +6134,7 @@ func damage_report() -> Array:
 func local_bottle_charge() -> Vector3:
 	if _local == null:
 		return Vector3.ZERO
-	return Vector3(_local.bottle_charge, _local.bottle_buff_left, 1.0 if _local.bottle_boosting else 0.0)
+	return Vector3(_local.bottle_charge, _local.bottle_charge_hold, _local.bottle_boost_strength if _local.bottle_boosting else 0.0)
 
 
 func _check_stage_clear() -> void:
@@ -6775,8 +6920,8 @@ func _emit_point(shooter: Shooter = null) -> void:
 	# A shaken bottle throws further: faster out of the nozzle, and carried
 	# longer before the pressure leaves it.
 	if shooter.bottle_boosting:
-		speed *= 1.0 + bottle_charge_speed_bonus
-		point.range_scale *= 1.0 + bottle_charge_range_bonus
+		speed *= 1.0 + bottle_charge_speed_bonus * shooter.bottle_boost_strength
+		point.range_scale *= 1.0 + bottle_charge_range_bonus * shooter.bottle_boost_strength
 	var player_velocity := shooter.player.velocity
 	var travel_scale := extend_speed / maxf(emission_speed, 0.001)
 	point.velocity = direction * speed + Vector3(player_velocity.x, 0.0, player_velocity.z) \
@@ -7081,6 +7226,11 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 		1.0 if blast <= 0.0 else 3.0, blast > 0.0)
 	if not authority or target == null:
 		return
+	# The lob cap goes off like a thrown tomato, at half its damage, and that
+	# blast is the whole of it: no separate direct hit on what it landed on.
+	if shot.part == SauceParts.Part.ARC:
+		_explode_lob_cap(at + normal * 0.08, shooter, sauce)
+		return
 	if target.is_in_group("mayo_floor"):
 		_record_floor_splat(shooter, shooter.burst_index, at, sauce)
 	elif target.is_in_group("mayo_contaminable"):
@@ -7145,6 +7295,14 @@ func apply_splats(data: PackedInt32Array) -> void:
 			continue
 		if kind == SPLAT_BODY_WASH:
 			_apply_refuge_shower(target, cell.x)
+			continue
+		if kind == SPLAT_BODY_HOSE:
+			_apply_hose_wash(target)
+			continue
+		if kind == SPLAT_WALL_CLEAR:
+			var cleared_wall := target / FACES_PER_WALL
+			if cleared_wall >= 0 and cleared_wall < _walls.size():
+				_walls[cleared_wall].wash_cell(target % FACES_PER_WALL, cell, HOSE_WALL_WASH_RADIUS)
 			continue
 		if kind == SPLAT_ROOF:
 			if target >= 0 and target < _roofs.size():
@@ -8821,43 +8979,43 @@ func _hose_direction(shooter: Shooter) -> Vector3:
 	return -_aim_basis(shooter).z
 
 
-## Where the jet is, sampled every `HOSE_STEP` metres of travel along the aim
-## from the nozzle until the street, the ground or its range stops it. A
-## parabola under `HOSE_JET_GRAVITY` at `HOSE_JET_SPEED`, so a flat jet droops
-## a couple of metres over its length and a raised one comes back down. The
-## last point is where the water lands when it met the ground; a jet that ran
-## out in the air ends in the air.
-func _hose_arc(from: Vector3, direction: Vector3) -> PackedVector3Array:
+## **The jet is a hitscan line, not a thrown arc.** What it hits is decided
+## along the aim from the eye -- the crosshair -- out to `HOSE_RANGE` or the
+## first piece of the street in the way (walls, props, the ground), all at
+## once. Bodies do not stop it: the water carries on through everything it
+## crosses.
+##
+## The water is *drawn* from the nozzle held low on the right to where that line
+## stops, so the stream converges on the crosshair instead of running down the
+## middle of the screen -- see `_update_hose_visuals`. The gameplay line stays on
+## the aim, so what is hit is what the crosshair was on.
+func _hose_eye(shooter: Shooter) -> Vector3:
+	return shooter.player.global_position + Vector3.UP * eye_height
+
+
+## `end` is where the line stops; `hit` is the static hit there, empty when the
+## jet ran its full range in the air.
+func _hose_line(shooter: Shooter) -> Dictionary:
+	var eye := _hose_eye(shooter)
+	var far := eye + _hose_direction(shooter) * HOSE_RANGE
+	var hit := _tomatina_static_hit(eye, far)
+	return {"eye": eye, "end": far if hit.is_empty() else hit.position as Vector3, "hit": hit}
+
+
+## Every `HOSE_STEP` metres from `from` to `to`, `to` included and `from` not.
+func _hose_samples(from: Vector3, to: Vector3) -> PackedVector3Array:
 	var points := PackedVector3Array()
-	var previous := from
-	var steps := int(HOSE_RANGE / HOSE_STEP)
+	var length := from.distance_to(to)
+	var steps := maxi(1, ceili(length / HOSE_STEP))
 	for step in range(1, steps + 1):
-		var travel := float(step) * HOSE_STEP
-		var fall := HOSE_JET_GRAVITY * 0.5 * pow(travel / HOSE_JET_SPEED, 2.0)
-		var at := from + direction * travel - Vector3.UP * fall
-		if not _nav.is_walkable(StreetMap.cell_at(at)):
-			break
-		if at.y <= HOSE_GROUND_Y:
-			var span := previous.y - at.y
-			var landing := at if span <= 0.000001 \
-				else previous.lerp(at, clampf((previous.y - HOSE_GROUND_Y) / span, 0.0, 1.0))
-			landing.y = HOSE_GROUND_Y
-			points.append(landing)
-			break
-		points.append(at)
-		previous = at
+		points.append(from.lerp(to, float(step) / float(steps)))
 	return points
 
 
-## How far along the aim the jet gets before something stops it, in metres.
-func _hose_reach(from: Vector3, direction: Vector3) -> float:
-	return float(_hose_arc(from, direction).size()) * HOSE_STEP
-
-
-## Whether the water came down on the street: the arc's last point sits on the
-## ground rather than in the air.
-func _hose_landed(points: PackedVector3Array) -> bool:
-	return not points.is_empty() and points[points.size() - 1].y <= HOSE_GROUND_Y + 0.001
+## Whether the line came down on the ground rather than into a wall or the air.
+func _hose_landed(line: Dictionary) -> bool:
+	var hit: Dictionary = line["hit"]
+	return not hit.is_empty() and (hit.normal as Vector3).y > 0.6
 
 
 func _wash_floor_at(sample: Vector3) -> void:
@@ -8878,8 +9036,10 @@ func _wash_floor_at(sample: Vector3) -> void:
 ##
 ## **The floor is washed where the water is, and where it is dirty.** A jet
 ## aimed flat drags its five columns along the whole run, like it always did;
-## one aimed up washes only where it comes down, in a wider patch. The clear
-## is a splat packet to every peer, so clean cells are never sent.
+## where the line meets the ground it washes a wider patch, where it meets a
+## wall it strips that patch of wall, and a teammate in the core comes out
+## clean. The clear is a splat packet to every peer, so clean cells are never
+## sent.
 ##
 ## The core bursts enemies and stops bowling balls. The surrounding mist
 ## pushes enemies away, and only the core washes the Press King's armor.
@@ -8899,8 +9059,9 @@ func _advance_fire_hoses(delta: float) -> void:
 			_hose_users.erase(slot)
 			_update_stage_objective()
 			continue
-		var origin := shooter.player.global_position
-		var from := origin + Vector3.UP * 0.9
+		var line := _hose_line(shooter)
+		var from: Vector3 = line["eye"]
+		var end: Vector3 = line["end"]
 		var direction := _hose_direction(shooter)
 		var flat := Vector3(direction.x, 0.0, direction.z)
 		var flat_length := flat.length()
@@ -8908,36 +9069,34 @@ func _advance_fire_hoses(delta: float) -> void:
 		# The thrust: back along the aim, flat, whatever the pitch -- the body
 		# is on the ground and that is where it is pushed along.
 		shooter.player.external_drift = -forward * HOSE_RECOIL_SPEED
-		var points := _hose_arc(from, direction)
-		if points.is_empty():
-			continue
 		var side := forward.cross(Vector3.UP)
-		for at in points:
-			if at.y > origin.y + 1.0:
+		# Level or aimed down, the water runs along the street under it and
+		# drags its five columns the whole way; aimed up, it only washes what
+		# it hits.
+		for at in _hose_samples(from, end):
+			if at.y > from.y + 0.05:
 				continue
 			for offset in [-1.2, -0.6, 0.0, 0.6, 1.2]:
 				_wash_floor_at(at + side * float(offset))
-		var landing := points[points.size() - 1]
-		var landed := _hose_landed(points)
-		if landed:
+		if _hose_landed(line):
 			for dx in [-1.5, -0.75, 0.0, 0.75, 1.5]:
 				for dz in [-1.5, -0.75, 0.0, 0.75, 1.5]:
-					_wash_floor_at(landing + Vector3(float(dx), 0.0, float(dz)))
-		var jet_span := points[-1] - from
-		var reach_flat := Vector2(jet_span.x, jet_span.z).length()
+					_wash_floor_at(end + Vector3(float(dx), 0.0, float(dz)))
+		elif not (line["hit"] as Dictionary).is_empty():
+			_wash_wall_at(line["hit"])
+		_wash_players_in_jet(shooter, from, end)
+		var span := end - from
+		var reach := span.length()
+		var axis := span / maxf(reach, 0.001)
 		for enemy in _enemies:
 			if not enemy.is_alive():
 				continue
-			var gap := enemy.global_position - from
-			var gap_flat := Vector3(gap.x, 0.0, gap.z)
-			var along := gap_flat.dot(forward)
-			if along <= 0.0 or along > reach_flat + enemy.radius:
+			var measure := _hose_measure(from, axis, reach, enemy.global_position,
+				enemy.radius, enemy.height)
+			if measure.is_empty():
 				continue
-			var travel := minf(along, reach_flat) / maxf(flat_length, 0.05)
-			var jet_y := from.y + direction.y * travel \
-				- HOSE_JET_GRAVITY * 0.5 * pow(travel / HOSE_JET_SPEED, 2.0)
-			var edge := (gap_flat - forward * minf(along, reach_flat)).length() - enemy.radius
-			var vertical_gap := absf(jet_y - enemy.global_position.y) - enemy.height * 0.5
+			var edge: float = measure[0]
+			var vertical_gap: float = measure[1]
 			if edge > HOSE_SPRAY_RADIUS or vertical_gap > HOSE_SPRAY_RADIUS:
 				continue
 			if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
@@ -8958,6 +9117,67 @@ func _advance_fire_hoses(delta: float) -> void:
 				continue
 			_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
 			_finish_tomato_kill(enemy, shooter)
+
+
+## How far a body stands off the jet line: (sideways gap past its radius,
+## vertical gap past its half height), or an empty array when it is behind the
+## nozzle or past where the line stopped. `centre` is the body's middle.
+func _hose_measure(from: Vector3, axis: Vector3, reach: float, centre: Vector3,
+		radius: float, height: float) -> Array:
+	var along := (centre - from).dot(axis)
+	if along <= 0.0 or along > reach + radius:
+		return []
+	var offset := centre - (from + axis * minf(along, reach))
+	return [Vector2(offset.x, offset.z).length() - radius, absf(offset.y) - height * 0.5]
+
+
+## Washes the patch of wall the jet hit, all of it, whatever sauce is on it.
+func _wash_wall_at(hit: Dictionary) -> void:
+	var wall := hit.get("collider") as ContaminableObject
+	if wall == null:
+		return
+	var index := _walls.find(wall)
+	if index < 0:
+		return
+	var washed := wall.wash_at(hit.position, hit.normal, HOSE_WALL_WASH_RADIUS)
+	if washed.x >= 0:
+		_pending_splats.append_array(PackedInt32Array([SPLAT_WALL_CLEAR,
+			index * FACES_PER_WALL + washed.x, washed.y, washed.z]))
+
+
+## A teammate in the core of the jet comes out clean: every sauce off the body,
+## and the glasses. Only sent for a body or a lens that has anything on it.
+func _wash_players_in_jet(user: Shooter, from: Vector3, end: Vector3) -> void:
+	var span := end - from
+	var reach := span.length()
+	if reach <= 0.001:
+		return
+	var axis := span / reach
+	for other: Shooter in _shooters.values():
+		if other == user or not is_instance_valid(other.player):
+			continue
+		var player := other.player
+		var measure := _hose_measure(from, axis, reach, player.global_position,
+			MayoPlayer.CAPSULE_RADIUS, MayoPlayer.CAPSULE_HEIGHT)
+		if measure.is_empty() or measure[0] > HOSE_JET_RADIUS or measure[1] > HOSE_JET_RADIUS:
+			continue
+		var dirty := (player.contamination != null and player.contamination.painted_cell_count() > 0) \
+			or (player.visor != null and player.visor.painted_cell_count() > 0)
+		if not dirty:
+			continue
+		_apply_hose_wash(player.peer_id)
+		_pending_splats.append_array(PackedInt32Array([SPLAT_BODY_HOSE, player.peer_id, 0, 0]))
+
+
+## Every peer, off the splat batch, so the grids stay byte-identical.
+func _apply_hose_wash(peer: int) -> void:
+	var shooter: Shooter = _shooters.get(peer)
+	if shooter == null:
+		return
+	if shooter.player.contamination != null:
+		shooter.player.contamination.clear()
+	if shooter.player.visor != null:
+		shooter.player.visor.clear()
 
 
 ## The first hose opening calls one announced counterattack before the boss.
@@ -9135,7 +9355,7 @@ func _hose_nozzle_for(shooter: Shooter) -> Node3D:
 	var nozzle: Node3D = _hose_nozzles.get(shooter.peer_id)
 	if is_instance_valid(nozzle) and nozzle.get_parent() == shooter.aim_pivot:
 		return nozzle
-	var hold := Vector3(0.3, -0.3, -0.3)
+	var hold := HOSE_HOLD
 	nozzle = Node3D.new()
 	nozzle.name = "HoseHold"
 	var to_crosshair := Vector3(0.0, 0.0, -aim_convergence_distance) - hold
@@ -9292,23 +9512,32 @@ func _update_hose_visuals() -> void:
 				"water": water, "rubber": _hose_material(Color(0.16, 0.42, 0.47), 0.0, 0.8)}
 			_hose_visuals[slot] = visual
 		var nozzle := _hose_nozzle_for(shooter)
-		var direction := _hose_direction(shooter)
+		# Straight from the nozzle in the right hand to where the hitscan line
+		# stopped: it starts thin beside the view and only fills out further
+		# down the street, so it does not curtain off the middle of the screen.
 		var tip := _hose_nozzle_marker(nozzle, "Tip").global_position
-		var arc := _hose_arc(shooter.player.global_position + Vector3.UP * 0.9, direction)
+		var line := _hose_line(shooter)
+		var end: Vector3 = line["end"]
 		var jet_points := PackedVector3Array([tip])
-		jet_points.append_array(arc)
+		var jet_length := tip.distance_to(end)
+		var jet_steps := clampi(ceili(jet_length / HOSE_VISUAL_STEP), 1, 32)
+		for step in range(1, jet_steps + 1):
+			jet_points.append(tip.lerp(end, float(step) / float(jet_steps)))
 		_lay_segments(visual["jet"], jet_points, visual["water"],
 			func(index: int, _count: int) -> float:
-				return lerpf(HOSE_JET_RADIUS * 0.3, HOSE_JET_RADIUS, clampf(float(index) / 12.0, 0.0, 1.0)))
-		var mist_points := PackedVector3Array([tip])
-		for index in range(3, arc.size(), 4):
-			mist_points.append(arc[index])
+				return lerpf(0.05, HOSE_JET_RADIUS * 0.8, clampf(float(index) / 8.0, 0.0, 1.0)))
+		var mist_points := PackedVector3Array()
+		if jet_length > HOSE_MIST_START + 1.0:
+			var mist_from := HOSE_MIST_START / jet_length
+			for index in 5:
+				mist_points.append(tip.lerp(end, lerpf(mist_from, 1.0, float(index) / 4.0)))
 		_lay_segments(visual["spray"], mist_points, visual["mist"],
-			func(index: int, _count: int) -> float: return lerpf(0.5, HOSE_SPRAY_RADIUS, clampf(index / 4.0, 0.0, 1.0)))
-		if _hose_landed(arc):
+			func(index: int, _count: int) -> float: return lerpf(0.4, HOSE_SPRAY_RADIUS, clampf(index / 3.0, 0.0, 1.0)))
+		if not (line["hit"] as Dictionary).is_empty():
 			var pulse := 1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.02)
+			var flat := 0.35 if _hose_landed(line) else 1.0
 			visual["splash"].global_transform = Transform3D(Basis.from_scale(
-				Vector3(1.4 * pulse, 0.35, 1.4 * pulse)), arc[arc.size() - 1])
+				Vector3(1.4 * pulse, flat, 1.4 * pulse) * (1.0 if flat < 1.0 else 0.55)), end)
 			visual["splash"].show()
 		else:
 			visual["splash"].hide()
@@ -9951,6 +10180,27 @@ func _explode_thrown_tomato(at: Vector3, owner: Shooter) -> void:
 	_blast_players(at, radius, thrown_tomato_player_damage)
 
 
+## The lob cap's landing: a thrown tomato's blast -- the same radius, flash,
+## shake and friend-or-foe reach -- at `LOB_CAP_DAMAGE_SHARE` of its damage,
+## and in the shooter's own sauce rather than a ketchup puddle. Authority only;
+## the flash goes to the peers like a thrown tomato's does.
+const LOB_CAP_DAMAGE_SHARE := 0.5
+func _explode_lob_cap(at: Vector3, owner: Shooter, sauce: int) -> void:
+	var radius := thrown_tomato_splash_radius
+	show_tomato_blast(at, radius)
+	_cut_cheese_by_blast(at, radius)
+	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
+		_net.broadcast_tomato_blast(at, radius)
+	_splash_enemies(at, radius, thrown_tomato_damage * LOB_CAP_DAMAGE_SHARE, owner, null, true)
+	_blast_players(at, radius, thrown_tomato_player_damage * LOB_CAP_DAMAGE_SHARE)
+	for index in 12:
+		var angle := TAU * float(index) / 12.0
+		var foot := Vector3(at.x, 0.14, at.z) + Vector3(cos(angle), 0.0, sin(angle)) \
+			* radius * (0.35 if index % 2 == 0 else 0.75)
+		if _tomatina_static_hit(at, foot).is_empty():
+			_record_floor_splat(owner, owner.burst_index, foot, sauce)
+
+
 func _show_tomato_fuse(at: Vector3) -> void:
 	_play_combat_warning(at, 610.0, 0.2)
 	_pulse_blast_radius(at, thrown_tomato_splash_radius, THROWN_TOMATO_FUSE, Color("b8ecff"))
@@ -10050,6 +10300,25 @@ func apply_inventory_state(data: PackedInt32Array) -> void:
 		_item_selected[data[i]] = data[i+1]
 		_item_slots[data[i]] = [data[i+2],data[i+3],data[i+4],data[i+5],data[i+6]]
 
+## Keeps the fitted part on the character's own bottle: built on its muzzle
+## socket, rebuilt when the part or the character changes, and turned to the
+## aim every frame, since the socket's own axes are whatever the rig gave it.
+func _update_character_part_tip(shooter: Shooter) -> void:
+	var anchor: Node3D = shooter.character_muzzle if is_instance_valid(shooter.character_muzzle) else null
+	var wanted := shooter.sauce_part if anchor != null else SauceParts.Part.STANDARD
+	var tip_valid := is_instance_valid(shooter.character_part_tip)
+	if wanted != shooter.character_part_shown or (tip_valid and shooter.character_part_tip.get_parent() != anchor) \
+			or (not tip_valid and wanted != SauceParts.Part.STANDARD):
+		if tip_valid:
+			shooter.character_part_tip.queue_free()
+		shooter.character_part_tip = null
+		shooter.character_part_shown = wanted
+		if wanted != SauceParts.Part.STANDARD:
+			shooter.character_part_tip = SauceParts.build_tip(wanted, anchor, Vector3.ZERO)
+	if is_instance_valid(shooter.character_part_tip):
+		shooter.character_part_tip.global_basis = _aim_basis(shooter)
+
+
 func _update_item_views() -> void:
 	for peer in _shooters:
 		var shooter = _shooters[peer]
@@ -10058,8 +10327,12 @@ func _update_item_views() -> void:
 				shooter.part_tip.queue_free()
 			shooter.part_shown = shooter.sauce_part
 			if shooter.sauce_part != SauceParts.Part.STANDARD:
+				# The viewmodel muzzle, not `muzzle`: on everyone but the owner
+				# `muzzle` is the character's bone socket, whose position means
+				# nothing in the first-person bottle's space.
 				shooter.part_tip = SauceParts.build_tip(shooter.sauce_part,
-					shooter.weapon_sway, shooter.muzzle.position)
+					shooter.weapon_sway, shooter.viewmodel_muzzle.position)
+		_update_character_part_tip(shooter)
 		var selected := selected_item_slot(peer)
 		var equipped: bool = selected > 0 and item_slots(peer)[selected] == 1
 		# A hand on the hose is not a hand on the bottle: the nozzle viewmodel

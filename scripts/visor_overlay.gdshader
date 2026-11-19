@@ -36,6 +36,42 @@ uniform float paint_threshold = 0.00784;
 uniform vec4 mustard_tint : source_color = vec4(1.00, 0.86, 0.26, 1.0);
 uniform vec4 ketchup_tint : source_color = vec4(1.00, 0.34, 0.24, 1.0);
 
+// How opaque a patch is by how many hits have landed on that same spot: one
+// coat lets half the view through, two let a fifth through, three and up are
+// solid. Each hit only thickens the cells it covers, so only the overlap of
+// two splats darkens, not the whole lens.
+uniform float one_coat_alpha = 0.5;
+uniform float two_coat_alpha = 0.8;
+uniform float three_coat_alpha = 1.0;
+
+// The layers under this fragment: its own cell's, or -- in the bleed just past
+// a stain's last painted texel -- the thickest of its neighbours', the same
+// way the tint below borrows its sauce.
+float coat_depth(vec2 at) {
+	ivec2 size = textureSize(mask_texture, 0);
+	ivec2 middle = clamp(ivec2(at * vec2(size)), ivec2(0), size - ivec2(1));
+	float own = floor(floor(texelFetch(mask_texture, middle, 0).r * 255.0 + 0.5) / 4.0);
+	if (own > 0.0) {
+		return own;
+	}
+	ivec2 lo = clamp(middle - ivec2(1), ivec2(0), size - ivec2(1));
+	ivec2 hi = clamp(middle + ivec2(1), ivec2(0), size - ivec2(1));
+	float best = 0.0;
+	for (int y = lo.y; y <= hi.y; y++) {
+		for (int x = lo.x; x <= hi.x; x++) {
+			best = max(best, floor(floor(texelFetch(mask_texture, ivec2(x, y), 0).r * 255.0 + 0.5) / 4.0));
+		}
+	}
+	return best;
+}
+
+float coat_alpha(float depth) {
+	if (depth >= 3.0) {
+		return three_coat_alpha;
+	}
+	return depth >= 2.0 ? two_coat_alpha : one_coat_alpha;
+}
+
 vec3 sauce_tint(vec2 at) {
 	ivec2 size = textureSize(mask_texture, 0);
 	ivec2 middle = clamp(ivec2(at * vec2(size)), ivec2(0), size - ivec2(1));
@@ -70,12 +106,13 @@ vec3 sauce_tint(vec2 at) {
 }
 
 void fragment() {
-	float coverage = texture(mask_texture, vec2(UV.x, 1.0 - UV.y)).r;
-	float alpha_limit = 1.0;
-	if (protect_centre) {
-		float central = 1.0 - smoothstep(0.07, 0.23, length((UV - vec2(0.5)) * vec2(1.7778, 1.0)));
-		alpha_limit = mix(0.82, 0.22, central);
-	}
-	COLOR = vec4(mayo_color.rgb * sauce_tint(vec2(UV.x, 1.0 - UV.y)),
-		step(paint_threshold, coverage) * mayo_color.a * alpha_limit);
+	vec2 at = vec2(UV.x, 1.0 - UV.y);
+	float coverage = texture(mask_texture, at).r;
+	// `protect_centre` used to cap the middle of the screen at 22% so a stain
+	// there never blinded; the coat count is what decides that now, and three
+	// coats in the middle are meant to be solid. Kept as a uniform so the world
+	// can still set it without an error.
+	float alpha = coat_alpha(coat_depth(at));
+	COLOR = vec4(mayo_color.rgb * sauce_tint(at),
+		step(paint_threshold, coverage) * alpha);
 }

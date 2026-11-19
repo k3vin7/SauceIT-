@@ -97,15 +97,13 @@ func _run() -> void:
 	_check(scene.overripe_burst_damage >= close_health, "the blast is not worth a grunt's health")
 	_check(not close.is_alive(), "the overripe blast did not kill the grunt in its ring")
 	_check(is_equal_approx(far.health, far_health), "the overripe blast reached a grunt outside its ring")
-	_check(is_equal_approx(me.max_health - me.health,
-		_expected(scene.overripe_burst_player_damage, me_gap, ripe.burst_radius)),
+	# A flat share of each player's own maximum, wherever they stand inside it.
+	var share: float = scene.overripe_burst_player_health_share
+	_check(is_equal_approx(me.max_health - me.health, me.max_health * share),
 		"the overripe blast took %.2f off the player, not %.2f" % [me.max_health - me.health,
-			_expected(scene.overripe_burst_player_damage, me_gap, ripe.burst_radius)])
-	_check(is_equal_approx(mate.max_health - mate.health,
-		_expected(scene.overripe_burst_player_damage, mate_gap, ripe.burst_radius)),
-		"the overripe blast did not hurt the teammate by distance")
-	_check(me.max_health - me.health > mate.max_health - mate.health,
-		"the nearer player was not hurt more")
+			me.max_health * share])
+	_check(is_equal_approx(mate.max_health - mate.health, mate.max_health * share),
+		"the overripe blast did not take the same share off the teammate")
 
 	# --- a thrown tomato: thrower and teammate alike ------------------------
 	var radius: float = scene.thrown_tomato_splash_radius

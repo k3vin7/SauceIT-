@@ -75,6 +75,13 @@ func build() -> void:
 	# The markers never move, so their cells are worked out here rather than by
 	# rebuilding the stall list -- which walks the whole map -- every frame.
 	_stall_cells = PackedVector2Array()
+	if StreetMap.layout_override is TomatinaMap:
+		# La Tomatina has no stalls to stock up at: its supply points are the
+		# refuges, and the place everyone is headed is the plaza with the hoses.
+		for room: Rect2i in TomatinaMap.SAFE_ROOMS:
+			_stall_cells.push_back(Vector2(room.get_center()))
+		_landmark_cells = PackedVector2Array([Vector2(TomatinaMap.PLAZA.get_center())])
+		return
 	for stall in StreetMap.stall_boxes():
 		_stall_cells.push_back(_cell_of(stall["position"]))
 	_landmark_cells = PackedVector2Array([

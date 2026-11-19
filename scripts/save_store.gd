@@ -6,7 +6,10 @@ var path := DEFAULT_PATH
 var tutorial_completed := false
 var master_volume := 0.8
 var bgm_volume := 1.0
-var sfx_volume := 1.0
+## A third of full: the effects were loud against the music at 1.0. Only the
+## default -- a volume a player has already saved is kept.
+const DEFAULT_SFX_VOLUME := 1.0 / 3.0
+var sfx_volume := DEFAULT_SFX_VOLUME
 var mouse_sensitivity := 0.09
 var game_options := preload("res://scripts/game_options.gd").new()
 
@@ -25,7 +28,7 @@ func load_data() -> void:
 	tutorial_completed = bool(config.get_value("progress", "tutorial_completed", false))
 	master_volume = clampf(float(config.get_value("options", "master_volume", 0.8)), 0.0, 1.0)
 	bgm_volume = clampf(float(config.get_value("options", "bgm_volume", 1.0)), 0.0, 1.0)
-	sfx_volume = clampf(float(config.get_value("options", "sfx_volume", 1.0)), 0.0, 1.0)
+	sfx_volume = clampf(float(config.get_value("options", "sfx_volume", DEFAULT_SFX_VOLUME)), 0.0, 1.0)
 	mouse_sensitivity = clampf(float(config.get_value("options", "mouse_sensitivity", 0.09)), 0.02, 0.3)
 
 
