@@ -34,6 +34,11 @@ var connection := 0.0:
 
 var impact_left := 0.0
 var trajectory_segments := PackedVector2Array()
+## One opacity per segment pair in `trajectory_segments`; missing means opaque.
+var trajectory_alpha := PackedFloat32Array()
+## Screen outline of the tomato drawn where a near throw lands, and its leaves.
+var landing_marker := PackedVector2Array()
+var landing_leaf := PackedVector2Array()
 var effective_range := false:
 	set(value):
 		if effective_range != value:
@@ -71,8 +76,18 @@ func _draw() -> void:
 	for index in range(0, trajectory_segments.size() - 1, 2):
 		var from := trajectory_segments[index]
 		var to := trajectory_segments[index + 1]
-		draw_line(from, to, Color(0.06, 0.08, 0.09, 0.6), 4.0, true)
-		draw_line(from, to, Color("f4db82"), 2.0, true)
+		var pair := index / 2
+		var alpha := trajectory_alpha[pair] if pair < trajectory_alpha.size() else 1.0
+		draw_line(from, to, Color(0.06, 0.08, 0.09, 0.6 * alpha), 4.0, true)
+		draw_line(from, to, Color(0.957, 0.859, 0.51, alpha), 2.0, true)
+	# Seen almost edge-on the outline folds flat and will not fill; skip it then.
+	if landing_marker.size() >= 3 and not Geometry2D.triangulate_polygon(landing_marker).is_empty():
+		draw_colored_polygon(landing_marker, Color(0.88, 0.16, 0.1, 0.8))
+		var outline := landing_marker.duplicate()
+		outline.append(landing_marker[0])
+		draw_polyline(outline, Color(0.25, 0.03, 0.02, 0.9), 2.0, true)
+		if landing_leaf.size() >= 3 and not Geometry2D.triangulate_polygon(landing_leaf).is_empty():
+			draw_colored_polygon(landing_leaf, Color(0.3, 0.68, 0.2, 0.95))
 	# Opening outwards rather than closing in: the arms pull back off what they
 	# are marking, so the thing being hit is less obscured exactly when it is
 	# worth looking at.

@@ -8710,6 +8710,14 @@ func debug_reset_profile() -> void:
 @export var thrown_tomato_player_damage := 30.0
 const THROWN_TOMATO_FUSE := 0.75
 const THROWN_TOMATO_MAX_FLIGHT := 10.0
+## Where a thrown tomato leaves the body, in the thrower's yaw frame: the right
+## hand, a little off the centre line. The throw and its preview both start
+## here, so the arc on screen comes up from the lower right like the hand does.
+const TOMATO_THROW_HAND := Vector3(0.28, 0.65, 0.0)
+
+
+func thrown_tomato_origin(shooter: Shooter) -> Vector3:
+	return shooter.player.global_position + Basis(Vector3.UP, shooter.aim_yaw) * TOMATO_THROW_HAND
 var _tomato_blast_sound: AudioStreamWAV
 var _healing_deaths: Dictionary = {}
 var _healing_tomatoes: Dictionary = {}
@@ -10111,7 +10119,7 @@ func tomato_action(peer: int, action: int) -> void:
 		var charge := tomato_charge_fraction(peer)
 		_tomato_charge_started.erase(peer)
 		var direction := -Basis.from_euler(Vector3(shooter.aim_pitch,shooter.aim_yaw,0)).z
-		var node := _make_healing_tomato(player.global_position + Vector3.UP * 0.65)
+		var node := _make_healing_tomato(thrown_tomato_origin(shooter))
 		slots[selected_item_slot(peer)] = 0
 		_item_throw_time[peer] = 0.3
 		_record_motion_event(peer, 2, player.global_position)

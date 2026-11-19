@@ -2,6 +2,18 @@ extends Node3D
 ## Tomatina-only presentation, encounter budget and mission bookkeeping.
 ## Authority remains in the world; this node never decides hits on a client.
 
+## Throw preview, after PUBG's grenade line. Within ARC_NEAR_DISTANCE of the
+## hand the whole arc shows, with a tomato where it lands; past it the line
+## runs solid for ARC_SOLID_LENGTH, turns to fading dashes, and is gone before
+## the landing.
+const ARC_STEPS := 48
+const ARC_NEAR_DISTANCE := 8.0
+const ARC_SOLID_LENGTH := 8.0
+const ARC_FADE_LENGTH := 4.5
+const ARC_DASH := 0.35
+const ARC_MARKER_RADIUS := 0.32
+const ARC_MARKER_POINTS := 20
+
 var world: Node3D
 var elapsed := 0.0
 var rows := {}
@@ -186,6 +198,9 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 	if reticle == null:
 		return
 	reticle.trajectory_segments.clear()
+	reticle.trajectory_alpha.clear()
+	reticle.landing_marker.clear()
+	reticle.landing_leaf.clear()
 	reticle.queue_redraw()
 	if not world._input_enabled or world._local.player.is_incapacitated() or world.is_cinematic_active():
 		return
@@ -193,7 +208,7 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 	var gravity := 9.8
 	var life := 2.0
 	if world.local_holds_tomato():
-		origin = world._local.player.global_position + Vector3.UP * 0.65
+		origin = world.thrown_tomato_origin(world._local)
 		var charge: float = world.tomato_charge_fraction(world._local.peer_id)
 		velocity = direction * lerpf(8.0, 25.0, charge) + Vector3.UP * lerpf(1.0, 3.0, charge)
 	elif world._local.sauce_part == world.SauceParts.Part.ARC:
@@ -203,21 +218,89 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 		life = profile.life
 	else:
 		return
-	var camera: Camera3D = world._camera
-	var previous := origin
-	for step in 32:
-		var time := life * float(step + 1) / 32.0
+	# The flight, cut at the first surface it meets.
+	var points: Array[Vector3] = [origin]
+	var landing := {}
+	var space := world.get_world_3d().direct_space_state
+	for step in ARC_STEPS:
+		var time := life * float(step + 1) / float(ARC_STEPS)
 		var next := origin + velocity * time + Vector3.DOWN * gravity * time * time * 0.5
-		# Stop at the first surface; no landing circle or endpoint marker.
-		var query := PhysicsRayQueryParameters3D.create(previous, next, 1)
+		var query := PhysicsRayQueryParameters3D.create(points[-1], next, 1)
 		query.exclude = [world._local.player.get_rid()]
-		if not world.get_world_3d().direct_space_state.intersect_ray(query).is_empty():
+		var hit := space.intersect_ray(query)
+		if not hit.is_empty():
+			landing = hit
+			points.push_back(hit.position)
 			break
-		if step % 2 == 0:
-			if not camera.is_position_behind(previous) and not camera.is_position_behind(next):
-				reticle.trajectory_segments.append(camera.unproject_position(previous))
-				reticle.trajectory_segments.append(camera.unproject_position(next))
-		previous = next
+		points.push_back(next)
+	# Near: the whole arc, solid, and a tomato where it lands. Far: solid out to
+	# ARC_SOLID_LENGTH, then dashes that fade out before the end, so a long
+	# throw shows its line but never its landing point.
+	var near := not landing.is_empty() and origin.distance_to(landing.position) <= ARC_NEAR_DISTANCE
+	var camera: Camera3D = world._camera
+	var travelled := 0.0
+	for index in points.size() - 1:
+		var from: Vector3 = points[index]
+		var to: Vector3 = points[index + 1]
+		var length := from.distance_to(to)
+		# Cut into short pieces so the dash pattern follows distance, not time.
+		var pieces := maxi(1, ceili(length / ARC_DASH))
+		for piece in pieces:
+			var a := from.lerp(to, float(piece) / pieces)
+			var b := from.lerp(to, float(piece + 1) / pieces)
+			var at := travelled + length * (float(piece) + 0.5) / pieces
+			var alpha := 1.0
+			if not near and at > ARC_SOLID_LENGTH:
+				var into := at - ARC_SOLID_LENGTH
+				if into >= ARC_FADE_LENGTH:
+					break
+				if int(into / ARC_DASH) % 2 == 1:
+					continue
+				alpha = 1.0 - into / ARC_FADE_LENGTH
+			if camera.is_position_behind(a) or camera.is_position_behind(b):
+				continue
+			reticle.trajectory_segments.append(camera.unproject_position(a))
+			reticle.trajectory_segments.append(camera.unproject_position(b))
+			reticle.trajectory_alpha.append(alpha)
+		travelled += length
+		if not near and travelled - ARC_SOLID_LENGTH >= ARC_FADE_LENGTH:
+			break
+	if near:
+		_mark_landing(reticle, camera, landing.position, landing.normal)
+
+
+## A tomato lying flat on the surface the throw lands on: its outline traced
+## round the landing point in that surface's plane and projected, so it sits
+## on the floor or wall in perspective instead of floating as a screen icon.
+func _mark_landing(reticle: Crosshair, camera: Camera3D, at: Vector3, normal: Vector3) -> void:
+	var up := normal.normalized()
+	var side := up.cross(Vector3.FORWARD if absf(up.y) > 0.9 else Vector3.UP).normalized()
+	var ahead := side.cross(up)
+	# Face the leaves away from the thrower, so the tomato reads upright.
+	var toward := camera.global_position - at
+	if ahead.dot(toward) > 0.0:
+		ahead = -ahead
+		side = -side
+	var lift := at + up * 0.03
+	var ring := PackedVector2Array()
+	for index in ARC_MARKER_POINTS:
+		var angle := TAU * float(index) / ARC_MARKER_POINTS
+		# A little wider than tall, like a tomato.
+		var point := lift + side * cos(angle) * ARC_MARKER_RADIUS * 1.1 + ahead * sin(angle) * ARC_MARKER_RADIUS * 0.9
+		if camera.is_position_behind(point):
+			return
+		ring.append(camera.unproject_position(point))
+	var leaf := PackedVector2Array()
+	var crown := lift + ahead * ARC_MARKER_RADIUS * 0.72
+	for index in 10:
+		var angle := TAU * float(index) / 10.0
+		var reach := ARC_MARKER_RADIUS * (0.34 if index % 2 == 0 else 0.13)
+		var point := crown + side * cos(angle) * reach + ahead * sin(angle) * reach
+		if camera.is_position_behind(point):
+			return
+		leaf.append(camera.unproject_position(point))
+	reticle.landing_marker = ring
+	reticle.landing_leaf = leaf
 
 func _update_floor_warning(delta: float) -> void:
 	_floor_left -= delta
