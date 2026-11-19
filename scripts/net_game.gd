@@ -26,11 +26,20 @@ extends Node
 ##     Clients only ever see the resulting fall state.
 
 const DEFAULT_PORT := 24565
-## What one peer may send per tick. A client sends one input a tick and no more
-## -- there is nothing a second one could say that the first did not -- so any
-## extra is either a duplicate or someone flooding, and either way the first is
-## the one to keep.
-const INPUT_PACKETS_PER_TICK := 1
+## What one peer may send per tick. A client sends one input a tick, but they do
+## not arrive one a tick: a hitch on either end lands two in one host tick and
+## none in the next. Keeping only the first of a pair threw away the newer keys
+## and stepped the body on the older ones twice, which is a correction on the
+## client's screen every time it happened -- the stutter moving left, right,
+## forward and jumping. So up to three may land in one tick, but the allowance
+## only drains by one a tick -- see `apply_client_input` -- so the sustained rate
+## is still one a tick and a flood is still dropped.
+const INPUT_PACKETS_PER_TICK := 3
+## How many unplayed inputs the host holds per client. Each tick plays the oldest
+## one, so every input the client predicted with is played once, in order, the
+## same number of times the client played it. Past this many the oldest goes:
+## a client whose clock runs a touch fast must not build up latency.
+const INPUT_QUEUE_LIMIT := 3
 ## Wipes are rarer and travel reliably, which makes them the more expensive
 ## thing to flood. A wipe takes wipe_duration to finish and cannot be started
 ## during one, so nobody can legitimately complete more than about 1.4 a second;
@@ -184,6 +193,8 @@ var _status := "offline"
 ## peer id -> the last input packet from that client, applied every tick until
 ## the next one arrives so a dropped packet coasts instead of stuttering.
 var _client_input: Dictionary = {}
+## peer id -> inputs received and not yet played, oldest first.
+var _input_queue: Dictionary = {}
 ## peer id -> how many input packets it has sent this tick, and how much wipe
 ## budget it has left. A peer that goes over is ignored rather than answered:
 ## nothing is sent back, so flooding costs the flooder and not the host.
@@ -761,6 +772,7 @@ func leave() -> void:
 	_peer = null
 	multiplayer.multiplayer_peer = null
 	_client_input.clear()
+	_input_queue.clear()
 	_input_this_tick.clear()
 	_wipe_budget.clear()
 	_refill_budget.clear()
@@ -1103,6 +1115,7 @@ func _on_peer_disconnected(id: int) -> void:
 	_waiting_peers.erase(id)
 	_late_loading.erase(id)
 	_client_input.erase(id)
+	_input_queue.erase(id)
 	_lobby_input.erase(id)
 	_input_this_tick.erase(id)
 	_wipe_budget.erase(id)
@@ -1779,9 +1792,15 @@ func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
 func apply_client_input() -> void:
 	if not _online or not multiplayer.is_server() or not _world_ready():
 		return
-	# A fresh allowance every tick. Anything a peer sent past last tick's was
-	# dropped as it arrived, so there is nothing here to catch up on.
-	_input_this_tick.clear()
+	# The allowance leaks one packet a tick: a peer may run up to
+	# INPUT_PACKETS_PER_TICK in a bunch after a quiet tick, but not keep it up.
+	# What a flooder sent past that was dropped as it arrived.
+	for id in _input_this_tick.keys():
+		var left: int = _input_this_tick[id] - 1
+		if left <= 0:
+			_input_this_tick.erase(id)
+		else:
+			_input_this_tick[id] = left
 	# The two rate limits below refill on the wall clock rather than by a fixed
 	# 1/60th per tick. What they are limiting is measured in real seconds at the
 	# other end -- a client's cooldown between view reports is decremented with
@@ -1805,6 +1824,12 @@ func apply_client_input() -> void:
 		_view_budget[id] = minf(_view_budget[id] + VIEW_REPORTS_PER_SECOND * elapsed,
 			VIEW_REPORTS_PER_SECOND)
 	_sweep_blocks()
+	# One input per client per tick, oldest first. With nothing new queued the
+	# last one is played again, so a late packet coasts instead of stopping.
+	for id in _input_queue:
+		var queue: Array = _input_queue[id]
+		if not queue.is_empty():
+			_client_input[id] = queue.pop_front()
 	for id in _client_input:
 		var shooter = world.shooter_for(id)
 		if shooter == null:
@@ -1855,11 +1880,16 @@ func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
 	if not all_finite([move, yaw, pitch, shake]):
 		rejected_packets += 1
 		return
-	_client_input[multiplayer.get_remote_sender_id()] = [
+	var sender := multiplayer.get_remote_sender_id()
+	var queue: Array = _input_queue.get(sender, [])
+	queue.push_back([
 		clamp_direction(move), run, firing, wrap_angle(yaw),
 		clamp_angle(pitch, deg_to_rad(world.pitch_limit_degrees)), jump,
 		clampi(character_index, 0, world.PLAYER_CHARACTERS.size() - 1),
-		clamp_range(shake, 0.0, 1.0), clampi(sequence, 0, 16000000)]
+		clamp_range(shake, 0.0, 1.0), clampi(sequence, 0, 16000000)])
+	while queue.size() > INPUT_QUEUE_LIMIT:
+		queue.pop_front()
+	_input_queue[sender] = queue
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")

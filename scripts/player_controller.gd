@@ -333,6 +333,9 @@ func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> voi
 
 
 func _physics_process(delta: float) -> void:
+	# Where this tick starts from, for the predicted body's own interpolation --
+	# see `render_position`. A correction below moves it with the body.
+	_render_from = global_position
 	if predict_local and not _pending_reconciliation.is_empty():
 		var snapshot := _pending_reconciliation
 		_pending_reconciliation = []
@@ -347,6 +350,8 @@ func _physics_process(delta: float) -> void:
 		# moved, and on a client that is whatever the last sync moved it by.
 		frame_movement = global_position - _network_previous_position
 		_network_previous_position = global_position
+		_render_to = global_position
+		_render_ready = true
 		return
 	if predict_local and not authority:
 		prediction_sequence += 1
@@ -355,6 +360,8 @@ func _physics_process(delta: float) -> void:
 		if _prediction_history.size() > 120:
 			_prediction_history.pop_front()
 	_simulate_movement(delta)
+	_render_to = global_position
+	_render_ready = true
 
 
 func _simulate_movement(delta: float) -> void:
@@ -627,6 +634,7 @@ func apply_network_state(new_position: Vector3, yaw: float, new_velocity: Vector
 			return
 		_last_ack = acknowledged
 		var rendered := global_position + _prediction_error
+		var predicted := global_position
 		var old_yaw := rotation.y
 		var was_dead := state == State.DEAD
 		global_position = new_position
@@ -657,9 +665,16 @@ func apply_network_state(new_position: Vector3, yaw: float, new_velocity: Vector
 			input_run = saved_run
 			input_jump = saved_jump
 			_prediction_error = (rendered - global_position).limit_length(1.5)
+			# The interpolation start moves with the correction, so the view
+			# carries on from where it was drawn and the error alone is what
+			# eases the difference out -- see `render_position`.
+			_render_from += global_position - predicted
 		else:
 			_prediction_history.clear()
 			_prediction_error = Vector3.ZERO
+			# A respawn or a long way out: snap, rather than sweep across.
+			_render_from = global_position
+			_render_to = global_position
 		rotation.y = old_yaw
 		return
 	global_position = new_position
@@ -769,11 +784,39 @@ func _advance_fall(delta: float) -> void:
 
 
 var _render_snap_until := 0
+## The predicted body's own interpolation: where the last physics tick started
+## and ended. The engine's interpolation cannot be used for it -- a correction
+## teleports the body back to the server's position and replays inside one
+## tick, so the engine's "previous" is in the uncorrected frame -- so the body
+## keeps its own pair, and a correction shifts both by what it moved.
+var _render_from := Vector3.ZERO
+var _render_to := Vector3.ZERO
+## False until a physics tick has filled the pair in.
+var _render_ready := false
+## The process frame the prediction error was last eased on. `render_position`
+## is asked several times a frame (camera, viewmodel, nozzle); easing on each
+## call made the error vanish at a rate that depended on how many asked.
+var _error_eased_frame := -1
+## How fast a correction is eased out, per second: about 0.06 s to halve.
+const PREDICTION_EASE_RATE := 12.0
 
+## Where to draw the body this frame. The camera follows this, so it has to move
+## at the rendered frame rate: the physics position alone steps at 60 Hz, which
+## on a faster screen -- or a 60 Hz one whose frames and ticks drift apart --
+## reads as the view juddering whenever the player moves.
 func render_position() -> Vector3:
-	if predict_local and not authority:
-		_prediction_error = _prediction_error.move_toward(Vector3.ZERO, 8.0 * get_process_delta_time())
-		return global_position + _prediction_error
+	if predict_local and not authority and _render_ready:
+		var frame := Engine.get_process_frames()
+		if frame != _error_eased_frame:
+			_error_eased_frame = frame
+			_prediction_error *= exp(-PREDICTION_EASE_RATE * get_process_delta_time())
+			if _prediction_error.length_squared() < 0.000001:
+				_prediction_error = Vector3.ZERO
+		var drawn := _render_from.lerp(_render_to, Engine.get_physics_interpolation_fraction())
+		# Anything this far apart is a teleport the snap branch did not see.
+		if _render_from.distance_squared_to(_render_to) > 9.0:
+			drawn = _render_to
+		return drawn + _prediction_error
 	if Engine.get_physics_frames() <= _render_snap_until:
 		return global_position
 	var rendered := get_global_transform_interpolated().origin
