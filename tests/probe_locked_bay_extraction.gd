@@ -57,7 +57,9 @@ func run() -> void:
 	player.global_position = arrival.final_at+Vector3(arrival.truck_body.size.x*.5+1.1,1.28,0)
 	player.state = MayoPlayer.State.NORMAL
 	scene.tomato_action(player.peer_id,0)
-	check(cleared[0],"explicit truck interaction failed")
+	check(arrival.escape_active and not cleared[0],"explicit truck interaction skipped the escape film")
+	arrival._finish_escape()
+	check(cleared[0],"escape film did not complete extraction")
 	arrival.reset_intro()
 	check(not arrival.active and not arrival.arrived and arrival.barrier.collision_layer==1,"reset failed to restore barrier")
 	for cell in arrival.nav_backup:

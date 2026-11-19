@@ -139,7 +139,8 @@ func _run() -> void:
 		host.session.finish_stage({"title": "probe"})
 		_check(await _until(func(): return guest.flow == SauceApp.Flow.RESULT),
 			"the result never reached the guest")
-		_check(host.session.return_to_truck(), "the host could not return to the truck")
+		_check(host.session.request_result_continue(), "the host result vote failed")
+		_check(guest.session.request_result_continue(), "the guest result vote failed")
 		_check(await _until(func(): return guest.flow == SauceApp.Flow.TRUCK_LOBBY \
 			and host.flow == SauceApp.Flow.TRUCK_LOBBY), "both apps did not return to the truck")
 		await process_frame

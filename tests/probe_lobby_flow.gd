@@ -95,9 +95,15 @@ func _run() -> void:
 	)
 	_check(both_result, "result phase was not broadcast to every participant")
 	_check(not guest.return_to_truck(), "a guest was able to force result exit")
-	_check(host.return_to_truck(), "host could not return the party to the truck")
+	_check(not host.return_to_truck(), "host bypassed the result consensus")
+	_check(host.request_result_continue(), "host result vote was rejected")
+	_check(await _until(func(): return guest.result_continue_status().x == 1),
+		"host result vote did not reach the guest")
+	_check(host.phase() == MayoNet.SessionPhase.RESULT,
+		"one result vote advanced a two-player party")
+	_check(guest.request_result_continue(), "guest result vote was rejected")
 	_check(await _until(func(): return guest.phase() == MayoNet.SessionPhase.TRUCK),
-		"guest did not return to the truck with the host")
+		"unanimous result vote did not return the party to the truck")
 	guest.report_lobby_initialized()
 	_check(await _until(func(): return host.all_lobby_ready()),
 		"returned truck did not re-arm the lobby ready barrier")

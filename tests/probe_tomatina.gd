@@ -821,7 +821,10 @@ func _run() -> void:
 		player.global_position = truck_centre + Vector3(4.0,1.28,0)
 		teammate.global_position = truck_centre + Vector3(-4.0,1.28,0)
 		scene.tomato_action(player.peer_id,0)
-		_check(cleared[0], "truck interaction did not complete extraction")
+		_check(scene._truck_arrival.escape_active and not cleared[0],
+			"truck interaction skipped the escape film")
+		scene._truck_arrival._finish_escape()
+		_check(cleared[0], "escape film did not complete extraction")
 
 	scene.free()
 	await process_frame

@@ -1232,10 +1232,12 @@ var _tomatina_warning_sounds: Dictionary = {}
 var _press_king: PressKing
 const TRUCK_ARRIVAL_CUE := 20
 const TRUCK_ARRIVAL_TAG := -995
+const TRUCK_ESCAPE_CUE := 21
 var _truck_arrival: Node3D
 var _pump_generator: Node3D
 var _boss_entrance: Node3D
 var _truck_exit_requested := false
+var _truck_escape_finished := false
 var _press_king_hideout: Node3D
 var _finale_remaining := 0
 const ESCAPE_SHOVE_ACTION := 6
@@ -1528,7 +1530,8 @@ func _exit_tree() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	if is_instance_valid(_truck_arrival) and _truck_arrival.active:
+	if is_instance_valid(_truck_arrival) \
+			and (_truck_arrival.active or _truck_arrival.escape_active):
 		if is_instance_valid(_net):
 			_net.end_of_frame(PackedInt32Array())
 		return
@@ -5875,6 +5878,7 @@ func _reset_tomatina_finale() -> void:
 	if is_instance_valid(_truck_arrival):
 		_truck_arrival.reset_intro()
 	_truck_exit_requested = false
+	_truck_escape_finished = false
 	_overripe_bursts.clear()
 	_splash_ripples.clear()
 	_press_king_rise_at = Vector3.INF
@@ -6148,7 +6152,9 @@ func _check_stage_clear() -> void:
 				_net.broadcast_combat_warning(_truck_arrival.final_at,Vector3.ZERO,6.2,TRUCK_ARRIVAL_CUE)
 			return
 		if is_instance_valid(_press_king) and not _press_king.is_alive() \
-				and _press_king.act_time >= 1.9 and is_instance_valid(_truck_arrival) and _truck_arrival.arrived and _party_at_fire_truck() and _truck_exit_requested:
+				and _press_king.act_time >= 1.9 and is_instance_valid(_truck_arrival) \
+				and _truck_arrival.arrived and _party_at_fire_truck() \
+				and _truck_exit_requested and _truck_escape_finished:
 			_stage_clear_emitted = true
 			set_gameplay_input_enabled(false)
 			stage_cleared.emit()
@@ -9626,6 +9632,10 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 		if is_instance_valid(_truck_arrival):
 			_truck_arrival.start(at)
 		return
+	if cue == TRUCK_ESCAPE_CUE:
+		if is_instance_valid(_truck_arrival):
+			_truck_arrival.start_escape()
+		return
 	if map_kind == MapKind.TOMATINA and cue in [0, 1, HOSE_COUNTERATTACK_CUE, PRESS_KING_RISE_CUE]:
 		if not muted:
 			_play_combat_warning(at, 220.0, duration, _tomatina_warning_sound(cue))
@@ -10497,10 +10507,23 @@ func _try_truck_exit(shooter: Shooter) -> bool:
 		return true
 	if shooter.player.state != MayoPlayer.State.NORMAL or not _party_at_fire_truck():
 		return true
-	_truck_exit_requested = true
-	_check_stage_clear()
+	if not _truck_exit_requested:
+		_truck_exit_requested = true
+		show_combat_warning(_truck_arrival.final_at, Vector3.ZERO,
+			_truck_arrival.ESCAPE_DURATION, TRUCK_ESCAPE_CUE)
+		if is_instance_valid(_net) and _net.is_online():
+			_net.broadcast_combat_warning(_truck_arrival.final_at, Vector3.ZERO,
+				_truck_arrival.ESCAPE_DURATION, TRUCK_ESCAPE_CUE)
 	return true
 
 
+func finish_truck_escape() -> void:
+	_truck_escape_finished = true
+	if _is_authority():
+		_check_stage_clear()
+
+
 func is_cinematic_active() -> bool:
-	return (is_instance_valid(_boss_entrance) and _boss_entrance.active) or (is_instance_valid(_truck_arrival) and _truck_arrival.active)
+	return (is_instance_valid(_boss_entrance) and _boss_entrance.active) \
+		or (is_instance_valid(_truck_arrival) \
+			and (_truck_arrival.active or _truck_arrival.escape_active))

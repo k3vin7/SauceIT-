@@ -162,6 +162,7 @@ signal transition_requested(stage_id: String, transition_id: int)
 signal play_authorized(transition_id: int)
 signal transition_failed(reason: String)
 signal result_ready(summary: Dictionary)
+signal result_votes_changed(ready: int, total: int)
 signal truck_returned
 signal session_ended(reason: String)
 signal late_join_waiting
@@ -277,6 +278,7 @@ var _lobby_input: Dictionary = {}
 var _transition_id := 0
 var _transition_roster := PackedInt32Array()
 var _loaded_peers: Dictionary = {}
+var _result_continue: Dictionary = {}
 var _load_clock := 0.0
 var _refused_busy := false
 var _refused_full := false
@@ -458,17 +460,69 @@ func finish_stage(summary := {}) -> void:
 	if not lobby_flow or not multiplayer.is_server() or session_phase != SessionPhase.STAGE:
 		return
 	session_phase = SessionPhase.RESULT
+	_result_continue.clear()
 	_waiting_peers.clear()
 	_late_loading.clear()
 	_late_syncing.clear()
 	_show_result.rpc(summary)
 	result_ready.emit(summary)
+	result_votes_changed.emit(0, _slots.size())
+
+
+## Every result screen owns one vote.  The host no longer drags guests away
+## from statistics they are still reading; the server advances only after the
+## current roster has all pressed the same continue button.
+func request_result_continue() -> bool:
+	if not lobby_flow or session_phase != SessionPhase.RESULT:
+		return false
+	if not _online or multiplayer.is_server():
+		return _accept_result_continue(local_id())
+	_request_result_continue.rpc_id(1)
+	return true
+
+
+func result_continue_status() -> Vector2i:
+	return Vector2i(_result_continue.size(), _slots.size())
+
+
+func _accept_result_continue(peer_id: int) -> bool:
+	if not multiplayer.is_server() or session_phase != SessionPhase.RESULT \
+			or not _slots.has(peer_id) or _result_continue.has(peer_id):
+		return false
+	_result_continue[peer_id] = true
+	var packet := PackedInt32Array(_result_continue.keys())
+	packet.sort()
+	_sync_result_continue.rpc(packet)
+	result_votes_changed.emit(packet.size(), _slots.size())
+	if packet.size() >= _slots.size() and not _slots.is_empty():
+		call_deferred("return_to_truck")
+	return true
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_result_continue() -> void:
+	if multiplayer.is_server():
+		_accept_result_continue(multiplayer.get_remote_sender_id())
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_result_continue(peers: PackedInt32Array) -> void:
+	if multiplayer.is_server() or session_phase != SessionPhase.RESULT:
+		return
+	_result_continue.clear()
+	for peer_id in peers:
+		if _slots.has(peer_id):
+			_result_continue[peer_id] = true
+	result_votes_changed.emit(_result_continue.size(), _slots.size())
 
 
 func return_to_truck() -> bool:
 	if not lobby_flow or not multiplayer.is_server() or session_phase != SessionPhase.RESULT:
 		return false
+	if _slots.is_empty() or _result_continue.size() < _slots.size():
+		return false
 	session_phase = SessionPhase.TRUCK
+	_result_continue.clear()
 	_lobby_ready = {1: true}
 	_loaded_peers.clear()
 	_transition_roster.clear()
@@ -1059,6 +1113,7 @@ func _on_peer_disconnected(id: int) -> void:
 	_characters.erase(id)
 	_lobby_ready.erase(id)
 	_loaded_peers.erase(id)
+	_result_continue.erase(id)
 	if multiplayer.is_server() and world != null:
 		world.remove_avatar(id)
 		_despawn_avatar.rpc(id)
@@ -1072,6 +1127,13 @@ func _on_peer_disconnected(id: int) -> void:
 			_lobby_broadcast_at = _now() + 0.1
 		if session_phase == SessionPhase.LOADING:
 			_try_authorize_play()
+		elif multiplayer.is_server() and session_phase == SessionPhase.RESULT:
+			var result_packet := PackedInt32Array(_result_continue.keys())
+			result_packet.sort()
+			_sync_result_continue.rpc(result_packet)
+			result_votes_changed.emit(result_packet.size(), _slots.size())
+			if result_packet.size() >= _slots.size() and not _slots.is_empty():
+				call_deferred("return_to_truck")
 	_set_status("player %d left" % id)
 
 
@@ -1353,8 +1415,10 @@ func _show_result(summary: Dictionary) -> void:
 	if multiplayer.is_server() or session_phase not in [SessionPhase.STAGE, SessionPhase.LOADING]:
 		return
 	session_phase = SessionPhase.RESULT
+	_result_continue.clear()
 	_receiving_late_snapshot = false
 	result_ready.emit(summary)
+	result_votes_changed.emit(0, _slots.size())
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -1362,6 +1426,7 @@ func _return_to_truck() -> void:
 	if multiplayer.is_server() or session_phase != SessionPhase.RESULT:
 		return
 	session_phase = SessionPhase.TRUCK
+	_result_continue.clear()
 	_lobby_ready.clear()
 	_loaded_peers.clear()
 	_transition_roster.clear()

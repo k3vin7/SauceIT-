@@ -14,6 +14,11 @@ func run() -> void:
 	var arrival = scene._truck_arrival
 	check(not arrival.arrived and not is_instance_valid(arrival.actor),"fire truck exists before boss death")
 	check(arrival.barrier.collision_layer == 1,"bay is not physically blocked")
+	var barrier_collider := arrival.barrier.get_child(0) as CollisionShape3D
+	var barrier_shape := barrier_collider.shape as BoxShape3D
+	check(arrival.wall_span > arrival.bay.size.x and barrier_shape.size.x == arrival.wall_span,
+		"extraction wall does not overlap and seal both side walls")
+	check(arrival.wall_bodies.size() > 64,"reinforced wall is missing its rubble apron")
 	for cell in arrival.nav_backup:
 		check(not scene._nav.is_walkable(cell),"bay barricade missing from navigation")
 	check(scene._siren_label.text == "발전기","generator name incorrect")
@@ -77,7 +82,11 @@ func run() -> void:
 	player.global_position = arrival.final_at+Vector3(4.0,1.28,0)
 	player.state = MayoPlayer.State.NORMAL
 	scene.tomato_action(player.peer_id,0)
-	check(cleared[0],"truck interaction did not end stage")
+	check(arrival.escape_active and not cleared[0],"truck interaction skipped the escape film")
+	check(is_instance_valid(arrival.escape_truck) and arrival.escape_root.get_child_count() > 100,
+		"escape film did not build the engine and endless road")
+	arrival._finish_escape()
+	check(cleared[0],"escape film completion did not end stage")
 	arrival.reset_intro()
 	check(not arrival.arrived and arrival.barrier.collision_layer == 1,"checkpoint failed to reset barricade")
 	for failure in failures: push_error(failure)

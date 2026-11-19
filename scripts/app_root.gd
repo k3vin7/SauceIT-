@@ -25,6 +25,9 @@ var _recruitment_layer: CanvasLayer
 var _character_layer: CanvasLayer
 var _loading_layer: CanvasLayer
 var _result_layer: CanvasLayer
+var _result_continue_button: Button
+var _result_vote_label: Label
+var _result_reveal_tween: Tween
 var _status_label: Label
 var _join_button: Button
 var _cancel_join_button: Button
@@ -85,6 +88,7 @@ func _connect_session() -> void:
 	session.play_authorized.connect(_on_play_authorized)
 	session.transition_failed.connect(_on_transition_failed)
 	session.result_ready.connect(_on_result_ready)
+	session.result_votes_changed.connect(_on_result_votes_changed)
 	session.truck_returned.connect(_show_truck)
 	session.session_ended.connect(_on_session_ended)
 
@@ -499,22 +503,80 @@ func _on_result_ready(summary: Dictionary) -> void:
 	detail.text = "%s\n참가자 %d명" % [summary.get("stage", ""), summary.get("players", 1)]
 	detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(detail)
-	if not summary.get("statistics", {}).is_empty():
+	var has_statistics := not summary.get("statistics", {}).is_empty()
+	if has_statistics:
 		preload("res://scripts/mission_statistics.gd").build(column, summary.statistics)
 	else:
 		_add_damage_lineup(column, summary.get("damage", []))
-	if session.is_server():
-		column.add_child(_button("같은 임무 바로 재시도", _retry_current_stage, true))
-		if is_instance_valid(bot_team):
-			column.add_child(_button("타이틀로", _show_title))
-		else:
-			column.add_child(_button("전원 트럭 복귀", func(): session.return_to_truck(), true))
-	else:
-		var waiting := Label.new()
-		waiting.text = "방장이 트럭 복귀를 선택할 때까지 기다리는 중…"
-		column.add_child(waiting)
+	_result_vote_label = Label.new()
+	_result_vote_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_result_vote_label.text = "스탯 공개 중…"
+	column.add_child(_result_vote_label)
+	_result_continue_button = _button("스탯 공개 중…", _vote_result_continue, true)
+	_result_continue_button.disabled = true
+	column.add_child(_result_continue_button)
 	column.add_child(_button("세션 나가기", _leave_session))
+	if has_statistics:
+		var tabs := column.get_child(column.get_child_count() - 4) as TabContainer
+		_begin_stat_reveal(tabs)
+	else:
+		call_deferred("_finish_stat_reveal")
 	_set_mouse_visible(true)
+
+
+func _begin_stat_reveal(tabs: TabContainer) -> void:
+	if tabs == null or tabs.get_tab_count() == 0:
+		call_deferred("_finish_stat_reveal")
+		return
+	for index in tabs.get_tab_count():
+		tabs.set_tab_hidden(index, true)
+	_result_reveal_tween = create_tween()
+	for index in tabs.get_tab_count():
+		_result_reveal_tween.tween_interval(0.62)
+		_result_reveal_tween.tween_callback(_reveal_stat.bind(tabs, index))
+	_result_reveal_tween.tween_interval(0.35)
+	_result_reveal_tween.tween_callback(_finish_stat_reveal)
+
+
+func _reveal_stat(tabs: TabContainer, index: int) -> void:
+	if not is_instance_valid(tabs) or index >= tabs.get_tab_count():
+		return
+	tabs.set_tab_hidden(index, false)
+	tabs.current_tab = index
+	if is_instance_valid(_result_vote_label):
+		_result_vote_label.text = "스탯 %d/%d" % [index + 1, tabs.get_tab_count()]
+
+
+func _finish_stat_reveal() -> void:
+	if not is_instance_valid(_result_continue_button):
+		return
+	_result_continue_button.disabled = false
+	_result_continue_button.text = "다음으로 넘어가기 동의"
+	if is_instance_valid(bot_team):
+		_result_vote_label.text = "스탯 확인 완료"
+	else:
+		var status := session.result_continue_status()
+		_result_vote_label.text = "다음 이동 동의 %d/%d" % [status.x, status.y]
+
+
+func _vote_result_continue() -> void:
+	if not is_instance_valid(_result_continue_button) or _result_continue_button.disabled:
+		return
+	_result_continue_button.disabled = true
+	_result_continue_button.text = "동의 완료"
+	if is_instance_valid(bot_team):
+		_show_title()
+		return
+	if not session.request_result_continue():
+		_result_continue_button.disabled = false
+		_result_continue_button.text = "다음으로 넘어가기 동의"
+
+
+func _on_result_votes_changed(ready: int, total: int) -> void:
+	if flow == Flow.RESULT and is_instance_valid(_result_vote_label) \
+			and is_instance_valid(_result_continue_button) \
+			and not _result_continue_button.text.begins_with("스탯 공개"):
+		_result_vote_label.text = "다음 이동 동의 %d/%d" % [ready, total]
 
 
 ## The party stood in a row, each over what they dealt: their own character,
@@ -842,6 +904,9 @@ func _clear_space() -> void:
 
 
 func _clear_all_ui() -> void:
+	if _result_reveal_tween != null and _result_reveal_tween.is_valid():
+		_result_reveal_tween.kill()
+	_result_reveal_tween = null
 	for layer in [_title_layer, _options_layer, _pause_layer, _recruitment_layer,
 			_character_layer, _loading_layer, _result_layer]:
 		_clear_ui(layer)
@@ -852,6 +917,8 @@ func _clear_all_ui() -> void:
 	_recruitment_layer = null
 	_loading_layer = null
 	_result_layer = null
+	_result_continue_button = null
+	_result_vote_label = null
 	_status_label = null
 
 
