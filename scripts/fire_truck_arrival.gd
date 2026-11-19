@@ -334,7 +334,7 @@ func _process(delta: float) -> void:
 	world._camera.global_transform = Transform3D(
 		Basis.looking_at((focus - camera_at).normalized()), camera_at)
 	world._camera.fov = lerpf(60.0, 70.0, smoothstep(4.0, ESCAPE_DURATION, escape_elapsed))
-	var viewport_size := world.get_viewport().get_visible_rect().size
+	var viewport_size: Vector2 = world.get_viewport().get_visible_rect().size
 	var bars := 1.0 - smoothstep(10.7, ESCAPE_DURATION, escape_elapsed)
 	top_bar.size = Vector2(viewport_size.x, 58.0 * bars)
 	bottom_bar.position = Vector2(0.0, viewport_size.y - 90.0 * bars)

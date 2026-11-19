@@ -503,7 +503,7 @@ func _on_result_ready(summary: Dictionary) -> void:
 	detail.text = "%s\n참가자 %d명" % [summary.get("stage", ""), summary.get("players", 1)]
 	detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(detail)
-	var has_statistics := not summary.get("statistics", {}).is_empty()
+	var has_statistics: bool = not summary.get("statistics", {}).is_empty()
 	if has_statistics:
 		preload("res://scripts/mission_statistics.gd").build(column, summary.statistics)
 	else:
