@@ -43,7 +43,7 @@ func run() -> void:
 	for enemy in scene._enemies:
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT:
 			count += 1
-	check(count >= 270, "small enemy density did not increase")
+	check(count >= 220, "main-road enemy density dropped below the approved encounter plan")
 	var first = scene._enemies[0]
 	var second = scene._enemies[1]
 	scene.play_support.special_leases.clear()

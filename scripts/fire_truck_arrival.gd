@@ -2,6 +2,15 @@ extends "res://scripts/press_king_entrance.gd"
 ## The whole bay is locked until the post-boss arrival, not just a visual gate.
 const ESCAPE_DURATION := 12.0
 const ESCAPE_SPEED := 22.0
+## The first village blocks give way to open road here.  Results begin at the
+## same beat, but the road film remains alive behind them until the party leaves
+## the result screen.
+const RESULT_START_TIME := 3.6
+const COUNTRY_LOOP_START := 80.0
+const COUNTRY_LOOP_LENGTH := 300.0
+const RIDER_BEATS_PER_SECOND := 2.0
+const WALL_RETURN_DEPTH := 4.8
+const WALL_RETURN_THICKNESS := 1.35
 var arrived := false
 var bay := Rect2()
 var barrier: StaticBody3D
@@ -17,11 +26,14 @@ var impact_count := 0
 var vehicle_distance := 0.0
 var truck_nav_backup := {}
 var wall_span := 0.0
+var sealed_wall_span := 0.0
 var escape_active := false
 var escape_finished := false
 var escape_elapsed := 0.0
 var escape_root: Node3D
 var escape_truck: Node3D
+var escape_riders: Array[Node3D] = []
+var escape_rider_bases: Array[Vector3] = []
 var escape_camera_before := Transform3D.IDENTITY
 var escape_fov_before := 75.0
 var escape_hud_before := true
@@ -48,7 +60,7 @@ func configure(owner_world) -> void:
 	var shape := BoxShape3D.new()
 	# Overlap the generated side walls instead of ending exactly on their seam.
 	# That closes the narrow walkable-looking slots at both ends of the facade.
-	shape.size = Vector3(wall_span,6.8,bay.size.y)
+	shape.size = Vector3(sealed_wall_span,6.8,bay.size.y)
 	collider.shape = shape
 	barrier.add_child(collider)
 	truck_body = ContaminableObject.new()
@@ -88,12 +100,21 @@ func _build_facade() -> void:
 	# a visible slot beside each post.  Carry the masonry two metres into both
 	# flanks and make the collision barrier use this same span.
 	wall_span = bay.size.x + 4.0
+	sealed_wall_span = wall_span + WALL_RETURN_THICKNESS
 	var width := wall_span
 	var plaster := _material(Color("bfaa8e"))
 	var brick := _material(Color("986b50"))
 	var dark_stone := _material(Color("6f6257"))
-	for z in [-width*.5+.35,width*.5-.35]:
+	for side in [-1,1]:
+		var z := float(side) * (width*.5-.35)
 		_box(facade,Vector3(-.08,3.4,z),Vector3(1.05,6.8,1.25),dark_stone)
+		# Close the pocket behind each end post.  The main facade sits across the
+		# mouth of the bay; without these perpendicular returns a player can look
+		# and squeeze around the post into the concealed fire-truck lane.
+		var wall_return := _box(facade,
+			Vector3(-WALL_RETURN_DEPTH*.5,3.4,float(side)*width*.5),
+			Vector3(WALL_RETURN_DEPTH,6.8,WALL_RETURN_THICKNESS),dark_stone)
+		wall_return.name = "ExtractionWallReturn%s" % ("Left" if side < 0 else "Right")
 	var columns := 16
 	var course_width := width/float(columns)
 	for row in 4:
@@ -260,13 +281,17 @@ func _build_escape_road() -> void:
 				_box(escape_root, house_at + Vector3.UP * 3.0,
 					Vector3(7.7, 1.25, 13.0), roof)
 			else:
-				var offset := float(posmod(segment * 7 + int(side), 5)) * 0.55
+				# The country repeats every fifteen segments.  The truck can loop this
+				# exact 300 m stretch indefinitely without a different tree pattern
+				# revealing the wrap behind a result screen.
+				var country_segment := segment - 5
+				var offset := float(posmod(country_segment * 7 + int(side), 5)) * 0.55
 				var tree_at := Vector3(side * (14.0 + offset), 1.4,
-					z + float((segment * 9) % 7) - 3.0)
+					z + float((country_segment * 3) % 5) - 2.0)
 				_box(escape_root, tree_at, Vector3(0.55, 3.0, 0.55), trunk)
 				var crown := MeshInstance3D.new()
 				var crown_mesh := SphereMesh.new()
-				crown_mesh.radius = 2.0 + float(segment % 3) * 0.25
+				crown_mesh.radius = 2.0 + float(country_segment % 3) * 0.25
 				crown_mesh.height = crown_mesh.radius * 1.65
 				crown_mesh.radial_segments = 8
 				crown_mesh.rings = 5
@@ -289,6 +314,8 @@ func _build_escape_road() -> void:
 
 
 func _build_escape_riders() -> void:
+	escape_riders.clear()
+	escape_rider_bases.clear()
 	var riders: Array = world._shooters.values()
 	riders.sort_custom(func(a, b): return a.spawn_slot < b.spawn_slot)
 	var seats := [Vector3(-0.85, 3.05, -1.15), Vector3(0.85, 3.05, -1.15),
@@ -305,6 +332,8 @@ func _build_escape_riders() -> void:
 		rider.rotation = Vector3(0.0, PI, 0.0)
 		rider.visible = true
 		escape_truck.add_child(rider)
+		escape_riders.push_back(rider)
+		escape_rider_bases.push_back(seats[index])
 		var animations := rider.find_children("*", "AnimationPlayer", true, false)
 		if not animations.is_empty():
 			var animation := animations[0] as AnimationPlayer
@@ -316,10 +345,14 @@ func _process(delta: float) -> void:
 	if not escape_active:
 		super._process(delta)
 		return
-	escape_elapsed = minf(escape_elapsed + delta, ESCAPE_DURATION)
+	escape_elapsed += delta
 	var distance := escape_elapsed * ESCAPE_SPEED
+	if distance >= COUNTRY_LOOP_START + COUNTRY_LOOP_LENGTH:
+		distance = COUNTRY_LOOP_START + fposmod(
+			distance - COUNTRY_LOOP_START, COUNTRY_LOOP_LENGTH)
 	escape_truck.position.z = distance
 	escape_truck.rotation.z = sin(escape_elapsed * 2.1) * 0.008
+	_update_escape_riders()
 	# Like a travelling end-credit shot, the vehicle stays readable while the
 	# framing opens from a close three-quarter departure to a calm, wide road.
 	var close_offset := Vector3(9.4, 4.9, -10.5)
@@ -350,8 +383,22 @@ func _process(delta: float) -> void:
 	for shooter in world._shooters.values():
 		if is_instance_valid(shooter.camera_viewmodel): shooter.camera_viewmodel.hide()
 		if is_instance_valid(shooter.first_person_arms): shooter.first_person_arms.hide()
-	if escape_elapsed >= ESCAPE_DURATION:
+	if escape_elapsed >= RESULT_START_TIME and not escape_finished:
 		_finish_escape()
+
+
+func _update_escape_riders() -> void:
+	for index in escape_riders.size():
+		var rider := escape_riders[index]
+		if not is_instance_valid(rider):
+			continue
+		var phase := float(index % 2) * PI + float(index / 2) * 0.38
+		var beat := sin(escape_elapsed * TAU * RIDER_BEATS_PER_SECOND + phase)
+		# Lift on every beat, with a smaller shoulder sway so it reads as the
+		# passengers celebrating rather than suspension jitter from the engine.
+		var lift := maxf(0.0, beat) * 0.22
+		rider.position = escape_rider_bases[index] + Vector3.UP * lift
+		rider.rotation = Vector3(beat * 0.035, PI, beat * 0.045)
 
 
 func _update_escape_title_card() -> void:
@@ -367,21 +414,19 @@ func _update_escape_title_card() -> void:
 
 
 func _escape_title_alpha() -> float:
-	for window in [[0.45, 1.05, 2.75, 3.35], [3.55, 4.15, 6.45, 7.05],
-			[7.45, 8.05, 10.55, 11.25]]:
-		if escape_elapsed >= float(window[0]) and escape_elapsed <= float(window[3]):
-			return smoothstep(float(window[0]), float(window[1]), escape_elapsed) \
-				* (1.0 - smoothstep(float(window[2]), float(window[3]), escape_elapsed))
-	return 0.0
+	# Later title cards used to occupy the same frame as the result UI.  Keep one
+	# clean departure card, then hand the typography over to the stat reveal.
+	return smoothstep(0.45, 1.05, escape_elapsed) \
+		* (1.0 - smoothstep(2.75, 3.35, escape_elapsed))
 
 
 func _finish_escape() -> void:
-	if not escape_active:
+	if not escape_active or escape_finished:
 		return
-	escape_active = false
 	escape_finished = true
-	set_process(false)
-	layer.hide()
+	# This only hands the mission summary to the app.  The travelling shot keeps
+	# processing behind the translucent results panel until the result flow frees
+	# the stage or returns the party to the lobby.
 	world.finish_truck_escape()
 
 func present(t: float) -> void:
@@ -461,6 +506,8 @@ func reset_intro() -> void:
 		escape_root.queue_free()
 	escape_root = null
 	escape_truck = null
+	escape_riders.clear()
+	escape_rider_bases.clear()
 	escape_active = false
 	escape_finished = false
 	escape_elapsed = 0.0

@@ -1,7 +1,13 @@
 extends Node3D
 ## Deterministic six-second introduction; visual debris never enters physics.
+const HOUSE_WALL_SHADER := preload(
+	"res://assets/props/Stage2_TomatinaVillage/press_king_house_wall.gdshader")
 const DURATION := 6.2
 const BREAK_TIME := 2.1
+const BLACKOUT_IN_END := 0.18
+const BLACKOUT_HOLD_END := 0.48
+const BLACKOUT_OUT_END := 0.82
+const RETURN_START := 5.0
 var world
 var active := false
 var played := false
@@ -12,6 +18,8 @@ var actor: Node3D
 var rig: AnimationPlayer
 var chunks: Array[MeshInstance3D] = []
 var chunk_rests: Array[Vector3] = []
+var wall_skins: Array[MeshInstance3D] = []
+var house_details: Array[MeshInstance3D] = []
 var removed_instances: Array[Dictionary] = []
 var facade: Node3D
 var dust: CPUParticles3D
@@ -20,6 +28,7 @@ var title: Label
 var subtitle: Label
 var top_bar: ColorRect
 var bottom_bar: ColorRect
+var blackout: ColorRect
 var start_camera := Transform3D.IDENTITY
 var frozen_before := {}
 var input_before := true
@@ -30,7 +39,11 @@ func configure(owner_world) -> void:
 	world = owner_world
 	name = "PressKingEntrance"
 	process_priority = 100
-	wall_at = Vector3(world._plaza_rect.position.x + 0.12, 0.0, world._plaza_rect.get_center().y)
+	# The authored house and the batched street boundary overlap at different
+	# depths.  This presentation plane lines up with the HouseHoney roof from the
+	# frontal shot while staying in front of that generic boundary surface.
+	wall_at = Vector3(world._plaza_rect.position.x+0.12,0.0,
+		world._plaza_rect.get_center().y)
 	var best_gap := -1.0
 	for row in [25.5,27.5,29.5,31.5]:
 		var candidate := Vector3(wall_at.x,0,TomatinaMap.at_cell(Vector2(20,row)).z)
@@ -55,31 +68,52 @@ func _box(parent: Node3D, at: Vector3, size: Vector3, material: Material) -> Mes
 	parent.add_child(mesh)
 	return mesh
 
-func _material(color: Color) -> StandardMaterial3D:
-	var result := StandardMaterial3D.new()
-	result.albedo_color = color
-	result.roughness = 0.95
+func _material(color: Color, weathered := false, masonry := false) -> ShaderMaterial:
+	var result := ShaderMaterial.new()
+	result.shader = HOUSE_WALL_SHADER
+	result.set_shader_parameter(&"base_color",color)
+	result.set_shader_parameter(&"weathered",weathered)
+	result.set_shader_parameter(&"masonry",masonry)
 	return result
 
 func _build_facade() -> void:
 	facade = Node3D.new()
-	facade.name = "BreakablePlazaWall"
+	facade.name = "BreakableHouseFront"
 	add_child(facade)
 	facade.position = wall_at
-	var plaster := _material(Color("d4ad7e"))
-	var brick := _material(Color("9b5940"))
+	# Exact palette of the HouseHoney instance generated at cell (20, 29).
+	var plaster := _material(Color("deba73"),true)
+	var stone := _material(Color("a8998c"),true,true)
+	var roof := _material(Color("b77856"))
+	var glass := _material(Color("416071"))
+	var shutters := _material(Color("8b4c51"))
+	var terracotta := _material(Color("b85737"))
 	var darkness := _material(Color("161512"))
-	# Permanent opening, pillars and broken masonry remain after the scene.
-	_box(facade, Vector3(-0.18, 3.6, 0), Vector3(0.2, 7.2, 8.4), darkness)
-	for z in [-4.7,4.7]:
-		_box(facade, Vector3(0, 4.2, z), Vector3(0.8, 8.4, 1.0), plaster)
-	_box(facade, Vector3(0, 7.7, 0), Vector3(0.9, 1.0, 8.5), brick)
+	# This is the actual street-facing wall of the house already placed behind
+	# the boundary.  Its roof and body remain; only this facade bursts inward to
+	# reveal the dark interior.  No freestanding doorway or side pillars remain.
+	# Just behind the 0.48 m front finish, but still a few centimetres ahead of
+	# the batched street wall so the breached interior fully covers that surface.
+	_box(facade, Vector3(0.39,3.6,0), Vector3(0.12,7.2,8.4), darkness)
+	_box(facade, Vector3(0.0,7.26,0), Vector3(0.78,0.24,8.8), roof)
 	for row in 5:
 		for column in 6:
-			var at := Vector3(0.2, 0.72 + row * 1.38, -3.5 + column * 1.4)
-			var mesh := _box(facade, at, Vector3(0.5, 1.36, 1.38), plaster if row > 0 else brick)
+			var at := Vector3(0.2,0.72 + row*1.44,-3.5 + column*1.4)
+			var mesh := _box(facade,at,Vector3(0.5,1.42,1.38),plaster if row > 0 else stone)
 			chunks.append(mesh)
 			chunk_rests.append(at)
+	# A paper-thin finish hides the joins between breakable blocks until impact.
+	wall_skins.append(_box(facade,Vector3(0.47,4.32,0),Vector3(0.02,5.74,8.38),plaster))
+	wall_skins.append(_box(facade,Vector3(0.47,0.72,0),Vector3(0.02,1.42,8.38),stone))
+	# Windows and flower boxes make this read as the existing house facade. They
+	# disappear with the plaster at impact while the house roof stays standing.
+	for window_z in [-2.35,2.35]:
+		house_details.append(_box(facade,Vector3(0.50,4.15,window_z),Vector3(0.04,1.45,1.18),glass))
+		for side in [-1.0,1.0]:
+			house_details.append(_box(facade,Vector3(0.54,4.15,window_z+side*0.78),
+				Vector3(0.08,1.56,0.30),shutters))
+		house_details.append(_box(facade,Vector3(0.60,3.31,window_z),
+			Vector3(0.20,0.28,1.48),terracotta))
 	dust = CPUParticles3D.new()
 	dust.one_shot = true
 	dust.explosiveness = 0.92
@@ -107,6 +141,12 @@ func _build_titles() -> void:
 	layer = CanvasLayer.new()
 	layer.layer = 30
 	add_child(layer)
+	blackout = ColorRect.new()
+	blackout.color = Color.BLACK
+	blackout.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	blackout.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	blackout.modulate.a = 0.0
+	layer.add_child(blackout)
 	for upper in [true, false]:
 		var bar := ColorRect.new()
 		bar.color = Color.BLACK
@@ -139,6 +179,9 @@ func start(at: Vector3) -> void:
 	spawn_at = at
 	start_camera = world._camera.global_transform
 	prior_fov = world._camera.fov
+	# Swap the generic multimesh street boundary for the matching breakable
+	# HouseHoney frontage before the blackout reveals the shot.
+	_remove_old_wall()
 	input_before = world._input_enabled
 	world._input_enabled = false
 	if is_instance_valid(world._hud_layer):
@@ -159,6 +202,8 @@ func start(at: Vector3) -> void:
 	set_process(true)
 
 func _remove_old_wall() -> void:
+	if not removed_instances.is_empty():
+		return
 	var art: Node = world.get_node_or_null("TomatinaVillageArt")
 	if art == null:
 		return
@@ -183,15 +228,22 @@ func _process(delta: float) -> void:
 func present(t: float) -> void:
 	var camera: Camera3D = world._camera
 	var focus := wall_at + Vector3(0,3.5,0)
-	var shot_at := wall_at + Vector3(15,5.5,14)
+	# Face the breach square-on from the plaza.  The boss travels along +X out
+	# of the wall, straight toward the lens, instead of being introduced from
+	# its right flank.
+	var shot_at := wall_at + Vector3(15.0,4.7,0.0)
 	var shot := Transform3D(Basis.looking_at((focus - shot_at).normalized()), shot_at)
-	var move := smoothstep(0.65,1.8,t)
-	var pose := start_camera.interpolate_with(shot, move)
-	if t < 0.8:
-		pose.origin += Vector3(sin(t*83),cos(t*97),0) * 0.045 * sin(t/0.8*PI)
+	# Hold the player's view only while the screen fades down.  The cut to the
+	# frontal shot happens under full black, so there is no visible sideways
+	# camera travel at the beginning of the introduction.
+	var pose := start_camera if t < BLACKOUT_IN_END else shot
 	if t >= BREAK_TIME:
 		if not actor.visible:
 			_remove_old_wall()
+			for skin in wall_skins:
+				skin.hide()
+			for detail in house_details:
+				detail.hide()
 			actor.show()
 			rig.play(&"Walk")
 			dust.restart()
@@ -210,17 +262,22 @@ func present(t: float) -> void:
 			chunks[i].position = point
 			chunks[i].rotation = Vector3(0.7,1.1,0.9) * minf(burst,1.3) * (1.0+i%4)
 		if burst < 0.4:
-			pose.origin += Vector3(sin(burst*90),cos(burst*74),0) * 0.12 * (1.0-burst/0.4)
+			pose.origin += (pose.basis.x*sin(burst*90)+pose.basis.y*cos(burst*74)) \
+				* 0.12 * (1.0-burst/0.4)
 		var look_at := actor.global_position + Vector3.UP * 3.0
 		pose.basis = pose.basis.slerp(Basis.looking_at((look_at-pose.origin).normalized()), smoothstep(2.1,3.4,t)*0.7)
-	if t > 5.1:
+	if t > RETURN_START:
 		# The normal camera has already been placed by the world this frame.
-		pose = pose.interpolate_with(camera.global_transform, smoothstep(5.1,DURATION,t))
+		pose = pose.interpolate_with(camera.global_transform, smoothstep(RETURN_START,DURATION,t))
 	camera.global_transform = pose
-	camera.fov = lerpf(prior_fov,62.0,smoothstep(0.65,1.8,t))
-	camera.fov = lerpf(camera.fov,prior_fov,smoothstep(5.1,DURATION,t))
+	camera.fov = 62.0 if t >= BLACKOUT_IN_END else prior_fov
+	camera.fov = lerpf(camera.fov,prior_fov,smoothstep(RETURN_START,DURATION,t))
 	var size: Vector2 = world.get_viewport().get_visible_rect().size
-	var bars := 1.0 - smoothstep(5.1,DURATION,t)
+	blackout.position = Vector2.ZERO
+	blackout.size = size
+	blackout.modulate.a = smoothstep(0.0,BLACKOUT_IN_END,t) \
+		* (1.0-smoothstep(BLACKOUT_HOLD_END,BLACKOUT_OUT_END,t))
+	var bars := 1.0 - smoothstep(RETURN_START,DURATION,t)
 	top_bar.position = Vector2.ZERO
 	top_bar.size = Vector2(size.x,58*bars)
 	bottom_bar.position = Vector2(0,size.y-90*bars)
@@ -259,6 +316,10 @@ func reset_intro() -> void:
 	for i in chunks.size():
 		chunks[i].position = chunk_rests[i]
 		chunks[i].rotation = Vector3.ZERO
+	for skin in wall_skins:
+		skin.show()
+	for detail in house_details:
+		detail.show()
 
 
 func spawn_point() -> Vector3:
@@ -269,6 +330,10 @@ func restore_breached() -> void:
 		return
 	played = true
 	_remove_old_wall()
+	for skin in wall_skins:
+		skin.hide()
+	for detail in house_details:
+		detail.hide()
 	for i in chunks.size():
 		chunks[i].position = chunk_rests[i] + Vector3(4.0 + i%5,0,(float(i%6)-2.5)*1.7)
 		chunks[i].position.y = 0.18

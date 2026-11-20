@@ -165,6 +165,31 @@ func _run() -> void:
 		await _frames(2)
 		_check(returning_app.flow == SauceApp.Flow.RECRUITMENT,
 			"returning completed profile did not skip the tutorial")
+		var cancel := InputEventAction.new()
+		cancel.action = "ui_cancel"
+		cancel.pressed = true
+		returning_app._unhandled_input(cancel)
+		_check(returning_app._options_layer != null
+			and returning_app._pause_layer != null
+			and not returning_app._pause_layer.visible,
+			"ESC did not open options directly over a hidden gameplay pause")
+		returning_app._volume_slider.value = 0.23
+		returning_app._bgm_slider.value = 0.45
+		returning_app._sfx_slider.value = 0.67
+		var resolution_draft := returning_app.save_store.game_options._controls["resolution"] as OptionButton
+		resolution_draft.select(2)
+		returning_app._unhandled_input(cancel)
+		_check(returning_app._options_layer == null and returning_app._pause_layer == null,
+			"second ESC did not close options and resume gameplay")
+		_check(not paused, "closing ESC options left the scene tree paused")
+		var audio_save := SauceSaveStore.new(app_save)
+		audio_save.load_data()
+		_check(is_equal_approx(audio_save.master_volume, 0.23)
+			and is_equal_approx(audio_save.bgm_volume, 0.45)
+			and is_equal_approx(audio_save.sfx_volume, 0.67),
+			"closing options with ESC did not save audio changes")
+		_check(int(audio_save.game_options.settings.resolution) == 0,
+			"closing options with ESC committed an unconfirmed graphics change")
 		returning_app._open_pause()
 		_check(returning_app._pause_layer != null,
 			"pause menu did not open from recruitment")

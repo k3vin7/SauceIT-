@@ -43,6 +43,7 @@ const TutorialWreckScript := preload("res://scripts/tutorial_wreck.gd")
 const TutorialCourseScript := preload("res://scripts/tutorial_course.gd")
 const TutorialHudScript := preload("res://scripts/tutorial_hud.gd")
 const FESTIVAL_ENVIRONMENT := preload("res://assets/cartoon/festival_environment.tres")
+const TOMATINA_ENVIRONMENT := preload("res://assets/cartoon/tomatina_environment.tres")
 const FESTIVAL_PROP_SHADER := preload("res://assets/cartoon/festival_prop_toon.tres")
 const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 	preload("res://assets/food_booths/food_booth_s1.glb"),
@@ -3599,9 +3600,7 @@ func _build_environment() -> void:
 		environment.ambient_light_energy = 0.72
 		environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	if map_kind == MapKind.TOMATINA:
-		environment.background_color = Color("b5cdd2")
-		environment.ambient_light_color = Color("e0e4ec")
-		environment.ambient_light_energy = 0.7
+		environment = TOMATINA_ENVIRONMENT
 	world_environment.environment = environment
 	add_child(world_environment)
 
@@ -4407,7 +4406,7 @@ func _build_street() -> void:
 ## and the fire truck are plain contaminable boxes; the juice is painted onto
 ## the floor before anyone arrives.
 var _tomatina_checkpoint := -1
-var tomatina_shortcut_open := true
+var tomatina_shortcut_open := false
 
 
 func _build_tomatina() -> void:
@@ -4458,9 +4457,6 @@ func _build_tomatina() -> void:
 		shop_sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		shop_sign.pixel_size = 0.012
 		add_child(shop_sign)
-	if not tomatina_shortcut_open:
-		var gate := TomatinaMap.market_gate()
-		_create_wall(gate["name"], gate["position"], gate["size"], gate["color"])
 	_build_tomatina_route_signs()
 	_fire_truck_zone = TomatinaMap.fire_truck_zone()
 	_plaza_rect = TomatinaMap.plaza_rect()
@@ -4553,9 +4549,9 @@ func _apply_refuge_shower(peer: int, room: int) -> void:
 func _build_tomatina_route_signs() -> void:
 	TomatinaVillageArt.build_plaza_waymarks(self)
 	var labels := [
-		[Vector2(10.9, 166.0), "지름길 · 토마토즙" if tomatina_shortcut_open else "지름길 폐쇄"],
+		[Vector2(10.9, 166.0), "지름길 폐쇄 · 큰길 이용"],
 		[Vector2(15.5, 164.8), "시장 큰길 · 볼러 주의"],
-		[Vector2(28.0, 70.5), "측면 우회"],
+		[Vector2(28.0, 70.5), "큰길 · 광장 방면"],
 	]
 	for entry in labels:
 		var label := Label3D.new()

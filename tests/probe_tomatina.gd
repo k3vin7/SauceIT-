@@ -145,13 +145,14 @@ func _run() -> void:
 	_check(scene._nav != null, "stage 2 built no router")
 	var route: PackedVector3Array = scene._nav.route(scene.spawn_position_for(0), truck_centre)
 	print("route from the start to the fire truck: %d waypoints" % route.size())
-	_check(not route.is_empty() and route.size() < 375, "the market shortcut did not shorten the stage")
-	for cell: Vector2i in TomatinaMap.market_gate_cells():
-		if scene._nav.is_walkable(cell):
-			scene._nav.grid.set_point_solid(cell, true)
-	var detour: PackedVector3Array = scene._nav.route(scene.spawn_position_for(0), truck_centre)
-	print("market routes: %d waypoints open, %d closed" % [route.size(), detour.size()])
-	_check(detour.size() >= route.size() + 12, "closing the shortcut does not leave a longer main route")
+	_check(not route.is_empty(), "the rubble closures cut the main route")
+	var closures := TomatinaMap.closed_passage_boxes()
+	_check(closures.size() == (TomatinaMap.SIDE_ALLEYS.size() + 2) * 6,
+		"not every side passage has a complete rubble closure")
+	for box: Dictionary in closures:
+		_check(box.get("closed_passage", false), "a closure prop lost its navigation marker")
+		for cell: Vector2i in TomatinaMap._box_cells([box] as Array[Dictionary]):
+			_check(not scene._nav.is_walkable(cell), "%s is visually blocked but navigable" % box["name"])
 	scene._nav.build()
 	for room in TomatinaMap.SAFE_ROOMS:
 		for y in range(room.position.y, room.end.y):
@@ -325,15 +326,13 @@ func _run() -> void:
 				"an ambusher spawned outside its alley")
 	print("roster: %s" % str(counts))
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) == TomatinaMap.grunt_cells().size(), "encounter pack grunt count differs from plan")
-	# 2026-11-17 revision: every grunt pack doubled (114 -> 228 planned) and
-	# REINFORCEMENT_GRUNTS went 4 -> 8. A pack is capped by the open cells near
-	# its pose, so the narrow first alley holds 7 of its 8.
+	# Closed decorative alleys no longer contribute hidden ambush or reinforcement
+	# packs. Main-road and plaza encounters remain.
 	_check(int(counts.get(MayoEnemy.EnemyKind.TOMATO_GRUNT, 0)) - reinforcement_grunts <= 280,
 		"the original grunt packs grew")
 	var planned_reinforcements: int = TomatinaMap.ALLEY_REINFORCEMENTS.size() * TomatinaMap.REINFORCEMENT_GRUNTS
-	_check(not reinforced_legs.has(0) and reinforcement_grunts <= planned_reinforcements
-		and reinforcement_grunts >= planned_reinforcements - 2,
-		"the alley reinforcement packs are incomplete: %s, %d grunts" % [str(reinforced_legs), reinforcement_grunts])
+	_check(planned_reinforcements == 0 and reinforcement_grunts == 0,
+		"a closed alley still contains reinforcement enemies")
 	for group in TomatinaMap.ALLEY_AMBUSHES.size():
 		_check(groups.get(group, 0) == 3, "alley ambush %d is missing an attacker" % group)
 	_check(plaza_guards == {MayoEnemy.EnemyKind.TOMATO_BRUTE: 2,
@@ -823,8 +822,15 @@ func _run() -> void:
 		scene.tomato_action(player.peer_id,0)
 		_check(scene._truck_arrival.escape_active and not cleared[0],
 			"truck interaction skipped the escape film")
-		scene._truck_arrival._finish_escape()
-		_check(cleared[0], "escape film did not complete extraction")
+		_check(scene._truck_arrival.escape_riders.size() == scene.party_size(),
+			"the escape truck did not carry the whole party")
+		var rider_y: float = scene._truck_arrival.escape_riders[0].position.y
+		scene._truck_arrival._process(scene._truck_arrival.RESULT_START_TIME + 0.1)
+		_check(cleared[0], "the road entry did not open the mission results")
+		_check(scene._truck_arrival.escape_active and scene._truck_arrival.escape_finished,
+			"the background escape film stopped when results opened")
+		_check(not is_equal_approx(scene._truck_arrival.escape_riders[0].position.y, rider_y),
+			"the escaping player characters did not bounce to the beat")
 
 	scene.free()
 	await process_frame

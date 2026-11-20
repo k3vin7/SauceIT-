@@ -42,6 +42,9 @@ var _volume_slider: HSlider
 var _bgm_slider: HSlider
 var _sfx_slider: HSlider
 var _sensitivity_slider: HSlider
+## ESC opens options directly during play. A hidden pause layer keeps solo play
+## paused and multiplayer input locked until those options are closed.
+var _options_owns_pause := false
 var _active_transition := 0
 var _notice := ""
 var bot_team: Node
@@ -76,7 +79,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		# it would unlock the office behind it on the way back.
 		pass
 	elif flow not in [Flow.TITLE, Flow.LOADING, Flow.RESULT]:
-		_open_pause()
+		_open_options_from_game()
 	get_viewport().set_input_as_handled()
 
 
@@ -425,7 +428,7 @@ func _on_transition_requested(stage_id: String, transition: int) -> void:
 		return
 	var world = packed.instantiate()
 	if stage_id == "stage_2":
-		world.tomatina_shortcut_open = transition % 2 == 1
+		world.tomatina_shortcut_open = false
 	world.external_net = session
 	world.mouse_sensitivity = save_store.mouse_sensitivity
 	world.stage_cleared.connect(_on_stage_cleared)
@@ -475,19 +478,34 @@ func _on_result_ready(summary: Dictionary) -> void:
 		current_space.call("set_gameplay_input_enabled", false)
 	_clear_ui(_loading_layer)
 	_result_layer = CanvasLayer.new()
+	_result_layer.name = "ResultUI"
 	_result_layer.layer = 8
 	add_child(_result_layer)
 	var dim := ColorRect.new()
-	dim.color = UI.SHADE
+	dim.name = "ResultBackdropTint"
+	# Keep the travelling fire-engine shot legible instead of replacing it with
+	# a nearly opaque result backdrop.
+	dim.color = Color(0.025, 0.04, 0.05, 0.24)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_result_layer.add_child(dim)
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var centre := CenterContainer.new()
-	centre.theme = UI.theme()
-	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_result_layer.add_child(centre)
+	var safe_margin := MarginContainer.new()
+	safe_margin.name = "ResultSafeMargin"
+	safe_margin.theme = UI.theme()
+	safe_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	safe_margin.add_theme_constant_override("margin_left", 36)
+	safe_margin.add_theme_constant_override("margin_top", 36)
+	safe_margin.add_theme_constant_override("margin_right", 36)
+	safe_margin.add_theme_constant_override("margin_bottom", 36)
+	_result_layer.add_child(safe_margin)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_END
+	safe_margin.add_child(row)
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(520.0, 0.0)
-	centre.add_child(panel)
+	panel.name = "ResultPanel"
+	panel.custom_minimum_size = Vector2(590.0, 0.0)
+	panel.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(panel)
 	var margin := _margin(28)
 	panel.add_child(margin)
 	var column := VBoxContainer.new()
@@ -754,8 +772,19 @@ func _open_options() -> void:
 	column.add_child(_labeled("마우스 감도", _sensitivity_slider))
 	save_store.game_options.build(column)
 	column.add_child(_button("적용 및 저장", _save_options, true))
-	column.add_child(_button("취소", _close_options))
+	column.add_child(_button("닫기", _close_options))
+	if _options_owns_pause:
+		column.add_child(_button("나가기 / 게임 종료 메뉴", _show_pause_from_options))
 	_set_mouse_visible(true)
+
+
+func _open_options_from_game() -> void:
+	_open_pause()
+	if _pause_layer == null:
+		return
+	_pause_layer.visible = false
+	_options_owns_pause = true
+	_open_options()
 
 
 func _save_options() -> void:
@@ -773,8 +802,23 @@ func _save_options() -> void:
 
 
 func _close_options() -> void:
+	_save_audio_options()
 	_clear_ui(_options_layer)
 	_options_layer = null
+	if _options_owns_pause:
+		_options_owns_pause = false
+		_close_pause()
+	else:
+		_restore_mouse_for_flow()
+
+
+func _show_pause_from_options() -> void:
+	_save_audio_options()
+	_options_owns_pause = false
+	_clear_ui(_options_layer)
+	_options_layer = null
+	if _pause_layer != null and is_instance_valid(_pause_layer):
+		_pause_layer.visible = true
 	_restore_mouse_for_flow()
 
 
@@ -787,13 +831,39 @@ func _audio_slider(column: VBoxContainer, caption: String, value: float) -> HSli
 	var row := _labeled(caption + "  %d%%" % roundi(value * 100), slider)
 	column.add_child(row)
 	var label := row.get_child(0) as Label
-	slider.value_changed.connect(func(amount: float): label.text = caption + "  %d%%" % roundi(amount * 100))
+	slider.value_changed.connect(func(amount: float):
+		label.text = caption + "  %d%%" % roundi(amount * 100)
+		_preview_audio_options())
 	return slider
+
+
+func _preview_audio_options() -> void:
+	if not _audio_sliders_ready():
+		return
+	_apply_audio_values(_volume_slider.value, _bgm_slider.value, _sfx_slider.value)
+
+
+func _save_audio_options() -> void:
+	if not _audio_sliders_ready():
+		return
+	save_store.save_options(_volume_slider.value, save_store.mouse_sensitivity,
+		_bgm_slider.value, _sfx_slider.value)
+	_apply_audio_values(save_store.master_volume, save_store.bgm_volume, save_store.sfx_volume)
+
+
+func _audio_sliders_ready() -> bool:
+	return _volume_slider != null and is_instance_valid(_volume_slider) \
+		and _bgm_slider != null and is_instance_valid(_bgm_slider) \
+		and _sfx_slider != null and is_instance_valid(_sfx_slider)
 
 
 func _apply_options() -> void:
 	save_store.game_options.apply_window(get_window())
-	for entry in [["Master", save_store.master_volume], ["Music", save_store.bgm_volume], ["SFX", save_store.sfx_volume]]:
+	_apply_audio_values(save_store.master_volume, save_store.bgm_volume, save_store.sfx_volume)
+
+
+func _apply_audio_values(master: float, music: float, effects: float) -> void:
+	for entry in [["Master", master], ["Music", music], ["SFX", effects]]:
 		var bus := AudioServer.get_bus_index(entry[0])
 		if bus >= 0:
 			AudioServer.set_bus_volume_db(bus, linear_to_db(maxf(entry[1], 0.0001)))
@@ -913,6 +983,7 @@ func _clear_all_ui() -> void:
 	_character_layer = null
 	_title_layer = null
 	_options_layer = null
+	_options_owns_pause = false
 	_pause_layer = null
 	_recruitment_layer = null
 	_loading_layer = null

@@ -19,6 +19,11 @@ func run() -> void:
 	assert(not paused and app.current_space._input_enabled)
 	app._on_stage_cleared()
 	assert(app.flow == app.Flow.RESULT and is_instance_valid(app._result_layer))
+	var tint := app._result_layer.find_child("ResultBackdropTint", true, false) as ColorRect
+	var panel := app._result_layer.find_child("ResultPanel", true, false) as PanelContainer
+	assert(tint != null and tint.color.a < 0.3)
+	assert(panel != null and panel.get_parent() is HBoxContainer \
+		and panel.get_parent().alignment == BoxContainer.ALIGNMENT_END)
 	app._retry_current_stage()
 	assert(app.flow == app.Flow.STAGE and app.current_space.party_size() == 4)
 	app._show_title()

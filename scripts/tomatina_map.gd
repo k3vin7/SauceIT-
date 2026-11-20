@@ -79,7 +79,9 @@ const ROAD_POCKETS := [
 	[2, Rect2i(11, 95, 5, 4)],
 	[2, CAPRESE_RESCUE_BAY],
 ]
-# Smaller side passages end at houses and never bypass a refuge.
+# Former side passages. Only a shallow recess remains at each mouth; the rest
+# is sealed by collapsed festival masonry so neither players nor enemies can
+# disappear into decorative dead ends.
 const SIDE_ALLEYS := [
 	[0, [Vector2(29.2, 206.8), Vector2(24, 203.9), Vector2(20, 199.4), Vector2(17, 196.2)]],
 	[1, [Vector2(10.1, 166.2), Vector2(10, 159), Vector2(6.8, 155.2), Vector2(7.8, 149.4)]],
@@ -89,6 +91,8 @@ const SIDE_ALLEYS := [
 ]
 const MARKET_SHORTCUT := [Vector2(10.1, 166.2), Vector2(13.5, 156.5), Vector2(15.5, 143.5), Vector2(22.5, 132.0), Vector2(28.0, 122.5)]
 const MARKET_GATE_CELL := Vector2(15.0, 146.0)
+const CLOSED_PASSAGE_STUB := 0.56
+const CLOSED_PASSAGE_BARRIER := 0.43
 const TRUCK_ROW := 44.0
 const SIREN_CELL := Vector2(25.5, 27.5)
 const PRESS_KING_CELL := Vector2(35.5, 23.5)
@@ -158,39 +162,10 @@ const GRUNT_PACKS := [
 	[3, 0.36, 16], [3, 0.73, 18],
 ]
 # Leg, trip point past the mouth of a side alley, then the forward and rear threats.
-const ALLEY_AMBUSHES := [
-	[0, Vector2(28.9, 204.3), [
-		["TOMATO_BRUTE", Vector2i(28, 201)], ["CAPRESE_CRAWLER", Vector2i(25, 206)],
-		["TOMATO_GRUNT", Vector2i(24, 203)],
-	]],
-	[1, Vector2(15.8, 164.7), [
-		["BOWLING_TOMATO", Vector2i(20, 163)], ["KETCHUP_SPITTER", Vector2i(12, 165)],
-		["TOMATO_GRUNT", Vector2i(10, 161)],
-	]],
-	[1, Vector2(33.6, 125.8), [
-		["TOMATO_BRUTE", Vector2i(29, 122)], ["CAPRESE_CRAWLER", Vector2i(36, 128)],
-		["TOMATO_GRUNT", Vector2i(39, 125)],
-	]],
-	[2, Vector2(16.8, 92.7), [
-		["BOWLING_TOMATO", Vector2i(18, 88)], ["CAPRESE_CRAWLER", Vector2i(18, 95)],
-		["TOMATO_GRUNT", Vector2i(21, 95)],
-	]],
-	[3, Vector2(28.5, 57.6), [
-		["TOMATO_BRUTE", Vector2i(24, 57)], ["KETCHUP_SPITTER", Vector2i(31, 58)],
-		["TOMATO_GRUNT", Vector2i(36, 54)],
-	]],
-]
+const ALLEY_AMBUSHES := []
 const ALLEY_REINFORCEMENT := &"alley_reinforcement"
-# Each pack adds a specialist and four grunts between the existing alley fights.
-const ALLEY_REINFORCEMENTS := [
-	[0, 0.34, "KETCHUP_SPITTER"],
-	[1, 0.20, "CAPRESE_CRAWLER"],
-	[1, 0.62, "TOMATO_BRUTE"],
-	[2, 0.11, "KETCHUP_SPITTER"],
-	[2, 0.69, "TOMATO_BRUTE"],
-	[3, 0.11, "CAPRESE_CRAWLER"],
-	[3, 0.79, "KETCHUP_SPITTER"],
-]
+# The closed passages deliberately contain no ambush or reinforcement roster.
+const ALLEY_REINFORCEMENTS := []
 const REINFORCEMENT_GRUNTS := 8
 
 
@@ -450,12 +425,14 @@ static func _ensure_layout() -> void:
 			var next := traveled + a.distance_to(b)
 			_raster_segment(a, b, leg, 4.0, Vector2(traveled / total, next / total))
 			traveled = next
+	# Keep just enough of each old entrance to show the rubble closure. There is
+	# no floor behind it, so the lattice and nav graph cannot retain a hidden
+	# bypass or an isolated enemy pocket.
 	for alley in SIDE_ALLEYS:
 		var points: Array = alley[1]
-		for index in range(1, points.size()):
-			_raster_segment(points[index - 1], points[index], int(alley[0]), 1.23)
-	for index in range(1, MARKET_SHORTCUT.size()):
-		_raster_segment(MARKET_SHORTCUT[index - 1], MARKET_SHORTCUT[index], 1, 1.65)
+		_raster_closed_stub(points[0], points[1], int(alley[0]), 1.23)
+	_raster_closed_stub(MARKET_SHORTCUT[0], MARKET_SHORTCUT[1], 1, 1.65)
+	_raster_closed_stub(MARKET_SHORTCUT[-1], MARKET_SHORTCUT[-2], 1, 1.65)
 	for pocket in ROAD_POCKETS:
 		_add_floor_rect(pocket[1], pocket[0])
 	_add_floor_rect(START_PLAZA, 0)
@@ -467,6 +444,7 @@ static func _ensure_layout() -> void:
 	_floor_legs.erase(Vector2i(5, 186))
 	for room in SAFE_ROOMS:
 		_add_floor_rect(room, -1)
+	_prune_closed_passage_pockets()
 	for cell: Vector2i in _floor_legs:
 		var pixel := Rect2i(cell, Vector2i.ONE)
 		_floor_bounds = pixel if not _floor_bounds.has_area() else _floor_bounds.merge(pixel)
@@ -488,6 +466,27 @@ static func _raster_segment(a: Vector2, b: Vector2, leg: int,
 				if progress.x >= 0.0 else radius
 			if point.distance_squared_to(a + span * fraction) <= width * width:
 				_floor_legs[Vector2i(x, y)] = leg
+
+
+static func _raster_closed_stub(mouth: Vector2, inward: Vector2, leg: int, radius: float) -> void:
+	_raster_segment(mouth, mouth.lerp(inward, CLOSED_PASSAGE_STUB), leg, radius)
+
+
+static func _prune_closed_passage_pockets() -> void:
+	var blocked := _box_cells(closed_passage_boxes())
+	var start := Vector2i(START_PLAZA.get_center())
+	var reached := {start: true}
+	var frontier: Array[Vector2i] = [start]
+	while not frontier.is_empty():
+		var cell: Vector2i = frontier.pop_back()
+		for step: Vector2i in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+			var next: Vector2i = cell + step
+			if _floor_legs.has(next) and not blocked.has(next) and not reached.has(next):
+				reached[next] = true
+				frontier.push_back(next)
+	for cell: Vector2i in _floor_legs.keys():
+		if not blocked.has(cell) and not reached.has(cell):
+			_floor_legs.erase(cell)
 
 
 static func _add_floor_rect(rect: Rect2i, leg: int) -> void:
@@ -536,7 +535,8 @@ static func market_gate() -> Dictionary:
 
 
 static func market_gate_cells() -> Dictionary:
-	return _box_cells([market_gate()])
+	return _box_cells(closed_passage_boxes().filter(func(box: Dictionary) -> bool:
+		return String(box["name"]).begins_with("ClosedShortcut")))
 
 
 static func blocked_cells() -> Dictionary:
@@ -643,6 +643,7 @@ static func is_aftermath_prop(box: Dictionary) -> bool:
 
 static func debris_boxes() -> Array[Dictionary]:
 	var boxes: Array[Dictionary] = []
+	_add_closed_passage_debris(boxes)
 	for leg in ROUTE_POINTS.size():
 		var count: int = [5, 8, 8, 6][leg]
 		for i in count:
@@ -724,6 +725,46 @@ static func debris_boxes() -> Array[Dictionary]:
 		Vector2(34.5, 33.5), Vector2(33.2, 33.9))
 	_add_festival_aftermath(boxes)
 	return boxes
+
+
+static func closed_passage_boxes() -> Array[Dictionary]:
+	var boxes: Array[Dictionary] = []
+	_add_closed_passage_debris(boxes)
+	return boxes
+
+
+static func _add_closed_passage_debris(boxes: Array[Dictionary]) -> void:
+	var passages: Array = []
+	for index in SIDE_ALLEYS.size():
+		var points: Array = SIDE_ALLEYS[index][1]
+		passages.append(["ClosedAlley%02d" % index, points[0], points[1]])
+	passages.append(["ClosedShortcutSouth", MARKET_SHORTCUT[0], MARKET_SHORTCUT[1]])
+	passages.append(["ClosedShortcutNorth", MARKET_SHORTCUT[-1], MARKET_SHORTCUT[-2]])
+	for passage_index in passages.size():
+		var passage: Array = passages[passage_index]
+		var mouth: Vector2 = passage[1]
+		var inward: Vector2 = passage[2]
+		var forward := mouth.direction_to(inward)
+		var across := forward.orthogonal()
+		var centre := mouth.lerp(inward, CLOSED_PASSAGE_BARRIER)
+		# Five overlapping chunks close diagonal gaps while still reading as an
+		# irregular pile instead of a single invisible rectangular gate.
+		for index in 5:
+			var lateral := (float(index) - 2.0) * 2.75
+			var depth := (0.42 if index % 2 == 0 else -0.34) * forward
+			var at := centre + across * (lateral / StreetMap.CELL) + depth
+			var height := 2.4 + 0.42 * float((index * 3 + passage_index) % 4)
+			var box := metre_box(at, Vector3(3.55, height, 3.55),
+				"%s_Rubble%02d" % [passage[0], index], RUBBLE)
+			box["closed_passage"] = true
+			boxes.push_back(box)
+		# A taller broken barricade behind the heap makes the closure readable
+		# from the main street and prevents the pile looking accidentally climbable.
+		var rear := centre + forward * 0.62
+		var barrier := metre_box(rear, Vector3(7.2, 3.7, 2.2),
+			"%s_BrokenBarrier" % passage[0], RUBBLE)
+		barrier["closed_passage"] = true
+		boxes.push_back(barrier)
 
 
 static func _add_festival_aftermath(boxes: Array[Dictionary]) -> void:

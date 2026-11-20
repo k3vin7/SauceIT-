@@ -301,7 +301,9 @@ func _add_debris(box: Dictionary) -> void:
 	var size: Vector3 = box["size"]
 	var key := "Rubble"
 	var facing := Vector3.BACK
-	if TomatinaMap.is_aftermath_prop(box):
+	if box.get("closed_passage", false):
+		key = "BrokenFestivalBarrier" if name.ends_with("BrokenBarrier") else "CollapsedStoneWall"
+	elif TomatinaMap.is_aftermath_prop(box):
 		key = name
 		facing = box["facing"]
 		if absf(facing.x) > 0.5:

@@ -25,6 +25,8 @@ func _initialize() -> void:
 			ambushes[entry[2]] = int(ambushes.get(entry[2], 0)) + 1
 	for group in TomatinaMap.ALLEY_AMBUSHES.size():
 		assert(ambushes.get(group, 0) == 3, "lost intentional ambush")
+	assert(TomatinaMap.ALLEY_AMBUSHES.is_empty() and TomatinaMap.ALLEY_REINFORCEMENTS.is_empty(),
+		"closed passages still define hidden enemy packs")
 	var removed := 0
 	for change in changes:
 		if change.get("removed", false):
