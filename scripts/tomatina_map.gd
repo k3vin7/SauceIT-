@@ -174,6 +174,13 @@ static func refuge_shower_at(room: int) -> Vector3:
 	return at_cell(Vector2(courtyard.end.x - 1.0, courtyard.position.y + 1.15))
 
 
+## The white cross on the shower post's blue plate, which the wash prompt is
+## pinned beside. From the RefugeShower model: 1.83 m up, 0.964 m behind the
+## nozzle (Blender +Y is Godot -Z), placed unturned.
+static func refuge_shower_marker_at(room: int) -> Vector3:
+	return refuge_shower_at(room) + Vector3(0.0, 1.83, -0.964)
+
+
 static func refuge_shop_at(room: int) -> Vector3:
 	return at_cell(Vector2(SAFE_ROOMS[room].position) + Vector2(0.82, 1.62))
 

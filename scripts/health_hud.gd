@@ -244,18 +244,51 @@ func _draw_player() -> void:
 			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13, tint)
 
 
+## Where the action chip is pinned in the world, or INF for the usual place at
+## the bottom of the screen. Only the shower is pinned: beside the cross on its
+## post, at twice the size.
+func _action_anchor() -> Vector3:
+	var support = world.get("play_support")
+	if support == null or not is_instance_valid(support) or world._local == null:
+		return Vector3.INF
+	var target: Dictionary = support.context_target(world._local)
+	if target.get("kind", "") != "shower":
+		return Vector3.INF
+	return TomatinaMap.refuge_shower_marker_at(int(target.id))
+
+
 func _draw_action_chip(text: String) -> void:
+	var anchor := _action_anchor()
+	var zoom := 1.0
+	var at := Vector2.INF
+	if anchor.is_finite():
+		var camera := world.get("_camera") as Camera3D
+		if camera == null or not is_instance_valid(camera) or camera.is_position_behind(anchor):
+			return
+		at = camera.unproject_position(anchor)
+		if not frame.has_point(at):
+			return
+		zoom = 2.0
 	var font := ThemeDB.fallback_font
 	var key_label := preload("res://scripts/game_options.gd").key_label("interact", "E")
 	var message := text.trim_prefix("[%s] " % key_label)
-	var width := font.get_string_size(message, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17).x
-	var card := Rect2(frame.get_center().x - (width + 62.0) * 0.5, frame.end.y - 201.0, width + 62.0, 38.0)
+	var width := font.get_string_size(message, HORIZONTAL_ALIGNMENT_LEFT, -1.0, roundi(17 * zoom)).x
+	var chip_size := Vector2(width + 62.0 * zoom, 38.0 * zoom)
+	var card := Rect2(frame.get_center().x - chip_size.x * 0.5, frame.end.y - 201.0, chip_size.x, chip_size.y)
+	if at.is_finite():
+		# To the right of the cross, centred on it, a small gap clear of it.
+		# Clear of the cross's arm (0.16 m) however near the camera stands.
+		var camera := world.get("_camera") as Camera3D
+		var arm := camera.unproject_position(anchor + camera.global_basis.x * 0.2).x - at.x
+		card.position = at + Vector2(maxf(arm, 0.0) + 12.0, -chip_size.y * 0.5)
+		card.position = card.position.clamp(frame.position, frame.end - chip_size)
 	draw_style_box(_plate, card)
-	var key := Rect2(card.position + Vector2(8.0, 7.0), Vector2(25.0, 24.0))
+	var key := Rect2(card.position + Vector2(8.0, 7.0) * zoom, Vector2(25.0, 24.0) * zoom)
 	draw_style_box(_slot_active, key)
-	draw_string(font, key.position + Vector2(0.0, 17.0), key_label, HORIZONTAL_ALIGNMENT_CENTER, key.size.x, 15, UI.CREAM)
-	draw_string(font, card.position + Vector2(43.0, 25.0), message,
-		HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, UI.CREAM)
+	draw_string(font, key.position + Vector2(0.0, 17.0 * zoom), key_label, HORIZONTAL_ALIGNMENT_CENTER,
+		key.size.x, roundi(15 * zoom), UI.CREAM)
+	draw_string(font, card.position + Vector2(43.0, 25.0) * zoom, message,
+		HORIZONTAL_ALIGNMENT_LEFT, -1.0, roundi(17 * zoom), UI.CREAM)
 
 func _draw_enemies() -> void:
 	var camera := world.get("_camera") as Camera3D
@@ -275,6 +308,9 @@ func _draw_enemies() -> void:
 	for index in count:
 		var enemy := world.enemy_at(index) as MayoEnemy
 		if enemy == null or not is_instance_valid(enemy) or not enemy.is_alive():
+			continue
+		# A bowled ball cannot be hurt, so a bar over it would never move.
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
 			continue
 		if world.map_kind == world.MapKind.TOMATINA:
 			if enemy.kind == MayoEnemy.EnemyKind.PRESS_KING:

@@ -51,6 +51,25 @@ var _sauce_mesh := SphereMesh.new()
 var _streak_mesh := CylinderMesh.new()
 var _sauce_materials: Array[StandardMaterial3D] = []
 
+## How long a shot is drawn bending from where it visibly left (the part on the
+## character's bottle) onto the line it really flies, as the stream does with
+## `MUZZLE_DRAW_BLEND`.
+const DRAW_BLEND := 0.22
+
+
+## How far the fitted part reaches past the bottle's muzzle -- the front of the
+## mesh `build_tip` centres on it -- so a shot leaves from the part's mouth.
+static func tip_reach(part: int) -> float:
+	match part:
+		Part.STANDARD:
+			return 0.0
+		Part.FAN:
+			return 0.09
+		Part.CANNON:
+			return 0.205
+		_:
+			return 0.115
+
 
 static func build_tip(part: int, mount: Node3D, at: Vector3) -> Node3D:
 	var tip := Node3D.new()
@@ -201,9 +220,17 @@ func reset() -> void:
 	dirty = true
 
 
-func show_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vector3) -> void:
+## `origin` is where the shot really flies from -- the same on every peer, so
+## it lands the same everywhere. `draw_from`, when given, is where this screen
+## sees it leave (the part on the shooter's character); the gap is drawn
+## closing over `DRAW_BLEND`. `sweep_from`, when given, is where the first hit
+## check starts, so a body pressed against the shooter, nearer than the part's
+## mouth, is still struck.
+func show_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vector3,
+		draw_from := Vector3.INF, sweep_from := Vector3.INF) -> void:
 	var profile: Dictionary = PROJECTILES[part]
 	var angles := [-18.0, -9.0, 0.0, 9.0, 18.0] if part == Part.FAN else [0.0]
+	var draw_offset := draw_from - origin if draw_from.is_finite() else Vector3.ZERO
 	for angle: float in angles:
 		var direction := forward.rotated(Vector3.UP, deg_to_rad(angle))
 		var glob := MeshInstance3D.new()
@@ -212,22 +239,29 @@ func show_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vec
 		glob.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		glob.scale = Vector3.ONE * (2.0 * float(profile.size))
 		add_child(glob)
-		glob.global_position = origin
+		# `head` is where the shot really is; the node is only drawn from it.
 		var shot := {"node": glob, "peer": peer, "part": part, "sauce": sauce,
-			"velocity": direction * float(profile.speed), "left": profile.life}
+			"velocity": direction * float(profile.speed), "left": profile.life,
+			"head": origin, "origin": origin, "age": 0.0, "draw_offset": draw_offset}
+		if sweep_from.is_finite():
+			shot["sweep_from"] = sweep_from
 		if part == Part.FAN:
-			# Where the shot really is travels apart from the node, which is
-			# now the streak behind it. See `_draw_streak`.
-			shot["head"] = origin
-			shot["origin"] = origin
 			shot["trail"] = float(profile.speed) * float(profile.cooldown)
-			_draw_streak(shot, profile)
+		_place_shot(shot, profile)
 		_projectiles.append(shot)
+
+
+func _place_shot(shot: Dictionary, profile: Dictionary) -> void:
+	var offset: Vector3 = shot.draw_offset * (1.0 - smoothstep(0.0, DRAW_BLEND, float(shot.age)))
+	if shot.part == Part.FAN:
+		_draw_streak(shot, profile, offset)
+	else:
+		(shot.node as MeshInstance3D).global_position = shot.head + offset
 
 
 ## Lays a fan shot's streak from its head back towards the nozzle, no longer
 ## than the distance the shot after it has yet to cover.
-func _draw_streak(shot: Dictionary, profile: Dictionary) -> void:
+func _draw_streak(shot: Dictionary, profile: Dictionary, offset := Vector3.ZERO) -> void:
 	var node: MeshInstance3D = shot.node
 	var head: Vector3 = shot.head
 	var velocity: Vector3 = shot.velocity
@@ -237,7 +271,7 @@ func _draw_streak(shot: Dictionary, profile: Dictionary) -> void:
 	var length := clampf(head.distance_to(shot.origin), 0.02, float(shot.trail))
 	var width := float(profile.size) * 1.5
 	var basis := Basis(Quaternion(Vector3.UP, along)).scaled_local(Vector3(width, length, width))
-	node.global_transform = Transform3D(basis, head - along * length * 0.5)
+	node.global_transform = Transform3D(basis, head + offset - along * length * 0.5)
 
 
 func advance_projectiles(delta: float, authority: bool) -> void:
@@ -245,10 +279,12 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 		var shot: Dictionary = _projectiles[i]
 		var profile: Dictionary = PROJECTILES[shot.part]
 		var node: MeshInstance3D = shot.node
-		var from: Vector3 = shot.get("head", node.global_position)
+		var from: Vector3 = shot.head
 		shot.velocity += Vector3.DOWN * float(profile.gravity) * delta
 		var to: Vector3 = from + shot.velocity * delta
-		var query := PhysicsRayQueryParameters3D.create(from, to)
+		var sweep: Vector3 = shot.get("sweep_from", from)
+		shot.erase("sweep_from")
+		var query := PhysicsRayQueryParameters3D.create(sweep, to)
 		var shooter = world.shooter_for(shot.peer)
 		if shooter != null:
 			query.exclude = [shooter.player.get_rid()]
@@ -259,11 +295,9 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 		if not hit.is_empty():
 			world._part_projectile_impact(hit, shot, profile, shooter, authority)
 		elif shot.left > 0.0:
-			if shot.has("head"):
-				shot.head = to
-				_draw_streak(shot, profile)
-			else:
-				node.global_position = to
+			shot.head = to
+			shot.age = float(shot.age) + delta
+			_place_shot(shot, profile)
 			continue
 		node.queue_free()
 		_projectiles.remove_at(i)

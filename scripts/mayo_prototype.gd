@@ -573,7 +573,7 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## How fast the mouse has to travel to count as a full-strength shake.
 @export_range(200.0, 10000.0, 50.0, "suffix:px/s") var bottle_shake_full_speed := 2200.0
 ## How long a full-strength shake takes to fill an empty gauge.
-@export_range(0.1, 10.0, 0.05, "suffix:s") var bottle_charge_seconds := 3.0
+@export_range(0.1, 10.0, 0.05, "suffix:s") var bottle_charge_seconds := 1.0
 ## How long the gauge holds once the shaking stops, before it starts to drain.
 @export_range(0.0, 20.0, 0.1, "suffix:s") var bottle_charge_hold_seconds := 3.0
 ## How long a full gauge takes to drain; a part-full one drains at the same rate.
@@ -1899,7 +1899,10 @@ const ARC_AIM_REACH := 30.0
 func _arc_launch_direction(shooter: Shooter, origin: Vector3) -> Vector3:
 	var forward := shooter.attack_direction
 	var fallback := (forward + Vector3.UP * 0.43).normalized()
-	var query := PhysicsRayQueryParameters3D.create(origin, origin + forward * ARC_AIM_REACH)
+	# What the crosshair is on is found from the eyes; the lob is solved from
+	# where it leaves, the part's mouth.
+	var eye := shooter.aim_pivot.global_position
+	var query := PhysicsRayQueryParameters3D.create(eye, eye + forward * ARC_AIM_REACH)
 	query.exclude = [shooter.player.get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
 	if hit.is_empty():
@@ -1919,9 +1922,38 @@ func _arc_launch_direction(shooter: Shooter, origin: Vector3) -> Vector3:
 	return (flat / distance * cos(pitch) + Vector3.UP * sin(pitch)).normalized()
 
 
-func _fire_part_volley(shooter: Shooter) -> void:
-	var origin := shooter.aim_pivot.global_position
+## Where a fitted part's shot leaves: the mouth of the part on the first-person
+## bottle. That bottle hangs off the aim pivot on every peer, so it is the same
+## place on all of them -- the reason `_emit_point` launches the stream from it
+## too. Everyone else's screen draws the shot from their character's bottle.
+func part_launch_origin(shooter: Shooter, part: int) -> Vector3:
+	if not is_instance_valid(shooter.viewmodel_muzzle):
+		return shooter.aim_pivot.global_position
+	return shooter.viewmodel_muzzle.to_global(Vector3(0.0, 0.0, -SauceParts.tip_reach(part)))
+
+
+## The straight parts leave from the bottle, off to the side of the eyes, so
+## they are turned onto what the crosshair is on instead of flying parallel to
+## the view and passing beside it.
+func _part_aim_direction(shooter: Shooter, origin: Vector3) -> Vector3:
 	var forward := shooter.attack_direction
+	var profile: Dictionary = SauceParts.PROJECTILES[shooter.sauce_part]
+	var reach := float(profile.speed) * float(profile.life)
+	var eye := shooter.aim_pivot.global_position
+	var query := PhysicsRayQueryParameters3D.create(eye, eye + forward * reach)
+	query.exclude = [shooter.player.get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	var target: Vector3 = eye + forward * reach if hit.is_empty() else hit.position
+	var to_target := target - origin
+	# Something nearer than the bottle's mouth: just fire along the aim.
+	if to_target.length_squared() < 0.01 or to_target.normalized().dot(forward) < 0.5:
+		return forward
+	return to_target.normalized()
+
+
+func _fire_part_volley(shooter: Shooter) -> void:
+	var origin := part_launch_origin(shooter, shooter.sauce_part)
+	var forward := _part_aim_direction(shooter, origin)
 	if shooter.sauce_part == SauceParts.Part.ARC:
 		forward = _arc_launch_direction(shooter, origin)
 	shooter.burst_index += 1
@@ -1939,7 +1971,17 @@ func _fire_part_volley(shooter: Shooter) -> void:
 func show_part_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vector3) -> void:
 	if _sauce_parts == null or not SauceParts.PROJECTILES.has(part):
 		return
-	_sauce_parts.show_volley(peer, part, sauce, origin, forward)
+	# Drawn leaving the part on the character's bottle when that is the bottle
+	# this screen shows; it really flies from `origin` on every peer.
+	var draw_from := Vector3.INF
+	var sweep_from := Vector3.INF
+	var shooter: Shooter = _shooters.get(peer)
+	if shooter != null:
+		sweep_from = shooter.aim_pivot.global_position
+		if is_instance_valid(shooter.muzzle) and shooter.muzzle != shooter.viewmodel_muzzle \
+				and forward.length_squared() > 0.000001:
+			draw_from = shooter.muzzle.global_position + forward.normalized() * SauceParts.tip_reach(part)
+	_sauce_parts.show_volley(peer, part, sauce, origin, forward, draw_from, sweep_from)
 	if part == SauceParts.Part.CANNON:
 		_play_combat_warning(origin, 155.0, 0.16)
 	elif part == SauceParts.Part.ARC:

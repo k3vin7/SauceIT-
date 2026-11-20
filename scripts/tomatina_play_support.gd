@@ -213,6 +213,8 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 		velocity = direction * lerpf(8.0, 25.0, charge) + Vector3.UP * lerpf(1.0, 3.0, charge)
 	elif world._local.sauce_part == world.SauceParts.Part.ARC:
 		var profile: Dictionary = world.SauceParts.PROJECTILES[world.SauceParts.Part.ARC]
+		# Drawn from where the lob really leaves, the cap's mouth.
+		origin = world.part_launch_origin(world._local, world.SauceParts.Part.ARC)
 		velocity = world._arc_launch_direction(world._local, origin) * float(profile.speed)
 		gravity = profile.gravity
 		life = profile.life
