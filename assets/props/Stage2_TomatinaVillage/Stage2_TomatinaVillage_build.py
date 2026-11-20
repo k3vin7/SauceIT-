@@ -69,6 +69,8 @@ materials = {
 }
 parts = []
 models = []
+ZFIGHT_PLANE_EPSILON = .001
+ZFIGHT_SURFACE_GAP = .003
 
 
 def paint(obj, color):
@@ -111,7 +113,73 @@ def gable(width, depth, base, rise, color):
     return paint(obj, color)
 
 
+def separate_coplanar_parts(model_name):
+    """Push coincident outward faces apart before joining primitive parts.
+
+    The kit is deliberately assembled from simple boxes.  When two decorative
+    parts land on the same plane Blender exports both faces and Godot alternates
+    between them at distance.  Extending the later face by three millimetres is
+    visually imperceptible, keeps the silhouette intact, and gives the depth
+    buffer an unambiguous winner.
+    """
+    bpy.context.view_layer.update()
+    records = []
+    for part_index, obj in enumerate(parts):
+        world = obj.matrix_world
+        normal_matrix = world.to_3x3().inverted().transposed()
+        for face in obj.data.polygons:
+            normal = (normal_matrix @ face.normal).normalized()
+            centre = world @ face.center
+            axis = max(range(3), key=lambda index: abs(normal[index]))
+            keep = [index for index in range(3) if index != axis]
+            coordinates = [world @ obj.data.vertices[index].co for index in face.vertices]
+            bounds = (
+                min(co[keep[0]] for co in coordinates), max(co[keep[0]] for co in coordinates),
+                min(co[keep[1]] for co in coordinates), max(co[keep[1]] for co in coordinates),
+            )
+            records.append((part_index, obj, face, normal, normal.dot(centre), axis, bounds))
+
+    move_faces = {}
+    for left_index, left in enumerate(records):
+        for right in records[left_index + 1:]:
+            if left[0] == right[0] or left[5] != right[5]:
+                continue
+            if left[3].dot(right[3]) < .99999:
+                continue
+            if abs(left[4] - right[4]) > ZFIGHT_PLANE_EPSILON:
+                continue
+            a, b = left[6], right[6]
+            overlap_u = min(a[1], b[1]) - max(a[0], b[0])
+            overlap_v = min(a[3], b[3]) - max(a[2], b[2])
+            if overlap_u <= .000001 or overlap_v <= .000001:
+                continue
+            target = right if right[0] >= left[0] else left
+            move_faces[(target[0], target[2].index)] = target[3]
+
+    vertex_deltas = {}
+    for (part_index, face_index), world_normal in move_faces.items():
+        obj = parts[part_index]
+        local_delta = obj.matrix_world.inverted().to_3x3() @ (world_normal * ZFIGHT_SURFACE_GAP)
+        face = obj.data.polygons[face_index]
+        for vertex_index in face.vertices:
+            key = (part_index, vertex_index)
+            vertex_deltas[key] = vertex_deltas.get(key, Vector()) + local_delta
+    for (part_index, vertex_index), delta in vertex_deltas.items():
+        parts[part_index].data.vertices[vertex_index].co += delta
+    for part_index in {key[0] for key in vertex_deltas}:
+        parts[part_index].data.update()
+    return len(move_faces)
+
+
 def finish(name):
+    fixed_faces = 0
+    for _pass in range(12):
+        fixed = separate_coplanar_parts(name)
+        fixed_faces += fixed
+        if fixed == 0:
+            break
+    if fixed_faces:
+        print(f"ZFIGHT_FIXED {name} {fixed_faces} face passes")
     bpy.ops.object.select_all(action="DESELECT")
     for obj in parts:
         obj.select_set(True)
@@ -326,33 +394,85 @@ def cargo_tomatoes():
         tomato((x, y, 1.89), .27, index + 8, True)
 
 
+def truck_wheel(x, y):
+    tire = cone((x, y, .58), .47, .47, .32, "Rubber", 12)
+    tire.rotation_euler.y = math.pi / 2
+    hub = cone((x * 1.015, y, .58), .19, .19, .35, "Chrome", 10)
+    hub.rotation_euler.y = math.pi / 2
+
+
+def truck_cab(body, emergency=False):
+    # A compact European cab-over silhouette: the lower nose projects beyond
+    # the upright door while the windscreen leans back into a shallow roof.
+    box((0, -1.92, 1.19), (2.12, 1.47, 1.08), body)
+    box((0, -1.78, 1.96), (2.02, 1.20, .75), body, tilt=math.radians(-7))
+    box((0, -2.41, 2.03), (1.64, .075, .56), "Glass", tilt=math.radians(-7))
+    box((0, -2.445, 2.03), (.065, .085, .58), "Shade", tilt=math.radians(-7))
+    box((0, -1.72, 2.39), (1.98, 1.07, .13), body)
+    for x in (-1.025, 1.025):
+        box((x, -1.74, 1.91), (.07, .66, .55), "Glass")
+        box((x * 1.10, -2.12, 2.01), (.10, .14, .13), "Shade")
+        box((x * 1.16, -2.19, 2.01), (.11, .22, .08), "Glass")
+        box((x, -1.39, 1.28), (.075, .08, .48), "Shade")
+    box((0, -2.63, .88), (2.18, .17, .22), "Chrome")
+    box((0, -2.555, 1.23), (.72, .05, .22), "Shade")
+    for x in (-.73, .73):
+        box((x, -2.655, 1.13), (.31, .07, .22), "White")
+        box((x, -2.665, .78), (.23, .06, .10), "Gold")
+    if emergency:
+        box((0, -1.87, 2.52), (1.20, .24, .12), "Chrome")
+        for x in (-.36, .36):
+            box((x, -1.87, 2.61), (.25, .22, .14), "Blue")
+
+
+def closed_truck_body(body, stripe):
+    box((0, .59, 1.64), (2.08, 3.50, 1.68), body)
+    box((0, .59, 2.52), (2.13, 3.55, .13), "Canvas")
+    box((0, 2.37, 1.61), (1.91, .07, 1.48), body)
+    box((0, 2.415, 1.72), (1.44, .035, .07), "Chrome")
+    for x in (-1.045, 1.045):
+        box((x, .56, 1.66), (.065, 3.35, .19), stripe)
+        box((x, 1.57, 1.29), (.07, .07, .78), "Shade")
+
+
+def fire_engine_body():
+    box((0, .58, 1.61), (2.08, 3.52, 1.61), "Scarlet")
+    box((0, .58, 2.47), (2.11, 3.55, .12), "White")
+    for x in (-1.045, 1.045):
+        for y in (-.35, .55, 1.45):
+            box((x, y, 1.54), (.065, .72, .92), "Chrome")
+            box((x * 1.006, y, 1.54), (.07, .62, .75), "Shade")
+        box((x, .62, 2.23), (.07, 3.25, .12), "White")
+    # Ladder and hose lockers give the long rear body a recognisable purpose.
+    for x in (-.43, .43):
+        box((x, .63, 2.66), (.09, 3.20, .10), "Chrome")
+    for y in (-.76, -.24, .28, .80, 1.32, 1.84):
+        box((0, y, 2.66), (.94, .08, .08), "Chrome")
+    box((0, 2.38, 1.76), (1.72, .07, .86), "Shade")
+    for x in (-.57, 0, .57):
+        box((x, 2.43, 1.78), (.30, .05, .09), "White")
+
+
 for name, body, stripe in [("FireEngine", "Scarlet", "White"), ("SauceVan", "Ochre", "Red"),
                            ("WreckBody", "Blue", "Canvas"), ("TomatoTruck", "Blue", "Canvas"),
                            ("OverturnedTomatoTruck", "Red", "Canvas")]:
-    box((0, 0, .87), (2.1, 5.35, .36), "Shade")
+    box((0, -.02, .74), (1.92, 4.90, .26), "Shade")
     carries_tomatoes = name.endswith("TomatoTruck")
     if carries_tomatoes:
         cargo_tomatoes()
+    elif name == "FireEngine":
+        fire_engine_body()
     else:
-        box((0, .38, 1.78), (2.12, 3.57, 1.48), body)
-    box((0, -1.57, 1.75), (2.0, 1.58, 1.44), body)
-    box((0, -2.39, 2.02), (1.74, .12, .61), "Glass")
-    box((0, -2.68, .87), (2.15, .2, .24), "Chrome")
-    for x in (-.73, .73):
-        box((x, -2.7, 1.15), (.34, .12, .25), "White")
-    for x in (-1.05, 1.05):
-        if not carries_tomatoes:
-            box((x, .46, 1.81), (.09, 3.39, .25), stripe)
-        box((x, -1.57, 2.02), (.09, .83, .63), "Glass")
-        for y in (-1.64, 1.63):
-            tire = cone((x, y, .48), .48, .48, .3, "Rubber", 12)
-            tire.rotation_euler.y = math.pi / 2
-    if name == "FireEngine":
-        box((0, -1.55, 2.63), (1.36, .32, .27), "Blue")
-        for x in (-.36, .36):
-            box((x, .56, 2.61), (.11, 2.94, .12), "Chrome")
-        for y in (-.72, -.22, .28, .78, 1.28, 1.78):
-            box((0, y, 2.61), (.77, .11, .1), "Chrome")
+        closed_truck_body(body, stripe)
+    truck_cab(body, name == "FireEngine")
+    for x in (-1.08, 1.08):
+        for y in (-1.60, 1.58):
+            truck_wheel(x, y)
+    # Small mudguards visually attach the wheels to the body without hiding
+    # their round silhouette, unlike the former floating black cylinders.
+    for x in (-1.075, 1.075):
+        for y in (-1.60, 1.58):
+            box((x, y, .91), (.10, 1.10, .13), body)
     truck = finish(name)
     if name == "OverturnedTomatoTruck":
         truck.data.transform(Matrix.Rotation(math.radians(98), 4, "Y"))
@@ -432,6 +552,54 @@ for x, y, length, width, angle in [
                 .017, .017, .017, "Slate", sides=6)
 finish("BrokenBoards")
 
+# Cups, napkins, a bottle and a cracked serving tray left after the crowd.
+for index, (x, y, angle) in enumerate([
+        (-.78, -.22, .18), (-.43, .31, -.42), (-.08, -.13, .63),
+        (.26, .34, -.18), (.58, -.28, .38), (.82, .16, -.61)]):
+    color = ("Canvas", "White", "Gold")[index % 3]
+    scrap = extruded_fragment([(-.16, -.10), (.13, -.12), (.18, .04),
+                                (.05, .13), (-.14, .08)],
+                               .012, (x, y, .008), angle, color, "CanvasDark")
+    scrap.rotation_euler.z = angle
+for x, y, angle in [(-.56, .04, .28), (.15, -.35, -.34), (.66, .38, .51)]:
+    cup = cone((x, y, .10), .09, .065, .20, "White", sides=8)
+    cup.rotation_euler.x = math.pi / 2 - .18
+    cup.rotation_euler.z = angle
+bottle = box((.03, .10, .055), (.38, .095, .09), "Glass")
+bottle.rotation_euler.z = -.58
+box((-.92, .25, .035), (.42, .31, .055), "Slate", .04).rotation_euler.z = .31
+finish("FestivalTrashPile")
+
+# A split produce basket with tomatoes rolling away from it.
+box((-.42, .02, .09), (.82, .72, .14), "Door", .12).rotation_euler.z = -.21
+for rail in range(4):
+    y = -.25 + rail * .17
+    slat = box((-.42, y, .25 + rail * .035), (.86, .09, .11),
+               "Wood" if rail % 2 else "CanvasDark", .16)
+    slat.rotation_euler.z = -.21
+for x in (-.80, -.05):
+    post = box((x, .02, .31), (.10, .76, .52), "Door", .12)
+    post.rotation_euler.z = -.21
+for index, (x, y, radius) in enumerate([
+        (.04, -.30, .18), (.27, -.09, .16), (.49, .18, .19), (.72, -.22, .15),
+        (.93, .13, .17), (.32, .39, .14), (.67, .43, .16), (1.02, -.42, .13)]):
+    tomato((x, y, radius), radius, index, index % 3 == 0)
+finish("TomatoBasketSpill")
+
+# Snapped bunting rope with bright triangular pennants tangled on the road.
+for index, (x, y, length, angle) in enumerate([
+        (-.36, -.20, 1.35, .18), (.28, .18, 1.20, -.34), (.58, -.27, .82, .57)]):
+    rope = box((x, y, .035 + index * .012), (length, .026, .026), "Door")
+    rope.rotation_euler.z = angle
+for index, (x, y, angle) in enumerate([
+        (-.82, -.25, .12), (-.47, -.12, -.20), (-.10, .11, .31),
+        (.22, .27, -.43), (.52, -.12, .56), (.83, -.31, -.19)]):
+    color = ("Scarlet", "Gold", "Canvas", "Red")[index % 4]
+    flag = extruded_fragment([(-.17, -.07), (.17, -.07), (0, .24)], .018,
+                             (x, y, .045 + .006 * (index % 2)), angle, color, "CanvasDark")
+    flag.rotation_euler.z = angle
+finish("TornBuntingHeap")
+
 for x, radius, height in [(-.59, .43, 1.02), (.47, .49, 1.19)]:
     cone((x, 0, height * .5), radius * .86, radius, height, "Wood", sides=10)
     for z in (height * .19, height * .75):
@@ -450,6 +618,55 @@ def beam(a, b, width, depth, color):
     obj = box(tuple((a + b) * .5), (width, depth, delta.length), color)
     obj.rotation_euler = Vector((0, 0, 1)).rotation_difference(delta).to_euler()
     return obj
+
+
+# Static festival casualties.  These are intentionally bloodless environment
+# meshes: clothing, hair and relaxed silhouettes communicate what happened
+# without adding animated skeletons or graphic detail.
+def victim_head(at, hair="Door"):
+    x, y, z = at
+    gem((x, y, z), (.24, .25, .22), "Peach", subdivisions=1)
+    gem((x, y + .015, z + .13), (.245, .22, .105), hair, subdivisions=1)
+
+
+# Face-down, one arm caught beneath the torso.
+box((0, -.02, .20), (.64, .84, .26), "PlasterBlue", .03).rotation_euler.z = -.08
+box((0, .42, .18), (.59, .24, .22), "Slate").rotation_euler.z = -.08
+victim_head((-.08, -.63, .20), "Door")
+beam((-.28, -.24, .18), (-.83, -.58, .13), .17, .16, "Peach")
+beam((.27, -.22, .15), (.48, .17, .11), .17, .15, "PlasterBlue")
+beam((-.17, .48, .16), (-.42, 1.10, .13), .21, .20, "RoofWine")
+beam((.17, .48, .16), (.44, 1.04, .12), .21, .20, "RoofWine")
+box((-.47, 1.15, .12), (.27, .40, .18), "Shade", .04)
+box((.50, 1.08, .11), (.27, .38, .18), "Shade", -.05)
+finish("FestivalVictimProne")
+
+# Face-up with limbs spread after being knocked into the street.
+box((0, -.04, .20), (.70, .88, .25), "Gold", -.02).rotation_euler.z = .05
+box((0, .44, .18), (.62, .25, .22), "CanvasDark").rotation_euler.z = .05
+victim_head((.05, -.68, .22), "RoofUmber")
+beam((-.31, -.24, .17), (-.91, -.05, .13), .17, .16, "Peach")
+beam((.31, -.24, .17), (.88, -.54, .14), .17, .16, "Peach")
+beam((-.18, .49, .16), (-.59, 1.10, .12), .22, .20, "Blue")
+beam((.18, .49, .16), (.62, 1.03, .13), .22, .20, "Blue")
+box((-.67, 1.16, .11), (.28, .39, .18), "Rubber", .06)
+box((.70, 1.08, .12), (.28, .39, .18), "Rubber", -.04)
+finish("FestivalVictimSprawled")
+
+# Curled on one side beside a wall or abandoned stall.
+torso = box((-.08, -.03, .24), (.62, .83, .29), "Terracotta", .08)
+torso.rotation_euler.z = -.28
+box((.02, .38, .20), (.55, .23, .22), "Shade").rotation_euler.z = -.28
+victim_head((-.35, -.58, .27), "CanvasDark")
+beam((-.31, -.20, .22), (-.70, .05, .16), .17, .16, "Peach")
+beam((.16, -.22, .20), (.50, -.48, .14), .17, .16, "Peach")
+beam((-.12, .48, .18), (-.42, .82, .14), .22, .20, "RoofSage")
+beam((-.42, .82, .14), (-.13, 1.18, .12), .21, .19, "RoofSage")
+beam((.15, .44, .18), (.43, .72, .14), .22, .20, "RoofSage")
+beam((.43, .72, .14), (.72, .96, .12), .21, .19, "RoofSage")
+box((-.08, 1.23, .11), (.28, .38, .17), "Rubber", .03).rotation_euler.z = -.22
+box((.78, 1.00, .11), (.28, .38, .17), "Rubber", -.03).rotation_euler.z = -.36
+finish("FestivalVictimSide")
 
 
 # A buckled stall frame and a torn striped canopy slumped off its ridge.

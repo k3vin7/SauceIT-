@@ -8,6 +8,7 @@ const FLAME_VOLUME := preload("res://assets/props/Stage2_TomatinaVillage/tomatin
 const FESTIVAL_DECOR := preload("res://scripts/tomatina_festival_decor.gd")
 const HOUSES := ["HouseCream", "HousePeach", "HouseLime", "HouseSage", "HouseBlue", "HouseHoney"]
 const BANNERS := ["BannerWater", "BannerMarket", "BannerFestival"]
+const VICTIM_MODELS := ["FestivalVictimProne", "FestivalVictimSprawled", "FestivalVictimSide"]
 const CARDINAL := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
 const CHUNK_SIZE := 70.0
 const HOUSE_CHUNK_WIDTH := 110.0
@@ -152,7 +153,8 @@ func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dicti
 			batch.name = "%s_%d_%d" % [name, chunk.x, chunk.y]
 			batch.multimesh = multimesh
 			batch.material_override = finish
-			if name == "BrokenBoards" or name == "CrushedTomatoes":
+			if name in ["BrokenBoards", "CrushedTomatoes", "FestivalTrashPile",
+					"TomatoBasketSpill", "TornBuntingHeap"]:
 				batch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			root.add_child(batch)
 
@@ -165,9 +167,21 @@ func _build_frontages() -> void:
 	for cell: Vector2i in floor:
 		var open := not blocked.has(cell)
 		var patch := posmod((cell.x * 73) ^ (cell.y * 157), 83)
-		if open and patch < 4 and TomatinaMap.safe_room_at(cell) < 0:
+		if open and patch < 9 and TomatinaMap.safe_room_at(cell) < 0:
 			var at := TomatinaMap.at_cell(Vector2(cell) + Vector2(0.38, 0.62))
 			_place_litter(at, cell, patch < 2, 1.38)
+		var victim_mark := posmod((cell.x * 97) ^ (cell.y * 193), 113)
+		if open and victim_mark < 2 and TomatinaMap.safe_room_at(cell) < 0 \
+				and not TomatinaMap.START_PLAZA.has_point(cell) \
+				and not TomatinaMap.CAPRESE_RESCUE_BAY.has_point(cell) \
+				and not TomatinaMap.FIRE_BAY.has_point(cell):
+			var victim_at := TomatinaMap.at_cell(Vector2(cell) + Vector2(
+				0.34 + float(posmod(cell.x * 11, 29)) / 100.0,
+				0.34 + float(posmod(cell.y * 13, 27)) / 100.0))
+			var victim_angle := float(posmod(cell.x * 31 + cell.y * 59, 41)) * 0.153
+			var victim_facing := Vector3(sin(victim_angle), 0.0, cos(victim_angle))
+			var victim_model: String = VICTIM_MODELS[posmod(cell.x * 7 + cell.y * 13, VICTIM_MODELS.size())]
+			_place(victim_model, victim_at, victim_facing, Vector3(1.65, 0.48, 2.15))
 		for step: Vector2i in CARDINAL:
 			if floor.has(cell + step):
 				continue
@@ -182,7 +196,7 @@ func _build_frontages() -> void:
 				_place_street_front(base, facing, cell)
 			elif scatter < 15:
 				_place_facade_detail(base, facing, scatter)
-			if scatter < 3 and open:
+			if scatter < 5 and open:
 				var at := base + facing * (0.82 + float(scatter) * 0.68)
 				at += Vector3(tangent.x, 0.0, tangent.y) * 0.44
 				_place_litter(at, cell, scatter == 2, 1.50 + float(scatter) * 0.29)
@@ -294,6 +308,15 @@ func _place_litter(at: Vector3, cell: Vector2i, boards: bool, spread: float) -> 
 	var facing := Vector3(sin(angle), 0.0, cos(angle))
 	var model := "BrokenBoards" if boards else "CrushedTomatoes"
 	_place(model, at, facing, Vector3(spread, 0.09 if boards else 0.07, spread * 0.72))
+	# Every dirty patch gets a second, smaller festival-specific story beat.  The
+	# offset keeps the two silhouettes readable while both remain collisionless.
+	var variant: int = posmod(cell.x * 43 + cell.y * 67, 3)
+	var accent: String = ["FestivalTrashPile", "TomatoBasketSpill", "TornBuntingHeap"][variant]
+	var side := Vector3(facing.z, 0.0, -facing.x)
+	var accent_at := at + side * (spread * (0.28 if variant != 1 else -0.31))
+	accent_at += facing * spread * 0.16
+	var height := 0.34 if variant == 1 else 0.11
+	_place(accent, accent_at, -facing, Vector3(spread * 0.72, height, spread * 0.58))
 
 
 func _add_debris(box: Dictionary) -> void:
