@@ -61,6 +61,8 @@ func _process(delta: float) -> void:
 		target -= 7.0
 	if cinematic:
 		target -= 8.0
+	elif is_instance_valid(world) and world.tomatina_intro_active():
+		target -= world._tomatina_intro.music_duck()
 	elif is_instance_valid(world) and not world._input_enabled:
 		target -= 5.0
 	volume_db = target+linear_to_db(maxf(music_gain,0.0001))

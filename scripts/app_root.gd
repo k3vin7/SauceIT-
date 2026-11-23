@@ -46,6 +46,7 @@ var _sensitivity_slider: HSlider
 ## paused and multiplayer input locked until those options are closed.
 var _options_owns_pause := false
 var _active_transition := 0
+var _show_stage_intro := false
 var _notice := ""
 var bot_team: Node
 
@@ -183,6 +184,7 @@ func _show_bot_practice() -> void:
 	bot_team = preload("res://scripts/player_bot_team.gd").new()
 	world.add_child(bot_team)
 	bot_team.configure(world, false)
+	world.play_stage_intro()
 
 
 func _start_game() -> void:
@@ -418,6 +420,8 @@ func _on_transition_requested(stage_id: String, transition: int) -> void:
 	if not StageRegistry.has_stage(stage_id):
 		_on_transition_failed("unknown stage: %s" % stage_id)
 		return
+	# Mid-stage guests come from the safe-point loading screen.
+	_show_stage_intro = stage_id == "stage_2" and flow in [Flow.TRUCK_LOBBY, Flow.RESULT]
 	flow = Flow.LOADING
 	_active_transition = transition
 	_show_loading("%s 로딩 중…\n모든 참가자를 기다립니다." % StageRegistry.display_name(stage_id))
@@ -446,7 +450,10 @@ func _on_play_authorized(transition: int) -> void:
 	flow = Flow.STAGE
 	_clear_ui(_loading_layer)
 	_loading_layer = null
-	current_space.set_gameplay_input_enabled(true)
+	if _show_stage_intro:
+		current_space.play_stage_intro()
+	else:
+		current_space.set_gameplay_input_enabled(true)
 
 
 func _on_transition_failed(reason: String) -> void:
@@ -874,6 +881,8 @@ func _open_pause() -> void:
 	if _pause_layer != null or flow in [Flow.TITLE, Flow.LOADING, Flow.RESULT]:
 		return
 	if current_space != null:
+		if current_space.has_method("tomatina_intro_active") and current_space.tomatina_intro_active():
+			return
 		if session.seat_assignments().size() <= 1:
 			current_space.process_mode = Node.PROCESS_MODE_PAUSABLE
 			get_tree().paused = true

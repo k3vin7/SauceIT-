@@ -2656,6 +2656,11 @@ func _update_fallen_body(shooter: Shooter) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if tomatina_intro_active():
+		if event.is_action_pressed("mute_sound"):
+			set_muted(not muted)
+		get_viewport().set_input_as_handled()
+		return
 	if _local == null:
 		return
 	var interact: bool = event.is_action_pressed("interact") and not event.is_echo()
@@ -4449,6 +4454,26 @@ func _build_street() -> void:
 ## the floor before anyone arrives.
 var _tomatina_checkpoint := -1
 var tomatina_shortcut_open := false
+var _tomatina_art: TomatinaVillageArt
+var _tomatina_entrance: Node3D
+var _tomatina_intro: Node3D
+
+
+func play_stage_intro() -> void:
+	if map_kind != MapKind.TOMATINA or not is_instance_valid(_tomatina_entrance):
+		set_gameplay_input_enabled(true)
+		return
+	if tomatina_intro_active():
+		return
+	_tomatina_intro = preload("res://scripts/tomatina_intro.gd").new()
+	_tomatina_intro.name = "TomatinaIntro"
+	add_child(_tomatina_intro)
+	_tomatina_intro.begin(self)
+	_capture_mouse()
+
+
+func tomatina_intro_active() -> bool:
+	return is_instance_valid(_tomatina_intro) and _tomatina_intro.active
 
 
 func _build_tomatina() -> void:
@@ -4456,8 +4481,8 @@ func _build_tomatina() -> void:
 	_sauce_parts.name = "SauceParts"
 	_sauce_parts.world = self
 	add_child(_sauce_parts)
-	var art := TomatinaVillageArt.new()
-	var has_art := art.load_kit()
+	_tomatina_art = TomatinaVillageArt.new()
+	var has_art := _tomatina_art.load_kit()
 	var debris := TomatinaMap.debris_boxes()
 	var parked_trucks := TomatinaMap.parked_trucks()
 	var truck := TomatinaMap.fire_truck_box()
@@ -4478,7 +4503,11 @@ func _build_tomatina() -> void:
 			_add_tomatina_supply(box)
 	_fill_narrow_slots(debris + parked_trucks)
 	if has_art:
-		art.build(self, debris, parked_trucks, truck)
+		_tomatina_art.build(self, debris, parked_trucks, truck)
+	_tomatina_entrance = preload("res://scripts/tomatina_entrance.gd").new()
+	_tomatina_entrance.name = "FestivalEntrance"
+	add_child(_tomatina_entrance)
+	_tomatina_entrance.build(self)
 	for room in TomatinaMap.SAFE_ROOMS.size():
 		var zone := TomatinaMap.rect_world(TomatinaMap.SAFE_ROOMS[room])
 		_build_zone_marker("Refuge%d" % room, zone, Color(0.2, 0.55, 0.43, 0.26))
@@ -6742,7 +6771,7 @@ func _build_start_marker(at := Vector3.ZERO) -> void:
 	add_child(marker)
 	marker.position = at
 	if map_kind == MapKind.TOMATINA:
-		marker.scale = Vector3(0.56, 1.0, 0.56)
+		marker.scale = Vector3(0.36, 1.0, 0.36)
 
 	# Painted on the road, so it is sized by the road rather than in metres.
 	var scale: float = StreetMap.SCALE
@@ -10570,6 +10599,7 @@ func finish_truck_escape() -> void:
 
 
 func is_cinematic_active() -> bool:
-	return (is_instance_valid(_boss_entrance) and _boss_entrance.active) \
+	return tomatina_intro_active() \
+		or (is_instance_valid(_boss_entrance) and _boss_entrance.active) \
 		or (is_instance_valid(_truck_arrival) \
 			and (_truck_arrival.active or _truck_arrival.escape_active))

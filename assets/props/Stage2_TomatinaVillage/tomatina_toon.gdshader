@@ -3,6 +3,7 @@ render_mode specular_disabled, diffuse_lambert;
 
 uniform bool tomato_wall = false;
 uniform bool boundary_wall = false;
+uniform bool festival_before_attack = false;
 varying vec3 wall_position;
 varying vec3 wall_normal;
 varying vec2 wall_origin;
@@ -57,7 +58,7 @@ void fragment() {
 		ALBEDO *= mix(1.0, mix(0.90, 1.10, grain) * (1.0 - max(seam.x, seam.y) * 0.20), detail);
 		bounce = 0.35;
 	}
-	if (tomato_wall && wall_position.y < 4.0 && abs(normal.y) < 0.36) {
+	if (tomato_wall && !festival_before_attack && wall_position.y < 4.0 && abs(normal.y) < 0.36) {
 		float wall = 1.0 - smoothstep(0.10, 0.36, abs(normal.y));
 		float height = 1.0 - smoothstep(1.8, 4.0, wall_position.y);
 		vec2 at = vec2(across, wall_position.y * 0.82) + vec2(1.93, 0.49);
