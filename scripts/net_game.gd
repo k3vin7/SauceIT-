@@ -113,7 +113,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 12
+const PROTOCOL_VERSION := 13
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
@@ -175,6 +175,8 @@ signal result_votes_changed(ready: int, total: int)
 signal truck_returned
 signal session_ended(reason: String)
 signal late_join_waiting
+## The host cut the arrival shot short, for everybody.
+signal intro_skipped(transition_id: int)
 
 enum SessionPhase { OFFLINE, TRUCK, LOADING, STAGE, RESULT }
 const BUSY_PREFIX := "mayo1-busy:"
@@ -347,6 +349,26 @@ func begin_host_room(port := DEFAULT_PORT, code := "", open_to_anyone := false,
 	return true
 
 
+## 혼자하기: a room of one that opens no port. Everything the app asks of a
+## room -- the office, the pick, the festival, the start, the result vote --
+## runs the same way, with this peer as the only seat and the only authority.
+func begin_solo_room(stage_id := "stage_1") -> bool:
+	if _online or lobby_flow:
+		return false
+	lobby_flow = true
+	selected_stage = stage_id
+	lobby_code = ""
+	session_phase = SessionPhase.TRUCK
+	_joined = true
+	_slots = {1: 0}
+	_lobby_ready = {1: true}
+	_characters.clear()
+	_set_status("solo")
+	lobby_joined.emit()
+	roster_changed.emit()
+	return true
+
+
 func begin_join_room(address: String, port := DEFAULT_PORT, code := "") -> bool:
 	lobby_flow = true
 	lobby_code = code.strip_edges()
@@ -392,23 +414,59 @@ func character_assignments() -> Dictionary:
 	return _characters.duplicate()
 
 
-## This peer's pick. Kept here at once, so the truck this peer is about to
-## build dresses its own body correctly without waiting a round trip, and sent
-## to the host, who tells everybody else.
-func choose_character(index: int) -> void:
-	if not lobby_flow or not _online:
-		return
-	index = clampi(index, 0, CHARACTER_COUNT - 1)
+## This peer's pick. No two players wear the same character, and the host is
+## the one who says who got there first: the host (and a solo room) takes a
+## free one at once, a guest asks and hears back in the next `_sync_lobby`.
+## Until then a guest's own entry does not change -- a pick that lost the race
+## is simply never applied. Returns false when it is known here to be taken.
+func choose_character(index: int) -> bool:
+	if not lobby_flow or index < 0 or index >= CHARACTER_COUNT:
+		return false
 	var mine := local_id()
 	if int(_characters.get(mine, -1)) == index:
-		return
-	_characters[mine] = index
-	if multiplayer.is_server():
+		return true
+	if character_taken(index, mine):
+		return false
+	if is_server():
+		_characters[mine] = index
 		_broadcast_lobby()
-		return
-	roster_changed.emit()
+		return true
 	if _joined:
 		_choose_character.rpc_id(1, index)
+	return true
+
+
+## Whether somebody other than `except` is wearing character `index`.
+func character_taken(index: int, except := 0) -> bool:
+	for id in _characters:
+		if int(id) != except and _slots.has(id) and int(_characters[id]) == index:
+			return true
+	return false
+
+
+## Every seated player has picked. The host's start waits on this and on
+## nothing else a player can dawdle over.
+func all_characters_chosen() -> bool:
+	for id in _slots:
+		if not _characters.has(id):
+			return false
+	return not _slots.is_empty()
+
+
+func can_start_stage() -> bool:
+	return lobby_flow and is_server() and all_lobby_ready() and all_characters_chosen()
+
+
+## The festival on the office map. The host's to choose, while the party is
+## still in the office; it rides to the guests with the roster.
+func set_selected_stage(stage_id: String) -> bool:
+	if not lobby_flow or not is_server() or session_phase != SessionPhase.TRUCK \
+			or not StageRegistry.has_stage(stage_id):
+		return false
+	if selected_stage != stage_id:
+		selected_stage = stage_id
+		_broadcast_lobby()
+	return true
 
 
 func lobby_ready_count() -> int:
@@ -436,24 +494,31 @@ func attach_play_world(new_world: Node) -> void:
 	for id in ids:
 		new_world.set_character_variant(int(id), character_of(int(id)))
 	new_world.set_local_character(character_of(mine))
+	# The fight is sized for the party that set out, and stays that size: a
+	# player who drops mid-stage does not make it easier for the rest.
+	new_world.fixed_party_size = ids.size()
+	new_world.rescale_enemies()
 	new_world.set_gameplay_input_enabled(false)
 
 
 func report_world_loaded(transition: int) -> void:
 	if session_phase != SessionPhase.LOADING or transition != _transition_id:
 		return
-	if multiplayer.is_server():
+	if is_server():
 		_mark_loaded(local_id(), transition)
 	else:
 		_report_world_loaded.rpc_id(1, transition)
 
 
 func request_stage_start() -> bool:
-	if not lobby_flow or not multiplayer.is_server():
+	if not lobby_flow or not is_server():
 		_set_status("only the host can start")
 		return false
 	if session_phase != SessionPhase.TRUCK or not all_lobby_ready():
 		_set_status("waiting for every player to initialize the lobby")
+		return false
+	if not all_characters_chosen():
+		_set_status("waiting for every player to pick a character")
 		return false
 	_transition_id += 1
 	_transition_roster = PackedInt32Array(_slots.keys())
@@ -461,21 +526,41 @@ func request_stage_start() -> bool:
 	_loaded_peers.clear()
 	_load_clock = 0.0
 	session_phase = SessionPhase.LOADING
-	_begin_stage_transition.rpc(selected_stage, _transition_id, _transition_roster)
+	if _online:
+		_begin_stage_transition.rpc(selected_stage, _transition_id, _transition_roster)
 	transition_requested.emit(selected_stage, _transition_id)
 	_set_status("loading %s" % selected_stage)
 	return true
 
 
+## The host cuts the arrival shot short and everybody lands together. A guest
+## asking is not answered: the shot is short, and one hand on it is enough.
+func request_intro_skip() -> bool:
+	if not lobby_flow or not is_server() or session_phase != SessionPhase.STAGE:
+		return false
+	if _online:
+		_skip_intro.rpc(_transition_id)
+	intro_skipped.emit(_transition_id)
+	return true
+
+
+@rpc("authority", "call_remote", "reliable")
+func _skip_intro(transition: int) -> void:
+	if is_server() or transition != _transition_id:
+		return
+	intro_skipped.emit(transition)
+
+
 func finish_stage(summary := {}) -> void:
-	if not lobby_flow or not multiplayer.is_server() or session_phase != SessionPhase.STAGE:
+	if not lobby_flow or not is_server() or session_phase != SessionPhase.STAGE:
 		return
 	session_phase = SessionPhase.RESULT
 	_result_continue.clear()
 	_waiting_peers.clear()
 	_late_loading.clear()
 	_late_syncing.clear()
-	_show_result.rpc(summary)
+	if _online:
+		_show_result.rpc(summary)
 	result_ready.emit(summary)
 	result_votes_changed.emit(0, _slots.size())
 
@@ -486,7 +571,7 @@ func finish_stage(summary := {}) -> void:
 func request_result_continue() -> bool:
 	if not lobby_flow or session_phase != SessionPhase.RESULT:
 		return false
-	if not _online or multiplayer.is_server():
+	if is_server():
 		return _accept_result_continue(local_id())
 	_request_result_continue.rpc_id(1)
 	return true
@@ -497,13 +582,14 @@ func result_continue_status() -> Vector2i:
 
 
 func _accept_result_continue(peer_id: int) -> bool:
-	if not multiplayer.is_server() or session_phase != SessionPhase.RESULT \
+	if not is_server() or session_phase != SessionPhase.RESULT \
 			or not _slots.has(peer_id) or _result_continue.has(peer_id):
 		return false
 	_result_continue[peer_id] = true
 	var packet := PackedInt32Array(_result_continue.keys())
 	packet.sort()
-	_sync_result_continue.rpc(packet)
+	if _online:
+		_sync_result_continue.rpc(packet)
 	result_votes_changed.emit(packet.size(), _slots.size())
 	if packet.size() >= _slots.size() and not _slots.is_empty():
 		call_deferred("return_to_truck")
@@ -528,7 +614,7 @@ func _sync_result_continue(peers: PackedInt32Array) -> void:
 
 
 func return_to_truck() -> bool:
-	if not lobby_flow or not multiplayer.is_server() or session_phase != SessionPhase.RESULT:
+	if not lobby_flow or not is_server() or session_phase != SessionPhase.RESULT:
 		return false
 	if _slots.is_empty() or _result_continue.size() < _slots.size():
 		return false
@@ -537,7 +623,8 @@ func return_to_truck() -> bool:
 	_lobby_ready = {1: true}
 	_loaded_peers.clear()
 	_transition_roster.clear()
-	_return_to_truck.rpc()
+	if _online:
+		_return_to_truck.rpc()
 	truck_returned.emit()
 	_set_status("truck lobby")
 	return true
@@ -552,7 +639,8 @@ func replay_stage() -> bool:
 	_loaded_peers.clear()
 	_load_clock = 0.0
 	session_phase = SessionPhase.LOADING
-	_begin_stage_transition.rpc(selected_stage, _transition_id, _transition_roster)
+	if _online:
+		_begin_stage_transition.rpc(selected_stage, _transition_id, _transition_roster)
 	transition_requested.emit(selected_stage, _transition_id)
 	return true
 
@@ -560,7 +648,7 @@ func replay_stage() -> bool:
 func report_lobby_initialized() -> void:
 	if not lobby_flow or session_phase != SessionPhase.TRUCK:
 		return
-	if multiplayer.is_server():
+	if is_server():
 		_lobby_ready[local_id()] = true
 		_broadcast_lobby()
 	else:
@@ -759,6 +847,19 @@ func join(address: String, port := DEFAULT_PORT) -> bool:
 
 func leave() -> void:
 	if not _online:
+		# A solo room has no peer to close, only the room itself to put away.
+		if lobby_flow:
+			_slots = {1: 0}
+			_characters.clear()
+			_joined = false
+			session_phase = SessionPhase.OFFLINE
+			_lobby_ready.clear()
+			_loaded_peers.clear()
+			_result_continue.clear()
+			_transition_roster.clear()
+			_load_clock = 0.0
+			lobby_flow = false
+			_set_status("offline")
 		return
 	# Mark the teardown before detaching the peer. Some backends deliver the
 	# disconnect signal synchronously from this assignment; a handler calling
@@ -846,7 +947,9 @@ func _on_peer_authenticating(id: int) -> void:
 	# A blocked address is not asked for the code at all: it is told how long it
 	# has left and dropped, before either side has said anything else.
 	if multiplayer.is_server():
-		if lobby_flow and session_phase != SessionPhase.TRUCK and not (session_phase == SessionPhase.STAGE and selected_stage == "stage_2"):
+		# The door is open while the party is in the office and at no other
+		# time: once they have set out, nobody joins until they are back.
+		if lobby_flow and session_phase != SessionPhase.TRUCK:
 			scene_multiplayer.send_auth(id,
 				(BUSY_PREFIX + "session already started").to_utf8_buffer())
 			_queue_drop(id)
@@ -1042,14 +1145,15 @@ func _connect_signals() -> void:
 func _on_peer_connected(id: int) -> void:
 	if not multiplayer.is_server():
 		return
+	if lobby_flow and session_phase != SessionPhase.TRUCK:
+		# Knocked while the party was in the office, got through the handshake
+		# as it left. Told so, and dropped once that has had time to leave.
+		_refuse_started.rpc_id(id)
+		_queue_drop(id)
+		return
 	var slot := _free_slot()
 	_slots[id] = slot
 	if lobby_flow:
-		if session_phase == SessionPhase.STAGE:
-			_waiting_peers[id] = true
-			_accept_waiting.rpc_id(id, selected_stage, _roster_packet())
-			_broadcast_lobby()
-			return
 		_accept_lobby.rpc_id(id, id, slot, selected_stage, _roster_packet())
 		_broadcast_lobby()
 		_set_status("player %d joined the truck" % id)
@@ -1248,11 +1352,8 @@ func _character_packet() -> PackedInt32Array:
 
 ## The host's picks, on a guest. Anything that is not a seated player with an
 ## index in range is skipped rather than failing the packet: the roster it
-## arrived with is already applied and is still right.
-##
-## This peer's own pick is the exception when the packet has none for it. That
-## is a roster sent before the host heard the choice, and dropping the local
-## copy for it would undress this player for a round trip.
+## arrived with is already applied and is still right. The host's copy is the
+## whole truth, this peer's own pick included -- see `choose_character`.
 func _apply_character_packet(packet: PackedInt32Array) -> void:
 	var parsed := {}
 	for index in range(0, packet.size() - 1, 2):
@@ -1260,14 +1361,11 @@ func _apply_character_packet(packet: PackedInt32Array) -> void:
 		var character := int(packet[index + 1])
 		if _slots.has(id) and character >= 0 and character < CHARACTER_COUNT:
 			parsed[id] = character
-	var mine := local_id()
-	if not parsed.has(mine) and _characters.has(mine):
-		parsed[mine] = _characters[mine]
 	_characters = parsed
 
 
 func _broadcast_lobby() -> void:
-	if not lobby_flow or not multiplayer.is_server():
+	if not lobby_flow or not is_server():
 		return
 	var ready := PackedInt32Array(_lobby_ready.keys())
 	ready.sort()
@@ -1338,11 +1436,17 @@ func _choose_character(index: int) -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if not _slots.has(sender):
 		return
-	index = clampi(index, 0, CHARACTER_COUNT - 1)
-	if int(_characters.get(sender, -1)) == index:
-		return
-	_characters[sender] = index
+	# Taken, or not a character at all: nothing changes, and the roster goes
+	# back out anyway so the asker's cards show who has it.
+	if index >= 0 and index < CHARACTER_COUNT and not character_taken(index, sender):
+		_characters[sender] = index
 	_broadcast_lobby()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _refuse_started() -> void:
+	if not is_server() and not _joined:
+		_refused_busy = true
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -1383,13 +1487,14 @@ func _mark_loaded(peer_id: int, transition: int) -> void:
 
 
 func _try_authorize_play() -> void:
-	if not multiplayer.is_server() or session_phase != SessionPhase.LOADING:
+	if not is_server() or session_phase != SessionPhase.LOADING:
 		return
 	for id in _transition_roster:
 		if _slots.has(id) and not _loaded_peers.has(id):
 			return
 	session_phase = SessionPhase.STAGE
-	_authorize_play.rpc(_transition_id)
+	if _online:
+		_authorize_play.rpc(_transition_id)
 	play_authorized.emit(_transition_id)
 	_set_status("stage started")
 
@@ -1405,11 +1510,12 @@ func _authorize_play(transition: int) -> void:
 
 
 func _fail_loading(reason: String) -> void:
-	if not multiplayer.is_server() or session_phase != SessionPhase.LOADING:
+	if not is_server() or session_phase != SessionPhase.LOADING:
 		return
 	session_phase = SessionPhase.TRUCK
 	_lobby_ready = {1: true}
-	_loading_failed.rpc(reason)
+	if _online:
+		_loading_failed.rpc(reason)
 	transition_failed.emit(reason)
 	_set_status(reason)
 
@@ -2206,7 +2312,7 @@ func _physics_process(delta: float) -> void:
 		_broadcast_lobby()
 	apply_client_input()
 	run_lobby(delta)
-	if lobby_flow and multiplayer.is_server() and session_phase == SessionPhase.LOADING:
+	if lobby_flow and is_server() and session_phase == SessionPhase.LOADING:
 		_load_clock += delta
 		if _load_clock >= LOAD_TIMEOUT:
 			_fail_loading("stage loading timed out; returned to truck")

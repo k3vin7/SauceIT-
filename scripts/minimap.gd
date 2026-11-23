@@ -78,7 +78,7 @@ func build() -> void:
 	if StreetMap.layout_override is TomatinaMap:
 		# La Tomatina has no stalls to stock up at: its supply points are the
 		# refuges, and the place everyone is headed is the plaza with the hoses.
-		for room: Rect2i in TomatinaMap.SAFE_ROOMS:
+		for room: Rect2i in TomatinaMap.safe_rooms():
 			_stall_cells.push_back(Vector2(room.get_center()))
 		_landmark_cells = PackedVector2Array([Vector2(TomatinaMap.PLAZA.get_center())])
 		return

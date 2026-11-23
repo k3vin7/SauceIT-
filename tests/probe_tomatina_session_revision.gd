@@ -33,21 +33,18 @@ func _run() -> void:
 	guest.play_authorized.connect(func(_transition): late_world.set_gameplay_input_enabled(true); loaded = true)
 	await process_frame
 	_check(host.begin_host_room(24839, "JOIN2", false, "stage_2"), "host failed")
-	_check(host.request_stage_start(), "solo start failed")
-	_check(await _until(func(): return host.phase() == MayoNet.SessionPhase.STAGE), "host stage never started")
-	_check(guest.begin_join_room("127.0.0.1", 24839, "JOIN2"), "late connection failed")
-	_check(await _until(func(): return not host._waiting_peers.is_empty()), "late guest not queued")
-	print("late join state: ", host.status(), " / ", guest.status(), " stage=", host.selected_stage,
-		" phase=", host.session_phase, " online=", guest.is_online(), " slots=", host._slots,
-		" late_loading=", host._late_loading)
-	_check(host_world.shooter_ids().size() == 1, "waiting player became a combat ghost")
-	var room: Rect2i = TomatinaMap.SAFE_ROOMS[0]
-	var at := TomatinaMap.at_cell(Vector2(room.position) + Vector2(room.size) * 0.5) + Vector3.UP * 1.28
-	host_world._floor.paint_mayo(at, -1, ContaminationGrid.KIND_KETCHUP)
-	host_world._local.player.finish_respawn(at)
-	host_world._tomatina_checkpoint = 0
-	host._admit_waiting_peers()
-	_check(await _until(func(): return loaded), "safe-point join never authorized")
+	# The door is open in the office and nowhere else: the guest joins before
+	# the start, and both pick before anybody sets out.
+	_check(guest.begin_join_room("127.0.0.1", 24839, "JOIN2"), "connection failed")
+	_check(await _until(func(): return host.seat_assignments().size() == 2 and host.all_lobby_ready()),
+		"guest never reached the lobby")
+	host.choose_character(0)
+	guest.choose_character(0)
+	guest.choose_character(1)
+	_check(await _until(func(): return host.all_characters_chosen()), "picks never reached the host")
+	_check(host.character_of(guest.local_id()) == 1, "the host gave two players one character")
+	_check(host.request_stage_start(), "start failed")
+	_check(await _until(func(): return loaded and host.phase() == MayoNet.SessionPhase.STAGE), "stage never started")
 	if late_world == null:
 		quit(1)
 		return

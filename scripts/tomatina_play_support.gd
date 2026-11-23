@@ -321,43 +321,65 @@ func context_candidates(shooter) -> Array:
 	var player: MayoPlayer = shooter.player
 	if player.state != MayoPlayer.State.NORMAL:
 		return out
+	# Each prompt is pinned beside the thing it acts on -- the `anchor`, drawn
+	# by the HUD -- while `at`, what the choice between prompts is scored on,
+	# stays what it always was.
 	for teammate in world._shooters.values():
 		if world._can_rescue_teammate(player, teammate.player):
-			_candidate(out, shooter, "rescue", teammate.peer_id, teammate.player.global_position, "동료 구조 · 1초간 움직이지 않기", -4.0)
+			var down: Vector3 = teammate.player.global_position
+			_candidate(out, shooter, "rescue", teammate.peer_id, down, "동료 구조 · 1초간 움직이지 않기", -4.0,
+				down + Vector3.UP * 0.7)
 	var at := player.global_position
 	if is_instance_valid(world._truck_arrival) and is_instance_valid(world._press_king) \
 			and not world._press_king.is_alive() and world._truck_arrival.in_reach(player) \
 			and TomatinaMap.in_rect(world._fire_truck_zone, at):
-		_candidate(out, shooter, "truck", 0, at, "트럭 탑승 · 생존 팀원 집결", -3.0)
+		_candidate(out, shooter, "truck", 0, at, "트럭 탑승 · 생존 팀원 집결", -3.0,
+			world._truck_arrival.final_at + Vector3.UP * 2.2)
 	if not world._horde_spawned and TomatinaMap.in_rect(world._siren_zone, at):
-		_candidate(out, shooter, "generator", 0, at, "발전기 켜기", -2.0)
-	if world._horde_spawned and (world._hose_slot_of(shooter.peer_id) >= 0 or world._hose_slot(at) >= 0):
-		_candidate(out, shooter, "hose", 0, at, "소방 호스 잡기 / 놓기", -1.0)
+		var generator: Vector3 = world._pump_generator.global_position if is_instance_valid(world._pump_generator) \
+			else TomatinaMap.at_cell(TomatinaMap.siren_cell())
+		_candidate(out, shooter, "generator", 0, at, "발전기 켜기", -2.0, generator + Vector3.UP * 1.3)
+	var hose: int = world._hose_slot_of(shooter.peer_id)
+	if hose < 0:
+		hose = world._hose_slot(at)
+	if world._horde_spawned and hose >= 0:
+		_candidate(out, shooter, "hose", 0, at, "소방 호스 잡기 / 놓기", -1.0,
+			TomatinaMap.at_cell(world.TOMATINA_HOSES[hose]) + Vector3.UP * 1.2)
 	var room: int = world._refuge_shower_in_reach(at)
 	if room >= 0:
-		_candidate(out, shooter, "shower", room, TomatinaMap.refuge_shower_at(room), "샤워로 소스 씻기", 0.0)
+		_candidate(out, shooter, "shower", room, TomatinaMap.refuge_shower_at(room), "샤워로 소스 씻기", 0.0,
+			TomatinaMap.refuge_shower_marker_at(room))
 	room = world._refuge_shop_in_reach(at)
 	if room >= 0:
-		_candidate(out, shooter, "shop", room, TomatinaMap.refuge_shop_at(room), "장비 개조", 0.0)
+		var shop := TomatinaMap.refuge_shop_at(room)
+		_candidate(out, shooter, "shop", room, shop, "장비 개조", 0.0, shop + Vector3.UP * 1.5)
 	var station: int = world.station_in_reach(player)
 	if station >= 0 and (shooter.sauce < 0.999 or world.station_sauce_for(player) != shooter.sauce_kind):
-		_candidate(out, shooter, "refill", station, at, "케첩 보충", 0.5)
+		var stall: Vector3 = world._refill_stations[station]["position"]
+		_candidate(out, shooter, "refill", station, at, "케첩 보충", 0.5, stall + Vector3.UP * 1.4)
 	if world.item_slots(shooter.peer_id).find(0, 1) >= 0:
 		for id in world._healing_tomatoes:
 			if int(id) < 0 or int(id) >= 1000000:
 				continue
 			var node: Node3D = world._healing_tomatoes[id].node
 			if is_instance_valid(node) and at.distance_squared_to(node.global_position) < 6.25:
-				_candidate(out, shooter, "pickup", int(id), node.global_position, "토마토 줍기", 0.0)
+				_candidate(out, shooter, "pickup", int(id), node.global_position, "토마토 줍기", 0.0,
+					node.global_position + Vector3.UP * 0.35)
+	if is_instance_valid(world._victims):
+		var body: int = world._victims.in_reach(at)
+		if body >= 0:
+			var lying: Vector3 = world._victims.positions[body] + Vector3.UP * 0.35
+			_candidate(out, shooter, "loot", body, lying, "시체 뒤지기", 0.2, lying + Vector3.UP * 0.3)
 	return out
 
-func _candidate(out: Array, shooter, kind: String, id: int, at: Vector3, text: String, priority: float) -> void:
+func _candidate(out: Array, shooter, kind: String, id: int, at: Vector3, text: String, priority: float,
+		anchor := Vector3.INF) -> void:
 	var eye: Vector3 = shooter.player.global_position + Vector3.UP * world.eye_height
 	var offset := at - eye
 	var distance := offset.length()
 	var facing: Vector3 = -Basis.from_euler(Vector3(shooter.aim_pitch, shooter.aim_yaw, 0)).z
 	var alignment := facing.dot(offset.normalized()) if distance > 0.01 else 1.0
-	if kind in ["pickup", "shop", "shower"]:
+	if kind in ["pickup", "shop", "shower", "loot"]:
 		if alignment < -0.1:
 			return
 		var query := PhysicsRayQueryParameters3D.create(eye, at, 1)
@@ -365,7 +387,8 @@ func _candidate(out: Array, shooter, kind: String, id: int, at: Vector3, text: S
 		var hit := world.get_world_3d().direct_space_state.intersect_ray(query)
 		if not hit.is_empty() and hit.position.distance_to(at) > 0.65:
 			return
-	out.append({"kind": kind, "id": id, "text": text, "score": priority + distance * 0.15 + (1.0 - alignment)})
+	out.append({"kind": kind, "id": id, "text": text, "anchor": anchor,
+		"score": priority + distance * 0.15 + (1.0 - alignment)})
 
 func context_target(shooter) -> Dictionary:
 	var frame := Engine.get_physics_frames()

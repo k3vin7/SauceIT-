@@ -108,6 +108,50 @@ const JUICE_ZONES: Array[Rect2i] = [
 static var _floor_legs: Dictionary
 static var _floor_bounds := Rect2i()
 static var _routes: Array[PackedVector2Array] = []
+static var _layout_ready := false
+
+## 노드로 편집한 맵(`TomatinaAuthoredMap`), 또는 null이면 이 파일의 원래 코드 설계.
+## 월드가 빌드 직전에 `use_authored`로 정한다. null일 때의 동작은 전과 같다.
+static var authored = null
+
+
+## 맵 설계를 바꾸고 캐시를 비운다. null이면 원래 코드 맵으로 돌아간다.
+static func use_authored(data) -> void:
+	authored = data
+	_floor_legs = {}
+	_floor_bounds = Rect2i()
+	_routes = []
+	_layout_ready = false
+
+
+static func safe_rooms() -> Array[Rect2i]:
+	return authored.safe_rooms if authored != null else SAFE_ROOMS
+
+
+static func safe_room_names() -> Array:
+	return authored.safe_room_names if authored != null else SAFE_ROOM_NAMES
+
+
+static func siren_cell() -> Vector2:
+	return authored.siren_cell if authored != null else SIREN_CELL
+
+
+static func route_points() -> Array:
+	return authored.route_points if authored != null else ROUTE_POINTS
+
+
+## 벽 충돌 상자들(바닥부터 BOUNDARY_HEIGHT). 노드 맵에 Walls가 있으면 그 노드들 그대로.
+static func boundary_boxes() -> Array[Dictionary]:
+	if authored != null and authored.has_walls:
+		return authored.walls.duplicate(true)
+	var out: Array[Dictionary] = []
+	for box in StreetMap.wall_boxes():
+		var position: Vector3 = box["position"]
+		var size: Vector3 = box["size"]
+		position.y = BOUNDARY_HEIGHT * 0.5
+		size.y = BOUNDARY_HEIGHT
+		out.push_back({"position": position, "size": size})
+	return out
 
 
 ## Where the start arrow is drawn, in metres from the lattice origin, which is
@@ -130,10 +174,14 @@ const SPAWNS := [
 
 
 static func start_arrow() -> Vector3:
+	if authored != null:
+		return authored.start_arrow
 	return START_ARROW + _start_offset()
 
 
 static func spawn_position(slot: int) -> Vector3:
+	if authored != null and not authored.spawns.is_empty():
+		return authored.spawns[slot % authored.spawns.size()]
 	return SPAWNS[slot % SPAWNS.size()] + _start_offset()
 
 
@@ -170,7 +218,7 @@ const REINFORCEMENT_GRUNTS := 8
 
 
 static func refuge_shower_at(room: int) -> Vector3:
-	var courtyard := SAFE_ROOMS[room]
+	var courtyard := safe_rooms()[room]
 	return at_cell(Vector2(courtyard.end.x - 1.0, courtyard.position.y + 1.15))
 
 
@@ -182,12 +230,13 @@ static func refuge_shower_marker_at(room: int) -> Vector3:
 
 
 static func refuge_shop_at(room: int) -> Vector3:
-	return at_cell(Vector2(SAFE_ROOMS[room].position) + Vector2(0.82, 1.62))
+	return at_cell(Vector2(safe_rooms()[room].position) + Vector2(0.82, 1.62))
 
 
 static func safe_room_at(cell: Vector2i) -> int:
-	for index in SAFE_ROOMS.size():
-		if SAFE_ROOMS[index].has_point(cell):
+	var rooms := safe_rooms()
+	for index in rooms.size():
+		if rooms[index].has_point(cell):
 			return index
 	return -1
 
@@ -199,6 +248,9 @@ static func encounter_at(cell: Vector2i) -> int:
 
 
 static func roster(changes: Array = []) -> Array:
+	# 노드 맵의 적은 사람이 직접 놓은 자리 그대로다. 경로 정렬로 옮기지 않는다.
+	if authored != null:
+		return authored.roster.duplicate(true)
 	var props := debris_boxes()
 	props.append_array(parked_trucks())
 	props.push_back(fire_truck_box())
@@ -412,7 +464,11 @@ static func bounds() -> Rect2i:
 
 
 static func _ensure_layout() -> void:
-	if not _routes.is_empty():
+	if _layout_ready:
+		return
+	_layout_ready = true
+	if authored != null:
+		_ensure_authored_layout()
 		return
 	for leg in ROUTE_POINTS.size():
 		var points: Array = ROUTE_POINTS[leg]
@@ -452,6 +508,27 @@ static func _ensure_layout() -> void:
 	for room in SAFE_ROOMS:
 		_add_floor_rect(room, -1)
 	_prune_closed_passage_pockets()
+	for cell: Vector2i in _floor_legs:
+		var pixel := Rect2i(cell, Vector2i.ONE)
+		_floor_bounds = pixel if not _floor_bounds.has_area() else _floor_bounds.merge(pixel)
+
+
+## 노드 맵: 바닥은 GridMap에 칠한 칸 그대로, 경로는 Path3D 점을 원래와 같은 방식으로 다듬는다.
+## 막힌 골목 가지치기는 하지 않는다 -- 칠한 칸은 칠한 그대로 둔다.
+static func _ensure_authored_layout() -> void:
+	_floor_legs = authored.floor_legs.duplicate()
+	for points: Array in authored.route_points:
+		if points.is_empty():
+			_routes.push_back(PackedVector2Array())
+			continue
+		var curve := PackedVector2Array([points[0]])
+		for index in range(1, points.size()):
+			var a: Vector2 = points[index - 1]
+			var b: Vector2 = points[index]
+			curve.push_back(a.lerp(b, 0.22))
+			curve.push_back(a.lerp(b, 0.78))
+		curve.push_back(points.back())
+		_routes.push_back(curve)
 	for cell: Vector2i in _floor_legs:
 		var pixel := Rect2i(cell, Vector2i.ONE)
 		_floor_bounds = pixel if not _floor_bounds.has_area() else _floor_bounds.merge(pixel)
@@ -522,6 +599,10 @@ static func _curve_length(curve: PackedVector2Array) -> float:
 
 static func _route_pose(leg: int, fraction: float) -> Array[Vector2]:
 	_ensure_layout()
+	if leg < 0 or leg >= _routes.size() or _routes[leg].size() < 2:
+		var only := _routes[leg][0] if leg >= 0 and leg < _routes.size() and _routes[leg].size() == 1 \
+			else Vector2.ZERO
+		return [only, Vector2.UP]
 	var curve := _routes[leg]
 	var remaining := fraction * _curve_length(curve)
 	for index in range(1, curve.size()):
@@ -649,6 +730,8 @@ static func is_aftermath_prop(box: Dictionary) -> bool:
 
 
 static func debris_boxes() -> Array[Dictionary]:
+	if authored != null:
+		return authored.debris.duplicate(true)
 	var boxes: Array[Dictionary] = []
 	_add_closed_passage_debris(boxes)
 	for leg in ROUTE_POINTS.size():
@@ -736,6 +819,10 @@ static func debris_boxes() -> Array[Dictionary]:
 
 static func closed_passage_boxes() -> Array[Dictionary]:
 	var boxes: Array[Dictionary] = []
+	if authored != null:
+		boxes.assign(authored.debris.filter(func(box: Dictionary) -> bool:
+			return box.get("closed_passage", false)))
+		return boxes
 	_add_closed_passage_debris(boxes)
 	return boxes
 
@@ -928,6 +1015,8 @@ static func _wrecked_truck(boxes: Array[Dictionary], label: String, body: Vector
 
 
 static func parked_trucks() -> Array[Dictionary]:
+	if authored != null:
+		return authored.parked.duplicate(true)
 	var side := Vector3(3.0, 3.2, 6.4)
 	var end := Vector3(6.4, 3.2, 3.0)
 	var boxes: Array[Dictionary] = []
@@ -980,6 +1069,8 @@ static func _truck_against_wall(wall_cell: Vector2, facing: Vector3, size: Vecto
 
 ## The fire truck itself, parked at the back of its bay.
 static func fire_truck_box() -> Dictionary:
+	if authored != null and not authored.fire_truck.is_empty():
+		return authored.fire_truck.duplicate(true)
 	return metre_box(Vector2(30.0, 24.0), Vector3(5.5, 4.2, 14.0), "FireTruck", Color("c4231d"))
 
 

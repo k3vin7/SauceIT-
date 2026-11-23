@@ -244,43 +244,43 @@ func _draw_player() -> void:
 			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13, tint)
 
 
-## Where the action chip is pinned in the world, or INF for the usual place at
-## the bottom of the screen. Only the shower is pinned: beside the cross on its
-## post, at twice the size.
-func _action_anchor() -> Vector3:
+## The current prompt's target, as the play support chose it: its kind and
+## where in the world it is pinned (`anchor`, INF for none).
+func _action_target() -> Dictionary:
 	var support = world.get("play_support")
 	if support == null or not is_instance_valid(support) or world._local == null:
-		return Vector3.INF
-	var target: Dictionary = support.context_target(world._local)
-	if target.get("kind", "") != "shower":
-		return Vector3.INF
-	return TomatinaMap.refuge_shower_marker_at(int(target.id))
+		return {}
+	return support.context_target(world._local)
 
 
+## Every prompt is drawn beside the thing it acts on, at twice the old size.
+## Off screen it is not drawn -- the thing is not in view, so neither is what
+## to do with it -- except the hose being held, whose stand the holder walks
+## away from: that one falls back to the bottom of the screen.
 func _draw_action_chip(text: String) -> void:
-	var anchor := _action_anchor()
-	var zoom := 1.0
+	var target := _action_target()
+	var anchor: Vector3 = target.get("anchor", Vector3.INF)
+	var zoom := 2.0
 	var at := Vector2.INF
+	var camera := world.get("_camera") as Camera3D
 	if anchor.is_finite():
-		var camera := world.get("_camera") as Camera3D
-		if camera == null or not is_instance_valid(camera) or camera.is_position_behind(anchor):
-			return
-		at = camera.unproject_position(anchor)
-		if not frame.has_point(at):
-			return
-		zoom = 2.0
+		if camera != null and is_instance_valid(camera) and not camera.is_position_behind(anchor):
+			at = camera.unproject_position(anchor)
+		if not at.is_finite() or not frame.has_point(at):
+			if target.get("kind", "") != "hose":
+				return
+			at = Vector2.INF
 	var font := ThemeDB.fallback_font
 	var key_label := preload("res://scripts/game_options.gd").key_label("interact", "E")
 	var message := text.trim_prefix("[%s] " % key_label)
 	var width := font.get_string_size(message, HORIZONTAL_ALIGNMENT_LEFT, -1.0, roundi(17 * zoom)).x
 	var chip_size := Vector2(width + 62.0 * zoom, 38.0 * zoom)
-	var card := Rect2(frame.get_center().x - chip_size.x * 0.5, frame.end.y - 201.0, chip_size.x, chip_size.y)
+	var card := Rect2(frame.get_center().x - chip_size.x * 0.5, frame.end.y - 240.0, chip_size.x, chip_size.y)
 	if at.is_finite():
-		# To the right of the cross, centred on it, a small gap clear of it.
-		# Clear of the cross's arm (0.16 m) however near the camera stands.
-		var camera := world.get("_camera") as Camera3D
-		var arm := camera.unproject_position(anchor + camera.global_basis.x * 0.2).x - at.x
-		card.position = at + Vector2(maxf(arm, 0.0) + 12.0, -chip_size.y * 0.5)
+		# To the right of the anchor, centred on it, clear of the 0.2 m around
+		# it (the shower's cross) however near the camera stands.
+		var clear := camera.unproject_position(anchor + camera.global_basis.x * 0.2).x - at.x
+		card.position = at + Vector2(maxf(clear, 0.0) + 12.0, -chip_size.y * 0.5)
 		card.position = card.position.clamp(frame.position, frame.end - chip_size)
 	draw_style_box(_plate, card)
 	var key := Rect2(card.position + Vector2(8.0, 7.0) * zoom, Vector2(25.0, 24.0) * zoom)

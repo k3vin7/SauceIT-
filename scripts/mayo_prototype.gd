@@ -494,6 +494,8 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## The combat/player implementation is shared. Only this small map profile changes
 ## the floor, boundaries, spawn markers and tutorial obstacles.
 @export var map_kind: MapKind = MapKind.FESTIVAL_STREET
+## 토마티나 전용: 노드로 편집한 맵 씬(루트 = TomatinaMapEditor). 비워 두면 원래 코드 맵.
+@export var tomatina_map_scene: PackedScene
 ## Whether this world runs the opening sequence.
 ##
 ## **Per world, not per process.** A scene that embeds `main.tscn` to get a real
@@ -643,7 +645,7 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## it was at 4 m, and the same count over it is a scatter rather than a mess.
 @export_range(0, 160, 1) var ketchup_ground_splats := 68
 
-## A jump out of juice kicks it up, and so does every stride of a run through
+## Landing a jump in juice kicks it up, and so does every stride of a run through
 ## it, at a third of the count and half the height. This many pieces fly off a
 ## jump, each thrown outward from the feet and upward at a speed drawn between
 ## the two lifts, so they top out anywhere from the ankle to above the head.
@@ -1236,6 +1238,8 @@ const TRUCK_ARRIVAL_TAG := -995
 const TRUCK_ESCAPE_CUE := 21
 var _truck_arrival: Node3D
 var _pump_generator: Node3D
+## The festival-goers lying in the streets: searchable, and the sauce sticks.
+var _victims: TomatinaVictims
 var _boss_entrance: Node3D
 var _truck_exit_requested := false
 var _truck_escape_finished := false
@@ -1298,6 +1302,9 @@ const TOMATO_DEBRIS_CAP := 120
 var _debris: Array[TomatoDebris] = []
 ## A player running through juice takes a drop on the glasses this often.
 const JUICE_SPLASH_INTERVAL := 0.35
+## How often a run or a landing in the juice puts a drop on the lens. Was one in
+## two, which read as being splashed in the face on every other stride.
+const JUICE_VISOR_CHANCE := 0.15
 ## How many coats of ketchup have to be on the street before running or landing
 ## in it flicks it back up onto the body. Counted the way the grid counts them:
 ## every pass that went over the spot adds one.
@@ -2897,6 +2904,12 @@ func _build_world() -> void:
 	# Which design the lattice carries, before anything reads it: the floor
 	# plane, the walls and the router all ask `StreetMap`, and `StreetMap`
 	# answers for whichever map this is.
+	if map_kind == MapKind.TOMATINA:
+		if is_instance_valid(_tomatina_map_nodes):
+			_tomatina_map_nodes.free()
+		_tomatina_map_nodes = tomatina_map_scene.instantiate() if tomatina_map_scene != null else null
+		TomatinaMap.use_authored(TomatinaAuthoredMap.from_root(_tomatina_map_nodes)
+			if _tomatina_map_nodes != null else null)
 	StreetMap.layout_override = TomatinaMap.new() if map_kind == MapKind.TOMATINA else null
 	if map_kind == MapKind.TOMATINA:
 		_tomato_rng.seed = TomatinaMap.SEED
@@ -3474,7 +3487,7 @@ func _try_open_refuge_shop() -> bool:
 		if _can_rescue_teammate(_local.player, teammate.player):
 			return false
 	_refuge_shop_room = room
-	_refuge_shop_title.text = "%s 상점" % TomatinaMap.SAFE_ROOM_NAMES[room]
+	_refuge_shop_title.text = "%s 상점" % TomatinaMap.safe_room_names()[room]
 	_refresh_refuge_shop()
 	_refuge_shop.show()
 	_local.player.frozen = true
@@ -4250,11 +4263,10 @@ const SLOT_WIDEST := 1.45
 const SLOT_LOWEST_SIDE := 0.5
 func _fill_narrow_slots(props: Array) -> void:
 	var solids: Array = []
-	for box in StreetMap.wall_boxes():
+	for box in TomatinaMap.boundary_boxes():
 		var wall_size: Vector3 = box["size"]
 		var wall_at: Vector3 = box["position"]
-		solids.push_back([Vector3(wall_at.x - wall_size.x * 0.5, 0.0, wall_at.z - wall_size.z * 0.5),
-			Vector3(wall_at.x + wall_size.x * 0.5, TomatinaMap.BOUNDARY_HEIGHT, wall_at.z + wall_size.z * 0.5)])
+		solids.push_back([wall_at - wall_size * 0.5, wall_at + wall_size * 0.5])
 	var first_prop := solids.size()
 	for box in props:
 		var size: Vector3 = box["size"]
@@ -4449,6 +4461,38 @@ func _build_street() -> void:
 ## the floor before anyone arrives.
 var _tomatina_checkpoint := -1
 var tomatina_shortcut_open := false
+## 노드 맵 씬의 인스턴스(설계를 읽은 뒤 그림 노드만 월드에 붙인다). 원래 맵이면 null.
+var _tomatina_map_nodes: Node3D
+
+
+## 노드 맵의 그림을 월드에 붙인다. 아트 조각은 모델별 MultiMesh로 다시 묶어(원래와 같은
+## "TomatinaVillageArt" 묶음) 그리고, 장식 줄·모닥불·안내판 같은 나머지 노드는 그대로 둔다.
+## 설계용 노드(바닥 칸, 적, 쓰러진 사람, 경로)는 이미 읽었으므로 버린다.
+func _attach_tomatina_map_art(art: TomatinaVillageArt) -> void:
+	var map := _tomatina_map_nodes
+	for pruned in ["Floor", "Enemies", "Victims", "Routes", "Spawns"]:
+		var node := map.get_node_or_null(pruned)
+		if node != null:
+			map.remove_child(node)
+			node.free()
+	var pieces := map.find_children("*", "", true, false).filter(func(node: Node) -> bool:
+		return node is TomatinaArtPiece)
+	for piece in pieces:
+		art.add_placement(piece.model, TomatinaAuthoredMap.relative_transform(piece, map))
+	for piece in pieces:
+		piece.get_parent().remove_child(piece)
+		piece.free()
+	art.emit_batches(self)
+	map.name = "TomatinaMapNodes"
+	add_child(map)
+	# 장식 줄은 원래처럼 월드 바로 아래에서 찾을 수 있게 옮긴다.
+	var bunting := map.get_node_or_null("Art/FestivalBunting")
+	if bunting != null:
+		bunting.reparent(self)
+	# 모닥불도 원래처럼 월드 바로 아래로(편집할 때는 화로 소품의 자식이라 같이 움직인다).
+	for fire in map.find_children("Fire", "Node3D", true, false):
+		if fire.is_in_group("tomatina_fire"):
+			fire.reparent(self)
 
 
 func _build_tomatina() -> void:
@@ -4461,12 +4505,8 @@ func _build_tomatina() -> void:
 	var debris := TomatinaMap.debris_boxes()
 	var parked_trucks := TomatinaMap.parked_trucks()
 	var truck := TomatinaMap.fire_truck_box()
-	for box in StreetMap.wall_boxes():
-		var position: Vector3 = box["position"]
-		var size: Vector3 = box["size"]
-		position.y = TomatinaMap.BOUNDARY_HEIGHT * 0.5
-		size.y = TomatinaMap.BOUNDARY_HEIGHT
-		_create_wall("TomatinaWall%02d" % _walls.size(), position, size,
+	for box in TomatinaMap.boundary_boxes():
+		_create_wall("TomatinaWall%02d" % _walls.size(), box["position"], box["size"],
 			Color("c9ad90"), true, has_art)
 	for box in debris + parked_trucks:
 		# Flat food smears are scenery; navigation already treats them as open.
@@ -4477,14 +4517,25 @@ func _build_tomatina() -> void:
 		if TomatinaMap.is_supply_prop(box):
 			_add_tomatina_supply(box)
 	_fill_narrow_slots(debris + parked_trucks)
-	if has_art:
+	if has_art and _tomatina_map_nodes != null:
+		_attach_tomatina_map_art(art)
+	elif has_art:
 		art.build(self, debris, parked_trucks, truck)
-	for room in TomatinaMap.SAFE_ROOMS.size():
-		var zone := TomatinaMap.rect_world(TomatinaMap.SAFE_ROOMS[room])
+	if _tomatina_map_nodes != null and not _tomatina_map_nodes.is_inside_tree():
+		_tomatina_map_nodes.free()
+		_tomatina_map_nodes = null
+	# Their boxes join `_walls` here, at the same point on every peer.
+	_victims = TomatinaVictims.new()
+	_victims.name = "FestivalVictims"
+	_victims.world = self
+	add_child(_victims)
+	_victims.build(art if has_art else null)
+	for room in TomatinaMap.safe_rooms().size():
+		var zone := TomatinaMap.rect_world(TomatinaMap.safe_rooms()[room])
 		_build_zone_marker("Refuge%d" % room, zone, Color(0.2, 0.55, 0.43, 0.26))
 		var sign := Label3D.new()
-		sign.text = "피난처 %d · %s" % [room + 1, TomatinaMap.SAFE_ROOM_NAMES[room]]
-		var courtyard: Rect2i = TomatinaMap.SAFE_ROOMS[room]
+		sign.text = "피난처 %d · %s" % [room + 1, TomatinaMap.safe_room_names()[room]]
+		var courtyard: Rect2i = TomatinaMap.safe_rooms()[room]
 		var sign_cell := Vector2(float(courtyard.get_center().x) + 0.5, float(courtyard.position.y) + 1.5)
 		sign.position = TomatinaMap.at_cell(sign_cell) + Vector3.UP * 4.4
 		sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -4505,7 +4556,7 @@ func _build_tomatina() -> void:
 	_boss_entrance = load("res://scripts/press_king_entrance.gd").new()
 	add_child(_boss_entrance)
 	_boss_entrance.configure(self)
-	var siren := TomatinaMap.at_cell(TomatinaMap.SIREN_CELL)
+	var siren := TomatinaMap.at_cell(TomatinaMap.siren_cell())
 	_siren_zone = Rect2(Vector2(siren.x, siren.z) - Vector2.ONE * 1.7, Vector2.ONE * 3.4)
 	_build_zone_marker("Siren", _siren_zone, Color(1.0, 0.74, 0.18, 0.55))
 	_truck_arrival = load("res://scripts/fire_truck_arrival.gd").new()
@@ -4589,6 +4640,9 @@ func _apply_refuge_shower(peer: int, room: int) -> void:
 
 
 func _build_tomatina_route_signs() -> void:
+	# 노드 맵은 안내판·표지를 Art/Signs 노드로 가지고 있다.
+	if _tomatina_map_nodes != null:
+		return
 	TomatinaVillageArt.build_plaza_waymarks(self)
 	var labels := [
 		[Vector2(10.9, 166.0), "지름길 폐쇄 · 큰길 이용"],
@@ -5842,16 +5896,16 @@ func _update_juice_splash(shooter: Shooter, delta: float) -> void:
 		_pending_splats.append_array(PackedInt32Array([
 			_splat_code(SPLAT_BODY, ContaminationGrid.KIND_KETCHUP),
 			player.peer_id, cell.x, cell.y]))
-	# And, about half the time, a small drop low on the lens.
-	if player.visor == null or _tomato_rng.randf() > 0.5:
+	# And, now and then, a small drop low on the lens.
+	if player.visor == null or _tomato_rng.randf() > JUICE_VISOR_CHANCE:
 		return
 	var on_lens := player.visor.to_global(Vector3(
 		_tomato_rng.randf_range(-0.5, 0.5), _tomato_rng.randf_range(-0.55, -0.15), -1.0))
 	_record_visor_splat(player, on_lens, ContaminationGrid.KIND_KETCHUP)
 
 
-## Juice kicked up by the feet: a jump out of it throws a ring of pieces up
-## around the jumper, and every stride of a run through it throws a smaller,
+## Juice kicked up by the feet: landing from a jump in it throws a ring of
+## pieces up around the jumper, and every stride of a run through it throws a smaller,
 ## lower one. Every peer, decoration only, like a burst's fragments: the jump
 ## and the run are what travel, as the velocity in the player packet, and each
 ## peer throws its own pieces off what it sees in that. The pieces carry no
@@ -5875,9 +5929,12 @@ func _update_juice_kickup(delta: float) -> void:
 		_juice_kick_clock[shooter.peer_id] = maxf(clock, 0.0)
 		if player.state != MayoPlayer.State.NORMAL:
 			continue
-		# A jump is the edge between not rising and rising at a jump's speed:
-		# an enemy's lift is a fraction of it, and a knock-down is not a jump.
-		var jumped := before <= 0.5 and rising >= player.jump_speed * 0.5
+		# **The landing, not the take-off**: the edge between falling at a good
+		# part of a jump's speed and having stopped. Read off the velocity, as
+		# every peer sees it in the player packet; stepping off a kerb falls too
+		# slowly to count. A harder landing throws more, up to half as much again.
+		var jumped := before <= -player.jump_speed * 0.5 and rising > -0.5
+		var impact := clampf(-before / maxf(player.jump_speed, 0.1), 0.75, 1.5) if jumped else 1.0
 		# A run is the feet going faster than a walk while on the ground, read
 		# the same way on every peer -- off the velocity rather than the key.
 		var pace := Vector2(player.velocity.x, player.velocity.z).length()
@@ -5891,7 +5948,7 @@ func _update_juice_kickup(delta: float) -> void:
 		if running:
 			_juice_kick_clock[shooter.peer_id] = JUICE_SPLASH_INTERVAL
 		# A stride kicks up a third of what a jump does, and half as high.
-		var share := 1.0 if jumped else 0.35
+		var share := impact if jumped else 0.35
 		var height := 1.0 if jumped else 0.5
 		# Deeper juice throws more of itself, up to half as much again.
 		var deep := 1.0 + 0.25 * float(clampi(thickness, 1, 3) - 1)
@@ -6215,7 +6272,7 @@ func _tomatina_refuge_status() -> String:
 	if room < 0:
 		return ""
 	if room <= _tomatina_checkpoint:
-		return "%s · 체크포인트 확보" % TomatinaMap.SAFE_ROOM_NAMES[room]
+		return "%s · 체크포인트 확보" % TomatinaMap.safe_room_names()[room]
 	var present := 0
 	var standing := 0
 	for shooter: Shooter in _shooters.values():
@@ -6224,7 +6281,7 @@ func _tomatina_refuge_status() -> String:
 		standing += 1
 		if TomatinaMap.safe_room_at(StreetMap.cell_at(shooter.player.global_position)) == room:
 			present += 1
-	return "%s · 집결 %d/%d" % [TomatinaMap.SAFE_ROOM_NAMES[room], present, standing]
+	return "%s · 집결 %d/%d" % [TomatinaMap.safe_room_names()[room], present, standing]
 
 
 func _tomatina_action_hint() -> String:
@@ -6557,7 +6614,7 @@ func _advance_player_respawns() -> void:
 		_tomato_charge_started.erase(shooter.peer_id)
 		var spawn := spawn_position_for(shooter.spawn_slot)
 		if tomatina and _tomatina_checkpoint >= 0:
-			var room: Rect2i = TomatinaMap.SAFE_ROOMS[_tomatina_checkpoint]
+			var room: Rect2i = TomatinaMap.safe_rooms()[_tomatina_checkpoint]
 			var centre := Vector2(room.position) + Vector2(room.size) * 0.5
 			var slot: int = shooter.spawn_slot % 4
 			spawn = TomatinaMap.at_cell(centre) + Vector3(
@@ -6612,7 +6669,7 @@ func can_admit_waiting_player() -> bool:
 func waiting_player_spawn(slot: int) -> Vector3:
 	if _tomatina_checkpoint < 0:
 		return spawn_position_for(slot)
-	var room: Rect2i = TomatinaMap.SAFE_ROOMS[_tomatina_checkpoint]
+	var room: Rect2i = TomatinaMap.safe_rooms()[_tomatina_checkpoint]
 	return TomatinaMap.at_cell(Vector2(room.position) + Vector2(room.size) * 0.5) \
 		+ Vector3(-2.1 if slot % 2 == 0 else 2.1, 1.28, -2.1 if slot < 2 else 2.1)
 
@@ -8439,7 +8496,31 @@ func _play_enemy_splat(enemy: MayoEnemy, at: Vector3) -> void:
 ## How many players the fight is being scaled for. Never below one: a world
 ## mid-teardown has no shooters, and a zero would divide the scaling away.
 func party_size() -> int:
+	if fixed_party_size > 0:
+		return fixed_party_size
 	return maxi(_shooters.size(), 1)
+
+
+## Set by the session when a party sets out from the office: the fight is sized
+## for the players who left together and stays that size, whoever drops on the
+## way. Zero (a world run without the office) counts the bodies as before.
+var fixed_party_size := 0
+
+
+## Where the game camera will be the moment play begins. The arrival shot
+## (`StageArrival`) ends here, so the cut into play does not jump.
+func arrival_view_transform() -> Transform3D:
+	_update_camera()
+	return _camera.global_transform if is_instance_valid(_camera) else Transform3D.IDENTITY
+
+
+## The arrival shot borrows the screen: the HUD goes away while it runs, and
+## the game camera is put back when it is done.
+func set_arrival_view(active: bool) -> void:
+	if is_instance_valid(_hud_layer):
+		_hud_layer.visible = not active
+	if not active and is_instance_valid(_camera):
+		_camera.make_current()
 
 
 ## What a heavy's maximum contamination should be for the party as it stands.
@@ -10027,6 +10108,9 @@ func perform_context_action(peer: int, kind: String, target_id: int) -> void:
 			_pending_splats.append_array(PackedInt32Array([SPLAT_BODY_WASH, peer, target_id, 0]))
 		"refill":
 			refill_for(peer, STATION_SAUCE_HERE)
+		"loot":
+			if is_instance_valid(_victims):
+				_victims.loot(target_id)
 		"pickup":
 			if not _healing_tomatoes.has(target_id):
 				return

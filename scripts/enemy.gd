@@ -1195,14 +1195,9 @@ func _advance_ball(delta: float, _targets: Array) -> void:
 		velocity.y -= fall_gravity * delta
 	var before := global_position
 	move_and_slide()
-	# Rolled rather than slid: the visual turns about the axis across its travel
-	# by the ground it covered, which is what makes it read as a ball.
 	var step := global_position - before
-	var covered := Vector2(step.x, step.z).length()
-	if covered > 0.0001 and _visual_root != null:
-		var axis := Vector3.UP.cross(Vector3(step.x, 0.0, step.z).normalized())
-		_visual_root.rotate(axis.normalized(), covered / maxf(radius, 0.01))
 	facing_yaw = atan2(-_ball_velocity.x, -_ball_velocity.z)
+	_roll_ball_visual(Vector2(step.x, step.z).length())
 	for index in get_slide_collision_count():
 		var collision := get_slide_collision(index)
 		var collider := collision.get_collider()
@@ -2200,6 +2195,19 @@ func network_state() -> Array:
 	return [global_position, facing_yaw, health, pose, max_health]
 
 
+## Rolled rather than slid: the visual turns by the ground it covered, top
+## going forwards, which is what makes it read as a ball. **About the body's own
+## axis across its travel.** The body is yawed to face where the ball goes, and
+## `rotate` works in the body's space, so the travel there is always -Z and the
+## axis always -X. Taking the axis from the world travel instead, as it was,
+## turned it a second time by the yaw: the ball spun sideways or backwards on
+## any lane but one.
+func _roll_ball_visual(covered: float) -> void:
+	if covered <= 0.0001 or _visual_root == null or not is_instance_valid(_visual_root):
+		return
+	_visual_root.rotate(Vector3.LEFT, covered / maxf(radius, 0.01))
+
+
 func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 		new_fall_angle: float, new_max_health := 0.0, interpolate := false) -> void:
 	# Guarded rather than assigned outright: a zero would make every fraction a
@@ -2238,6 +2246,9 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	if was_alive and not is_alive():
 		_play_death_animation()
 	elif is_alive():
+		# A client never runs `_advance_ball`; the packet's step is its roll.
+		if kind == EnemyKind.TOMATO_BALL and step.length_squared() < 16.0:
+			_roll_ball_visual(Vector2(step.x, step.z).length())
 		_set_locomotion_animation(walking)
 		# Clients do not simulate enemies; this packet is the only ground distance
 		# they see. Feed it through the same odometer as the authority so planted

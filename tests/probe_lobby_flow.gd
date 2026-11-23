@@ -63,6 +63,12 @@ func _run() -> void:
 		and host.seat_assignments().values().has(1), "first guest did not receive seat 2")
 	_check(host.seat_assignments() == guest.seat_assignments(),
 		"host and guest disagree on seat assignments")
+	# Nobody sets out undressed, and no two players wear the same character.
+	_check(not host.request_stage_start(), "the host started with nobody dressed")
+	host.choose_character(0)
+	guest.choose_character(1)
+	_check(await _until(func(): return host.all_characters_chosen()),
+		"the picks never reached the host")
 	_check(not guest.request_stage_start(), "a guest was able to start the stage")
 
 	_check(host.request_stage_start(), "ready host could not begin the stage transition")

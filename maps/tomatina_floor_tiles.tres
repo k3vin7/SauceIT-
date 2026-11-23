@@ -1,0 +1,83 @@
+[gd_resource type="MeshLibrary" format=3]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_0vv1b"]
+transparency = 1
+shading_mode = 0
+albedo_color = Color(0.8509804, 0.56078434, 0.30588236, 0.55)
+
+[sub_resource type="BoxMesh" id="BoxMesh_rv4l2"]
+material = SubResource("StandardMaterial3D_0vv1b")
+size = Vector3(4.33152, 0.08, 4.33152)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1qhx0"]
+transparency = 1
+shading_mode = 0
+albedo_color = Color(0.35686275, 0.56078434, 0.8509804, 0.55)
+
+[sub_resource type="BoxMesh" id="BoxMesh_w0wju"]
+material = SubResource("StandardMaterial3D_1qhx0")
+size = Vector3(4.33152, 0.08, 4.33152)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_4luos"]
+transparency = 1
+shading_mode = 0
+albedo_color = Color(0.6431373, 0.41568628, 0.81960785, 0.55)
+
+[sub_resource type="BoxMesh" id="BoxMesh_mohh2"]
+material = SubResource("StandardMaterial3D_4luos")
+size = Vector3(4.33152, 0.08, 4.33152)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_xn21y"]
+transparency = 1
+shading_mode = 0
+albedo_color = Color(0.8509804, 0.7607843, 0.30588236, 0.55)
+
+[sub_resource type="BoxMesh" id="BoxMesh_rplcu"]
+material = SubResource("StandardMaterial3D_xn21y")
+size = Vector3(4.33152, 0.08, 4.33152)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_37pv8"]
+transparency = 1
+shading_mode = 0
+albedo_color = Color(0.30980393, 0.7490196, 0.5254902, 0.55)
+
+[sub_resource type="BoxMesh" id="BoxMesh_3mxws"]
+material = SubResource("StandardMaterial3D_37pv8")
+size = Vector3(4.33152, 0.08, 4.33152)
+
+[resource]
+item/0/name = "구간0 출발~급수마당"
+item/0/mesh = SubResource("BoxMesh_rv4l2")
+item/0/mesh_transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+item/0/mesh_cast_shadow = 1
+item/0/shapes = []
+item/0/navigation_mesh_transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+item/0/navigation_layers = 1
+item/1/name = "구간1 급수마당~시장"
+item/1/mesh = SubResource("BoxMesh_w0wju")
+item/1/mesh_transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+item/1/mesh_cast_shadow = 1
+item/1/shapes = []
+item/1/navigation_mesh_transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+item/1/navigation_layers = 1
+item/2/name = "구간2 시장~축제본부"
+item/2/mesh = SubResource("BoxMesh_mohh2")
+item/2/mesh_transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+item/2/mesh_cast_shadow = 1
+item/2/shapes = []
+item/2/navigation_mesh_transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+item/2/navigation_layers = 1
+item/3/name = "구간3 축제본부~광장"
+item/3/mesh = SubResource("BoxMesh_rplcu")
+item/3/mesh_transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+item/3/mesh_cast_shadow = 1
+item/3/shapes = []
+item/3/navigation_mesh_transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+item/3/navigation_layers = 1
+item/4/name = "피난처 바닥"
+item/4/mesh = SubResource("BoxMesh_3mxws")
+item/4/mesh_transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+item/4/mesh_cast_shadow = 1
+item/4/shapes = []
+item/4/navigation_mesh_transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+item/4/navigation_layers = 1

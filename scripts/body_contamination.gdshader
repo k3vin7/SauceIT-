@@ -83,7 +83,7 @@ void vertex() {
 // because a painted cell bled into this one, so the sauce to draw is the sauce of
 // whatever bled.
 uniform vec4 mustard_tint : source_color = vec4(1.00, 0.86, 0.26, 1.0);
-uniform vec4 ketchup_tint : source_color = vec4(1.00, 0.34, 0.24, 1.0);
+uniform vec4 ketchup_tint : source_color = vec4(0.34, 0.022, 0.016, 1.0);
 
 vec3 sauce_tint(vec2 at) {
 	ivec2 size = textureSize(mask_texture, 0);
@@ -118,12 +118,16 @@ vec3 sauce_tint(vec2 at) {
 	return mix(tint, ketchup_tint.rgb, step(1.5, kind) * step(kind, 2.5));
 }
 
+#include "res://scripts/sauce_toon.gdshaderinc"
+
 void fragment() {
 	vec3 about = surface_position - axis_offset;
 	vec2 uv = chart_uv(about, normalize(surface_normal).y, body_height);
 	float coverage = texture(mask_texture, uv).r;
 	float painted = step(paint_threshold, coverage);
-	ALBEDO = mix(clean_color.rgb, mayo_color.rgb * sauce_tint(uv), painted);
+	vec3 stain = sauce_toon_finish(mayo_color.rgb * sauce_tint(uv), coverage, paint_threshold,
+		uv * vec2(textureSize(mask_texture, 0)));
+	ALBEDO = mix(clean_color.rgb, stain, painted);
 	ROUGHNESS = mix(clean_roughness, mayo_roughness, painted);
 	METALLIC = 0.0;
 }

@@ -64,6 +64,8 @@ vec2 chart_uv(vec3 about, float up, float height_of_body) {
 }
 
 
+#include "res://scripts/sauce_toon.gdshaderinc"
+
 varying vec3 body_position;
 varying vec3 body_normal;
 
@@ -84,7 +86,7 @@ void vertex() {
 // because a painted cell bled into this one, so the sauce to draw is the sauce of
 // whatever bled.
 uniform vec4 mustard_tint : source_color = vec4(1.00, 0.86, 0.26, 1.0);
-uniform vec4 ketchup_tint : source_color = vec4(1.00, 0.34, 0.24, 1.0);
+uniform vec4 ketchup_tint : source_color = vec4(0.34, 0.022, 0.016, 1.0);
 
 vec3 sauce_tint(vec2 at) {
 	ivec2 size = textureSize(mask_texture, 0);
@@ -122,10 +124,19 @@ vec3 sauce_tint(vec2 at) {
 void fragment() {
 	vec3 about = body_position - axis_offset;
 	vec2 uv = chart_uv(about, normalize(body_normal).y, body_height);
-	if (texture(mask_texture, uv).r < paint_threshold) {
+	float coverage = texture(mask_texture, uv).r;
+	if (coverage < paint_threshold) {
 		discard;
 	}
-	ALBEDO = mayo_color.rgb * sauce_tint(uv);
-	ROUGHNESS = 0.34;
+	ALBEDO = sauce_toon_finish(mayo_color.rgb * sauce_tint(uv), coverage, paint_threshold,
+		uv * vec2(textureSize(mask_texture, 0)));
+	EMISSION = ALBEDO * 0.28;
+	ROUGHNESS = 1.0;
 	METALLIC = 0.0;
+}
+
+// Toon bands, as the village kit is lit, and a little of the sauce's own colour
+// in the shadow so a stain on the dark side still reads.
+void light() {
+	DIFFUSE_LIGHT += sauce_toon_light(NORMAL, LIGHT, ATTENUATION, LIGHT_COLOR, ALBEDO);
 }

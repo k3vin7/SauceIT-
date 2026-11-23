@@ -215,6 +215,10 @@ func _run() -> void:
 			"guest %d never reached the truck" % index)
 	_check(await _until(func(): return host.seat_assignments().size() == players and host.all_lobby_ready()),
 		"the %d-player roster did not converge" % players)
+	# Nobody sets out undressed, and no two players wear the same character.
+	for index in players:
+		sessions[index].choose_character(index)
+	_check(await _until(func(): return host.all_characters_chosen()), "the picks never reached the host")
 	_check(host.request_stage_start(), "host could not start Tomatina")
 	if not await _until(func(): return authorized.size() == players, 7200):
 		_check(false, "only %d of %d peers were authorized to play" % [authorized.size(), players])
@@ -337,42 +341,7 @@ func _run() -> void:
 		await _physics(10)
 		_agree("after rescue")
 
-	# --- 6. the last guest leaves; a new player joins at the safe point ---
-	var leaver: MayoNet = sessions[players - 1]
-	var leaver_id := leaver.local_id()
-	var leaver_world: Node = worlds[leaver]
-	leaver.leave()
-	sessions.erase(leaver)
-	worlds.erase(leaver)
-	leaver_world.queue_free()
-	for session in sessions:
-		var world = worlds[session]
-		_check(await _physics_until(func(): return world.shooter_for(leaver_id) == null, 600),
-			"peer %d kept the departed player's avatar" % session.local_id())
-	_check(host_world.party_size() == players - 1, "party_size did not drop after a leave (%d)" % host_world.party_size())
-	_gather_in_safe_room()
-	host_world._tomatina_checkpoint = 0
-	await _physics(6)
-	_check(host_world.can_admit_waiting_player(), "the party standing in the safe room cannot admit a newcomer")
-	# ENet retires a departed peer's slot a beat after reporting the leave; a
-	# connection that lands in that slot within ~0.1 s comes up with zero
-	# channels and times out (see _on_peer_disconnected). A second is ample.
-	await create_timer(1.0).timeout
-	var newcomer := _add_session(players)
-	await process_frame
-	_check(newcomer.begin_join_room("127.0.0.1", SYNC_PORT, "SYNC%d" % players), "the newcomer could not connect")
-	_check(await _until(func(): return not host._waiting_peers.is_empty()), "the newcomer was not queued")
-	host._admit_waiting_peers()
-	_check(await _until(func(): return authorized.has(newcomer), 7200), "the newcomer was never authorized to play")
-	await _physics(15)
-	for session in sessions:
-		var world = worlds[session]
-		_check(await _physics_until(func(): return world.shooter_ids().size() == players, 300),
-			"after the rejoin, peer %d sees %d players" % [session.local_id(), world.shooter_ids().size()])
-	_check(worlds[newcomer].grid_md5() == host_world.grid_md5(), "the newcomer's floor differs from the host's")
-	_agree("after rejoin")
-
-	# --- 7. a guest powers the generator, another takes a hose ---
+	# --- 6. a guest powers the generator, another takes a hose ---
 	# The generator's own body fills the middle of its zone; dropped inside it a
 	# player is pushed out under the floor, so find a spot they stand on.
 	_check(await _stand_in_zone(_id(1), host_world._siren_zone, TomatinaMap.at_cell(TomatinaMap.SIREN_CELL)),
@@ -397,6 +366,33 @@ func _run() -> void:
 	# Health and sauce change under fire here and arrive a packet late, so only
 	# positions and states are compared.
 	print("finale: worst gap %.3f m" % _agree("during the finale", MOVING_TOLERANCE, false))
+	# --- 7. the last guest leaves; the fight stays sized, and the door stays shut ---
+	var leaver: MayoNet = sessions[players - 1]
+	var leaver_id := leaver.local_id()
+	var leaver_world: Node = worlds[leaver]
+	leaver.leave()
+	sessions.erase(leaver)
+	worlds.erase(leaver)
+	leaver_world.queue_free()
+	for session in sessions:
+		var world = worlds[session]
+		_check(await _physics_until(func(): return world.shooter_for(leaver_id) == null, 600),
+			"peer %d kept the departed player's avatar" % session.local_id())
+	# The party that set out is the party the fight is sized for.
+	_check(host_world.party_size() == players,
+		"a leaver changed the party the fight is sized for (%d)" % host_world.party_size())
+	# ENet retires a departed peer's slot a beat after reporting the leave; a
+	# connection that lands in that slot within ~0.1 s comes up with zero
+	# channels and times out (see _on_peer_disconnected). A second is ample.
+	await create_timer(1.0).timeout
+	var newcomer := _make_peer("NewcomerView")
+	await process_frame
+	_check(newcomer.begin_join_room("127.0.0.1", SYNC_PORT, "SYNC%d" % players), "the newcomer could not knock")
+	_check(await _until(func(): return not newcomer.is_online()), "the newcomer was not turned away")
+	_check(newcomer.status() == "session is already in progress",
+		"the newcomer was not told the party had set out: '%s'" % newcomer.status())
+	_check(host.seat_assignments().size() == players - 1 and host._waiting_peers.is_empty(),
+		"a player joined a party that had already set out")
 	_finish()
 
 

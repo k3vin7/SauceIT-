@@ -48,6 +48,9 @@ const SEATS := [
 
 var session: MayoNet
 var mouse_sensitivity := 0.09
+## How fast a body walks here. The office (`OfficeLobby`) is this same space
+## with more floor, and sets its own.
+var walk_speed := WALK_SPEED
 var input_locked := false
 ## Tests drive the local occupant through these instead of the keyboard, the
 ## same seam `debug_clear_enemies` opens in the stage. `Input` is global and a
@@ -267,8 +270,8 @@ func _step_body(body: CharacterBody3D, move: Vector2, yaw: float, jump: bool, de
 		body.velocity.y = JUMP_SPEED if jump else 0.0
 	else:
 		body.velocity.y -= GRAVITY * delta
-	body.velocity.x = move_toward(body.velocity.x, wish.x * WALK_SPEED, ACCELERATION * delta)
-	body.velocity.z = move_toward(body.velocity.z, wish.z * WALK_SPEED, ACCELERATION * delta)
+	body.velocity.x = move_toward(body.velocity.x, wish.x * walk_speed, ACCELERATION * delta)
+	body.velocity.z = move_toward(body.velocity.z, wish.z * walk_speed, ACCELERATION * delta)
 	body.move_and_slide()
 
 
@@ -425,9 +428,21 @@ func _refresh_hint() -> void:
 
 
 func _refresh_roster() -> void:
-	if session == null or _roster_label == null:
+	if session == null:
 		return
 	var assignments := session.seat_assignments()
+	_sync_occupants(assignments)
+	_refresh_panel(assignments)
+
+
+## Where seat `seat` stands and which way it faces: {"position", "yaw"}.
+func _seat_pose(seat: int) -> Dictionary:
+	return SEATS[seat % SEATS.size()]
+
+
+## Bodies in step with the roster: one for everybody seated, none for anybody
+## who has left, each wearing what its player picked.
+func _sync_occupants(assignments: Dictionary) -> void:
 	for peer_id in _occupants.keys():
 		if not assignments.has(peer_id):
 			if int(peer_id) == _local_id():
@@ -438,13 +453,8 @@ func _refresh_roster() -> void:
 			_animators.erase(peer_id)
 			_yaws.erase(peer_id)
 			_worn.erase(peer_id)
-	var lines: Array[String] = []
-	var ids: Array = assignments.keys()
-	ids.sort_custom(func(a, b): return int(assignments[a]) < int(assignments[b]))
-	for peer_id in ids:
+	for peer_id in assignments:
 		var seat := int(assignments[peer_id])
-		lines.push_back("좌석 %d · 플레이어 %d%s" % [seat + 1, peer_id,
-			" (방장)" if int(peer_id) == 1 else ""])
 		if not _occupants.has(peer_id):
 			_spawn_occupant(int(peer_id), seat)
 		elif int(_worn.get(peer_id, -1)) != _character_for(int(peer_id), seat):
@@ -452,6 +462,17 @@ func _refresh_roster() -> void:
 			# character select is already on the roster, in the look its seat
 			# gave it. Same body, same place, new character.
 			_dress_occupant(int(peer_id), _occupants[peer_id], _character_for(int(peer_id), seat))
+
+
+func _refresh_panel(assignments: Dictionary) -> void:
+	if _roster_label == null:
+		return
+	var lines: Array[String] = []
+	var ids: Array = assignments.keys()
+	ids.sort_custom(func(a, b): return int(assignments[a]) < int(assignments[b]))
+	for peer_id in ids:
+		lines.push_back("좌석 %d · 플레이어 %d%s" % [int(assignments[peer_id]) + 1, peer_id,
+			" (방장)" if int(peer_id) == 1 else ""])
 	_roster_label.text = "참가자 %d / 4\n%s" % [assignments.size(), "\n".join(lines)]
 	_stage_label.text = "선택: %s" % StageRegistry.display_name(session.selected_stage)
 	var host := session.is_server()
@@ -475,9 +496,10 @@ func _character_for(peer_id: int, seat: int) -> int:
 func _spawn_occupant(peer_id: int, seat: int) -> void:
 	var body := CharacterBody3D.new()
 	body.name = "Occupant_%d" % peer_id
-	var spawn: Vector3 = SEATS[seat]["position"]
+	var pose := _seat_pose(seat)
+	var spawn: Vector3 = pose["position"]
 	body.position = Vector3(spawn.x, OCCUPANT_HEIGHT * 0.5, spawn.z)
-	body.rotation.y = SEATS[seat]["yaw"]
+	body.rotation.y = pose["yaw"]
 	var collision := CollisionShape3D.new()
 	var capsule := CapsuleShape3D.new()
 	capsule.radius = OCCUPANT_RADIUS
@@ -487,7 +509,7 @@ func _spawn_occupant(peer_id: int, seat: int) -> void:
 	add_child(body)
 	_dress_occupant(peer_id, body, _character_for(peer_id, seat))
 	_occupants[peer_id] = body
-	_yaws[peer_id] = float(SEATS[seat]["yaw"])
+	_yaws[peer_id] = float(pose["yaw"])
 	if peer_id == _local_id():
 		_adopt_local(body, seat)
 	else:
@@ -547,7 +569,7 @@ func _bind_animator(peer_id: int, visual: Node3D, index: int) -> void:
 
 ## This peer's own body carries the camera, so the view walks with it.
 func _adopt_local(body: CharacterBody3D, seat: int) -> void:
-	_yaw = float(SEATS[seat]["yaw"])
+	_yaw = float(_seat_pose(seat)["yaw"])
 	_pitch = 0.0
 	_camera_pivot = Node3D.new()
 	_camera_pivot.name = "ViewPivot"

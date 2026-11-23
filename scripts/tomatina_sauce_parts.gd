@@ -154,6 +154,14 @@ func drop_for(enemy: MayoEnemy) -> void:
 	dirty = true
 
 
+## Authority only: a coin lying at `at`, on the ground -- what a searched body
+## drops. Picked up and sent like any other.
+func drop_coin(at: Vector3) -> void:
+	_coin_serial += 1
+	_place_coin(_coin_serial, at + Vector3.UP * 0.37)
+	dirty = true
+
+
 func _place_coin(id: int, at: Vector3) -> void:
 	var coin := MeshInstance3D.new()
 	coin.name = "SauceCoin%d" % id
@@ -190,24 +198,38 @@ func _remove_coin(id: int) -> void:
 	_coins.erase(id)
 
 
+## The coins lying about, four floats each. The searched bodies ride along as
+## entries with a negative id (-1 - body), so a body searched on the host stops
+## offering itself on every screen without a message of its own.
 func coin_state() -> PackedFloat32Array:
 	var data := PackedFloat32Array()
 	for id in _coins:
 		var at: Vector3 = _coins[id].global_position
 		data.append_array(PackedFloat32Array([id, at.x, at.y, at.z]))
+	var victims = world.get("_victims")
+	if victims != null:
+		for index in victims.looted_indices():
+			data.append_array(PackedFloat32Array([-1 - int(index), 0.0, 0.0, 0.0]))
 	return data
 
 
 func apply_coin_state(data: PackedFloat32Array) -> void:
 	var present := {}
+	var looted := []
 	for i in range(0, data.size() - 3, 4):
 		var id := int(data[i])
+		if id < 0:
+			looted.push_back(-1 - id)
+			continue
 		present[id] = true
 		if not _coins.has(id):
 			_place_coin(id, Vector3(data[i + 1], data[i + 2], data[i + 3]))
 	for id in _coins.keys():
 		if not present.has(id):
 			_remove_coin(id)
+	var victims = world.get("_victims")
+	if victims != null:
+		victims.set_looted(looted)
 
 
 func reset() -> void:
@@ -217,6 +239,9 @@ func reset() -> void:
 		shot.node.queue_free()
 	_projectiles.clear()
 	_rolled_deaths.clear()
+	var victims = world.get("_victims")
+	if victims != null:
+		victims.reset()
 	dirty = true
 
 

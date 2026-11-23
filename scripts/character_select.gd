@@ -2,21 +2,22 @@ extends CanvasLayer
 
 const UI := preload("res://scripts/sauce_ui.gd")
 
-## The door of the truck: four characters, pick one.
+## Four characters, pick one.
 ##
-## Shown once per session, between being let into a room and the truck itself,
-## for the host and for every guest. What is picked here goes to the session
-## (`MayoNet.choose_character`), which is what the truck and the stage both ask
-## when they dress a body -- so this screen is the only place the choice is
-## made, and it holds from the truck through every stage after it.
+## Shown on the way into the office, for the host and for every guest, and
+## again from the office locker. What is picked here goes to the session
+## (`MayoNet.choose_character`), which is what the office and the stage both
+## ask when they dress a body -- so this screen is the only place the choice
+## is made, and it holds through every stage after it.
 ##
-## Two players may pick the same character. The cards say who has already taken
-## what, so a party that wants four different ones can see how to get there, but
-## nothing is locked: a lock would need a rule for two picks arriving at once,
-## and "you both get it" is a better answer than any tiebreak.
+## No two players wear the same character. A card somebody else holds is shut,
+## and when two picks cross on the wire the host's order decides: the loser's
+## select simply stays up with that card now shut (see `SauceApp`).
 
 signal character_chosen(index: int)
 signal leave_requested
+## The locker's select may be closed without picking; the first one may not.
+signal cancel_requested
 
 const NAMES := ["캐릭터 1", "캐릭터 2", "캐릭터 3", "캐릭터 4"]
 ## Every model is stood at the stage's 2.56 m and then given the stage's own
@@ -30,6 +31,9 @@ const TURN_SPEED := 0.9
 
 var session: MayoNet
 var selected := 0
+## Set when the player already has a character: the way out is `닫기`, back to
+## the office, rather than out of the room.
+var can_cancel := false
 
 var _cards: Array[Button] = []
 var _models: Array[Node3D] = []
@@ -42,8 +46,7 @@ func _ready() -> void:
 	name = "CharacterSelectUI"
 	layer = 5
 	if session != null:
-		# Opens on the character the seat would have given, so a player who just
-		# presses the button gets what they would have got before this screen.
+		# Opens on what this player is wearing, or the first one nobody holds.
 		selected = session.character_of(session.local_id())
 		if not session.roster_changed.is_connected(_refresh_taken):
 			session.roster_changed.connect(_refresh_taken)
@@ -78,14 +81,23 @@ func _unhandled_input(event: InputEvent) -> void:
 		_select(code - KEY_1)
 		get_viewport().set_input_as_handled()
 	elif code == KEY_LEFT or code == KEY_A:
-		_select(posmod(selected - 1, NAMES.size()))
+		_step(-1)
 		get_viewport().set_input_as_handled()
 	elif code == KEY_RIGHT or code == KEY_D:
-		_select(posmod(selected + 1, NAMES.size()))
+		_step(1)
 		get_viewport().set_input_as_handled()
 	elif code == KEY_ENTER or code == KEY_KP_ENTER:
 		_confirm_pick()
 		get_viewport().set_input_as_handled()
+
+
+## The next card in `direction` that nobody else holds.
+func _step(direction: int) -> void:
+	for distance in range(1, NAMES.size()):
+		var index := posmod(selected + direction * distance, NAMES.size())
+		if not _held_by_other(index):
+			_select(index)
+			return
 
 
 func _build() -> void:
@@ -107,7 +119,7 @@ func _build() -> void:
 	title.add_theme_color_override("font_color", UI.CREAM)
 	column.add_child(title)
 	var subtitle := Label.new()
-	subtitle.text = "트럭에 타기 전에 함께할 캐릭터를 고르세요.  (1~4 · ←/→ 선택, Enter 탑승)"
+	subtitle.text = "함께할 캐릭터를 고르세요. 다른 팀원이 고른 캐릭터는 고를 수 없습니다.  (1~4 · ←/→ 선택, Enter 확정)"
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	subtitle.add_theme_color_override("font_color", UI.MUTED)
 	column.add_child(subtitle)
@@ -125,9 +137,13 @@ func _build() -> void:
 	_confirm.pressed.connect(_confirm_pick)
 	column.add_child(_confirm)
 	var leave := Button.new()
-	leave.text = "세션 나가기"
+	leave.text = "닫기" if can_cancel else "나가기 · 타이틀로"
 	leave.custom_minimum_size = Vector2(0.0, 38.0)
-	leave.pressed.connect(func(): leave_requested.emit())
+	leave.pressed.connect(func():
+		if can_cancel:
+			cancel_requested.emit()
+		else:
+			leave_requested.emit())
 	column.add_child(leave)
 
 
@@ -252,7 +268,11 @@ func _build_stage(view: SubViewport, index: int) -> void:
 
 
 func _select(index: int) -> void:
-	selected = clampi(index, 0, NAMES.size() - 1)
+	index = clampi(index, 0, NAMES.size() - 1)
+	# A card somebody else holds cannot be stood on; the selection stays put.
+	if _held_by_other(index) and not _held_by_other(selected):
+		index = selected
+	selected = index
 	for card_index in _cards.size():
 		_cards[card_index].set_pressed_no_signal(card_index == selected)
 	# The picked one walks on the spot as it turns; the rest hold still.
@@ -266,11 +286,17 @@ func _select(index: int) -> void:
 			animator.seek(0.0, true)
 			animator.pause()
 	if _confirm != null:
-		_confirm.text = "%s 선택하고 탑승" % NAMES[selected]
+		_confirm.text = "%s 선택" % NAMES[selected]
+		_confirm.disabled = _held_by_other(selected)
 
 
 func _confirm_pick() -> void:
-	character_chosen.emit(selected)
+	if not _held_by_other(selected):
+		character_chosen.emit(selected)
+
+
+func _held_by_other(index: int) -> bool:
+	return session != null and session.character_taken(index, session.local_id())
 
 
 ## Who else is already wearing each one. This peer's own entry is left out: the
@@ -295,3 +321,12 @@ func _refresh_taken() -> void:
 	for index in _taken.size():
 		var names: PackedStringArray = holders[index]
 		_taken[index].text = "" if names.is_empty() else "%s 선택함" % ", ".join(names)
+		_cards[index].disabled = not names.is_empty()
+		_cards[index].modulate = Color(1.0, 1.0, 1.0, 0.45 if not names.is_empty() else 1.0)
+	# Standing on a card that has just been taken: step to the first free one.
+	if _held_by_other(selected):
+		for index in NAMES.size():
+			if not _held_by_other(index):
+				_select(index)
+				return
+	_select(selected)

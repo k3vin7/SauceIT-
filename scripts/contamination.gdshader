@@ -60,7 +60,7 @@ uniform float slip_threshold = 0.04706;
 // vec3(1.0) a sauce is drawn exactly as mayo is, which is what the fourth,
 // unused kind gets.
 uniform vec4 mustard_tint : source_color = vec4(1.00, 0.86, 0.26, 1.0);
-uniform vec4 ketchup_tint : source_color = vec4(1.00, 0.34, 0.24, 1.0);
+uniform vec4 ketchup_tint : source_color = vec4(0.34, 0.022, 0.016, 1.0);
 
 uniform bool paint_only = false;
 uniform bool paved = false;
@@ -70,6 +70,8 @@ uniform vec2 pavement_size = vec2(1.0);
 varying vec2 pavement_position;
 
 #include "res://assets/props/Stage2_TomatinaVillage/tomatina_splatter.gdshaderinc"
+
+#include "res://scripts/sauce_toon.gdshaderinc"
 
 void vertex() {
 	pavement_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xz;
@@ -170,14 +172,17 @@ void fragment() {
 	stained = mix(stained, mayo_color_thick.rgb * tint, thick);
 	vec3 base_albedo = mix(stained, deep_color.rgb * tint, deep);
 	if (paved && kind > 1.5 && kind < 2.5) {
-		// Let grey pavers show through the old juice while fresh drops sit on top.
+		// Solid juice over the pavers, a little thinner in the ripples.
 		float wave = sin(pavement_position.x * 1.48 + sin(pavement_position.y * 1.15))
 			* cos(pavement_position.y * 2.07) * 0.5 + 0.5;
-		vec3 juice = mix(vec3(0.30, 0.045, 0.027), vec3(0.54, 0.14, 0.077), wave);
+		vec3 juice = mix(vec3(0.30, 0.024, 0.014), vec3(0.46, 0.05, 0.03), wave);
 		juice = mix(juice, vec3(0.39, 0.023, 0.013), tomato_marks * 0.8);
-		base_albedo = mix(clean, juice, painted * mix(0.44, 0.68, wave));
+		base_albedo = mix(clean, juice, painted * mix(0.9, 1.0, wave));
 	}
 	ALBEDO = base_albedo;
+	if (painted > 0.5) {
+		ALBEDO = sauce_toon_finish(ALBEDO, coverage, paint_threshold, UV * vec2(mask_size));
+	}
 
 	float rough = mix(clean_roughness, mayo_roughness, painted);
 	rough = mix(rough, mix(mayo_roughness, deep_roughness, 0.3), mid);

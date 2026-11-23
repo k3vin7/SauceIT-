@@ -102,45 +102,60 @@ func load_kit() -> bool:
 
 
 func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dictionary], fire_truck: Dictionary) -> void:
+	record_tag = "street"
 	_build_frontages()
 	FESTIVAL_DECOR.build(parent, _facades)
 	var ember_mesh := _make_ember_mesh()
 	var ember_process := _make_ember_process()
-	for box in debris:
+	for index in debris.size():
+		var box := debris[index]
+		record_tag = "debris:%d" % index
 		_add_debris(box)
 		if box["name"] == "RefugeBrazier":
 			var centre: Vector3 = box["position"]
 			_add_fire(parent, Vector3(centre.x, 0.38, centre.z),
 				Vector3(1.24, 1.63, 1.21), ember_mesh, ember_process)
-	for box in parked_trucks:
-		_add_debris(box)
-	for index in TomatinaMap.SAFE_ROOMS.size():
-		var room: Rect2i = TomatinaMap.SAFE_ROOMS[index]
+	for index in parked_trucks.size():
+		record_tag = "parked:%d" % index
+		_add_debris(parked_trucks[index])
+	for index in TomatinaMap.safe_rooms().size():
+		var room: Rect2i = TomatinaMap.safe_rooms()[index]
 		var centre := Vector2(float(room.get_center().x) + 0.5, float(room.position.y) + 1.5)
+		record_tag = "room:%d" % index
 		_place(BANNERS[index], TomatinaMap.at_cell(centre))
 		_place("RefugeShower", TomatinaMap.refuge_shower_at(index))
+	record_tag = "landmark"
 	_place("Church", TomatinaMap.at_cell(Vector2(36.5, 20.6)), Vector3.BACK, Vector3(17, 15, 9))
+	emit_batches(parent)
+
+
+## 노드 맵 굽기용: 켜 두면 `_place`가 놓는 조각마다 [모델, 변환, record_tag]를 남긴다.
+var recording := false
+var record_tag := ""
+var recorded: Array = []
+
+
+## 노드 맵의 아트 조각 하나를 묶음에 넣는다(`emit_batches` 전에).
+func add_placement(key: String, placement: Transform3D) -> void:
+	if not _meshes.has(key):
+		return
+	var chunk_width := HOUSE_CHUNK_WIDTH if key in HOUSES else CHUNK_SIZE
+	var chunk := Vector2i(floori(placement.origin.x / chunk_width), floori(placement.origin.z / CHUNK_SIZE))
+	if not _batches.has(key):
+		_batches[key] = {}
+	if not _batches[key].has(chunk):
+		_batches[key][chunk] = []
+	_batches[key][chunk].push_back(placement)
+
+
+## 모아 둔 조각을 모델·구역별 MultiMesh로 `parent` 아래 "TomatinaVillageArt"에 만든다.
+func emit_batches(parent: Node3D) -> void:
 	var root := Node3D.new()
 	root.name = "TomatinaVillageArt"
 	parent.add_child(root)
-	var material := ShaderMaterial.new()
-	material.shader = TOON_SHADER
-	var stained_walls := ShaderMaterial.new()
-	stained_walls.shader = TOON_SHADER
-	stained_walls.set_shader_parameter("tomato_wall", true)
-	var street_walls := stained_walls.duplicate() as ShaderMaterial
-	street_walls.set_shader_parameter("boundary_wall", true)
+	var finishes := {}
 	for name: String in _batches:
-		var finish: Material = material
-		if name == "BoundaryWall":
-			finish = street_walls
-		elif name == "Church" or name in HOUSES:
-			finish = stained_walls
-		if STREET_ACCENTS.has(name):
-			var accent := StandardMaterial3D.new()
-			accent.albedo_color = STREET_ACCENTS[name].darkened(0.36)
-			accent.roughness = 0.82
-			finish = accent
+		var finish := finish_for(name, finishes)
 		for chunk: Vector2i in _batches[name]:
 			var transforms: Array = _batches[name][chunk]
 			var multimesh := MultiMesh.new()
@@ -153,10 +168,42 @@ func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dicti
 			batch.name = "%s_%d_%d" % [name, chunk.x, chunk.y]
 			batch.multimesh = multimesh
 			batch.material_override = finish
-			if name in ["BrokenBoards", "CrushedTomatoes", "FestivalTrashPile",
-					"TomatoBasketSpill", "TornBuntingHeap"]:
+			if name in NO_SHADOW:
 				batch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			root.add_child(batch)
+
+
+const NO_SHADOW := ["BrokenBoards", "CrushedTomatoes", "FestivalTrashPile",
+	"TomatoBasketSpill", "TornBuntingHeap"]
+
+
+## 모델 이름에 맞는 재질. 같은 `cache`를 쓰는 조각끼리 재질을 나눈다.
+static func finish_for(name: String, cache: Dictionary) -> Material:
+	var key := "toon"
+	if STREET_ACCENTS.has(name):
+		key = name
+	elif name == "BoundaryWall":
+		key = "street"
+	elif name == "Church" or name in HOUSES:
+		key = "stained"
+	if cache.has(key):
+		return cache[key]
+	var finish: Material
+	if STREET_ACCENTS.has(name):
+		var accent := StandardMaterial3D.new()
+		accent.albedo_color = STREET_ACCENTS[name].darkened(0.36)
+		accent.roughness = 0.82
+		finish = accent
+	else:
+		var toon := ShaderMaterial.new()
+		toon.shader = TOON_SHADER
+		if key != "toon":
+			toon.set_shader_parameter("tomato_wall", true)
+		if key == "street":
+			toon.set_shader_parameter("boundary_wall", true)
+		finish = toon
+	cache[key] = finish
+	return finish
 
 
 ## The curb is also the face of the collision. The visual panel sits just
@@ -170,18 +217,6 @@ func _build_frontages() -> void:
 		if open and patch < 9 and TomatinaMap.safe_room_at(cell) < 0:
 			var at := TomatinaMap.at_cell(Vector2(cell) + Vector2(0.38, 0.62))
 			_place_litter(at, cell, patch < 2, 1.38)
-		var victim_mark := posmod((cell.x * 97) ^ (cell.y * 193), 113)
-		if open and victim_mark < 2 and TomatinaMap.safe_room_at(cell) < 0 \
-				and not TomatinaMap.START_PLAZA.has_point(cell) \
-				and not TomatinaMap.CAPRESE_RESCUE_BAY.has_point(cell) \
-				and not TomatinaMap.FIRE_BAY.has_point(cell):
-			var victim_at := TomatinaMap.at_cell(Vector2(cell) + Vector2(
-				0.34 + float(posmod(cell.x * 11, 29)) / 100.0,
-				0.34 + float(posmod(cell.y * 13, 27)) / 100.0))
-			var victim_angle := float(posmod(cell.x * 31 + cell.y * 59, 41)) * 0.153
-			var victim_facing := Vector3(sin(victim_angle), 0.0, cos(victim_angle))
-			var victim_model: String = VICTIM_MODELS[posmod(cell.x * 7 + cell.y * 13, VICTIM_MODELS.size())]
-			_place(victim_model, victim_at, victim_facing, Vector3(1.65, 0.48, 2.15))
 		for step: Vector2i in CARDINAL:
 			if floor.has(cell + step):
 				continue
@@ -276,6 +311,8 @@ func _boundary_mesh() -> ArrayMesh:
 ## A second row of homes makes the winding roads read as lanes within a village.
 ## These homes live behind the street boundary and never obstruct a route.
 func _build_backlots(floor: Dictionary) -> void:
+	var previous_tag := record_tag
+	record_tag = "backlot"
 	var candidates := {}
 	for cell: Vector2i in floor:
 		for step: Vector2i in CARDINAL:
@@ -301,6 +338,7 @@ func _build_backlots(floor: Dictionary) -> void:
 		var at := TomatinaMap.at_cell(Vector2(site) + Vector2(0.5, 0.5))
 		var size := Vector3(8.8, 7.6 + float(variant) * 1.2, 8.1)
 		_place(HOUSES[variant], at, Vector3(sin(turn), 0.0, cos(turn)), size)
+	record_tag = previous_tag
 
 
 func _place_litter(at: Vector3, cell: Vector2i, boards: bool, spread: float) -> void:
@@ -472,6 +510,57 @@ func _add_box_model(key: String, box: Dictionary, facing: Vector3, size := Vecto
 	_place(key, at, facing, footprint if size == Vector3.ZERO else size)
 
 
+## The festival-goers lying in the street, in the order every peer builds them
+## -- the floor's own cell order -- so body N is the same body everywhere. Not
+## batched with the scenery: each one is a body of its own, which the sauce can
+## land on and a player can search. See `TomatinaVictims`.
+static func victim_placements() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	if TomatinaMap.authored != null and TomatinaMap.authored.has_victims:
+		out.assign(TomatinaMap.authored.victims)
+		return out
+	var blocked := TomatinaMap.blocked_cells()
+	for cell: Vector2i in TomatinaMap.floor_cells():
+		var victim_mark := posmod((cell.x * 97) ^ (cell.y * 193), 113)
+		if blocked.has(cell) or victim_mark >= 2 or TomatinaMap.safe_room_at(cell) >= 0 \
+				or TomatinaMap.START_PLAZA.has_point(cell) \
+				or TomatinaMap.CAPRESE_RESCUE_BAY.has_point(cell) \
+				or TomatinaMap.FIRE_BAY.has_point(cell):
+			continue
+		var victim_angle := float(posmod(cell.x * 31 + cell.y * 59, 41)) * 0.153
+		out.push_back({
+			"at": TomatinaMap.at_cell(Vector2(cell) + Vector2(
+				0.34 + float(posmod(cell.x * 11, 29)) / 100.0,
+				0.34 + float(posmod(cell.y * 13, 27)) / 100.0)),
+			"facing": Vector3(sin(victim_angle), 0.0, cos(victim_angle)),
+			"model": VICTIM_MODELS[posmod(cell.x * 7 + cell.y * 13, VICTIM_MODELS.size())],
+		})
+	return out
+
+
+const VICTIM_SIZE := Vector3(1.65, 0.48, 2.15)
+
+
+func mesh_for(key: String) -> Mesh:
+	return _meshes.get(key)
+
+
+## Where `_place` puts a model: standing on `at`, turned to `facing`, stretched
+## to `size` when one is given. Identity when the model is not in the kit.
+func placement_transform(key: String, at: Vector3, facing := Vector3.BACK, size := Vector3.ZERO) -> Transform3D:
+	var mesh: Mesh = _meshes.get(key)
+	if mesh == null:
+		return Transform3D.IDENTITY
+	var bounds := mesh.get_aabb()
+	var offset := bounds.get_center()
+	offset.y = bounds.position.y
+	if key == "RefugeShower":
+		offset = Vector3.ZERO
+	var scale := size / bounds.size if size != Vector3.ZERO else Vector3.ONE
+	var basis := Basis(Vector3.UP, atan2(facing.x, facing.z)).scaled_local(scale)
+	return Transform3D(basis, at - basis * offset)
+
+
 func _place(key: String, at: Vector3, facing := Vector3.BACK, size := Vector3.ZERO) -> void:
 	var mesh: Mesh = _meshes.get(key)
 	if mesh == null:
@@ -492,3 +581,5 @@ func _place(key: String, at: Vector3, facing := Vector3.BACK, size := Vector3.ZE
 	if not _batches[key].has(chunk):
 		_batches[key][chunk] = []
 	_batches[key][chunk].push_back(Transform3D(basis, at - basis * offset))
+	if recording:
+		recorded.push_back([key, Transform3D(basis, at - basis * offset), record_tag])

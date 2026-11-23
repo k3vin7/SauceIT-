@@ -1,0 +1,13 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/mayo_prototype.gd" id="1_world"]
+[ext_resource type="PackedScene" path="res://maps/tomatina_map_editable.tscn" id="2_map"]
+
+[node name="Stage2TomatinaEditable" type="Node3D"]
+script = ExtResource("1_world")
+map_kind = 2
+tomatina_map_scene = ExtResource("2_map")
+tutorial_enabled = false
+stage_mode = true
+network_ui_enabled = false
+show_key_legend = false

@@ -1,11 +1,22 @@
 class_name SauceApp
 extends Node
 
-enum Flow { TITLE, TUTORIAL, RECRUITMENT, TRUCK_LOBBY, LOADING, STAGE, RESULT }
+enum Flow { TITLE, TUTORIAL, OFFICE, LOADING, STAGE, RESULT }
 
 const TutorialScene := preload("res://tutorial_world.tscn")
-const RecruitmentScene := preload("res://recruitment_map.tscn")
-const TruckScene := preload("res://truck_lobby.tscn")
+const OfficeScene := preload("res://office_lobby.tscn")
+## What a new room is headed for until the host picks on the office map.
+const DEFAULT_STAGE := "stage_2"
+## What the session says in its own words, in the player's.
+const STATUS_TEXT := {
+	"wrong lobby code": "입장 코드가 맞지 않습니다.",
+	"room is full": "방이 가득 찼습니다 (최대 4명).",
+	"session is already in progress": "이미 출발한 방입니다. 팀이 사무실로 돌아오면 다시 참여할 수 있습니다.",
+	"connection failed": "연결하지 못했습니다. IP와 포트를 확인하세요.",
+	"connection cancelled": "접속을 취소했습니다.",
+	"host closed the session": "방장이 방을 닫았습니다.",
+	"game version differs from the host": "방장과 게임 버전이 다릅니다.",
+}
 const CharacterSelectScript := preload("res://scripts/character_select.gd")
 const UI := preload("res://scripts/sauce_ui.gd")
 
@@ -20,9 +31,14 @@ var current_space: Node
 var _title_layer: CanvasLayer
 var _options_layer: CanvasLayer
 var _pause_layer: CanvasLayer
-var _recruitment_layer: CanvasLayer
-## The character select, up between being let into a room and the truck.
+## 같이하기: the make-or-join panel, over the title.
+var _party_layer: CanvasLayer
+## The character select: up on the way into the office and from its locker.
 var _character_layer: CanvasLayer
+## The character this player asked for and has not been given yet.
+var _pending_pick := -1
+## The arrival shot between loading a stage and playing it.
+var _arrival: StageArrival
 var _loading_layer: CanvasLayer
 var _result_layer: CanvasLayer
 var _result_continue_button: Button
@@ -35,9 +51,6 @@ var _address_field: LineEdit
 var _port_field: LineEdit
 var _code_field: LineEdit
 var _open_room: CheckBox
-## The stage dropdown on the host panel. Read when the room is made, so the
-## selection travels with `begin_host_room` instead of a hard-coded id.
-var _stage_select: OptionButton
 var _volume_slider: HSlider
 var _bgm_slider: HSlider
 var _sfx_slider: HSlider
@@ -55,8 +68,8 @@ func _ready() -> void:
 	save_store = SauceSaveStore.new(save_path_override)
 	save_store.load_data()
 	_apply_options()
-	# A guest is ready when its truck is up, which is after it has picked a
-	# character -- not the moment the host lets it in.
+	# A guest is ready when its office is up, not the moment the host lets it
+	# in. Picking a character is a separate gate: `MayoNet.can_start_stage`.
 	session.defer_lobby_ready = true
 	_connect_session()
 	_show_title()
@@ -70,14 +83,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if _options_layer != null and is_instance_valid(_options_layer):
 		_close_options()
-	elif _recruitment_layer != null and is_instance_valid(_recruitment_layer):
-		_close_recruitment_panel()
+	elif _party_layer != null and is_instance_valid(_party_layer):
+		_close_party_panel()
 	elif _pause_layer != null and is_instance_valid(_pause_layer):
 		_close_pause()
 	elif _character_layer != null and is_instance_valid(_character_layer):
-		# The select has its own way out (`세션 나가기`). A pause menu on top of
-		# it would unlock the office behind it on the way back.
-		pass
+		# A pause menu on top of the select would unlock the office behind it
+		# on the way back. Esc closes a select that may be closed (the locker's);
+		# the first one has its own way out (`나가기`).
+		if session.has_character(session.local_id()):
+			_close_character_select()
 	elif flow not in [Flow.TITLE, Flow.LOADING, Flow.RESULT]:
 		_open_options_from_game()
 	get_viewport().set_input_as_handled()
@@ -92,8 +107,10 @@ func _connect_session() -> void:
 	session.transition_failed.connect(_on_transition_failed)
 	session.result_ready.connect(_on_result_ready)
 	session.result_votes_changed.connect(_on_result_votes_changed)
-	session.truck_returned.connect(_show_truck)
+	session.truck_returned.connect(_show_office)
 	session.session_ended.connect(_on_session_ended)
+	session.intro_skipped.connect(_on_intro_skipped)
+	session.roster_changed.connect(_settle_character_pick)
 
 
 func _on_late_join_waiting() -> void:
@@ -101,18 +118,20 @@ func _on_late_join_waiting() -> void:
 	_clear_space()
 	_show_loading("진행 중인 토마티나에 참가했어요.\n팀이 안전지점에 도착하면 합류합니다.")
 	var cancel := Button.new()
-	cancel.text = "합류 취소 · 모집 장소로"
+	cancel.text = "합류 취소 · 타이틀로"
 	cancel.position = Vector2(40, 40)
 	cancel.pressed.connect(_leave_session)
 	_loading_layer.add_child(cancel)
 
 
-func _show_title() -> void:
+func _show_title(message := "") -> void:
 	flow = Flow.TITLE
 	_clear_space()
 	_clear_all_ui()
-	if session.is_online():
-		session.leave()
+	# Solo rooms as well as hosted ones: `leave` puts either away.
+	session.leave()
+	if not message.is_empty():
+		_notice = message
 	_set_mouse_visible(true)
 	_title_layer = CanvasLayer.new()
 	_title_layer.name = "TitleUI"
@@ -158,12 +177,22 @@ func _show_title() -> void:
 	column.add_theme_constant_override("separation", 14)
 	margin.add_child(column)
 	column.add_child(UI.eyebrow("출격 메뉴"))
+	# The split is made here, before the office: a room is solo or shared from
+	# the start, and the fight is sized for the party that leaves the office.
+	column.add_child(_button("혼자하기", _start_solo, true))
+	column.add_child(_button("같이하기", _open_party_panel, true))
 	column.add_child(_button("봇 3명과 토마티나 연습", _show_bot_practice))
-	column.add_child(_button("게임 시작", _start_game, true))
-	if save_store.tutorial_completed:
-		column.add_child(_button("튜토리얼 다시 하기", _show_tutorial))
+	column.add_child(_button("튜토리얼", _show_tutorial))
 	column.add_child(_button("옵션", _open_options))
 	column.add_child(_button("종료", func(): get_tree().quit()))
+	if not _notice.is_empty():
+		var notice := Label.new()
+		notice.name = "TitleNotice"
+		notice.text = _status_text(_notice)
+		notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		notice.add_theme_color_override("font_color", UI.GOLD)
+		column.add_child(notice)
+		_notice = ""
 
 
 func _show_bot_practice() -> void:
@@ -185,12 +214,13 @@ func _show_bot_practice() -> void:
 	bot_team.configure(world, false)
 
 
-func _start_game() -> void:
-	_clear_ui(_title_layer)
-	if save_store.tutorial_completed:
-		_show_recruitment()
-	else:
-		_show_tutorial()
+## 혼자하기: a room of one, no port opened. The office, the pick, the map and
+## the start are the same ones a shared room uses.
+func _start_solo() -> void:
+	if flow != Flow.TITLE:
+		return
+	session.leave()
+	session.begin_solo_room(DEFAULT_STAGE)
 
 
 func _show_tutorial() -> void:
@@ -210,40 +240,27 @@ func _on_tutorial_completed() -> void:
 	if flow != Flow.TUTORIAL:
 		return
 	var error := save_store.save_progress_complete()
-	if error != OK:
-		_notice = "튜토리얼 완료 저장 실패 (오류 %d)" % error
-	_show_recruitment()
+	_show_title("튜토리얼 완료 저장 실패 (오류 %d)" % error if error != OK else "")
 
 
-func _show_recruitment(message := "") -> void:
-	flow = Flow.RECRUITMENT
-	_clear_space()
-	_clear_all_ui()
-	var hub := RecruitmentScene.instantiate() as RecruitmentMap
-	hub.mouse_sensitivity = save_store.mouse_sensitivity
-	hub.screen_interacted.connect(_open_recruitment_panel)
-	hub.pause_requested.connect(_open_pause)
-	space_root.add_child(hub)
-	current_space = hub
-	_notice = message if not message.is_empty() else _notice
-
-
-func _open_recruitment_panel() -> void:
-	if flow != Flow.RECRUITMENT or _recruitment_layer != null:
+## 같이하기: make a room or join one. This is what the office terminal used to
+## ask; it is asked on the title now, so that everybody who reaches the office
+## is already in the room they will leave it with.
+func _open_party_panel() -> void:
+	if flow != Flow.TITLE or _party_layer != null:
 		return
-	(current_space as RecruitmentMap).set_input_locked(true)
-	_recruitment_layer = CanvasLayer.new()
-	_recruitment_layer.name = "RecruitmentUI"
-	_recruitment_layer.layer = 5
-	add_child(_recruitment_layer)
+	_party_layer = CanvasLayer.new()
+	_party_layer.name = "PartyUI"
+	_party_layer.layer = 5
+	add_child(_party_layer)
 	var dim := ColorRect.new()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	dim.color = UI.SHADE
-	_recruitment_layer.add_child(dim)
+	_party_layer.add_child(dim)
 	var centre := CenterContainer.new()
 	centre.theme = UI.theme()
 	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_recruitment_layer.add_child(centre)
+	_party_layer.add_child(centre)
 	var panel := PanelContainer.new()
 	panel.custom_minimum_size = Vector2(760.0, 0.0)
 	centre.add_child(panel)
@@ -253,7 +270,7 @@ func _open_recruitment_panel() -> void:
 	column.add_theme_constant_override("separation", 9)
 	margin.add_child(column)
 	var title := Label.new()
-	title.text = "팀 모집 터미널"
+	title.text = "같이하기"
 	title.add_theme_font_size_override("font_size", 30)
 	column.add_child(title)
 	var columns := HBoxContainer.new()
@@ -269,13 +286,7 @@ func _open_recruitment_panel() -> void:
 	columns.add_child(join)
 	host.add_child(UI.eyebrow("01  방 만들기"))
 	join.add_child(UI.eyebrow("02  기존 방에 참여"))
-	var stage := OptionButton.new()
-	for stage_id in StageRegistry.available_ids():
-		stage.add_item(StageRegistry.display_name(stage_id))
-		stage.set_item_metadata(stage.item_count - 1, stage_id)
-	stage.select(0)
-	_stage_select = stage
-	host.add_child(_labeled("플레이 스테이지", stage))
+	host.add_child(UI.eyebrow("갈 축제는 사무실 지도에서 고릅니다.", UI.MUTED))
 	_code_field = LineEdit.new()
 	_code_field.placeholder_text = "비우면 5자리 코드 자동 생성"
 	_open_room = CheckBox.new()
@@ -310,104 +321,127 @@ func _open_recruitment_panel() -> void:
 	_status_label = Label.new()
 	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_status_label.add_theme_color_override("font_color", UI.MUTED)
-	_status_label.text = _notice if not _notice.is_empty() else "호스트가 공유한 IP, 포트, 입장 코드가 필요합니다."
+	_status_label.text = "참여하려면 방장이 알려 준 IP, 포트, 입장 코드가 필요합니다.\n팀이 사무실에 있는 동안에만 들어갈 수 있습니다."
 	column.add_child(_status_label)
-	column.add_child(_button("닫기  (Esc)", _close_recruitment_panel))
+	column.add_child(_button("닫기  (Esc)", _close_party_panel))
 
 
 func _host_room() -> void:
+	session.leave()
 	if session.begin_host_room(_port(), _code_field.text.strip_edges(),
-			_open_room.button_pressed, _selected_stage_id()):
+			_open_room.button_pressed, DEFAULT_STAGE):
 		return
-	_status_label.text = session.status()
-
-
-## The stage the host picked, falling back to stage 1 when the panel is not up.
-func _selected_stage_id() -> String:
-	if _stage_select == null or not is_instance_valid(_stage_select) \
-			or _stage_select.selected < 0:
-		return "stage_1"
-	var picked = _stage_select.get_item_metadata(_stage_select.selected)
-	return str(picked) if picked != null and StageRegistry.has_stage(str(picked)) else "stage_1"
+	_status_label.text = _status_text(session.status())
 
 
 func _join_room() -> void:
+	session.leave()
 	if session.begin_join_room(_address_field.text.strip_edges(), _port(),
 			_code_field.text.strip_edges()):
 		_join_button.disabled = true
 		_cancel_join_button.visible = true
 		_status_label.text = "접속 및 입장 코드 인증 중…"
 	else:
-		_status_label.text = session.status()
+		_status_label.text = _status_text(session.status())
 
 
 func _cancel_join() -> void:
 	session.cancel_join()
 	_join_button.disabled = false
 	_cancel_join_button.visible = false
-	_status_label.text = session.status()
+	_status_label.text = _status_text(session.status())
 
 
-func _close_recruitment_panel() -> void:
-	if session.is_online() and not session.all_lobby_ready():
+func _close_party_panel() -> void:
+	if flow == Flow.TITLE and session.is_online():
 		session.cancel_join()
-	_clear_ui(_recruitment_layer)
-	_recruitment_layer = null
-	if current_space is RecruitmentMap:
-		(current_space as RecruitmentMap).set_input_locked(false)
+	_clear_ui(_party_layer)
+	_party_layer = null
+	_status_label = null
 
 
+## Let into a room -- one made here, one joined, or a solo one: the office.
 func _on_lobby_joined() -> void:
-	if flow == Flow.RECRUITMENT:
+	if flow == Flow.TITLE:
+		_show_office()
+
+
+## The office: where the party gathers, picks who to be, and sets out from. It
+## is also where every stage comes back to (`truck_returned`), and while the
+## party is standing in it the room is open to join again.
+func _show_office() -> void:
+	flow = Flow.OFFICE
+	_clear_space()
+	_clear_all_ui()
+	var office := OfficeScene.instantiate() as OfficeLobby
+	office.session = session
+	office.mouse_sensitivity = save_store.mouse_sensitivity
+	office.start_requested.connect(_request_start)
+	office.character_requested.connect(_show_character_select)
+	space_root.add_child(office)
+	current_space = office
+	call_deferred("_report_office_ready")
+	# Nobody stands around undressed: a player who has not picked yet picks
+	# before they can walk. Coming back from a stage they are still wearing it.
+	if not session.has_character(session.local_id()):
 		_show_character_select()
 
 
-## Let into a room, host or guest: pick who to be before climbing in. Shown
-## this once per session -- coming back from a stage goes straight to the
-## truck (`truck_returned`), wearing what was picked here.
+func _report_office_ready() -> void:
+	if flow == Flow.OFFICE:
+		session.report_lobby_initialized()
+
+
+## Pick who to be. Up on the way into the office, and again from the locker.
+## No two players wear the same one, and the host decides who got there first,
+## so the select stays up until the session says the pick is this player's.
 func _show_character_select() -> void:
-	if _character_layer != null and is_instance_valid(_character_layer):
+	if flow != Flow.OFFICE or (_character_layer != null and is_instance_valid(_character_layer)):
 		return
-	_clear_ui(_recruitment_layer)
-	_recruitment_layer = null
-	# The office stays behind the select, and stays locked: the panel that led
-	# here locked it, but say so again rather than depend on that.
-	if current_space is RecruitmentMap:
-		(current_space as RecruitmentMap).set_input_locked(true)
+	if current_space is OfficeLobby:
+		(current_space as OfficeLobby).close_map()
+		(current_space as OfficeLobby).set_input_locked(true)
 	var select := CharacterSelectScript.new()
 	select.session = session
+	select.can_cancel = session.has_character(session.local_id())
 	select.character_chosen.connect(_on_character_chosen)
 	select.leave_requested.connect(_leave_session)
+	select.cancel_requested.connect(_close_character_select)
 	add_child(select)
 	_character_layer = select
+	_pending_pick = -1
 	_set_mouse_visible(true)
 
 
 func _on_character_chosen(index: int) -> void:
-	if flow != Flow.RECRUITMENT or not session.is_online():
+	if flow != Flow.OFFICE or not session.lobby_flow:
 		return
-	session.choose_character(index)
-	_show_truck()
+	if not session.choose_character(index):
+		return
+	_pending_pick = index
+	_settle_character_pick()
 
 
-func _show_truck() -> void:
-	flow = Flow.TRUCK_LOBBY
-	session.bind(null)
-	_clear_space()
-	_clear_all_ui()
-	var truck := TruckScene.instantiate() as TruckLobby
-	truck.session = session
-	truck.mouse_sensitivity = save_store.mouse_sensitivity
-	truck.start_requested.connect(_request_start)
-	truck.leave_requested.connect(_leave_session)
-	space_root.add_child(truck)
-	current_space = truck
-	call_deferred("_report_truck_ready")
+## Closes the select once the session agrees the pick is ours. A pick that
+## somebody else got to first leaves it up, with that card now marked taken.
+func _settle_character_pick() -> void:
+	if _pending_pick < 0 or _character_layer == null or not is_instance_valid(_character_layer):
+		return
+	var mine := session.local_id()
+	if session.has_character(mine) and session.character_of(mine) == _pending_pick:
+		_close_character_select()
+	elif session.character_taken(_pending_pick, mine):
+		_pending_pick = -1
 
 
-func _report_truck_ready() -> void:
-	if flow == Flow.TRUCK_LOBBY:
-		session.report_lobby_initialized()
+func _close_character_select() -> void:
+	_pending_pick = -1
+	_clear_ui(_character_layer)
+	_character_layer = null
+	if current_space is OfficeLobby:
+		(current_space as OfficeLobby).set_input_locked(false)
+	else:
+		_restore_mouse_for_flow()
 
 
 func _request_start() -> void:
@@ -440,18 +474,48 @@ func _on_transition_requested(stage_id: String, transition: int) -> void:
 	session.report_world_loaded(transition)
 
 
+## Everybody has the stage loaded. The arrival shot plays first -- every time,
+## a retry included -- and play begins when it ends or the host skips it.
 func _on_play_authorized(transition: int) -> void:
 	if flow != Flow.LOADING or transition != _active_transition or current_space == null:
 		return
-	flow = Flow.STAGE
 	_clear_ui(_loading_layer)
 	_loading_layer = null
+	_arrival = StageArrival.new()
+	add_child(_arrival)
+	_arrival.finished.connect(_on_arrival_finished.bind(transition))
+	_arrival.skip_requested.connect(func(): session.request_intro_skip())
+	_arrival.begin(current_space, StageRegistry.display_name(session.selected_stage),
+		session.is_server())
+
+
+func _on_arrival_finished(transition: int) -> void:
+	if _arrival == null:
+		return
+	_arrival = null
+	if flow != Flow.LOADING or transition != _active_transition or current_space == null:
+		return
+	flow = Flow.STAGE
 	current_space.set_gameplay_input_enabled(true)
+
+
+func _on_intro_skipped(transition: int) -> void:
+	if transition == _active_transition and _arrival != null and is_instance_valid(_arrival):
+		_arrival.finish()
+
+
+## Puts the arrival shot away without starting play: the screen goes back to
+## the game camera, and whoever asked decides what happens next.
+func _drop_arrival() -> void:
+	var arrival := _arrival
+	_arrival = null
+	if arrival != null and is_instance_valid(arrival):
+		arrival.finish()
 
 
 func _on_transition_failed(reason: String) -> void:
 	_notice = reason
-	_show_truck()
+	_show_office()
 
 
 func _on_stage_cleared() -> void:
@@ -473,6 +537,8 @@ func _on_stage_cleared() -> void:
 
 
 func _on_result_ready(summary: Dictionary) -> void:
+	# A result that lands during the arrival shot takes the screen from it.
+	_drop_arrival()
 	flow = Flow.RESULT
 	if current_space != null and current_space.has_method("set_gameplay_input_enabled"):
 		current_space.call("set_gameplay_input_enabled", false)
@@ -714,18 +780,20 @@ func _stand_character(view: SubViewport, index: int) -> void:
 
 
 func _leave_session() -> void:
-	if session.is_online():
-		session.leave()
-	_show_recruitment("세션에서 나왔습니다.")
+	_show_title("방에서 나왔습니다.")
 
 
 func _on_session_ended(reason: String) -> void:
-	_show_recruitment(reason)
+	_show_title(reason)
+
+
+func _status_text(message: String) -> String:
+	return str(STATUS_TEXT.get(message, message))
 
 
 func _on_session_status(message: String) -> void:
 	if _status_label != null and is_instance_valid(_status_label):
-		_status_label.text = message
+		_status_label.text = _status_text(message)
 		if not session.is_online():
 			_join_button.disabled = false
 			_cancel_join_button.visible = false
@@ -913,8 +981,8 @@ func _open_pause() -> void:
 	column.add_child(_button("계속", _close_pause, true))
 	column.add_child(_button("옵션", _open_options))
 	if session.is_online():
-		column.add_child(_button("세션 나가기", _leave_session))
-	column.add_child(_button("타이틀로", _show_title))
+		column.add_child(_button("방 나가기", _leave_session))
+	column.add_child(_button("타이틀로", func(): _show_title()))
 	column.add_child(_button("게임 종료", func(): get_tree().quit()))
 	_set_mouse_visible(true)
 
@@ -977,15 +1045,17 @@ func _clear_all_ui() -> void:
 	if _result_reveal_tween != null and _result_reveal_tween.is_valid():
 		_result_reveal_tween.kill()
 	_result_reveal_tween = null
-	for layer in [_title_layer, _options_layer, _pause_layer, _recruitment_layer,
+	_drop_arrival()
+	for layer in [_title_layer, _options_layer, _pause_layer, _party_layer,
 			_character_layer, _loading_layer, _result_layer]:
 		_clear_ui(layer)
 	_character_layer = null
+	_pending_pick = -1
 	_title_layer = null
 	_options_layer = null
 	_options_owns_pause = false
 	_pause_layer = null
-	_recruitment_layer = null
+	_party_layer = null
 	_loading_layer = null
 	_result_layer = null
 	_result_continue_button = null
@@ -1036,10 +1106,10 @@ func _restore_mouse_for_flow() -> void:
 func _mouse_should_be_visible() -> bool:
 	# Options can be opened on top of the pause menu. Closing only that top
 	# layer must not capture the cursor while the pause menu is still active.
-	for layer in [_options_layer, _pause_layer, _recruitment_layer, _character_layer]:
+	for layer in [_options_layer, _pause_layer, _party_layer, _character_layer]:
 		if layer != null and is_instance_valid(layer):
 			return true
-	# The truck is walked through rather than watched, so it holds its own
-	# cursor -- captured to look around, released with `Tab` for the host
-	# buttons -- and `set_input_locked` hands it back when a panel opens.
+	# The office is walked through rather than watched, so it holds its own
+	# cursor -- captured to look around, released while its map is open -- and
+	# `set_input_locked` hands it back when a panel opens.
 	return flow in [Flow.TITLE, Flow.RESULT]

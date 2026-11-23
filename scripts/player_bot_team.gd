@@ -25,8 +25,8 @@ func configure(play_world: Node3D, control_leader := false) -> void:
 		world.set_character_variant(shooter.peer_id, slot)
 		_add_brain(shooter, slot)
 	_add_brain(world._local, 0)
-	for leg in TomatinaMap.ROUTE_POINTS.size():
-		for point: Vector2 in TomatinaMap.ROUTE_POINTS[leg]:
+	for leg in TomatinaMap.route_points().size():
+		for point: Vector2 in TomatinaMap.route_points()[leg]:
 			var at := TomatinaMap.at_cell(point)
 			var safe := TomatinaMap.safe_room_at(Vector2i(point.floor()))
 			route.append({"at": at, "safe": safe})
@@ -213,7 +213,7 @@ func _think(shooter, brain: Dictionary) -> void:
 		return
 	var goal := _formation_goal(shooter, brain)
 	if autoplay and brain.slot == 0:
-		goal = route[route_index].at if route_index < route.size() else TomatinaMap.at_cell(TomatinaMap.SIREN_CELL)
+		goal = route[route_index].at if route_index < route.size() else TomatinaMap.at_cell(TomatinaMap.siren_cell())
 		var lag := _party_lag()
 		if lag > 22.0:
 			brain.state = "팀원 기다리기"
