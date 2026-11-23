@@ -2663,6 +2663,11 @@ func _update_fallen_body(shooter: Shooter) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if tomatina_intro_active():
+		if event.is_action_pressed("mute_sound"):
+			set_muted(not muted)
+		get_viewport().set_input_as_handled()
+		return
 	if _local == null:
 		return
 	var interact: bool = event.is_action_pressed("interact") and not event.is_echo()
@@ -4461,6 +4466,38 @@ func _build_street() -> void:
 ## the floor before anyone arrives.
 var _tomatina_checkpoint := -1
 var tomatina_shortcut_open := false
+var _tomatina_art: TomatinaVillageArt
+var _tomatina_entrance: Node3D
+var _tomatina_intro: Node3D
+
+
+func play_stage_intro() -> void:
+	if map_kind != MapKind.TOMATINA or not is_instance_valid(_tomatina_entrance):
+		set_gameplay_input_enabled(true)
+		return
+	if tomatina_intro_active():
+		return
+	_tomatina_intro = preload("res://scripts/tomatina_intro.gd").new()
+	_tomatina_intro.name = "TomatinaIntro"
+	add_child(_tomatina_intro)
+	_tomatina_intro.begin(self)
+	_capture_mouse()
+
+
+func tomatina_intro_active() -> bool:
+	return is_instance_valid(_tomatina_intro) and _tomatina_intro.active
+
+
+## Whether this stage has a cold open of its own to play before play begins.
+func has_stage_intro() -> bool:
+	return map_kind == MapKind.TOMATINA and is_instance_valid(_tomatina_entrance)
+
+
+func skip_stage_intro() -> void:
+	if tomatina_intro_active():
+		_tomatina_intro.skip()
+
+
 ## 노드 맵 씬의 인스턴스(설계를 읽은 뒤 그림 노드만 월드에 붙인다). 원래 맵이면 null.
 var _tomatina_map_nodes: Node3D
 
@@ -4500,8 +4537,8 @@ func _build_tomatina() -> void:
 	_sauce_parts.name = "SauceParts"
 	_sauce_parts.world = self
 	add_child(_sauce_parts)
-	var art := TomatinaVillageArt.new()
-	var has_art := art.load_kit()
+	_tomatina_art = TomatinaVillageArt.new()
+	var has_art := _tomatina_art.load_kit()
 	var debris := TomatinaMap.debris_boxes()
 	var parked_trucks := TomatinaMap.parked_trucks()
 	var truck := TomatinaMap.fire_truck_box()
@@ -4518,18 +4555,26 @@ func _build_tomatina() -> void:
 			_add_tomatina_supply(box)
 	_fill_narrow_slots(debris + parked_trucks)
 	if has_art and _tomatina_map_nodes != null:
-		_attach_tomatina_map_art(art)
+		_attach_tomatina_map_art(_tomatina_art)
 	elif has_art:
-		art.build(self, debris, parked_trucks, truck)
+		_tomatina_art.build(self, debris, parked_trucks, truck)
 	if _tomatina_map_nodes != null and not _tomatina_map_nodes.is_inside_tree():
 		_tomatina_map_nodes.free()
 		_tomatina_map_nodes = null
+	# The gate and the party truck stand where the code map puts its entrance.
+	# A node map lays out its own start, so it has neither -- and so no intro.
+	if TomatinaMap.authored == null:
+		_tomatina_entrance = preload("res://scripts/tomatina_entrance.gd").new()
+		_tomatina_entrance.name = "FestivalEntrance"
+		add_child(_tomatina_entrance)
+		_tomatina_entrance.build(self)
 	# Their boxes join `_walls` here, at the same point on every peer.
 	_victims = TomatinaVictims.new()
 	_victims.name = "FestivalVictims"
 	_victims.world = self
 	add_child(_victims)
-	_victims.build(art if has_art else null)
+	_victims.build(_tomatina_art if has_art else null)
+	_tomatina_art.aftermath_nodes.append(_victims)
 	for room in TomatinaMap.safe_rooms().size():
 		var zone := TomatinaMap.rect_world(TomatinaMap.safe_rooms()[room])
 		_build_zone_marker("Refuge%d" % room, zone, Color(0.2, 0.55, 0.43, 0.26))
@@ -6799,7 +6844,7 @@ func _build_start_marker(at := Vector3.ZERO) -> void:
 	add_child(marker)
 	marker.position = at
 	if map_kind == MapKind.TOMATINA:
-		marker.scale = Vector3(0.56, 1.0, 0.56)
+		marker.scale = Vector3(0.36, 1.0, 0.36)
 
 	# Painted on the road, so it is sized by the road rather than in metres.
 	var scale: float = StreetMap.SCALE
@@ -10654,6 +10699,7 @@ func finish_truck_escape() -> void:
 
 
 func is_cinematic_active() -> bool:
-	return (is_instance_valid(_boss_entrance) and _boss_entrance.active) \
+	return tomatina_intro_active() \
+		or (is_instance_valid(_boss_entrance) and _boss_entrance.active) \
 		or (is_instance_valid(_truck_arrival) \
 			and (_truck_arrival.active or _truck_arrival.escape_active))

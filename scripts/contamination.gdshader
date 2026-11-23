@@ -64,6 +64,7 @@ uniform vec4 ketchup_tint : source_color = vec4(0.34, 0.022, 0.016, 1.0);
 
 uniform bool paint_only = false;
 uniform bool paved = false;
+uniform bool festival_before_attack = false;
 uniform sampler2D pavement_mask : filter_nearest, repeat_disable, hint_default_black;
 uniform vec2 pavement_origin;
 uniform vec2 pavement_size = vec2(1.0);
@@ -162,7 +163,7 @@ void fragment() {
 		vec3 stone = mix(clean, paving * (1.0 - 0.23 * max(seam.x, seam.y)), detail);
 		float large = tomato_splat(pavement_position, 2.7, 0.69);
 		float small = tomato_splat(pavement_position + vec2(3.7, 1.1), 1.12, 0.46);
-		tomato_marks = max(large, small * 0.81) * on_street;
+		tomato_marks = max(large, small * 0.81) * on_street * (festival_before_attack ? 0.35 : 1.0);
 		vec3 ketchup = mix(vec3(0.32, 0.16, 0.12), vec3(0.45, 0.23, 0.16), grain);
 		stone = mix(stone, ketchup, tomato_marks * 0.42);
 		clean = mix(vec3(0.18, 0.135, 0.102), stone, on_street);

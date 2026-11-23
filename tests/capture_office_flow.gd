@@ -51,14 +51,16 @@ func _run() -> void:
 	await _shot("6_map.png")
 	office.pick_stage("stage_2")
 	office.request_start()
-	await _until(func(): return app._arrival != null and is_instance_valid(app._arrival) and app._arrival.active)
-	await _shot("7_arrival_start.png")
-	await _until(func(): return app._arrival == null or not is_instance_valid(app._arrival) \
-		or app._arrival._clock > StageArrival.DURATION * 0.55)
-	await _shot("8_arrival_middle.png")
-	await _until(func(): return app._arrival == null or not is_instance_valid(app._arrival) 		or app._arrival._clock > StageArrival.DURATION * 0.85)
-	await _shot("8b_arrival_late.png")
-	await _until(func(): return app.flow == SauceApp.Flow.STAGE)
+	# 스테이지 2는 자체 인트로(트럭 도착 컷신)를 튼다. 조금 보다가 건너뛴다.
+	await _until(func(): return app.flow == SauceApp.Flow.STAGE and app._stage_intro_active())
+	print("intro active=", app._stage_intro_active(), " input=", app.current_space.gameplay_input_enabled())
+	await _shot("7_intro_start.png")
+	await _until(func(): return app.current_space._tomatina_intro.elapsed > 8.0)
+	await _shot("8_intro_middle.png")
+	app._skip_stage_intro()
+	await process_frame
+	print("after skip: intro active=", app._stage_intro_active(), " input=",
+		app.current_space.gameplay_input_enabled(), " hint=", app._intro_hint_layer != null)
 	await _shot("9_play.png")
 	DirAccess.remove_absolute(app.save_path_override)
 	quit(0)

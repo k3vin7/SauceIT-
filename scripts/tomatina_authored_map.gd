@@ -123,8 +123,11 @@ static func from_root(root: Node) -> TomatinaAuthoredMap:
 			if spawn is Node3D:
 				data.spawns.append(relative_transform(spawn, root).origin)
 	var arrow := root.get_node_or_null("StartArrow") as Node3D
-	data.start_arrow = relative_transform(arrow, root).origin if arrow != null \
-		else TomatinaMap.START_ARROW + TomatinaMap._start_offset()
+	# 화살표 노드가 없으면 첫 출발 지점 바닥에 그린다.
+	if arrow != null:
+		data.start_arrow = relative_transform(arrow, root).origin
+	elif not data.spawns.is_empty():
+		data.start_arrow = Vector3(data.spawns[0].x, 0.0, data.spawns[0].z)
 	var siren := root.get_node_or_null("Siren") as Node3D
 	if siren != null:
 		data.siren_cell = world_to_cell(relative_transform(siren, root).origin)

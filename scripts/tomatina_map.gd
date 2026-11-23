@@ -15,6 +15,8 @@ extends RefCounted
 const SEED := 0x70A7A70
 const BOUNDARY_HEIGHT := 6.8
 const START_PLAZA := Rect2i(26, 224, 8, 6)
+const FESTIVAL_ENTRANCE := Rect2i(26, 230, 8, 6)
+const ENTRANCE_CELL := Vector2(29.8, 230.75)
 const FINISH_APPROACH := Rect2i(28, 36, 4, 9)
 const PLAZA := Rect2i(20, 22, 20, 15)
 const FIRE_BAY := Rect2i(27, 16, 6, 7)
@@ -154,39 +156,49 @@ static func boundary_boxes() -> Array[Dictionary]:
 	return out
 
 
-## Where the start arrow is drawn, in metres from the lattice origin, which is
-## the middle of the start plaza. The arrow is 22 m nose to tail, so drawn at
-## the origin its tail ran under the south wall; this puts the whole of it on
-## the plaza.
-const START_ARROW := Vector3(0.0, 0.0, -7.2)
-
-## Where the party stands at the start: single file down the arrow's shaft
-## from its tail, the host at the very end, everyone facing the way it
-## points -- so the whole arrow is in front of you, pointing up the street.
-## Three metres apart, so nobody stands in anybody. The shaft ends at
-## z = 11.2, so the host stands a metre and a half short of its tail.
+## Two ranks next to the parked truck, with the gate straight ahead.
 const SPAWNS := [
-	Vector3(0.0, 1.28, 9.5),
-	Vector3(0.0, 1.28, 6.5),
-	Vector3(0.0, 1.28, 3.5),
-	Vector3(0.0, 1.28, 0.5),
+	Vector3(-1.9, 1.28, 8.4),
+	Vector3(1.8, 1.28, 8.4),
+	Vector3(-1.9, 1.28, 11.6),
+	Vector3(1.8, 1.28, 11.6),
 ]
 
 
 static func start_arrow() -> Vector3:
 	if authored != null:
 		return authored.start_arrow
-	return START_ARROW + _start_offset()
+	return entrance_position() + Vector3.FORWARD * 1.7
 
 
 static func spawn_position(slot: int) -> Vector3:
 	if authored != null and not authored.spawns.is_empty():
 		return authored.spawns[slot % authored.spawns.size()]
-	return SPAWNS[slot % SPAWNS.size()] + _start_offset()
+	return SPAWNS[slot % SPAWNS.size()] + entrance_position()
 
 
-static func _start_offset() -> Vector3:
-	return Vector3.BACK * ((START_PLAZA.position.y - 90) * StreetMap.CELL)
+static func entrance_position() -> Vector3:
+	return at_cell(ENTRANCE_CELL)
+
+
+static func party_truck_position() -> Vector3:
+	return entrance_position() + Vector3(7.1, 0.0, 7.4)
+
+
+static func entrance_obstacles() -> Array[Dictionary]:
+	# 노드 맵에는 축제 입구(문·봉고)가 없다: 그 자리는 맵 씬이 정한다.
+	if authored != null:
+		return []
+	var gate := entrance_position()
+	var truck := party_truck_position()
+	return [
+		{"name": "EntrancePierLeft", "position": gate + Vector3(-5.95, 2.05, 0.0),
+			"size": Vector3(1.82, 4.1, 1.96)},
+		{"name": "EntrancePierRight", "position": gate + Vector3(5.95, 2.05, 0.0),
+			"size": Vector3(1.82, 4.1, 1.96)},
+		{"name": "PartyBongo", "position": truck + Vector3.UP * 1.45,
+			"size": Vector3(2.48, 2.9, 6.22)},
+	]
 
 
 const PLAZA_ELITES := [
@@ -499,6 +511,7 @@ static func _ensure_layout() -> void:
 	for pocket in ROAD_POCKETS:
 		_add_floor_rect(pocket[1], pocket[0])
 	_add_floor_rect(START_PLAZA, 0)
+	_add_floor_rect(FESTIVAL_ENTRANCE, 0)
 	for rect in [FINISH_APPROACH, Rect2i(26, 44, 7, 3), Rect2i(26, 36, 8, 6), PLAZA, FIRE_BAY]:
 		_add_floor_rect(rect, 3)
 	for corner in PLAZA_CORNERS:
@@ -634,6 +647,7 @@ static func blocked_cells() -> Dictionary:
 			continue
 		props.push_back(box)
 	props.append_array(parked_trucks())
+	props.append_array(entrance_obstacles())
 	return _box_cells(props)
 
 

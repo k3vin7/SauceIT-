@@ -2,13 +2,17 @@ class_name TomatinaVillageArt
 extends RefCounted
 
 const KIT_PATH := "res://assets/props/Stage2_TomatinaVillage/Stage2_TomatinaVillage.glb"
+const FALLEN_GUESTS := preload("res://assets/characters/Stage2_FestivalGuest/Stage2_FestivalGuest_Fallen.glb")
 const TOON_SHADER := preload("res://assets/props/Stage2_TomatinaVillage/tomatina_toon.gdshader")
 const PARTICLE_FIRE := preload("res://assets/props/Stage2_TomatinaVillage/tomatina_particle_fire.gdshader")
 const FLAME_VOLUME := preload("res://assets/props/Stage2_TomatinaVillage/tomatina_flame_volume.gdshader")
 const FESTIVAL_DECOR := preload("res://scripts/tomatina_festival_decor.gd")
 const HOUSES := ["HouseCream", "HousePeach", "HouseLime", "HouseSage", "HouseBlue", "HouseHoney"]
 const BANNERS := ["BannerWater", "BannerMarket", "BannerFestival"]
-const VICTIM_MODELS := ["FestivalVictimProne", "FestivalVictimSprawled", "FestivalVictimSide"]
+const VICTIM_MODELS := ["FallenFront", "FallenBack", "FallenSide"]
+const ATTACK_AFTERMATH := ["FallenFront", "FallenBack", "FallenSide", "CollapsedStall",
+	"OverturnedHandcart", "CollapsedStoneWall", "BrokenFestivalBarrier", "Rubble",
+	"OverturnedTomatoTruck", "WreckBody", "BrokenBoards", "TornBuntingHeap"]
 const CARDINAL := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
 const CHUNK_SIZE := 70.0
 const HOUSE_CHUNK_WIDTH := 110.0
@@ -32,6 +36,11 @@ const PLAZA_WAYMARKS := [
 var _meshes: Dictionary = {}
 var _batches: Dictionary = {}
 var _facades: Array[Transform3D] = []
+var _aftermath: Array[MultiMeshInstance3D] = []
+## 묶음(MultiMesh)이 아닌 습격 흔적 -- 길에 쓰러진 사람들(`TomatinaVictims`)처럼 따로 서
+## 있는 노드. 인트로의 "습격 전" 장면에서 묶음과 함께 숨긴다.
+var aftermath_nodes: Array[Node3D] = []
+var _stained_materials: Array[ShaderMaterial] = []
 
 
 static func configure_pavement(floor_body: FloorContamination) -> void:
@@ -95,6 +104,10 @@ func load_kit() -> bool:
 	for model in scene.find_children("*", "MeshInstance3D", true, false):
 		_meshes[model.name] = model.mesh
 	scene.free()
+	var fallen := FALLEN_GUESTS.instantiate()
+	for model in fallen.find_children("*", "MeshInstance3D", true, false):
+		_meshes[model.name] = model.mesh
+	fallen.free()
 	_meshes["BoundaryWall"] = _boundary_mesh()
 	for name in STREET_ACCENTS:
 		_meshes[name] = BoxMesh.new()
@@ -171,6 +184,43 @@ func emit_batches(parent: Node3D) -> void:
 			if name in NO_SHADOW:
 				batch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			root.add_child(batch)
+			if name in ATTACK_AFTERMATH:
+				_aftermath.append(batch)
+	# 습격 전/후를 바꿔 칠하는 벽 재질(집·교회, 길가 담장).
+	_stained_materials.clear()
+	for key in ["stained", "street"]:
+		if finishes.get(key) is ShaderMaterial:
+			_stained_materials.append(finishes[key])
+	_batches.clear()
+	_facades.clear()
+
+
+func set_before_attack(enabled: bool) -> void:
+	for batch in _aftermath:
+		batch.visible = not enabled
+	for node in aftermath_nodes:
+		if is_instance_valid(node):
+			node.visible = not enabled
+	for material in _stained_materials:
+		material.set_shader_parameter("festival_before_attack", enabled)
+
+
+func film_prop(key: String, parent: Node3D, at: Vector3, size: Vector3,
+		yaw := 0.0) -> MeshInstance3D:
+	var instance := MeshInstance3D.new()
+	instance.name = key
+	instance.mesh = _meshes[key]
+	var bounds := instance.mesh.get_aabb()
+	var dimensions := size / bounds.size
+	var basis := Basis(Vector3.UP, yaw).scaled_local(dimensions)
+	var base := bounds.get_center()
+	base.y = bounds.position.y
+	instance.transform = Transform3D(basis, at - basis * base)
+	var material := ShaderMaterial.new()
+	material.shader = TOON_SHADER
+	instance.material_override = material
+	parent.add_child(instance)
+	return instance
 
 
 const NO_SHADOW := ["BrokenBoards", "CrushedTomatoes", "FestivalTrashPile",
@@ -214,7 +264,8 @@ func _build_frontages() -> void:
 	for cell: Vector2i in floor:
 		var open := not blocked.has(cell)
 		var patch := posmod((cell.x * 73) ^ (cell.y * 157), 83)
-		if open and patch < 9 and TomatinaMap.safe_room_at(cell) < 0:
+		var at_entrance := TomatinaMap.FESTIVAL_ENTRANCE.has_point(cell)
+		if open and patch < 9 and TomatinaMap.safe_room_at(cell) < 0 and not at_entrance:
 			var at := TomatinaMap.at_cell(Vector2(cell) + Vector2(0.38, 0.62))
 			_place_litter(at, cell, patch < 2, 1.38)
 		for step: Vector2i in CARDINAL:
@@ -231,7 +282,7 @@ func _build_frontages() -> void:
 				_place_street_front(base, facing, cell)
 			elif scatter < 15:
 				_place_facade_detail(base, facing, scatter)
-			if scatter < 5 and open:
+			if scatter < 5 and open and not at_entrance:
 				var at := base + facing * (0.82 + float(scatter) * 0.68)
 				at += Vector3(tangent.x, 0.0, tangent.y) * 0.44
 				_place_litter(at, cell, scatter == 2, 1.50 + float(scatter) * 0.29)
@@ -523,6 +574,7 @@ static func victim_placements() -> Array[Dictionary]:
 	for cell: Vector2i in TomatinaMap.floor_cells():
 		var victim_mark := posmod((cell.x * 97) ^ (cell.y * 193), 113)
 		if blocked.has(cell) or victim_mark >= 2 or TomatinaMap.safe_room_at(cell) >= 0 \
+				or TomatinaMap.FESTIVAL_ENTRANCE.has_point(cell) \
 				or TomatinaMap.START_PLAZA.has_point(cell) \
 				or TomatinaMap.CAPRESE_RESCUE_BAY.has_point(cell) \
 				or TomatinaMap.FIRE_BAY.has_point(cell):

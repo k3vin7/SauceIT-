@@ -59,7 +59,9 @@ func build(art: TomatinaVillageArt) -> void:
 		view.mesh = mesh
 		view.material_override = finish
 		add_child(view)
-		view.global_transform = art.placement_transform(placement.model, at, facing, size)
+		# 새 쓰러진 손님 모델(Fallen*)은 제 크기로 만든 것이라 늘이지 않는다.
+		view.global_transform = art.placement_transform(placement.model, at, facing,
+			Vector3.ZERO if String(placement.model).begins_with("Fallen") else size)
 		body.attach_view(view)
 
 

@@ -59,6 +59,8 @@ var _sensitivity_slider: HSlider
 ## paused and multiplayer input locked until those options are closed.
 var _options_owns_pause := false
 var _active_transition := 0
+## "Space · 건너뛰기" over a stage's own cold open, while it runs.
+var _intro_hint_layer: CanvasLayer
 var _notice := ""
 var bot_team: Node
 
@@ -73,6 +75,23 @@ func _ready() -> void:
 	session.defer_lobby_ready = true
 	_connect_session()
 	_show_title()
+
+
+func _process(_delta: float) -> void:
+	if _intro_hint_layer != null and not _stage_intro_active():
+		_clear_ui(_intro_hint_layer)
+		_intro_hint_layer = null
+
+
+## The stage swallows every key while its cold open runs, so the skip is read
+## here, ahead of it.
+func _input(event: InputEvent) -> void:
+	if not _stage_intro_active() or not _may_skip_stage_intro():
+		return
+	if event.is_action_pressed("ui_accept") or (InputMap.has_action("jump")
+			and event.is_action_pressed("jump")):
+		_skip_stage_intro()
+		get_viewport().set_input_as_handled()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -212,6 +231,8 @@ func _show_bot_practice() -> void:
 	bot_team = preload("res://scripts/player_bot_team.gd").new()
 	world.add_child(bot_team)
 	bot_team.configure(world, false)
+	world.play_stage_intro()
+	_show_intro_hint()
 
 
 ## 혼자하기: a room of one, no port opened. The office, the pick, the map and
@@ -481,6 +502,14 @@ func _on_play_authorized(transition: int) -> void:
 		return
 	_clear_ui(_loading_layer)
 	_loading_layer = null
+	# A stage with a cold open of its own (Tomatina's truck ride in) plays that;
+	# it hands input over itself when it ends. Any other stage gets the short
+	# camera descent.
+	if current_space.has_method("has_stage_intro") and current_space.has_stage_intro():
+		flow = Flow.STAGE
+		current_space.play_stage_intro()
+		_show_intro_hint()
+		return
 	_arrival = StageArrival.new()
 	add_child(_arrival)
 	_arrival.finished.connect(_on_arrival_finished.bind(transition))
@@ -499,9 +528,60 @@ func _on_arrival_finished(transition: int) -> void:
 	current_space.set_gameplay_input_enabled(true)
 
 
+## Whether a stage's own cold open is on screen.
+func _stage_intro_active() -> bool:
+	return flow == Flow.STAGE and current_space != null and is_instance_valid(current_space) \
+		and current_space.has_method("tomatina_intro_active") \
+		and current_space.tomatina_intro_active()
+
+
+## The host's to skip in a room (everybody lands together); anybody's when
+## there is no room at all (bot practice).
+func _may_skip_stage_intro() -> bool:
+	return not session.lobby_flow or session.is_server()
+
+
+func _skip_stage_intro() -> void:
+	if not _stage_intro_active() or not _may_skip_stage_intro():
+		return
+	if session.lobby_flow:
+		session.request_intro_skip()
+	else:
+		current_space.skip_stage_intro()
+
+
+## The one line of text over a stage's cold open: who can cut it short.
+func _show_intro_hint() -> void:
+	_clear_ui(_intro_hint_layer)
+	_intro_hint_layer = null
+	if not _stage_intro_active():
+		return
+	_intro_hint_layer = CanvasLayer.new()
+	_intro_hint_layer.name = "IntroHintUI"
+	_intro_hint_layer.layer = 9
+	add_child(_intro_hint_layer)
+	var hint := Label.new()
+	hint.theme = UI.theme()
+	hint.text = "Space · 건너뛰기" if _may_skip_stage_intro() else "방장이 건너뛸 수 있습니다"
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	hint.add_theme_color_override("font_color", UI.MUTED)
+	hint.add_theme_color_override("font_outline_color", Color.BLACK)
+	hint.add_theme_constant_override("outline_size", 6)
+	hint.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	hint.offset_left = -420.0
+	hint.offset_right = -40.0
+	hint.offset_top = -56.0
+	hint.offset_bottom = -22.0
+	_intro_hint_layer.add_child(hint)
+
+
 func _on_intro_skipped(transition: int) -> void:
-	if transition == _active_transition and _arrival != null and is_instance_valid(_arrival):
+	if transition != _active_transition:
+		return
+	if _arrival != null and is_instance_valid(_arrival):
 		_arrival.finish()
+	elif _stage_intro_active():
+		current_space.skip_stage_intro()
 
 
 ## Puts the arrival shot away without starting play: the screen goes back to
@@ -942,6 +1022,8 @@ func _open_pause() -> void:
 	if _pause_layer != null or flow in [Flow.TITLE, Flow.LOADING, Flow.RESULT]:
 		return
 	if current_space != null:
+		if current_space.has_method("tomatina_intro_active") and current_space.tomatina_intro_active():
+			return
 		if session.seat_assignments().size() <= 1:
 			current_space.process_mode = Node.PROCESS_MODE_PAUSABLE
 			get_tree().paused = true
@@ -1047,8 +1129,9 @@ func _clear_all_ui() -> void:
 	_result_reveal_tween = null
 	_drop_arrival()
 	for layer in [_title_layer, _options_layer, _pause_layer, _party_layer,
-			_character_layer, _loading_layer, _result_layer]:
+			_character_layer, _loading_layer, _result_layer, _intro_hint_layer]:
 		_clear_ui(layer)
+	_intro_hint_layer = null
 	_character_layer = null
 	_pending_pick = -1
 	_title_layer = null
