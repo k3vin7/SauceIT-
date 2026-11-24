@@ -3657,6 +3657,11 @@ func _close_refuge_shop() -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
+## 피난처 상점이 팔 수 있는 파츠(비트마다 하나). 사무실 작업대에서 해금한 것으로, 세션이
+## 스테이지를 띄울 때 넣는다. -1은 전부(사무실 없이 띄운 월드).
+var unlocked_parts := -1
+
+
 func _refresh_refuge_shop() -> void:
 	if _refuge_shop_room < 0 or _local == null:
 		return
@@ -3666,8 +3671,9 @@ func _refresh_refuge_shop() -> void:
 		var choice := _refuge_shop_buttons[part]
 		var owned := (_local.owned_parts & (1 << part)) != 0
 		var equipped := _local.sauce_part == part
+		var locked := not owned and not SauceParts.is_unlocked(unlocked_parts, part)
 		choice.visible = owned or _refuge_shop_room >= int(entry[2])
-		choice.disabled = equipped or (not owned and _local.coins < int(entry[3]))
+		choice.disabled = equipped or locked or (not owned and _local.coins < int(entry[3]))
 		if equipped:
 			choice.add_theme_stylebox_override("disabled", _refuge_shop_equipped)
 			choice.add_theme_color_override("font_disabled_color", UI.MINT)
@@ -3675,6 +3681,8 @@ func _refresh_refuge_shop() -> void:
 			choice.remove_theme_stylebox_override("disabled")
 			choice.remove_theme_color_override("font_disabled_color")
 		var action := "장착 중" if equipped else ("장착" if owned else "%d코인" % entry[3])
+		if locked:
+			action = "잠김 · 사무실 작업대에서 해금"
 		choice.text = "%s  ·  %s\n%s" % [entry[0], action, entry[1]]
 
 
@@ -3699,7 +3707,8 @@ func buy_or_equip_sauce_part(peer: int, part: int) -> bool:
 	var entry: Array = SauceParts.CATALOG[part]
 	var bit := 1 << part
 	if (shooter.owned_parts & bit) == 0:
-		if room < int(entry[2]) or shooter.coins < int(entry[3]):
+		if room < int(entry[2]) or shooter.coins < int(entry[3]) \
+				or not SauceParts.is_unlocked(unlocked_parts, part):
 			return false
 		# The purse is the team's: one spends, every balance drops.
 		var left := shooter.coins - int(entry[3])

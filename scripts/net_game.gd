@@ -1,6 +1,8 @@
 class_name MayoNet
 extends Node
 
+const SauceParts := preload("res://scripts/tomatina_sauce_parts.gd")
+
 ## LAN session for two players over ENet. One peer hosts, the other types an IP.
 ## There is no lobby and no matchmaking: pressing Host opens the port, and the
 ## first peer to connect is the second player.
@@ -113,7 +115,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 17
+const PROTOCOL_VERSION := 18
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 const ENEMY_SNAPSHOT_NEAR_DISTANCE := 42.0
 const ENEMY_SNAPSHOT_FAR_PERIOD := 5
@@ -490,9 +492,167 @@ var slot_pick_override := -1.0
 var _slot_rng := RandomNumberGenerator.new()
 
 
-## 팀 돈 `bet`을 걸고 슬롯머신을 돌린다. 사무실에 있는 누구나 할 수 있고, 굴리는 것은 방장이다.
+## 해금한 파츠가 바뀌었다(`team_parts`).
+signal team_parts_changed
+## 사무실 소품의 상태가 바뀌었다(`office_props`).
+signal office_props_changed
+## 팀이 사무실 작업대에서 해금한 파츠, 비트마다 하나(`TomatinaSauceParts.UNLOCK_PRICES`).
+## 원본은 방장의 저장 파일이고 팀원에게는 명단과 함께 간다.
+var team_parts := 1
+## 사무실 소품의 켜고 끈 상태, 비트마다 하나(`OfficeLobby.PROP_*`). 누구나 바꾸고 모두에게 보인다.
+var office_props := 0
+
+
+## 작업대에서 `part`를 해금한다: 팀 돈에서 값을 치른다. 사무실에 있는 누구나 할 수 있고
+## 셈은 방장이 한다. 팀원이 부르면 요청만 보낸다(답은 `team_parts_changed`).
+func request_part_unlock(part: int) -> bool:
+	if not lobby_flow or session_phase != SessionPhase.TRUCK or not _can_unlock(part):
+		return false
+	if is_server():
+		return _resolve_part_unlock(local_id(), part)
+	_request_part_unlock.rpc_id(1, part)
+	return true
+
+
+func _can_unlock(part: int) -> bool:
+	return part > 0 and part < SauceParts.UNLOCK_PRICES.size() \
+		and not SauceParts.is_unlocked(team_parts, part) \
+		and team_money >= int(SauceParts.UNLOCK_PRICES[part])
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_part_unlock(part: int) -> void:
+	if multiplayer.is_server():
+		_resolve_part_unlock(multiplayer.get_remote_sender_id(), part)
+
+
+func _resolve_part_unlock(peer_id: int, part: int) -> bool:
+	if not is_server() or session_phase != SessionPhase.TRUCK or not _slots.has(peer_id) \
+			or not _can_unlock(part):
+		return false
+	team_money -= int(SauceParts.UNLOCK_PRICES[part])
+	team_parts |= 1 << part
+	team_money_spent.emit()
+	_broadcast_lobby()
+	team_parts_changed.emit()
+	return true
+
+
+## 사무실 소품 하나(`bit`)를 켜거나 끈다. 사무실에 있는 누구나.
+func request_office_prop(bit: int, on: bool) -> bool:
+	if not lobby_flow or session_phase != SessionPhase.TRUCK or bit <= 0 or bit > 0xffff:
+		return false
+	if is_server():
+		_set_office_prop(bit, on)
+	else:
+		_request_office_prop.rpc_id(1, bit, on)
+	return true
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_office_prop(bit: int, on: bool) -> void:
+	if multiplayer.is_server() and _slots.has(multiplayer.get_remote_sender_id()) \
+			and session_phase == SessionPhase.TRUCK and bit > 0 and bit <= 0xffff:
+		_set_office_prop(bit, on)
+
+
+func _set_office_prop(bit: int, on: bool) -> void:
+	var next := (office_props | bit) if on else (office_props & ~bit)
+	if next == office_props:
+		return
+	office_props = next
+	for id in _slots.keys():
+		if int(id) != 1 and _peer_can_receive(int(id)):
+			_sync_office_props.rpc_id(int(id), office_props)
+	office_props_changed.emit()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_office_props(props: int) -> void:
+	if not multiplayer.is_server():
+		office_props = props
+		office_props_changed.emit()
+
+
+## 슬롯머신 앞에 앉은 사람이 바뀌었다(`slot_user`).
+signal slot_user_changed
+## 지금 슬롯머신을 쓰고 있는 사람의 peer id. 아무도 없으면 0. 기계는 하나라 한 번에 한 명만
+## 쓴다: 자리는 방장이 내주고, 화면을 닫거나 방을 나가면 비운다.
+var slot_user := 0
+
+
+## 슬롯머신 자리를 달라고 한다. 방장은 그 자리에서 답을 얻고(true면 앉았다), 팀원은 요청만
+## 보낸다 -- 답은 `slot_user_changed`로 온다. 누가 이미 쓰고 있으면 false.
+func request_slot_seat() -> bool:
+	if not lobby_flow or session_phase != SessionPhase.TRUCK \
+			or (slot_user != 0 and slot_user != local_id()):
+		return false
+	if is_server():
+		return _take_slot_seat(local_id())
+	_request_slot_seat.rpc_id(1)
+	return true
+
+
+## 앉아 있던 자리를 비운다. 앉아 있지 않았으면 아무 일도 없다.
+func release_slot_seat() -> void:
+	if is_server():
+		_leave_slot_seat(local_id())
+	elif _online and slot_user == local_id():
+		_release_slot_seat.rpc_id(1)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_slot_seat() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	# 자리가 찼어도 답은 보낸다: 요청한 화면이 누가 앉아 있는지 알아야 물러난다.
+	if not _take_slot_seat(sender) and _slots.has(sender) and _peer_can_receive(sender):
+		_sync_slot_user.rpc_id(sender, slot_user)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _release_slot_seat() -> void:
+	if multiplayer.is_server():
+		_leave_slot_seat(multiplayer.get_remote_sender_id())
+
+
+func _take_slot_seat(peer_id: int) -> bool:
+	if not is_server() or session_phase != SessionPhase.TRUCK or not _slots.has(peer_id):
+		return false
+	if slot_user != 0 and slot_user != peer_id and _slots.has(slot_user):
+		return false
+	_set_slot_user(peer_id)
+	return true
+
+
+func _leave_slot_seat(peer_id: int) -> void:
+	if is_server() and slot_user == peer_id and peer_id != 0:
+		_set_slot_user(0)
+
+
+func _set_slot_user(peer_id: int) -> void:
+	if slot_user == peer_id:
+		return
+	slot_user = peer_id
+	for id in _slots.keys():
+		if int(id) != 1 and _peer_can_receive(int(id)):
+			_sync_slot_user.rpc_id(int(id), slot_user)
+	slot_user_changed.emit()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_slot_user(peer_id: int) -> void:
+	if not multiplayer.is_server():
+		slot_user = peer_id
+		slot_user_changed.emit()
+
+
+## 팀 돈 `bet`을 걸고 슬롯머신을 돌린다. 자리에 앉은 사람만 할 수 있고(`request_slot_seat`),
+## 굴리는 것은 방장이다.
 func request_slot_spin(bet: int) -> bool:
-	if not lobby_flow or session_phase != SessionPhase.TRUCK or bet < 1 or bet > team_money:
+	if not lobby_flow or session_phase != SessionPhase.TRUCK or bet < 1 or bet > team_money \
+			or slot_user != local_id():
 		return false
 	if is_server():
 		return _resolve_slot_spin(local_id(), bet)
@@ -508,7 +668,7 @@ func _request_slot_spin(bet: int) -> void:
 
 func _resolve_slot_spin(peer_id: int, bet: int) -> bool:
 	if not is_server() or session_phase != SessionPhase.TRUCK or not _slots.has(peer_id) \
-			or bet < 1 or bet > team_money:
+			or bet < 1 or bet > team_money or slot_user != peer_id:
 		return false
 	var outcome := OfficeSlot.roll(_slot_rng, slot_pick_override)
 	var gain := OfficeSlot.gain_for(bet, outcome.multiplier)
@@ -619,10 +779,14 @@ func add_team_money(amount: int) -> bool:
 
 
 ## 방장이 자기 저장 파일의 돈·전리품을 방에 올린다. 팀원이 부르면 아무 일도 없다.
+## `parts`를 주지 않으면(-1) 해금한 파츠는 그대로 둔다.
 func set_team_progress(money: int, trophies: PackedStringArray, clears: Dictionary,
-		jackpot := 0) -> void:
+		jackpot := 0, parts := -1) -> void:
 	if not is_server():
 		return
+	if parts >= 0:
+		team_parts = parts | 1
+		team_parts_changed.emit()
 	team_money = money
 	team_jackpot = maxi(jackpot, 0)
 	team_trophies = trophies.duplicate()
@@ -634,9 +798,12 @@ func set_team_progress(money: int, trophies: PackedStringArray, clears: Dictiona
 
 @rpc("authority", "call_remote", "reliable")
 func _sync_team_progress(money: int, trophies: PackedStringArray, clears: Dictionary,
-		jackpot: int) -> void:
+		jackpot: int, parts: int) -> void:
 	if multiplayer.is_server():
 		return
+	if (parts | 1) != team_parts:
+		team_parts = parts | 1
+		team_parts_changed.emit()
 	team_money = maxi(money, 0)
 	team_jackpot = maxi(jackpot, 0)
 	team_trophies = trophies
@@ -1414,6 +1581,7 @@ func _on_peer_disconnected(id: int) -> void:
 	_view_budget.erase(id)
 	_views.erase(id)
 	_slots.erase(id)
+	_leave_slot_seat(id)
 	_characters.erase(id)
 	_lobby_ready.erase(id)
 	_loaded_peers.erase(id)
@@ -1560,8 +1728,11 @@ func _broadcast_lobby() -> void:
 	var characters := _character_packet()
 	for peer_id in _slots.keys():
 		if int(peer_id) != 1 and _peer_can_receive(int(peer_id)):
-			_sync_team_progress.rpc_id(int(peer_id), team_money, team_trophies, team_clears, team_jackpot)
+			_sync_team_progress.rpc_id(int(peer_id), team_money, team_trophies, team_clears, team_jackpot,
+				team_parts)
+			_sync_office_props.rpc_id(int(peer_id), office_props)
 			_sync_debug_mode.rpc_id(int(peer_id), _debug_here)  # DEBUG
+			_sync_slot_user.rpc_id(int(peer_id), slot_user)
 			_sync_lobby.rpc_id(int(peer_id), packet, ready, selected_stage, session_phase,
 				characters)
 	roster_changed.emit()

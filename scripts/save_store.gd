@@ -10,6 +10,8 @@ var money := 0
 var jackpot := 0
 var trophies := PackedStringArray()
 var clears: Dictionary = {}
+## 사무실 작업대에서 해금한 파츠(비트마다 하나, `TomatinaSauceParts.UNLOCK_PRICES`).
+var parts := 1
 var master_volume := 0.8
 var bgm_volume := 1.0
 ## A third of full: the effects were loud against the music at 1.0. Only the
@@ -35,6 +37,7 @@ func load_data() -> void:
 	money = maxi(int(config.get_value("progress", "money", 0)), 0)
 	jackpot = maxi(int(config.get_value("progress", "jackpot", 0)), 0)
 	trophies = PackedStringArray(config.get_value("progress", "trophies", PackedStringArray()))
+	parts = int(config.get_value("progress", "parts", 1)) | 1
 	var saved_clears = config.get_value("progress", "clears", {})
 	clears = saved_clears if saved_clears is Dictionary else {}
 	master_volume = clampf(float(config.get_value("options", "master_volume", 0.8)), 0.0, 1.0)
@@ -80,6 +83,7 @@ func _write() -> int:
 	config.set_value("progress", "jackpot", jackpot)
 	config.set_value("progress", "trophies", trophies)
 	config.set_value("progress", "clears", clears)
+	config.set_value("progress", "parts", parts)
 	config.set_value("options", "master_volume", master_volume)
 	config.set_value("options", "bgm_volume", bgm_volume)
 	config.set_value("options", "sfx_volume", sfx_volume)

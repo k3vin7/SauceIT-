@@ -4,7 +4,8 @@ extends SceneTree
 ## godot --headless --path . --script res://tools/bake_office_room.gd
 const SOURCE := "res://maps/command.tscn"
 const DESTINATION := "res://maps/command_runtime.scn"
-const KEEP_PATHS := ["MapScreen/Screen", "Locker/Body", "SlotMachine/Upper"]
+const KEEP_PATHS := ["MapScreen/Screen", "Locker/Body", "SlotMachine/Upper",
+	"ShowerBooth/Curtain", "ShowerBooth/ShowerHead"]
 
 
 func _initialize() -> void:
