@@ -403,6 +403,9 @@ func _show_office() -> void:
 	# 방의 돈과 전리품은 방장의 저장 파일에서 온다. 축제를 마치고 돌아올 때마다 다시 올린다.
 	if session.is_server():
 		session.set_team_progress(save_store.money, save_store.trophies, save_store.clears)
+	# 캐릭터를 아직 안 골랐으면 곧바로 선택 화면이 뜬다. 사무실이 그 직전에 마우스를 잡으면
+	# 커서가 화면 가운데로 끌려갔다가 풀리므로, 처음부터 잠근 채로 들인다.
+	office.input_locked = not session.has_character(session.local_id())
 	space_root.add_child(office)
 	current_space = office
 	call_deferred("_report_office_ready")
