@@ -134,7 +134,7 @@ func _connect_session() -> void:
 	session.session_ended.connect(_on_session_ended)
 	session.intro_skipped.connect(_on_intro_skipped)
 	session.roster_changed.connect(_settle_character_pick)
-	session.team_money_spent.connect(func(): save_store.set_money(session.team_money))
+	session.team_money_spent.connect(func(): save_store.set_money(session.team_money, session.team_jackpot))
 
 
 func _on_late_join_waiting() -> void:
@@ -372,7 +372,7 @@ func _show_office() -> void:
 	office.character_requested.connect(_show_character_select)
 	# 방의 돈과 전리품은 방장의 저장 파일에서 온다. 축제를 마치고 돌아올 때마다 다시 올린다.
 	if session.is_server():
-		session.set_team_progress(save_store.money, save_store.trophies, save_store.clears)
+		session.set_team_progress(save_store.money, save_store.trophies, save_store.clears, save_store.jackpot)
 	# 캐릭터를 아직 안 골랐으면 곧바로 선택 화면이 뜬다. 사무실이 그 직전에 마우스를 잡으면
 	# 커서가 화면 가운데로 끌려갔다가 풀리므로, 처음부터 잠근 채로 들인다.
 	office.input_locked = not session.has_character(session.local_id())

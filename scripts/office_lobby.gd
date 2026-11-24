@@ -7,7 +7,8 @@ extends TruckLobby
 ## 움직이고 자세를 보내 준다). 여기서 바뀌는 것은 방, 화면, 그리고 할 수 있는 일이다.
 ##   * 큰 스크린의 지도 -- 갈 축제와 토마티나 연습 봇을 고른다.
 ##   * 사물함 -- 캐릭터를 다시 고른다.
-##   * 슬롯머신 -- 팀 돈을 걸고 돌린다. 누구나 할 수 있고 방장이 굴린다. 배당은 `OfficeSlot`.
+##   * 슬롯머신 -- 팀 돈을 걸고 돌린다. 누구나 할 수 있고 방장이 굴린다. 배당과 잭팟은
+##     `OfficeSlot`, 사무실에 놓인 기계의 움직임과 소리는 `OfficeSlotShow`.
 ##   * 출발 구역 -- 전원이 올라서면 잠깐 센 뒤 떠난다. 지도에는 출발 버튼이 없다.
 ## 출발 조건은 "전원이 캐릭터를 골랐고(`MayoNet.can_start_stage`) 전원이 구역 위에 있다"이다.
 ## 누가 구역에 있는지는 각자 자기 화면의 몸 위치로 세고(방장이 보내 준 자세), 실제 출발은
@@ -28,6 +29,10 @@ const LOOK_DOT := 0.8
 const OFFICE_WALK_SPEED := 5.2
 ## 전원이 출발 구역에 올라선 뒤 떠나기까지. 한 명이라도 내려서면 처음부터 다시 센다.
 const DEPART_COUNTDOWN := 3.0
+## 디버그용: 사무실에서 이 키를 누를 때마다 팀 돈이 `DEBUG_MONEY_STEP`만큼 늘어난다(방장·혼자하기만).
+## 출시 전에 `DEBUG_MONEY_STEP`을 0으로 바꾸면 키도 안내 문구도 사라진다.
+const DEBUG_MONEY_KEY := KEY_F9
+const DEBUG_MONEY_STEP := 100
 ## 네 자리. 문 쪽에 나란히 서서 스크린을 본다.
 const SPAWNS := [
 	{"position": Vector3(-0.9, 0.0, 5.5), "yaw": 0.0},
@@ -57,12 +62,24 @@ var _slot_position := Vector3.INF
 var _slot_layer: CanvasLayer
 var _slot_money: Label
 var _slot_bet_label: Label
-var _slot_reels: Array[Label] = []
+var _slot_reels: Array[SauceBottle] = []
 var _slot_message: Label
 var _slot_spin: Button
 var _slot_bet := 10
 var _slot_waiting := false
-var _slot_tween: Tween
+var _slot_show: OfficeSlotShow
+var _slot_jackpot: Label
+var _slot_flash: ColorRect
+var _slot_coins: CPUParticles2D
+var _slot_banner: Label
+## 지금 화면에서 돌아가고 있는 한 판(reels, text, tier, gain, pot, elapsed, stopped, ticks). 없으면 빈 사전.
+var _slot_spinning: Dictionary = {}
+## 화면에 적혀 있는 돈과 잭팟. 칸이 다 멈출 때까지는 돌리기 전 값이고, 멈추면 세어 올라간다.
+var _slot_shown_money := 0
+var _slot_shown_jackpot := 0
+var _slot_count_tween: Tween
+var _slot_announce: Label
+var _slot_announce_left := 0.0
 var _info_label: Label
 var _prompt: Label
 var _screen_label: Label3D
@@ -120,6 +137,11 @@ func _physics_process(delta: float) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if input_locked:
+		return
+	if DEBUG_MONEY_STEP > 0 and session != null and event is InputEventKey and event.pressed \
+			and not event.echo and (event as InputEventKey).keycode == DEBUG_MONEY_KEY:
+		session.add_team_money(DEBUG_MONEY_STEP)
+		get_viewport().set_input_as_handled()
 		return
 	if is_map_open() or is_slot_open():
 		if event.is_action_pressed("ui_cancel"):
@@ -187,8 +209,9 @@ func open_slot() -> void:
 func close_slot() -> void:
 	if not is_slot_open():
 		return
-	if _slot_tween != null:
-		_slot_tween.kill()
+	if _slot_count_tween != null:
+		_slot_count_tween.kill()
+	_slot_spinning = {}
 	_slot_layer.queue_free()
 	_slot_layer = null
 	_slot_reels.clear()
@@ -205,52 +228,171 @@ func set_slot_bet(amount: int) -> void:
 
 ## 지금 판돈으로 돌린다. 결과는 `MayoNet.slot_result`로 온다.
 func spin_slot() -> bool:
-	if session == null or _slot_waiting or not session.request_slot_spin(_slot_bet):
+	if session == null or _slot_waiting or not is_slot_open():
 		return false
+	# 방장은 요청하는 자리에서 바로 결과가 나온다. 그 전에 "돌리는 중"과 돌리기 전 금액을 잡아 둔다.
+	if _slot_count_tween != null:
+		_slot_count_tween.kill()
+	_slot_shown_money = session.team_money
+	_slot_shown_jackpot = session.team_jackpot
 	_slot_waiting = true
+	if not session.request_slot_spin(_slot_bet):
+		_slot_waiting = false
+		return false
+	_slot_message.text = ""
+	if _slot_show != null:
+		_slot_show.play("lever")
 	_refresh_slot()
 	return true
 
 
-func _on_slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array) -> void:
+func _on_slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array, pot: int) -> void:
+	var mine := peer_id == _local_id() and is_slot_open()
 	var who := "나" if peer_id == _local_id() else "P%d" % peer_id
+	var tier := OfficeSlot.tier_of(reels)
 	var outcome := "당첨! +%d" % gain if gain > 0 else ("본전" if gain == 0 else "꽝  %d" % gain)
-	var text := "%s: %d 걸고 %s" % [who, bet, outcome]
-	if not is_slot_open() or peer_id != _local_id():
-		# 남이 돌린 것, 또는 화면을 닫은 뒤에 온 결과: 한 줄로만 알린다.
-		if is_slot_open():
+	var text := "%s%s: %d 걸고 %s" % [["", "소스 둘 · ", "황금 둘! ", "소스 셋! ", "황금 셋!! "][tier], who, bet, outcome]
+	if pot > 0:
+		text += "  (잭팟 %d 포함)" % pot
+	# 사무실에 놓인 기계는 누가 돌렸든 움직인다. 내 화면으로 보는 판은 기계 소리를 겹치지 않는다.
+	if _slot_show != null:
+		_slot_show.spin(reels, mine)
+	if not mine:
+		# 남이 돌린 것, 또는 화면을 닫은 뒤에 온 결과: 한 줄로만 알린다. 황금 셋은 모두에게 크게.
+		if is_slot_open() and not _slot_waiting:
 			_slot_message.text = text
+		if tier == 4:
+			var shout := create_tween()
+			shout.tween_interval(OfficeSlot.stop_times(reels)[2])
+			shout.tween_callback(_announce.bind("%s 잭팟!  +%d" % [who, gain], 5.0))
 		_refresh_slot()
 		return
-	# 내가 돌린 것: 칸이 잠깐 돌다가 왼쪽부터 하나씩 멈춘다.
-	if _slot_tween != null:
-		_slot_tween.kill()
-	_slot_tween = create_tween()
-	for step in 12:
-		_slot_tween.tween_callback(_show_reels.bind(reels, step / 4, step))
-		_slot_tween.tween_interval(0.07)
-	_slot_tween.tween_callback(func():
-		_show_reels(reels, 3, 0)
-		_slot_message.text = text
-		_slot_message.add_theme_color_override("font_color", UI.MINT if gain > 0 else UI.GOLD)
-		_slot_waiting = false
-		_refresh_slot())
+	_slot_spinning = {"reels": reels, "text": text, "tier": tier, "gain": gain, "pot": pot,
+		"elapsed": 0.0, "stopped": 0, "ticks": 0}
 
 
-## 왼쪽 `settled`칸은 결과 그림, 나머지는 돌아가는 중인 그림.
-func _show_reels(reels: PackedInt32Array, settled: int, step: int) -> void:
-	for index in _slot_reels.size():
-		var symbol := int(reels[index]) if index < settled \
-			else (step + index * 2) % OfficeSlot.SYMBOLS.size()
-		_slot_reels[index].text = OfficeSlot.SYMBOLS[symbol]
-		_slot_reels[index].add_theme_color_override("font_color", OfficeSlot.SYMBOL_COLORS[symbol])
+func _process(delta: float) -> void:
+	if _slot_announce_left > 0.0:
+		_slot_announce_left -= delta
+		if _slot_announce_left <= 0.0 and _slot_announce != null:
+			_slot_announce.visible = false
+	if _slot_spinning.is_empty() or not is_slot_open():
+		return
+	# 세 칸이 돌다가 왼쪽부터 하나씩 멈춘다. 앞의 두 칸이 같으면 마지막 칸은 느려지며 한참 끈다.
+	_slot_spinning.elapsed += delta
+	var elapsed: float = _slot_spinning.elapsed
+	var reels: PackedInt32Array = _slot_spinning.reels
+	var stops := OfficeSlot.stop_times(reels)
+	var stopped := 0
+	for index in 3:
+		if elapsed >= stops[index]:
+			_slot_reels[index].symbol = reels[index]
+			stopped += 1
+		else:
+			_slot_reels[index].symbol = (index + OfficeSlot.spin_ticks(index, reels, elapsed)) \
+				% OfficeSlot.SYMBOLS.size()
+	var ticks := OfficeSlot.spin_ticks(2, reels, elapsed)
+	if ticks != int(_slot_spinning.ticks) and stopped < 3:
+		_slot_spinning.ticks = ticks
+		# 빨리 돌 때는 두 칸에 한 번, 끄는 동안은 칸마다 딸깍.
+		if _slot_show != null and (stopped == 2 or ticks % 2 == 0):
+			_slot_show.play("tick")
+	if stopped > int(_slot_spinning.stopped):
+		for index in range(int(_slot_spinning.stopped), stopped):
+			_pop_reel(_slot_reels[index])
+		_slot_spinning.stopped = stopped
+		if _slot_show != null:
+			_slot_show.play("stop")
+	if stopped == 3:
+		_finish_slot_spin()
+
+
+## 칸이 멈출 때 통이 한 번 튄다.
+func _pop_reel(bottle: SauceBottle) -> void:
+	bottle.pivot_offset = bottle.size * 0.5
+	bottle.scale = Vector2.ONE * 1.28
+	create_tween().tween_property(bottle, "scale", Vector2.ONE, 0.2) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+
+## 세 칸이 다 멈췄다: 결과를 알리고, 돈이 세어 올라가고, 등급에 맞게 터진다.
+func _finish_slot_spin() -> void:
+	var spin := _slot_spinning
+	_slot_spinning = {}
+	var tier: int = spin.tier
+	_slot_message.text = spin.text
+	_slot_message.add_theme_color_override("font_color",
+		UI.MUTED if tier == 0 else (UI.MINT if tier == 1 else UI.GOLD))
+	if _slot_show != null:
+		_slot_show.play(OfficeSlotShow.TIER_SFX[tier])
+	_slot_waiting = false
+	_count_slot_money([0.25, 0.5, 0.9, 1.1, 2.2][tier])
+	if tier >= 2:
+		_celebrate_slot(tier, int(spin.pot))
+	_refresh_slot()
+
+
+## 화면의 돈과 잭팟이 지금 값까지 세어 올라간다(내려간다).
+func _count_slot_money(seconds: float) -> void:
+	if _slot_count_tween != null:
+		_slot_count_tween.kill()
+	_slot_count_tween = create_tween().set_parallel(true)
+	_slot_count_tween.tween_method(func(value: float):
+		_slot_shown_money = roundi(value)
+		_write_slot_money(), float(_slot_shown_money), float(session.team_money), seconds)
+	_slot_count_tween.tween_method(func(value: float):
+		_slot_shown_jackpot = roundi(value)
+		_write_slot_money(), float(_slot_shown_jackpot), float(session.team_jackpot), seconds)
+
+
+func _write_slot_money() -> void:
+	if is_slot_open():
+		_slot_money.text = "팀 돈  %d" % _slot_shown_money
+		_slot_jackpot.text = "잭팟  %d" % _slot_shown_jackpot
+
+
+## 2배 이상: 화면이 번쩍이고 동전이 쏟아지고 큰 글자가 튀어나온다. 등급이 높을수록 크고 길다.
+func _celebrate_slot(tier: int, pot: int) -> void:
+	var view := get_viewport().get_visible_rect().size
+	_slot_flash.color = Color(1.0, 0.82, 0.3, [0.0, 0.0, 0.32, 0.45, 0.75][tier])
+	create_tween().tween_property(_slot_flash, "color:a", 0.0, [0.0, 0.0, 0.5, 0.7, 1.4][tier])
+	_slot_coins.position = view * Vector2(0.5, 0.58)
+	_slot_coins.amount = [1, 1, 40, 80, 240][tier]
+	_slot_coins.lifetime = 2.6 if tier == 4 else 1.7
+	_slot_coins.restart()
+	_slot_coins.emitting = true
+	_slot_banner.text = ["", "", "2배!", "4배!", "잭팟!  10배"][tier]
+	if pot > 0:
+		_slot_banner.text += "\n+ 잭팟 %d" % pot
+	_slot_banner.pivot_offset = view * 0.5
+	_slot_banner.scale = Vector2.ONE * 0.3
+	_slot_banner.modulate.a = 1.0
+	_slot_banner.visible = true
+	var pop := create_tween()
+	pop.tween_property(_slot_banner, "scale", Vector2.ONE, 0.32).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	pop.tween_interval(2.4 if tier == 4 else 0.9)
+	pop.tween_property(_slot_banner, "modulate:a", 0.0, 0.35)
+	pop.tween_callback(func(): _slot_banner.visible = false)
+
+
+## 사무실 화면 위쪽에 잠깐 뜨는 알림(누군가 황금 셋을 터뜨렸을 때).
+func _announce(message: String, seconds: float) -> void:
+	if _slot_announce == null:
+		return
+	_slot_announce.text = message
+	_slot_announce.visible = true
+	_slot_announce_left = seconds
 
 
 func _refresh_slot() -> void:
 	if not is_slot_open() or session == null:
 		return
 	_slot_bet = clampi(_slot_bet, 1, maxi(session.team_money, 1))
-	_slot_money.text = "팀 돈  %d" % session.team_money
+	# 돌아가는 중이거나 세어 올라가는 중이면 화면의 금액은 그쪽이 쥐고 있다.
+	if not _slot_waiting and (_slot_count_tween == null or not _slot_count_tween.is_running()):
+		_slot_shown_money = session.team_money
+		_slot_shown_jackpot = session.team_jackpot
+	_write_slot_money()
 	_slot_bet_label.text = "판돈  %d" % _slot_bet
 	_slot_spin.disabled = _slot_waiting or session.team_money < 1
 	_slot_spin.text = "돌아가는 중…" if _slot_waiting else \
@@ -284,7 +426,7 @@ func _build_slot_panel() -> void:
 	heading.add_theme_font_size_override("font_size", 30)
 	column.add_child(heading)
 	var sub := Label.new()
-	sub.text = "7 셋 10배 · 같은 소스 셋 4배 · 7 둘 2배 · 같은 소스 둘 본전 · 다 다르면 꽝.\n팀 공용 돈을 겁니다."
+	sub.text = "황금 소스통 셋 10배 · 같은 소스 셋 4배 · 황금 둘 2배 · 같은 소스 둘 1.1배 · 다 다르면 꽝.\n팀 공용 돈을 겁니다."
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	sub.add_theme_color_override("font_color", UI.MUTED)
 	column.add_child(sub)
@@ -294,21 +436,22 @@ func _build_slot_panel() -> void:
 	column.add_child(reels)
 	for index in 3:
 		var cell := PanelContainer.new()
-		cell.custom_minimum_size = Vector2(130.0, 96.0)
+		cell.custom_minimum_size = Vector2(130.0, 150.0)
 		reels.add_child(cell)
-		var symbol := Label.new()
-		symbol.text = "?"
-		symbol.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		symbol.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		symbol.add_theme_font_size_override("font_size", 28)
-		cell.add_child(symbol)
-		_slot_reels.push_back(symbol)
+		var bottle := SauceBottle.new()
+		bottle.symbol = index
+		cell.add_child(bottle)
+		_slot_reels.push_back(bottle)
 	_slot_message = Label.new()
 	_slot_message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_slot_message.add_theme_font_size_override("font_size", 20)
 	column.add_child(_slot_message)
+	_slot_jackpot = Label.new()
+	_slot_jackpot.add_theme_color_override("font_color", UI.GOLD)
+	_slot_jackpot.add_theme_font_size_override("font_size", 24)
+	column.add_child(_slot_jackpot)
 	_slot_money = Label.new()
-	_slot_money.add_theme_color_override("font_color", UI.GOLD)
+	_slot_money.add_theme_color_override("font_color", UI.MINT)
 	column.add_child(_slot_money)
 	_slot_bet_label = Label.new()
 	_slot_bet_label.add_theme_font_size_override("font_size", 22)
@@ -347,6 +490,35 @@ func _build_slot_panel() -> void:
 	close.focus_mode = Control.FOCUS_NONE
 	close.pressed.connect(close_slot)
 	column.add_child(close)
+	_slot_flash = ColorRect.new()
+	_slot_flash.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_slot_flash.color = Color(1.0, 0.82, 0.3, 0.0)
+	_slot_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_slot_layer.add_child(_slot_flash)
+	_slot_coins = CPUParticles2D.new()
+	_slot_coins.emitting = false
+	_slot_coins.one_shot = true
+	_slot_coins.explosiveness = 0.8
+	_slot_coins.direction = Vector2.UP
+	_slot_coins.spread = 70.0
+	_slot_coins.initial_velocity_min = 320.0
+	_slot_coins.initial_velocity_max = 780.0
+	_slot_coins.gravity = Vector2(0.0, 1300.0)
+	_slot_coins.scale_amount_min = 7.0
+	_slot_coins.scale_amount_max = 13.0
+	_slot_coins.color = UI.GOLD
+	_slot_layer.add_child(_slot_coins)
+	_slot_banner = Label.new()
+	_slot_banner.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_slot_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_slot_banner.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_slot_banner.add_theme_font_size_override("font_size", 84)
+	_slot_banner.add_theme_color_override("font_color", Color("fff3c4"))
+	_slot_banner.add_theme_color_override("font_outline_color", Color("7a3b12"))
+	_slot_banner.add_theme_constant_override("outline_size", 18)
+	_slot_banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_slot_banner.visible = false
+	_slot_layer.add_child(_slot_banner)
 
 
 ## 방장이 지도에서 축제를 고른다. 팀원이 누른 것은 아무 일도 하지 않는다.
@@ -479,6 +651,10 @@ func _build_truck() -> void:
 	var slot := _room.get_node_or_null("SlotMachine/Upper") as Node3D
 	if slot != null:
 		_slot_position = slot.global_position
+	_slot_show = OfficeSlotShow.new()
+	_slot_show.name = "SlotShow"
+	add_child(_slot_show)
+	_slot_show.setup(_room)
 	_depart_area = _room.get_node_or_null("Departure/DepartArea") as Area3D
 	_depart_sign = _room.get_node_or_null("Departure/Label") as Label3D
 	if _depart_area != null:
@@ -511,6 +687,8 @@ func _build_ui() -> void:
 	column.add_child(_info_label)
 	var hint := Label.new()
 	hint.text = "WASD 이동 · Space 점프 · E 상호작용 · Esc 메뉴\n축제 지도에서 출격 준비\n모두 출발 구역에 올라서면 출발"
+	if DEBUG_MONEY_STEP > 0:
+		hint.text += "\n[디버그] %s: 팀 돈 +%d" % [OS.get_keycode_string(DEBUG_MONEY_KEY), DEBUG_MONEY_STEP]
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", UI.MUTED)
 	hint.add_theme_font_size_override("font_size", 14)
@@ -532,6 +710,17 @@ func _build_ui() -> void:
 	_depart_hud.size = Vector2(800.0, 48.0)
 	_depart_hud.visible = false
 	layer.add_child(_depart_hud)
+	_slot_announce = Label.new()
+	_slot_announce.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_slot_announce.add_theme_font_size_override("font_size", 38)
+	_slot_announce.add_theme_color_override("font_color", Color("fff3c4"))
+	_slot_announce.add_theme_color_override("font_outline_color", Color("7a3b12"))
+	_slot_announce.add_theme_constant_override("outline_size", 10)
+	_slot_announce.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_slot_announce.position = Vector2(-400.0, 150.0)
+	_slot_announce.size = Vector2(800.0, 54.0)
+	_slot_announce.visible = false
+	layer.add_child(_slot_announce)
 	var cross := Label.new()
 	cross.text = "+"
 	cross.add_theme_font_size_override("font_size", 24)
@@ -583,6 +772,9 @@ func _refresh_progress() -> void:
 			var trophy_name := String(child.name)
 			if trophy_name.begins_with("Trophy_") and child is Node3D:
 				(child as Node3D).visible = session.team_trophies.has(trophy_name.trim_prefix("Trophy_"))
+	var slot_sign := _room.get_node_or_null("SlotMachine/Label") as Label3D
+	if slot_sign != null:
+		slot_sign.text = "슬롯머신\n잭팟 %d" % session.team_jackpot
 	var records := _room.get_node_or_null("RecordBoard/Records") as Label3D
 	if records != null:
 		var lines: Array[String] = ["팀 돈  %d" % session.team_money]
@@ -755,6 +947,75 @@ func _ensure_interact_action() -> void:
 	var key := InputEventKey.new()
 	key.physical_keycode = KEY_E
 	InputMap.action_add_event("interact", key)
+
+
+## 슬롯머신 한 칸: 소스통 하나를 그린다. `symbol`은 `OfficeSlot.SYMBOLS` 번호.
+## 짜는 통 모양 -- 뾰족한 뚜껑, 어깨, 몸통, 가운데 띠지 -- 에 소스마다 색과 띠지 그림이 다르다.
+class SauceBottle extends Control:
+	var symbol := 0:
+		set(value):
+			symbol = value
+			queue_redraw()
+
+	var _origin := Vector2.ZERO
+	var _unit := 1.0
+
+	## 통 그림 좌표(가로 가운데가 0, 뚜껑 끝이 세로 0, 통 높이 약 118)를 화면 좌표로.
+	func _at(x: float, y: float) -> Vector2:
+		return _origin + Vector2(x, y) * _unit
+
+	func _draw() -> void:
+		var body: Color = OfficeSlot.SYMBOL_COLORS[symbol]
+		var cap: Color = OfficeSlot.SYMBOL_CAPS[symbol]
+		var shade := body.darkened(0.22)
+		var unit := minf(size.x / 100.0, size.y / 150.0)
+		var origin := Vector2(size.x * 0.5, size.y * 0.5 - 68.0 * unit)
+		_origin = origin
+		_unit = unit
+		# 뚜껑: 뾰족한 노즐과 그 밑동.
+		draw_colored_polygon(PackedVector2Array([_at(-4, 0), _at(4, 0), _at(9, 22), _at(-9, 22)]), cap)
+		draw_rect(Rect2(_at(-13, 22), Vector2(26, 9) * unit), cap.darkened(0.12))
+		# 어깨와 몸통.
+		draw_colored_polygon(PackedVector2Array([_at(-13, 31), _at(13, 31), _at(27, 52), _at(-27, 52)]), body)
+		var trunk := StyleBoxFlat.new()
+		trunk.bg_color = body
+		trunk.set_corner_radius_all(int(9.0 * unit))
+		trunk.corner_radius_top_left = 0
+		trunk.corner_radius_top_right = 0
+		draw_style_box(trunk, Rect2(_at(-27, 51), Vector2(54, 67) * unit))
+		# 오른쪽 그늘과 왼쪽 반사광.
+		draw_rect(Rect2(_at(17, 54), Vector2(10, 56) * unit), shade)
+		draw_rect(Rect2(_at(-22, 56), Vector2(5, 50) * unit), body.lightened(0.35))
+		# 띠지와 그 위의 그림.
+		var label := Color("fff8ea") if symbol != 2 else Color("5b8fc2")
+		draw_rect(Rect2(_at(-27, 68), Vector2(54, 30) * unit), label)
+		var mark := _at(0, 83)
+		if symbol == 0:
+			# 케찹: 토마토.
+			draw_circle(mark, 10.0 * unit, Color("c2433a"))
+			draw_rect(Rect2(mark + Vector2(-5, -13) * unit, Vector2(10, 4) * unit), Color("4f9a55"))
+		elif symbol == 1:
+			# 머스터드: 겨자씨 세 알.
+			for offset in [Vector2(-10, 3), Vector2(0, -4), Vector2(10, 3)]:
+				draw_circle(mark + offset * unit, 5.0 * unit, Color("b9872a"))
+		elif symbol == 2:
+			# 마요네즈: 달걀.
+			draw_circle(mark, 11.0 * unit, Color("fff8ea"))
+			draw_circle(mark, 5.0 * unit, Color("f0b93a"))
+		else:
+			# 황금 소스통: 별.
+			var star := PackedVector2Array()
+			for point in 10:
+				var reach := (12.0 if point % 2 == 0 else 5.0) * unit
+				var angle := -PI * 0.5 + TAU * point / 10.0
+				star.append(mark + Vector2(cos(angle), sin(angle)) * reach)
+			draw_colored_polygon(star, Color("c2433a"))
+		var caption: String = OfficeSlot.SYMBOLS[symbol]
+		var font := ThemeDB.fallback_font
+		var text_size := int(13.0 * unit)
+		var width := font.get_string_size(caption, HORIZONTAL_ALIGNMENT_LEFT, -1.0, text_size).x
+		draw_string(font, Vector2(size.x * 0.5 - width * 0.5, origin.y + 138.0 * unit), caption,
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, text_size, Color("d8dfe3"))
 
 
 ## 지도 그림: 바다, 땅덩이 몇 개, 그리고 사무실에서 목적지까지의 점선.

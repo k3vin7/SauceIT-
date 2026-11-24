@@ -113,7 +113,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 15
+const PROTOCOL_VERSION := 16
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
@@ -177,8 +177,9 @@ signal session_ended(reason: String)
 signal late_join_waiting
 ## 방장 쪽에서만: 사무실에서 팀 돈이 바뀌었다(슬롯머신 등). 앱이 저장 파일에 적는다.
 signal team_money_spent
-## 누군가 슬롯머신을 돌린 결과. 사무실에 있는 전원에게 온다. `gain`은 팀 돈이 변한 양.
-signal slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array)
+## 누군가 슬롯머신을 돌린 결과. 사무실에 있는 전원에게 온다. `gain`은 팀 돈이 변한 양이고,
+## 그중 `pot`은 터뜨려 받은 잭팟이다.
+signal slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array, pot: int)
 ## The host cut the arrival shot short, for everybody.
 signal intro_skipped(transition_id: int)
 
@@ -272,6 +273,8 @@ var selected_stage := "stage_1"
 var team_money := 0
 var team_trophies := PackedStringArray()
 var team_clears: Dictionary = {}
+## 슬롯머신에 쌓인 잭팟. 팀 돈과 함께 방장의 저장 파일에 있다.
+var team_jackpot := 0
 var _lobby_ready: Dictionary = {}
 ## Which of the four characters each player picked at the truck's door, peer id
 ## -> index. The same index means the same character in the truck
@@ -499,27 +502,46 @@ func _resolve_slot_spin(peer_id: int, bet: int) -> bool:
 		return false
 	var outcome := OfficeSlot.roll(_slot_rng, slot_pick_override)
 	var gain := OfficeSlot.gain_for(bet, outcome.multiplier)
+	var pot := 0
+	if OfficeSlot.tier_of(outcome.reels) == 4:
+		pot = team_jackpot
+		team_jackpot = 0
+		gain += pot
+	elif gain < 0:
+		team_jackpot += OfficeSlot.jackpot_share(bet)
 	team_money += gain
 	team_money_spent.emit()
 	_broadcast_lobby()
 	for id in _slots.keys():
 		if int(id) != 1 and _peer_can_receive(int(id)):
-			_slot_result.rpc_id(int(id), peer_id, bet, gain, outcome.reels)
-	slot_result.emit(peer_id, bet, gain, outcome.reels)
+			_slot_result.rpc_id(int(id), peer_id, bet, gain, outcome.reels, pot)
+	slot_result.emit(peer_id, bet, gain, outcome.reels, pot)
 	return true
 
 
 @rpc("authority", "call_remote", "reliable")
-func _slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array) -> void:
+func _slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array, pot: int) -> void:
 	if not multiplayer.is_server() and reels.size() == 3:
-		slot_result.emit(peer_id, bet, gain, reels)
+		slot_result.emit(peer_id, bet, gain, reels, pot)
+
+
+## 디버그용: 팀 돈을 그냥 더한다(방장만). 사무실의 디버그 키가 부른다 -- `OfficeLobby.DEBUG_MONEY_STEP`.
+func add_team_money(amount: int) -> bool:
+	if not lobby_flow or not is_server() or session_phase != SessionPhase.TRUCK or amount <= 0:
+		return false
+	team_money += amount
+	team_money_spent.emit()
+	_broadcast_lobby()
+	return true
 
 
 ## 방장이 자기 저장 파일의 돈·전리품을 방에 올린다. 팀원이 부르면 아무 일도 없다.
-func set_team_progress(money: int, trophies: PackedStringArray, clears: Dictionary) -> void:
+func set_team_progress(money: int, trophies: PackedStringArray, clears: Dictionary,
+		jackpot := 0) -> void:
 	if not is_server():
 		return
 	team_money = money
+	team_jackpot = maxi(jackpot, 0)
 	team_trophies = trophies.duplicate()
 	team_clears = clears.duplicate()
 	_broadcast_lobby()
@@ -528,10 +550,12 @@ func set_team_progress(money: int, trophies: PackedStringArray, clears: Dictiona
 
 
 @rpc("authority", "call_remote", "reliable")
-func _sync_team_progress(money: int, trophies: PackedStringArray, clears: Dictionary) -> void:
+func _sync_team_progress(money: int, trophies: PackedStringArray, clears: Dictionary,
+		jackpot: int) -> void:
 	if multiplayer.is_server():
 		return
 	team_money = maxi(money, 0)
+	team_jackpot = maxi(jackpot, 0)
 	team_trophies = trophies
 	team_clears = clears
 	roster_changed.emit()
@@ -1453,7 +1477,7 @@ func _broadcast_lobby() -> void:
 	var characters := _character_packet()
 	for peer_id in _slots.keys():
 		if int(peer_id) != 1 and _peer_can_receive(int(peer_id)):
-			_sync_team_progress.rpc_id(int(peer_id), team_money, team_trophies, team_clears)
+			_sync_team_progress.rpc_id(int(peer_id), team_money, team_trophies, team_clears, team_jackpot)
 			_sync_lobby.rpc_id(int(peer_id), packet, ready, selected_stage, session_phase,
 				characters)
 	roster_changed.emit()

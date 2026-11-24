@@ -164,6 +164,17 @@ func _party() -> void:
 		"the guest's office does not show the team's money and trophy")
 	_check(guest.save_store.money == 0, "the team's money leaked into the guest's own save")
 	print("party: guest sees the host's 90 and the ketchup OK")
+	# --- 디버그 키: 방장만 팀 돈을 100씩 더한다 ----------------------------------
+	var press := InputEventKey.new()
+	press.keycode = OfficeLobby.DEBUG_MONEY_KEY
+	press.pressed = true
+	guest_office._unhandled_input(press)
+	(host.current_space as OfficeLobby)._unhandled_input(press)
+	_check(await _until(func(): return guest.session.team_money == 190), "the debug key did not add 100 for the host only")
+	_check(host.save_store.money == 190, "the debug money was not saved")
+	host.session.set_team_progress(90, host.session.team_trophies, host.session.team_clears)
+	host.save_store.set_money(90)
+	_check(await _until(func(): return guest.session.team_money == 90), "could not put the money back for the next checks")
 
 	# --- 슬롯머신: 누구나 돌리고, 방장이 굴리고, 방장 저장에 남는다 ----------------
 	var host_office := host.current_space as OfficeLobby
@@ -179,8 +190,8 @@ func _party() -> void:
 	_check(host.save_store.money == 450 and guest.save_store.money == 0, "the win was not saved for the host only")
 	_check(await _until(func(): return not guest_office._slot_waiting and guest_office._slot_message.text.contains("당첨")),
 		"the guest's machine never showed the win")
-	_check(guest_office._slot_reels[0].text == "7" and guest_office._slot_reels[1].text == "7" \
-		and guest_office._slot_reels[2].text == "7", "the 10x did not show three sevens")
+	_check(guest_office._slot_reels[0].symbol == OfficeSlot.GOLDEN and guest_office._slot_reels[1].symbol == OfficeSlot.GOLDEN \
+		and guest_office._slot_reels[2].symbol == OfficeSlot.GOLDEN, "the 10x did not show three golden bottles")
 	host_office.open_slot()
 	host.session.slot_pick_override = 0.01         # 1%: 같은 소스 셋, 4배
 	host_office.set_slot_bet(50)
@@ -191,19 +202,49 @@ func _party() -> void:
 	_check(host_office.spin_slot(), "the host could not spin for the 2x")
 	_check(await _until(func(): return guest.session.team_money == 650), "a 2x on 50 did not add 50")
 	_check(await _until(func(): return not host_office._slot_waiting), "the host's machine never stopped")
-	host.session.slot_pick_override = 0.2          # 33%: 같은 소스 둘, 본전
+	host.session.slot_pick_override = 0.2          # 33%: 같은 소스 둘, 1.1배
 	_check(host_office.spin_slot(), "the host could not spin again")
+	_check(await _until(func(): return guest.session.team_money == 655), "a 1.1x on 50 did not add 5")
+	_check(await _until(func(): return not host_office._slot_waiting and host_office._slot_message.text.contains("+5")),
+		"a 1.1x did not read as a small win")
+	host_office.set_slot_bet(4)
+	_check(host_office.spin_slot(), "the host could not spin a small bet")
 	_check(await _until(func(): return not host_office._slot_waiting and host_office._slot_message.text.contains("본전")),
-		"a 1x did not read as breaking even")
-	_check(host.session.team_money == 650, "a 1x changed the money")
+		"a 1.1x on 4 did not read as breaking even")
+	_check(host.session.team_money == 655, "a 1.1x on 4 changed the money")
 	host.session.slot_pick_override = 0.9          # 61.5%: 전부 다름, 꽝
 	host_office.set_slot_bet(9999)
-	_check(host_office._slot_bet == 650, "the bet was not capped at the team's money")
+	_check(host_office._slot_bet == 655, "the bet was not capped at the team's money")
 	_check(host_office.spin_slot(), "the host could not go all in")
 	_check(await _until(func(): return guest.session.team_money == 0 and host.save_store.money == 0),
 		"losing it all did not empty the team's money")
 	_check(await _until(func(): return not host_office._slot_waiting), "the host's machine never stopped")
 	_check(host_office._slot_spin.disabled and not host_office.spin_slot(), "an empty wallet can still spin")
+	# 잭팟: 꽝으로 잃은 돈의 20%가 쌓이고, 황금 셋이 10배에 더해 통째로 가져간다.
+	_check(host.session.team_jackpot == 131 and host.save_store.jackpot == 131,
+		"losing 655 did not put 131 in the jackpot: %d" % host.session.team_jackpot)
+	_check(await _until(func(): return guest.session.team_jackpot == 131), "the guest was not told the jackpot")
+	_check((host_office._room.get_node("SlotMachine/Label") as Label3D).text.contains("131"),
+		"the machine's sign does not show the jackpot")
+	_check(host.session.add_team_money(100), "could not add money for the jackpot check")
+	host.session.slot_pick_override = 0.0
+	host_office.set_slot_bet(10)
+	_check(host_office.spin_slot(), "the host could not spin for the jackpot")
+	_check(host_office._slot_shown_money == 100 and host.session.team_money == 321,
+		"the screen showed the winnings before the reels stopped, or 10x + 131 on 10 was not 321")
+	_check(await _until(func(): return not host_office._slot_waiting), "the jackpot spin never stopped")
+	_check(host_office._slot_banner.visible and host_office._slot_banner.text.contains("131") \
+		and host_office._slot_message.text.contains("잭팟 131"), "the jackpot was not celebrated")
+	_check(await _until(func(): return host_office._slot_shown_money == 321), "the money did not count up to 321")
+	_check(host.session.team_jackpot == 0 and host.save_store.jackpot == 0 and host.save_store.money == 321,
+		"the jackpot was not emptied and saved")
+	_check(await _until(func(): return guest_office._slot_announce.visible \
+		and guest_office._slot_announce.text.contains("잭팟")), "the guest was not told about the jackpot win")
+	_check(OfficeSlot.tier_of(PackedInt32Array([3, 3, 3])) == 4 and OfficeSlot.tier_of(PackedInt32Array([1, 1, 1])) == 3 \
+		and OfficeSlot.tier_of(PackedInt32Array([3, 0, 3])) == 2 and OfficeSlot.tier_of(PackedInt32Array([2, 2, 0])) == 1 \
+		and OfficeSlot.tier_of(PackedInt32Array([0, 1, 2])) == 0, "the tiers are read wrong off the reels")
+	_check(OfficeSlot.stop_times(PackedInt32Array([1, 1, 0]))[2] > OfficeSlot.stop_times(PackedInt32Array([1, 0, 1]))[2],
+		"two matching reels do not hold the third one back")
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 7
 	var counts := {}
@@ -217,16 +258,17 @@ func _party() -> void:
 		if same == 3:
 			shown = 10.0 if sevens == 3 else 4.0
 		elif same == 1:
-			shown = 2.0 if sevens == 2 else 1.0
+			shown = 2.0 if sevens == 2 else 1.1
 		_check(shown == outcome.multiplier, "the reels %s do not match a %.0fx" % [reels, outcome.multiplier])
 		counts[outcome.multiplier] = int(counts.get(outcome.multiplier, 0)) + 1
 		returned += 100 + OfficeSlot.gain_for(100, outcome.multiplier)
 	var summary: Array[String] = []
 	for payout in OfficeSlot.PAYOUTS:
 		var rate := int(counts.get(payout[1], 0)) / 200000.0
-		_check(absf(rate - payout[0]) < maxf(payout[0] * 0.15, 0.004), "the %.0fx rate is off: %.3f%%" % [payout[1], rate * 100.0])
-		summary.push_back("%.0fx %.2f%%" % [payout[1], rate * 100.0])
-	_check(OfficeSlot.gain_for(40, 10.0) == 360 and OfficeSlot.gain_for(7, 0.0) == -7 and OfficeSlot.gain_for(9, 1.0) == 0,
+		_check(absf(rate - payout[0]) < maxf(payout[0] * 0.15, 0.004), "the %.1fx rate is off: %.3f%%" % [payout[1], rate * 100.0])
+		summary.push_back("%.1fx %.2f%%" % [payout[1], rate * 100.0])
+	_check(OfficeSlot.gain_for(40, 10.0) == 360 and OfficeSlot.gain_for(7, 0.0) == -7 and OfficeSlot.gain_for(10, 1.1) == 1 \
+		and OfficeSlot.gain_for(4, 1.1) == 0,
 		"the payout sums are off")
 	print("slot over 200000: %s, returned %.1f%% of the bets" % [", ".join(summary), returned / 200000.0])
 	host_office.close_slot()

@@ -6,6 +6,8 @@ var path := DEFAULT_PATH
 var tutorial_completed := false
 ## 팀 공용 돈과 전리품, 축제별 완료 횟수. 방을 연 사람(방장)의 것이 그 방의 것이다.
 var money := 0
+## 슬롯머신에 쌓인 잭팟(`OfficeSlot`).
+var jackpot := 0
 var trophies := PackedStringArray()
 var clears: Dictionary = {}
 var master_volume := 0.8
@@ -31,6 +33,7 @@ func load_data() -> void:
 	game_options.load_config(config)
 	tutorial_completed = bool(config.get_value("progress", "tutorial_completed", false))
 	money = maxi(int(config.get_value("progress", "money", 0)), 0)
+	jackpot = maxi(int(config.get_value("progress", "jackpot", 0)), 0)
 	trophies = PackedStringArray(config.get_value("progress", "trophies", PackedStringArray()))
 	var saved_clears = config.get_value("progress", "clears", {})
 	clears = saved_clears if saved_clears is Dictionary else {}
@@ -54,9 +57,11 @@ func add_reward(stage_id: String, money_gain: int, trophy_id: String) -> int:
 	return _write()
 
 
-## 사무실에서 쓰거나 딴 뒤의 팀 돈을 적는다.
-func set_money(value: int) -> int:
+## 사무실에서 쓰거나 딴 뒤의 팀 돈을 적는다. `pot`을 주면 잭팟도 함께 적는다.
+func set_money(value: int, pot := -1) -> int:
 	money = maxi(value, 0)
+	if pot >= 0:
+		jackpot = pot
 	return _write()
 
 
@@ -72,6 +77,7 @@ func _write() -> int:
 	var config := ConfigFile.new()
 	config.set_value("progress", "tutorial_completed", tutorial_completed)
 	config.set_value("progress", "money", money)
+	config.set_value("progress", "jackpot", jackpot)
 	config.set_value("progress", "trophies", trophies)
 	config.set_value("progress", "clears", clears)
 	config.set_value("options", "master_volume", master_volume)

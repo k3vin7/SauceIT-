@@ -2,6 +2,7 @@
 
 [ext_resource type="Script" path="res://scripts/command_walk_test.gd" id="1_walk"]
 [ext_resource type="Shader" path="res://assets/cartoon/office_toon.gdshader" id="2_toon"]
+[ext_resource type="Shader" path="res://assets/cartoon/office_hologram.gdshader" id="3_hologram"]
 
 [sub_resource type="Environment" id="Env_office"]
 background_mode = 1
@@ -200,10 +201,13 @@ shader = ExtResource("2_toon")
 shader_parameter/albedo = Color(0.372549, 0.901961, 1, 1)
 shader_parameter/glow = 1
 
-[sub_resource type="StandardMaterial3D" id="Mat_hologram"]
-transparency = 1
-shading_mode = 0
-albedo_color = Color(0.3, 0.9, 1, 0.5)
+[sub_resource type="ShaderMaterial" id="Mat_hologram"]
+shader = ExtResource("3_hologram")
+
+[sub_resource type="ShaderMaterial" id="Mat_hologram_bright"]
+shader = ExtResource("3_hologram")
+shader_parameter/tint = Color(0.75, 1, 1, 1)
+shader_parameter/opacity = 0.85
 
 [sub_resource type="StandardMaterial3D" id="Mat_holo_beam"]
 transparency = 1
@@ -1851,7 +1855,7 @@ material = SubResource("Mat_hologram")
 [node name="Glasses" type="CSGBox3D" parent="DoctorHologram/Doctor"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.04, 0.26)
 size = Vector3(0.42, 0.09, 0.05)
-material = SubResource("Mat_holo_ring")
+material = SubResource("Mat_hologram_bright")
 
 [node name="HoloLight" type="OmniLight3D" parent="DoctorHologram"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.4, 0)
