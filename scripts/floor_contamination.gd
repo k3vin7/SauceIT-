@@ -91,6 +91,7 @@ var pavement_bounds := Rect2()
 
 var grid := ContaminationGrid.new()
 var _floor_mesh: MeshInstance3D
+var upload_tiles_per_frame := 0
 
 
 func _ready() -> void:
@@ -99,7 +100,14 @@ func _ready() -> void:
 
 
 func _process(_delta: float) -> void:
-	grid.upload_if_dirty()
+	if not grid.dirty:
+		return
+	var focus := Vector2.INF
+	var camera := get_viewport().get_camera_3d()
+	if upload_tiles_per_frame > 0 and camera != null:
+		var at := to_local(camera.global_position)
+		focus = Vector2(at.x, at.z)
+	grid.upload_if_dirty(upload_tiles_per_frame, focus)
 
 
 func configure(new_cell_size: float, new_brush_radius: float) -> void:

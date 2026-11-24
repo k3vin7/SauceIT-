@@ -7,8 +7,8 @@ extends "res://tests/probe_lobby_flow.gd"
 #   2. each guest walks its own way; the gap is sampled while they move and
 #      every screen must agree once they stop
 #   3. a guest refills at a supply station
-#   4. a grunt the host kills is gone on every screen
-#   5. a guest rescues a downed guest
+#   4. a grunt kill and a floor splat reach the guest in a distant safe room
+#   5. the party regroups and a guest rescues a downed teammate
 #   6. the last guest leaves, and a new player joins at the safe point
 #   7. a guest powers the generator, another takes a fire hose
 # and every screen agrees on everybody's position, health and sauce after each.
@@ -292,11 +292,29 @@ func _run() -> void:
 	_gather_in_safe_room()
 	await _physics(10)
 
-	# --- 4. a kill on the host is gone everywhere ---
+	# --- 4. floor paint and a kill reach a peer outside the near snapshot range ---
+	var distant_guest := _id(1)
+	_place(distant_guest, _safe_room_centre(2))
+	await _physics(10)
+	var guest_position: Vector3 = host_world.shooter_for(distant_guest).player.global_position
+	var host_position: Vector3 = host_world._local.player.global_position
+	_check(guest_position.distance_to(host_position) > MayoNet.ENEMY_SNAPSHOT_NEAR_DISTANCE,
+		"the team did not separate beyond the near snapshot range")
+	_agree("while split")
+	var floor_before: String = host_world._floor.cells_md5()
+	host_world._record_floor_splat(host_world._local, 1, host_position, ContaminationGrid.KIND_MAYO)
+	var painted: String = host_world._floor.cells_md5()
+	_check(floor_before != painted, "the host did not add floor paint")
+	for index in range(1, players):
+		var remote_floor: FloorContamination = _world(index)._floor
+		_check(await _physics_until(func(): return remote_floor.cells_md5() == painted, 60),
+			"guest %d did not get the floor splat" % index)
+
 	var victim := -1
 	for index in host_world.enemy_count():
 		var enemy: MayoEnemy = host_world.enemy_at(index)
-		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive():
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() \
+				and enemy.global_position.distance_to(guest_position) > MayoNet.ENEMY_SNAPSHOT_NEAR_DISTANCE:
 			victim = index
 			break
 	_check(victim >= 0, "no grunt to kill")
@@ -313,31 +331,33 @@ func _run() -> void:
 		var counts := sessions.map(func(session): return worlds[session].enemy_count())
 		_check(counts.all(func(count): return count == counts[0]), "screens disagree on the enemy count: %s" % str(counts))
 
-	# --- 5. a guest rescues a downed guest ---
-	if players >= 3:
-		var downed := _id(1)
-		var rescuer := _id(2)
-		# A safe room shields whoever stands in it, so the downed guest lies
-		# just outside its door and the rescuer reaches out from inside.
-		var door := _doorway(0)
-		_check(not door.is_empty(), "no doorway found for the first safe room")
-		if not door.is_empty():
-			_place(downed, door[0])
-			_place(rescuer, door[1])
+	# --- 5. the team regroups and a guest rescues a downed teammate ---
+	_gather_in_safe_room()
+	await _physics(10)
+	_agree("after regrouping")
+	var rescuer_index := 2 if players >= 3 else 1
+	var downed := _id(rescuer_index - 1)
+	var rescuer := _id(rescuer_index)
+	# A safe room shields whoever stands in it, so the target lies just
+	# outside its door and the rescuer reaches out from inside.
+	var door := _doorway(0)
+	_check(not door.is_empty(), "no doorway found for the first safe room")
+	if not door.is_empty():
+		_place(downed, door[0])
+		_place(rescuer, door[1])
 		await _physics(4)
-		host_world._damage_player(host_world.shooter_for(downed).player, host_world.shooter_for(downed).player.max_health * 3.0)
+		var patient: MayoPlayer = host_world.shooter_for(downed).player
+		host_world._damage_player(patient, patient.max_health * 3.0)
 		for session in sessions:
 			var world = worlds[session]
 			_check(await _physics_until(func(): return world.shooter_for(downed).player.state == MayoPlayer.State.DEAD),
-				"peer %d never saw guest 1 go down" % session.local_id())
-		_world(2).debug_set_input(Vector2.ZERO, false, false)
-		sessions[2].request_context_action("rescue", downed)
-		_check(await _physics_until(func(): return host_world.shooter_for(downed).player.state == MayoPlayer.State.NORMAL, 240),
-			"guest 2's rescue of guest 1 never completed at the host")
+				"peer %d never saw %d go down" % [session.local_id(), downed])
+		_world(rescuer_index).debug_set_input(Vector2.ZERO, false, false)
+		sessions[rescuer_index].request_context_action("rescue", downed)
 		for session in sessions:
 			var world = worlds[session]
 			_check(await _physics_until(func(): return world.shooter_for(downed).player.state == MayoPlayer.State.NORMAL),
-				"peer %d never saw guest 1 back up" % session.local_id())
+				"peer %d never saw %d back up" % [session.local_id(), downed])
 		await _physics(10)
 		_agree("after rescue")
 

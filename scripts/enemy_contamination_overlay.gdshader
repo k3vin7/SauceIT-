@@ -128,8 +128,11 @@ void fragment() {
 	if (coverage < paint_threshold) {
 		discard;
 	}
-	ALBEDO = sauce_toon_finish(mayo_color.rgb * sauce_tint(uv), coverage, paint_threshold,
-		uv * vec2(textureSize(mask_texture, 0)));
+	ALBEDO = mayo_color.rgb * sauce_tint(uv);
+	if (dot(VERTEX, VERTEX) < 2304.0) {
+		ALBEDO = sauce_toon_finish(ALBEDO, coverage, paint_threshold,
+			uv * vec2(textureSize(mask_texture, 0)));
+	}
 	EMISSION = ALBEDO * 0.28;
 	ROUGHNESS = 1.0;
 	METALLIC = 0.0;

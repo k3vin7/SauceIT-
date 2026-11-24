@@ -47,9 +47,10 @@ func _rebuild() -> void:
 
 func _queue_face_upload(face: int) -> void:
 	super._queue_face_upload(face)
-	if face == TOP_FACE and is_instance_valid(_view) and _view.material_overlay == null \
-			and grids[TOP_FACE].painted_cell_count() > 0:
-		_view.material_overlay = _overlay
+	if face == TOP_FACE and is_instance_valid(_view):
+		var overlay := _overlay if grids[TOP_FACE].painted_cell_count() > 0 else null
+		if _view.material_overlay != overlay:
+			_view.material_overlay = overlay
 
 
 func _refresh_overlay() -> void:

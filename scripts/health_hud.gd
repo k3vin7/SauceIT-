@@ -217,6 +217,13 @@ func _draw_player() -> void:
 	var sauce := "%d / 4발" % floori(level * 4.0) if cannon else "%d%%" % roundi(level * 100.0)
 	draw_string(font, at + Vector2(256.0, 19.0), health, HORIZONTAL_ALIGNMENT_RIGHT, 64.0, 13, UI.CREAM)
 	draw_string(font, at + Vector2(256.0, 41.0), sauce, HORIZONTAL_ALIGNMENT_RIGHT, 64.0, 13, sauce_color)
+	var status := _bottle_status()
+	if not status.is_empty():
+		var notice := Rect2(panel.position + Vector2(0.0, -86.0), Vector2(HUD_WIDTH, 25.0))
+		draw_style_box(_plate, notice)
+		var color := UI.ACCENT if status.begins_with("소스 부족") else UI.GOLD
+		draw_string(font, notice.position + Vector2(0.0, 17.0), status,
+			HORIZONTAL_ALIGNMENT_CENTER, notice.size.x, 14, color)
 	# The shake gauge: a strip under the tank, filling while the bottle is
 	# shaken, holding, then running down; and what it is doing, beside it.
 	# (x the gauge, y seconds of hold left, z the strength of a boost under way.)
@@ -242,6 +249,29 @@ func _draw_player() -> void:
 		draw_rect(Rect2(strip.position, Vector2(strip.size.x * clampf(fill, 0.0, 1.0), strip.size.y)), tint, true)
 		draw_string(font, at + Vector2(104.0, 0.0), note,
 			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13, tint)
+
+
+func _bottle_status() -> String:
+	var shooter = world._local
+	if world.map_kind != world.MapKind.TOMATINA or not world._input_enabled \
+			or shooter.player.is_incapacitated() or world.selected_item_slot(shooter.peer_id) != 0 \
+			or world._hose_slot_of(shooter.peer_id) >= 0 or world._refuge_shop_room >= 0:
+		return ""
+	if shooter.nozzle == world.Nozzle.CAUGHT:
+		return "노즐 막힘 · 우클릭을 누른 채 마우스 흔들기"
+	var part: int = shooter.sauce_part
+	if Parts.PROJECTILES.has(part):
+		if shooter.sauce < Parts.PROJECTILES[part].cost and shooter.part_shots_left == 0:
+			return "소스 부족 · 보급 지점에서 충전"
+		return ""
+	var stage: int = world.sauce_stage_of(shooter.sauce)
+	if stage == world.SauceStage.EMPTY and shooter.nozzle != world.Nozzle.STREAM:
+		return "소스 부족 · 보급 지점에서 충전"
+	if shooter.firing and shooter.fire_cooldown > 0.0 and world._burst_spent(shooter):
+		return "압력 회복 중"
+	if stage == world.SauceStage.SPLUTTERING:
+		return "소스 잔량 낮음 · 보급 지점에서 충전"
+	return ""
 
 
 ## The current prompt's target, as the play support chose it: its kind and

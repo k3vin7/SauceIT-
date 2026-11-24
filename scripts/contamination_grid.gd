@@ -87,10 +87,13 @@ var _tiles_down := 1
 var _tile_textures: Array[ImageTexture] = []
 var _tile_materials: Array[ShaderMaterial] = []
 var _tile_dirty := PackedByteArray()
+var _next_upload_tile := 0
 ## Bytes handed to the GPU by the last `upload_if_dirty`, and since the last
 ## reset. What the headless checks can measure of an upload they cannot time.
 var bytes_uploaded := 0
 var bytes_uploaded_total := 0
+var measure_uploads := false
+var upload_time_us := 0
 
 ## Running counts, kept as cells change rather than found by scanning. The floor
 ## is fourteen million cells and something wants to know "how much of it is
@@ -152,6 +155,7 @@ func configure(new_extent: Vector2, new_cell_size: float, clean_color: Color,
 	_tiles_down = ceili(float(height) / float(tile_cells))
 	_tile_dirty.resize(_tiles_across * _tiles_down)
 	_tile_dirty.fill(0)
+	_next_upload_tile = 0
 	_tile_textures.clear()
 	_tile_materials.clear()
 	for index in _tiles_across * _tiles_down:
@@ -458,15 +462,32 @@ func restore_cells(new_cells: PackedByteArray) -> bool:
 ## rebuilt from the mask rather than kept in step cell by cell: `cells` is
 ## already exactly an R8 buffer, and one allocation a frame beats a set_pixel
 ## for every cell a splat touches.
-func upload_if_dirty() -> void:
+func upload_if_dirty(tile_budget := 0, focus := Vector2.INF) -> void:
 	# Reset *after* the early out, not before it: this is "what the last real
 	# upload cost", and zeroing it on every idle call meant anything reading it
 	# a frame later almost always saw 0. `bytes_uploaded_total` is what to take
 	# differences of.
 	if not dirty:
 		return
+	var started := Time.get_ticks_usec() if measure_uploads else 0
 	bytes_uploaded = 0
-	for index in _tile_textures.size():
+	var tile_total := _tile_textures.size()
+	var preferred := -1
+	if tile_budget > 0 and focus.is_finite():
+		var best := INF
+		for index in tile_total:
+			if _tile_dirty[index] == 0:
+				continue
+			var distance := tile_region(index).get_center().distance_squared_to(focus)
+			if distance < best:
+				best = distance
+				preferred = index
+	var uploaded := 0
+	var first := _next_upload_tile
+	for offset in range(-1, tile_total):
+		var index := preferred if offset < 0 else (first + offset) % tile_total
+		if index < 0:
+			continue
 		if _tile_dirty[index] == 0:
 			continue
 		_tile_dirty[index] = 0
@@ -484,8 +505,15 @@ func upload_if_dirty() -> void:
 		_tile_textures[index].update(tile_image)
 		bytes_uploaded += data.size()
 		texture_uploads += 1
+		uploaded += 1
+		if offset >= 0:
+			_next_upload_tile = (index + 1) % tile_total
+		if tile_budget > 0 and uploaded >= tile_budget:
+			break
 	bytes_uploaded_total += bytes_uploaded
-	dirty = false
+	dirty = _tile_dirty.has(1)
+	if measure_uploads:
+		upload_time_us += Time.get_ticks_usec() - started
 	# Kept in step for anything reading the whole-surface image, which is the
 	# checks: headless has no GPU to read a texture back from.
 	if _tile_textures.size() == 1:

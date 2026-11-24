@@ -1,12 +1,16 @@
 extends SceneTree
 
-## 구운 노드 맵(maps/tomatina_map_editable.tscn)이 원래 코드 맵과 같은 설계를 내는지 본다.
-## 맵을 손으로 편집한 뒤에는 당연히 달라지므로, 굽기 직후 확인용이다.
+## Run tools/bake_tomatina_map.gd first to compare a fresh bake with the stage layout.
+const BAKED_SCENE := "res://.godot/tomatina_map_bake/tomatina_map_editable.tscn"
 
 var _failed := false
 
 
 func _initialize() -> void:
+	if not ResourceLoader.exists(BAKED_SCENE, "PackedScene"):
+		push_error("Run tools/bake_tomatina_map.gd with its default output before testing parity")
+		quit(1)
+		return
 	TomatinaMap.use_authored(null)
 	var floor_a := TomatinaMap.floor_cells()
 	var bounds_a := TomatinaMap.bounds()
@@ -15,6 +19,7 @@ func _initialize() -> void:
 	var truck_a := TomatinaMap.fire_truck_box()
 	var roster_a := TomatinaMap.roster()
 	var blocked_a := TomatinaMap.blocked_cells()
+	var entrance_cells := TomatinaMap._box_cells(TomatinaMap.entrance_obstacles())
 	var gate_a := TomatinaMap.market_gate_cells()
 	var rooms_a := TomatinaMap.safe_rooms().duplicate()
 	var spawn_a := TomatinaMap.spawn_position(2)
@@ -24,14 +29,15 @@ func _initialize() -> void:
 	var walls_a := TomatinaMap.boundary_boxes()
 	var victims_a := TomatinaVillageArt.victim_placements()
 
-	var data := TomatinaAuthoredMap.from_scene(load("res://maps/tomatina_map_editable.tscn"))
+	var data := TomatinaAuthoredMap.from_scene(load(BAKED_SCENE))
 	TomatinaMap.use_authored(data)
 	_check(TomatinaMap.floor_cells() == floor_a, "floor cells")
 	_check(TomatinaMap.bounds() == bounds_a, "bounds")
 	_check(_sorted(TomatinaMap.debris_boxes()) == _sorted(debris_a), "debris boxes")
 	_check(_sorted(TomatinaMap.parked_trucks()) == _sorted(parked_a), "parked trucks")
 	_check(_key(TomatinaMap.fire_truck_box()) == _key(truck_a), "fire truck")
-	_check(TomatinaMap.blocked_cells() == blocked_a, "blocked cells")
+	_check(TomatinaMap.entrance_obstacles().is_empty(), "preview entrance")
+	_check(TomatinaMap.blocked_cells().merged(entrance_cells) == blocked_a, "blocked cells with the runtime entrance")
 	_check(TomatinaMap.market_gate_cells() == gate_a, "market gate cells")
 	_check(TomatinaMap.safe_rooms() == rooms_a, "safe rooms")
 	_check(TomatinaMap.spawn_position(2).is_equal_approx(spawn_a), "spawn")

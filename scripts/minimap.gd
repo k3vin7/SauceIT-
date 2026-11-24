@@ -34,6 +34,7 @@ const PLAYER := UI.CREAM
 
 var world: Node3D
 var frame := Rect2()
+var top_inset := 0.0
 
 var _texture: ImageTexture
 ## Lattice cell that image pixel (0, 0) holds.
@@ -107,7 +108,7 @@ func _draw() -> void:
 		return
 
 	var box := Rect2(
-		Vector2(frame.position.x + frame.size.x - SIZE - MARGIN - 7.0, frame.position.y + MARGIN + 29.0),
+		Vector2(frame.end.x - SIZE - MARGIN - 7.0, frame.position.y + MARGIN + 29.0 + top_inset),
 		Vector2(SIZE, SIZE))
 	var card := Rect2(box.position - Vector2(7.0, 27.0), box.size + Vector2(14.0, 34.0))
 	draw_style_box(_plate, card)

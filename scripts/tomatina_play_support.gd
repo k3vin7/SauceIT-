@@ -33,6 +33,29 @@ var _aim_left := 0.0
 var hitches: Array[Dictionary] = []
 var diagnostics_frames := 0
 var diagnostics_frame_ms := 0.0
+var _mortar_static_path: Array[Vector3] = []
+var _mortar_origin := Vector3.INF
+var _mortar_velocity := Vector3.INF
+var _mortar_sweep_from := Vector3.INF
+var _mortar_step_seconds := 0.0
+var _mortar_static_until_ms := 0
+
+func _ready() -> void:
+	get_tree().node_added.connect(_on_node_added)
+	get_tree().node_removed.connect(_on_node_removed)
+
+
+func _on_node_added(node: Node) -> void:
+	if node is StaticBody3D and world.is_ancestor_of(node):
+		_mortar_static_path.clear()
+	elif node is PhysicsBody3D and world.is_ancestor_of(node) and node.collision_layer != 0:
+		node.set_collision_layer_value(world.SauceParts.MORTAR_PREVIEW_ACTOR_LAYER, true)
+
+
+func _on_node_removed(node: Node) -> void:
+	if node is StaticBody3D:
+		_mortar_static_path.clear()
+
 
 func _process(delta: float) -> void:
 	if world._local == null:
@@ -188,8 +211,7 @@ func _update_aim_feedback() -> void:
 		world._crosshair.effective_range = valid and world._input_enabled and not shooter.player.is_incapacitated()
 	_update_arc(origin, direction)
 	if shooter.nozzle == world.Nozzle.CAUGHT and _hint_left <= 0.0 and shooter.sauce > 0.0:
-		world._health_hud.notify_action("박사: 막힌 소스통은 흔들어서 풀어요!")
-		world._health_hud.notify_action("우클릭을 누른 채 마우스 흔들기")
+		world._health_hud.notify_action("박사: 우클릭을 누른 채 마우스를 흔들어서 풀어요!")
 		_hint_left = 9.0
 		prioritize_sound(0.5)
 
@@ -203,23 +225,30 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 	reticle.landing_leaf.clear()
 	reticle.queue_redraw()
 	if not world._input_enabled or world._local.player.is_incapacitated() or world.is_cinematic_active():
+		_mortar_static_path.clear()
 		return
 	var velocity := Vector3.ZERO
 	var gravity := 9.8
 	var life := 2.0
+	var step_seconds := life / float(ARC_STEPS)
+	var sweep_from := Vector3.INF
 	# 박격포는 멀리 던지는 토마토처럼 앞부분 곡선만 보인다: 착탄 지점은 가까워도 표시하지 않는다.
 	var shows_landing := true
 	if world.local_holds_tomato():
 		origin = world.thrown_tomato_origin(world._local)
 		var charge: float = world.tomato_charge_fraction(world._local.peer_id)
 		velocity = direction * lerpf(8.0, 25.0, charge) + Vector3.UP * lerpf(1.0, 3.0, charge)
-	elif world._local.sauce_part == world.SauceParts.Part.ARC:
+	elif world._local.sauce_part == world.SauceParts.Part.ARC \
+			and world.selected_item_slot(world._local.peer_id) == 0 \
+			and world._hose_slot_of(world._local.peer_id) < 0:
 		var profile: Dictionary = world.SauceParts.PROJECTILES[world.SauceParts.Part.ARC]
 		# Drawn from where the lob really leaves, the cap's mouth.
 		origin = world.part_launch_origin(world._local, world.SauceParts.Part.ARC)
-		velocity = world.mortar_launch_velocity(world._local, world._local.bottle_charge)
+		velocity = world.SauceParts.mortar_launch_velocity(direction, world._local.bottle_charge)
 		gravity = profile.gravity
-		life = 4.0
+		life = profile.life
+		step_seconds = world.get_physics_process_delta_time()
+		sweep_from = world._local.aim_pivot.global_position
 		shows_landing = false
 	else:
 		return
@@ -227,17 +256,22 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 	var points: Array[Vector3] = [origin]
 	var landing := {}
 	var space := world.get_world_3d().direct_space_state
-	for step in ARC_STEPS:
-		var time := life * float(step + 1) / float(ARC_STEPS)
-		var next := origin + velocity * time + Vector3.DOWN * gravity * time * time * 0.5
-		var query := PhysicsRayQueryParameters3D.create(points[-1], next, 1)
+	if shows_landing:
+		var query := PhysicsRayQueryParameters3D.new()
+		query.collision_mask = 1
 		query.exclude = [world._local.player.get_rid()]
-		var hit := space.intersect_ray(query)
-		if not hit.is_empty():
-			landing = hit
-			points.push_back(hit.position)
-			break
-		points.push_back(next)
+		for step in ARC_STEPS:
+			var time := step_seconds * float(step + 1)
+			var next: Vector3 = world.SauceParts.ballistic_position(origin, velocity, gravity, time)
+			query.from = points[-1]
+			query.to = next
+			landing = space.intersect_ray(query)
+			if not landing.is_empty():
+				points.push_back(landing.position)
+				break
+			points.push_back(next)
+	else:
+		points = _mortar_path(origin, velocity, sweep_from, gravity, life, step_seconds, space)
 	# Near: the whole arc, solid, and a tomato where it lands. Far: solid out to
 	# ARC_SOLID_LENGTH, then dashes that fade out before the end, so a long
 	# throw shows its line but never its landing point.
@@ -273,6 +307,52 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 			break
 	if near:
 		_mark_landing(reticle, camera, landing.position, landing.normal)
+
+
+## Stage geometry is static during play. Reuse its visible curve for a steady
+## aim, but sweep against the current player and enemy bodies every refresh.
+func _mortar_path(origin: Vector3, velocity: Vector3, sweep_from: Vector3, gravity: float,
+		life: float, step_seconds: float, space: PhysicsDirectSpaceState3D) -> Array[Vector3]:
+	var now := Time.get_ticks_msec()
+	if now >= _mortar_static_until_ms or _mortar_static_path.is_empty() \
+			or not _mortar_origin.is_equal_approx(origin) or not _mortar_velocity.is_equal_approx(velocity) \
+			or not _mortar_sweep_from.is_equal_approx(sweep_from) \
+			or not is_equal_approx(_mortar_step_seconds, step_seconds):
+		_mortar_origin = origin
+		_mortar_velocity = velocity
+		_mortar_sweep_from = sweep_from
+		_mortar_step_seconds = step_seconds
+		_mortar_static_until_ms = now + 250
+		_mortar_static_path = [origin]
+		var traced_length := 0.0
+		for step in ceili(life / step_seconds):
+			var time := minf(life, step_seconds * float(step + 1))
+			var next: Vector3 = world.SauceParts.ballistic_position(origin, velocity, gravity, time)
+			var from := sweep_from if step == 0 else _mortar_static_path[-1]
+			var hit: Dictionary = world._tomatina_static_hit(from, next, 0xffffffff)
+			if not hit.is_empty():
+				_mortar_static_path.append(hit.position)
+				break
+			traced_length += _mortar_static_path[-1].distance_to(next)
+			_mortar_static_path.append(next)
+			if traced_length >= ARC_SOLID_LENGTH + ARC_FADE_LENGTH:
+				break
+	var points: Array[Vector3] = [origin]
+	var query := PhysicsRayQueryParameters3D.new()
+	query.collision_mask = world.SauceParts.MORTAR_PREVIEW_ACTOR_MASK
+	query.exclude = [world._local.player.get_rid()]
+	for index in range(1, _mortar_static_path.size()):
+		query.from = sweep_from if index == 1 else points[-1]
+		query.to = _mortar_static_path[index]
+		var hit := space.intersect_ray(query)
+		var end: Vector3 = _mortar_static_path[index] if hit.is_empty() else hit.position
+		# A first sweep blocked between the eye and muzzle has no visible flight.
+		if index == 1 and (end - origin).dot(velocity) <= 0.0:
+			break
+		points.append(end)
+		if not hit.is_empty():
+			break
+	return points
 
 
 ## A tomato lying flat on the surface the throw lands on: its outline traced

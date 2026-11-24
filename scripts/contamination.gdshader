@@ -181,7 +181,7 @@ void fragment() {
 		base_albedo = mix(clean, juice, painted * mix(0.9, 1.0, wave));
 	}
 	ALBEDO = base_albedo;
-	if (painted > 0.5) {
+	if (painted > 0.5 && dot(VERTEX, VERTEX) < 2304.0) {
 		ALBEDO = sauce_toon_finish(ALBEDO, coverage, paint_threshold, UV * vec2(mask_size));
 	}
 

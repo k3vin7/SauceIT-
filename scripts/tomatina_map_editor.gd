@@ -3,7 +3,8 @@ class_name TomatinaMapEditor
 extends Node3D
 
 ## 노드로 편집하는 토마티나 맵의 루트. 구성과 규칙은 `TomatinaAuthoredMap` 머리말 참고.
-## 실제 게임은 stage_2_tomatina_editable.tscn 으로 실행한다(F6).
+## 편집 중인 맵은 stage_2_tomatina_editable.tscn을 열고 F6으로 미리 본다.
+## 출격 메뉴는 TomatinaMap과 TomatinaVillageArt를 사용하는 stage_2_tomatina.tscn을 연다.
 ##
 ## 벽·집·담장·소품·장식이 전부 노드로 들어 있어서 그대로 옮기고 지우고 복제하면 된다.
 ## 바닥(Floor)을 크게 다시 칠했다면 아래 버튼으로 벽 충돌 상자와 길가 건물(Art/Streets)을

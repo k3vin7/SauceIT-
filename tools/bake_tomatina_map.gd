@@ -2,12 +2,13 @@ extends SceneTree
 
 ## 원래 코드로 만든 토마티나 맵(TomatinaMap + TomatinaVillageArt)을 그대로 노드 씬으로 굽는다.
 ##   <godot> --headless --path . --script res://tools/bake_tomatina_map.gd
-## 결과: res://maps/tomatina_map_editable.tscn (+ 바닥 타일, 장식 줄 메시)
-## 주의: 다시 실행하면 손으로 편집한 맵 씬을 덮어쓴다. 원래 맵 코드는 건드리지 않는다.
+## 기본 출력은 res://.godot/tomatina_map_bake/ 아래에 둔다.
+## 손으로 편집한 씬과 리소스를 새로 굽는 경우에만 -- --replace-editable 을 넘긴다.
 
-const OUT_SCENE := "res://maps/tomatina_map_editable.tscn"
-const OUT_TILES := "res://maps/tomatina_floor_tiles.tres"
-const OUT_BUNTING := "res://maps/tomatina_festival_bunting.res"
+const BAKE_DIR := "res://.godot/tomatina_map_bake"
+const SCENE_FILE := "tomatina_map_editable.tscn"
+const TILES_FILE := "tomatina_floor_tiles.tres"
+const BUNTING_FILE := "tomatina_festival_bunting.res"
 const TILE_NAMES := ["구간0 출발~급수마당", "구간1 급수마당~시장", "구간2 시장~축제본부",
 	"구간3 축제본부~광장", "피난처 바닥"]
 const TILE_COLORS := [Color("d98f4e"), Color("5b8fd9"), Color("a46ad1"), Color("d9c24e"), Color("4fbf86")]
@@ -20,11 +21,21 @@ const ROUTE_LABELS := [
 
 
 func _initialize() -> void:
+	var output_dir := "res://maps" if OS.get_cmdline_user_args().has("--replace-editable") else BAKE_DIR
+	var directory_error := DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output_dir))
+	if directory_error != OK:
+		push_error("Could not create Tomatina bake directory: %s" % error_string(directory_error))
+		quit(1)
+		return
+	var tiles := _make_tiles()
+	var tiles_path := output_dir.path_join(TILES_FILE)
+	var save_error := ResourceSaver.save(tiles, tiles_path, ResourceSaver.FLAG_CHANGE_PATH)
+	if save_error != OK:
+		push_error("Could not save Tomatina floor tiles: %s" % error_string(save_error))
+		quit(1)
+		return
 	TomatinaMap.use_authored(null)
 	StreetMap.layout_override = TomatinaMap.new()
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://maps"))
-	ResourceSaver.save(_make_tiles(), OUT_TILES)
-	var tiles: MeshLibrary = load(OUT_TILES)
 
 	var root := TomatinaMapEditor.new()
 	root.name = "TomatinaMap"
@@ -137,8 +148,14 @@ func _initialize() -> void:
 
 	for child in holder.get_children():
 		if child is MeshInstance3D and child.name == "FestivalBunting":
-			ResourceSaver.save(child.mesh, OUT_BUNTING)
-			child.mesh = load(OUT_BUNTING)
+			save_error = ResourceSaver.save(child.mesh, output_dir.path_join(BUNTING_FILE),
+				ResourceSaver.FLAG_CHANGE_PATH)
+			if save_error != OK:
+				push_error("Could not save Tomatina bunting: %s" % error_string(save_error))
+				holder.free()
+				root.free()
+				quit(1)
+				return
 			holder.remove_child(child)
 			art_root.add_child(child)
 		elif child.is_in_group("tomatina_fire"):
@@ -222,7 +239,7 @@ func _initialize() -> void:
 	var packed := PackedScene.new()
 	var error := packed.pack(root)
 	if error == OK:
-		error = ResourceSaver.save(packed, OUT_SCENE)
+		error = ResourceSaver.save(packed, output_dir.path_join(SCENE_FILE))
 	print("BAKE_TOMATINA_MAP %s floor=%d walls=%d props=%d art=%d victims=%d enemies=%d" % [
 		"OK" if error == OK else "ERROR %d" % error, floor_legs.size(),
 		TomatinaMap.boundary_boxes().size(), count + 1, art.recorded.size(), placements.size(), roster.size()])

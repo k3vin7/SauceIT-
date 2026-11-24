@@ -33,6 +33,9 @@ var _stopped := 0
 var _tier := 0
 var _flash_left := 0.0
 var _quiet := false
+var _shown_symbols := PackedInt32Array([-1, -1, -1])
+var _bulb_phase := -1
+var _bulbs_winning := false
 
 
 ## `room`의 `SlotMachine` 노드에 붙는다. 그 노드가 없으면 아무것도 하지 않는다.
@@ -122,10 +125,14 @@ func _process(delta: float) -> void:
 	var winning := _flash_left > 0.0
 	if winning:
 		_flash_left -= delta
-	for index in _bulbs.size():
-		var lit := (int(_clock * 12.0) + index) % 2 == 0 if winning else (int(_clock * 1.5) + index) % 3 == 0
-		if _bulbs[index] != null:
-			_bulbs[index].set_shader_parameter("glow", 1.6 if lit else 0.1)
+	var phase := int(_clock * (12.0 if winning else 1.5))
+	if phase != _bulb_phase or winning != _bulbs_winning:
+		_bulb_phase = phase
+		_bulbs_winning = winning
+		for index in _bulbs.size():
+			var lit := (phase + index) % (2 if winning else 3) == 0
+			if _bulbs[index] != null:
+				_bulbs[index].set_shader_parameter("glow", 1.6 if lit else 0.1)
 	if _light != null:
 		_light.light_energy = (2.5 + 2.0 * sin(_clock * 24.0)) if winning and _tier >= 2 else 0.0
 
@@ -139,15 +146,19 @@ func _say(sound: String) -> void:
 
 func _show_symbols(symbols: PackedInt32Array) -> void:
 	for index in mini(_symbols.size(), symbols.size()):
-		if _symbols[index] != null:
+		if _symbols[index] != null and symbols[index] != _shown_symbols[index]:
 			_symbols[index].set_shader_parameter("albedo", OfficeSlot.SYMBOL_COLORS[symbols[index]])
+			_shown_symbols[index] = symbols[index]
 
 
 ## 이 조각만의 재질: 씬에서는 여러 조각이 한 재질을 같이 쓰므로, 색을 따로 바꾸려면 복제한다.
 func _own_material(node: Node) -> ShaderMaterial:
-	var shape := node as CSGPrimitive3D
-	if shape == null or not shape.material is ShaderMaterial:
+	var instance := node as MeshInstance3D
+	if instance == null or instance.mesh == null:
 		return null
-	var own := (shape.material as ShaderMaterial).duplicate() as ShaderMaterial
-	shape.material = own
+	var source := instance.get_active_material(0) as ShaderMaterial
+	if source == null:
+		return null
+	var own := source.duplicate() as ShaderMaterial
+	instance.set_surface_override_material(0, own)
 	return own

@@ -103,9 +103,34 @@ var leaf_mesh: CylinderMesh
 var pulp_mesh: SphereMesh
 
 
-func begin(stage: Node3D) -> void:
+func prepare(stage: Node3D, staggered: bool) -> void:
 	world = stage
 	entrance = world._tomatina_entrance
+	active = false
+	performers = Node3D.new()
+	performers.name = "FestivalBeforeTheAttack"
+	performers.hide()
+	add_child(performers)
+	party = Node3D.new()
+	party.name = "FestivalGuests"
+	performers.add_child(party)
+	_build_tomato_meshes()
+	_build_street()
+	if staggered:
+		await get_tree().process_frame
+	_build_square()
+	if staggered:
+		await get_tree().process_frame
+	_build_passengers()
+	passengers.hide()
+
+
+func begin(stage: Node3D) -> void:
+	if performers == null:
+		await prepare(stage, false)
+	active = true
+	performers.show()
+	passengers.show()
 	world.set_gameplay_input_enabled(false)
 	hud_was_visible = world._hud_layer.visible
 	world._hud_layer.hide()
@@ -147,16 +172,6 @@ func begin(stage: Node3D) -> void:
 	layer.add_child(blackout)
 	blackout.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	performers = Node3D.new()
-	performers.name = "FestivalBeforeTheAttack"
-	add_child(performers)
-	party = Node3D.new()
-	party.name = "FestivalGuests"
-	performers.add_child(party)
-	_build_tomato_meshes()
-	_build_street()
-	_build_square()
-	_build_passengers()
 	entrance.approach(13.0, 0.0)
 	entrance.open_doors(0.0)
 

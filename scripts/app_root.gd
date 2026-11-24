@@ -7,6 +7,7 @@ enum OptionsPage { AUDIO, DISPLAY, VIEW, KEYS }
 const TutorialScene := preload("res://tutorial_world.tscn")
 const OfficeScene := preload("res://office_lobby.tscn")
 const OPTIONS_CATEGORIES := ["음량", "화면", "시점·조작", "키 매핑"]
+const FPS_REFRESH_SECONDS := 0.25
 ## What a new room is headed for until the host picks on the office map.
 const DEFAULT_STAGE := "stage_2"
 ## What the session says in its own words, in the player's.
@@ -26,6 +27,8 @@ const UI := preload("res://scripts/sauce_ui.gd")
 
 @onready var session: MayoNet = $Session
 @onready var space_root: Node = $SpaceRoot
+@onready var _fps_badge: PanelContainer = $FPSOverlay/Badge
+@onready var _fps_value: Label = $FPSOverlay/Badge/Value
 
 var flow: int = Flow.TITLE
 var save_store: SauceSaveStore
@@ -66,13 +69,17 @@ var _active_transition := 0
 ## "Space · 건너뛰기" over a stage's own cold open, while it runs.
 var _intro_hint_layer: CanvasLayer
 var _notice := ""
+var _fps_refresh_left := 0.0
 var bot_team: Node
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	Engine.max_fps = int(ProjectSettings.get_setting("application/run/max_fps"))
 	save_store = SauceSaveStore.new(save_path_override)
 	save_store.load_data()
+	_fps_badge.add_theme_stylebox_override("panel", UI.box(UI.SHADE, Color.TRANSPARENT, 5))
+	_fps_value.add_theme_color_override("font_color", UI.CREAM)
 	_apply_options()
 	# A guest is ready when its office is up, not the moment the host lets it
 	# in. Picking a character is a separate gate: `MayoNet.can_start_stage`.
@@ -81,10 +88,17 @@ func _ready() -> void:
 	_show_title()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if _intro_hint_layer != null and not _stage_intro_active():
 		_clear_ui(_intro_hint_layer)
 		_intro_hint_layer = null
+	if _fps_badge.visible:
+		_fps_refresh_left -= delta
+		if _fps_refresh_left <= 0.0:
+			_fps_refresh_left = FPS_REFRESH_SECONDS
+			var text := "%d FPS" % Engine.get_frames_per_second()
+			if _fps_value.text != text:
+				_fps_value.text = text
 
 
 ## The stage swallows every key while its cold open runs, so the skip is read
@@ -458,19 +472,42 @@ func _on_transition_requested(stage_id: String, transition: int) -> void:
 	await get_tree().process_frame
 	if flow != Flow.LOADING or _active_transition != transition:
 		return
-	var packed := load(StageRegistry.scene_path(stage_id)) as PackedScene
+	var scene_path := StageRegistry.scene_path(stage_id)
+	var packed: PackedScene
+	if ResourceLoader.has_cached(scene_path):
+		packed = ResourceLoader.load(scene_path) as PackedScene
+	else:
+		var request := ResourceLoader.load_threaded_request(scene_path)
+		if request == OK or request == ERR_BUSY:
+			var status := ResourceLoader.load_threaded_get_status(scene_path)
+			while status == ResourceLoader.THREAD_LOAD_IN_PROGRESS:
+				await get_tree().process_frame
+				if flow != Flow.LOADING or _active_transition != transition:
+					return
+				status = ResourceLoader.load_threaded_get_status(scene_path)
+			if status == ResourceLoader.THREAD_LOAD_LOADED:
+				packed = ResourceLoader.load_threaded_get(scene_path) as PackedScene
+			elif ResourceLoader.has_cached(scene_path):
+				packed = ResourceLoader.load(scene_path) as PackedScene
 	if packed == null:
 		_on_transition_failed("stage scene could not be loaded")
 		return
 	var world = packed.instantiate()
 	if stage_id == "stage_2":
 		world.tomatina_shortcut_open = false
+		world.staged_loading = true
 	world.external_net = session
 	world.mouse_sensitivity = save_store.mouse_sensitivity
 	world.stage_cleared.connect(_on_stage_cleared)
 	world.menu_requested.connect(_open_pause)
-	space_root.add_child(world)
 	current_space = world
+	space_root.add_child(world)
+	while is_instance_valid(world) and current_space == world and not world.load_complete:
+		await get_tree().process_frame
+		if flow != Flow.LOADING or _active_transition != transition:
+			return
+	if not is_instance_valid(world) or current_space != world:
+		return
 	save_store.game_options.apply_world(world)
 	session.attach_play_world(world)
 	if stage_id == "stage_2" and not session.is_online() and _practice_bot_count > 0:
@@ -479,6 +516,13 @@ func _on_transition_requested(stage_id: String, transition: int) -> void:
 		bot_team.configure(world, false, _practice_bot_count)
 		world.fixed_party_size += _practice_bot_count
 		world.rescale_enemies()
+	if stage_id == "stage_2":
+		await world.prepare_stage_intro()
+		if not is_instance_valid(world) or current_space != world or _active_transition != transition:
+			return
+		await world.warm_stage_materials()
+		if not is_instance_valid(world) or current_space != world or _active_transition != transition:
+			return
 	session.report_world_loaded(transition)
 
 
@@ -1090,6 +1134,8 @@ func _audio_sliders_ready() -> bool:
 
 func _apply_options() -> void:
 	save_store.game_options.apply_window(get_window())
+	_fps_badge.visible = bool(save_store.game_options.settings.show_fps)
+	_fps_refresh_left = 0.0
 	_apply_audio_values(save_store.master_volume, save_store.bgm_volume, save_store.sfx_volume)
 
 

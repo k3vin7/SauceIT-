@@ -91,13 +91,17 @@ func run():
 		Vector3(0.5, 2.8, 3.0), Color.GRAY)
 	player.global_position = clear_ground + Vector3.LEFT * 9.0
 	await physics_frame
+	var pooled_blast: Node3D = scene._blast_effects.back()
 	flying.velocity = Vector3.DOWN * 200.0
 	scene._advance_thrown_tomatoes(0.02)
 	assert(scene._thrown_tomatoes.is_empty(), "the tomato did not explode on landing")
+	assert(pooled_blast.visible and not scene._blast_effects.has(pooled_blast), "the blast did not reuse a prepared effect")
 	assert(scene.get_node_or_null("TomatoFuseWarning") == null, "a landing warning was built for an instant blast")
 	print("splash: the grunt beside the landing lost %.2f health" % (target_health - target.health))
 	assert(target.health < target_health, "a grunt beside the landing was not hurt by the splash")
 	assert(protected.health == protected_health, "the explosion damaged a target through cover")
 	assert(player.health == before, "the splash hurt the thrower")
+	await create_timer(0.35).timeout
+	assert(not pooled_blast.visible and scene._blast_effects.has(pooled_blast), "the faded blast did not return to the pool")
 	print("HEALING_TOMATO_OK")
 	quit()

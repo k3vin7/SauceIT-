@@ -51,7 +51,7 @@ func build(art: TomatinaVillageArt) -> void:
 		world._walls.push_back(body)
 		bodies.push_back(body)
 		positions.push_back(at)
-		var mesh: Mesh = art.mesh_for(placement.model) if art != null else null
+		var mesh: Mesh = art.victim_mesh_for(placement.model) if art != null else null
 		if mesh == null:
 			continue
 		var view := MeshInstance3D.new()

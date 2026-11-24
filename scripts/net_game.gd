@@ -115,7 +115,12 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## before it can become a player.
 const PROTOCOL_VERSION := 17
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
+const ENEMY_SNAPSHOT_NEAR_DISTANCE := 42.0
+const ENEMY_SNAPSHOT_FAR_PERIOD := 5
+const ENEMY_SNAPSHOT_REFRESH_PERIOD := 20
 var _tomatina_snapshot_phase := 0
+var _tomatina_snapshot_number := 0
+var _enemy_snapshots_by_peer := {}
 const AUTH_VERSION_PREFIX := "mayo-version:"
 ## How often one address is worth answering. A blocked address can reconnect as
 ## fast as its machine allows, and an answer to each would be a packet out for
@@ -317,6 +322,10 @@ var _late_syncing := {}
 
 
 func bind(new_world: Node) -> void:
+	if world != new_world:
+		_enemy_snapshots_by_peer.clear()
+		_tomatina_snapshot_number = 0
+		_tomatina_snapshot_phase = 0
 	world = new_world
 
 
@@ -1796,8 +1805,9 @@ static func wrap_angle(value: float) -> float:
 func end_of_frame(splats: PackedInt32Array) -> void:
 	if not _online or not multiplayer.is_server() or not _world_ready():
 		return
-	var guests := multiplayer.get_peers().size()
 	_admit_waiting_peers()
+	var peer_ids := multiplayer.get_peers()
+	var guests := peer_ids.size()
 	if not splats.is_empty():
 		_apply_splats.rpc(splats)
 		splat_bytes_sent += splats.size() * 4 * guests
@@ -1824,15 +1834,64 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 		if _tomatina_snapshot_phase != 0:
 			return
 	# Keep each unreliable datagram under the ENet MTU even during a horde.
-	for start in range(0, world.enemy_count(), ENEMY_SNAPSHOT_BATCH_SIZE):
-		var enemies: PackedFloat32Array = world.enemy_state(start, ENEMY_SNAPSHOT_BATCH_SIZE)
-		_apply_enemy_state.rpc(enemies, start, stage_two)
-		state_bytes_sent += (enemies.size() * 4 + 8) * guests
+	if stage_two and world.is_inside_tree():
+		_send_tomatina_enemy_snapshots(peer_ids)
+	else:
+		for start in range(0, world.enemy_count(), ENEMY_SNAPSHOT_BATCH_SIZE):
+			var enemies: PackedFloat32Array = world.enemy_state(start, ENEMY_SNAPSHOT_BATCH_SIZE)
+			_apply_enemy_state.rpc(enemies, start, stage_two)
+			state_bytes_sent += (enemies.size() * 4 + 8) * guests
 	if stage_two:
 		var status: PackedFloat64Array = world.tomatina_status()
 		var threads: PackedFloat32Array = world.cheese_thread_state()
 		_apply_tomatina_status.rpc(status, threads)
 		state_bytes_sent += (status.size() * 8 + threads.size() * 4) * guests
+
+
+func _send_tomatina_enemy_snapshots(peer_ids: PackedInt32Array) -> void:
+	_tomatina_snapshot_number += 1
+	for id in _enemy_snapshots_by_peer.keys():
+		if not peer_ids.has(id):
+			_enemy_snapshots_by_peer.erase(id)
+	var positions := {}
+	for id in peer_ids:
+		var shooter = world.shooter_for(id)
+		if shooter != null:
+			positions[id] = shooter.player.global_position
+			_enemy_snapshots_by_peer.get_or_add(id, {})
+	for start in range(0, world.enemy_count(), ENEMY_SNAPSHOT_BATCH_SIZE):
+		var batch_number := start / ENEMY_SNAPSHOT_BATCH_SIZE
+		var staggered := _tomatina_snapshot_number + batch_number
+		var refresh := staggered % ENEMY_SNAPSHOT_REFRESH_PERIOD == 0
+		var far_turn := staggered % ENEMY_SNAPSHOT_FAR_PERIOD == 0
+		var state: PackedFloat32Array = world.enemy_state(start, ENEMY_SNAPSHOT_BATCH_SIZE)
+		var recipients := PackedInt32Array()
+		for id in positions:
+			var previous: PackedFloat32Array = _enemy_snapshots_by_peer[id].get(start, PackedFloat32Array())
+			if previous.size() != state.size() or refresh:
+				recipients.append(id)
+			elif previous != state and (far_turn or _enemy_snapshot_important(state, previous, positions[id])):
+				recipients.append(id)
+		if recipients.size() == peer_ids.size():
+			_apply_enemy_state.rpc(state, start, true)
+		else:
+			for id in recipients:
+				_apply_enemy_state.rpc_id(id, state, start, true)
+		for id in recipients:
+			_enemy_snapshots_by_peer[id][start] = state
+		state_bytes_sent += (state.size() * 4 + 8) * recipients.size()
+
+
+func _enemy_snapshot_important(state: PackedFloat32Array, previous: PackedFloat32Array,
+		peer_position: Vector3) -> bool:
+	for offset in range(0, state.size(), world.ENEMY_STATE_STRIDE):
+		# Health transitions stay visible even when the team is split across the map.
+		if (state[offset + 4] <= 0.0) != (previous[offset + 4] <= 0.0):
+			return true
+		var at := Vector3(state[offset], state[offset + 1], state[offset + 2])
+		if at.distance_squared_to(peer_position) <= ENEMY_SNAPSHOT_NEAR_DISTANCE ** 2:
+			return true
+	return false
 
 
 ## R, on a client. The wipe is a change everyone sees, so the client asks and

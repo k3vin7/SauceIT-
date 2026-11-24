@@ -95,6 +95,7 @@ func _run() -> void:
 func _solo() -> void:
 	var app := _make_app("SoloView")
 	await process_frame
+	_check(Engine.max_fps == 120, "the running client needs the fixed 120 FPS cap")
 	_check(app.flow == SauceApp.Flow.TITLE, "the app did not open on the title")
 	_press(app._title_layer, "혼자하기")
 	await process_frame
@@ -109,6 +110,11 @@ func _solo() -> void:
 	_check(app.session.character_of(1) == 2 and app.session.has_character(1),
 		"the solo pick was not kept")
 	var office := app.current_space as OfficeLobby
+	_check(office._room.find_children("*", "CSGShape3D", true, false).is_empty(),
+		"the running office still contains unbaked CSG")
+	var floor_node := office._room.get_node("Room/Floor") as MeshInstance3D
+	_check(floor_node != null and floor_node.find_children("*", "CollisionShape3D", true, false).size() == 1,
+		"the baked office lost its floor collision")
 	_check(not office.input_locked, "the office stayed locked after the pick")
 	_check(app.session.selected_stage == SauceApp.DEFAULT_STAGE, "a new room has no default festival")
 	office.open_map()

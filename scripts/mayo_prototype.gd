@@ -403,6 +403,7 @@ class Shooter:
 	var shake_degrees := 0.0
 	var shake_direction := Vector3.ZERO
 	var air_visual: StreamVisual
+	var last_ribbon_tick := -1
 	var nozzle_visual: StreamVisual
 	var landing_visual: StreamVisual
 	var shadow_visual: StreamVisual
@@ -1166,6 +1167,11 @@ var _camera: Camera3D
 var _floor: FloorContamination
 var _walls: Array[ContaminableObject] = []
 var _enemies: Array[MayoEnemy] = []
+var _bowled_tomatoes: Array[MayoEnemy] = []
+var _blast_grid_in_tick := false
+var _blast_grid_built := false
+var _blast_cells: Dictionary[int, Vector2i] = {}
+var _blast_buckets := {}
 var _roofs: Array[StallRoof] = []
 ## Where the refill stations are and which way they face, so the reach test
 ## does not have to walk the scene tree every frame.
@@ -1498,11 +1504,29 @@ var debug_droplet_overwritten_life: float:
 ## Points thrown away by the cap rather than landing. Anything but zero means
 ## sauce vanished in mid-air.
 var debug_points_trimmed := 0
+var staged_loading := false
+var load_complete := false
+var _enabled_stage_occlusion := false
+var _enemy_visual_lod_left := 0.0
+var _ribbons_dirty := false
+const LOAD_WALL_BATCH := 36
+const LOAD_ENEMY_BATCH := 24
 var debug_timings_us := {
+	"aim_and_hud": 0,
+	"encounter_and_damage": 0,
+	"enemy_ai": 0,
+	"enemy_movement": 0,
+	"enemy_crowd": 0,
+	"enemy_navigation": 0,
+	"enemy_visibility": 0,
+	"spawn_and_hose": 0,
 	"emit_follow": 0,
+	"projectiles": 0,
 	"point_physics": 0,
 	"constraint": 0,
 	"ribbon_update": 0,
+	"render_script": 0,
+	"floor_upload": 0,
 	"net_send": 0,
 	"total": 0,
 }
@@ -1514,8 +1538,15 @@ func _ready() -> void:
 	_healing_rng.randomize()
 	_feel_rng.randomize()
 	_ensure_input_actions()
-	_build_world()
+	if staged_loading:
+		_input_enabled = false
+		set_process(false)
+		set_physics_process(false)
+	await _build_world()
 	if map_kind == MapKind.TOMATINA:
+		if staged_loading and not get_viewport().use_occlusion_culling:
+			get_viewport().use_occlusion_culling = true
+			_enabled_stage_occlusion = true
 		play_support = preload("res://scripts/tomatina_play_support.gd").new()
 		play_support.world = self
 		add_child(play_support)
@@ -1537,9 +1568,14 @@ func _ready() -> void:
 	for wall in _walls:
 		wall.configure(grid_cell_size, contamination_brush_radius)
 	_update_camera()
+	load_complete = true
+	if staged_loading:
+		set_process(true)
 
 
 func _exit_tree() -> void:
+	if _enabled_stage_occlusion:
+		get_viewport().use_occlusion_culling = false
 	if is_instance_valid(external_net) and external_net.world == self:
 		external_net.bind(null)
 
@@ -1561,13 +1597,16 @@ func _physics_process(delta: float) -> void:
 	var frame_started := Time.get_ticks_usec() if debug_profile_enabled else 0
 	var step_started := frame_started
 	_read_local_input()
-	if is_instance_valid(play_support):
-		play_support.advance(delta)
 	# Every peer simulates every strand off the aim it has for that shooter, so
 	# nothing about the strand itself goes over the wire. Only the server's copy
 	# is allowed to paint, and it broadcasts the cells it painted.
 	for shooter in _shooters.values():
 		_update_aim(shooter)
+	if is_instance_valid(play_support):
+		play_support.advance(delta)
+	if debug_profile_enabled:
+		debug_timings_us.aim_and_hud += Time.get_ticks_usec() - step_started
+		step_started = Time.get_ticks_usec()
 	if _tutorial != null:
 		_tutorial.advance(delta)
 		if _tutorial.is_complete() and not _completion_emitted:
@@ -1584,6 +1623,8 @@ func _physics_process(delta: float) -> void:
 			if not _tutorial.allows_firing(shooter.peer_id):
 				shooter.firing = false
 	if _is_authority():
+		_blast_grid_in_tick = map_kind == MapKind.TOMATINA
+		_blast_grid_built = false
 		_burst_ground_budget = TOMATO_BURST_TICK_CAP
 		if map_kind == MapKind.TOMATINA:
 			_advance_tomatina_rescues(delta)
@@ -1598,14 +1639,23 @@ func _physics_process(delta: float) -> void:
 		# Before the enemies step, so a body wading into mustard is slowed on the
 		# frame it arrives rather than a frame after it.
 		_update_mustard_field()
+		if debug_profile_enabled:
+			debug_timings_us.encounter_and_damage += Time.get_ticks_usec() - step_started
+			step_started = Time.get_ticks_usec()
 		# After the slip test and before the strand: an enemy that shoved a
 		# player this frame should be where the strand is aimed from.
 		_advance_enemies(delta)
+		if debug_profile_enabled:
+			debug_timings_us.enemy_ai += Time.get_ticks_usec() - step_started
+			step_started = Time.get_ticks_usec()
 		_advance_horde_spawn(delta)
 		_advance_fire_hoses(delta)
 		_advance_hose_wave(delta)
 		if map_kind == MapKind.TOMATINA:
 			_advance_press_king_spawn(delta)
+		if debug_profile_enabled:
+			debug_timings_us.spawn_and_hose += Time.get_ticks_usec() - step_started
+			step_started = Time.get_ticks_usec()
 	for shooter in _shooters.values():
 		_advance_strand(shooter, delta)
 		if _is_authority():
@@ -1625,10 +1675,13 @@ func _physics_process(delta: float) -> void:
 		shooter.bottle_shake_pose = move_toward(shooter.bottle_shake_pose,
 			1.0 if shooter.bottle_shake_show > 0.05 else 0.0, delta * 7.0)
 	if _sauce_parts != null:
+		if debug_profile_enabled:
+			debug_timings_us.emit_follow += Time.get_ticks_usec() - step_started
+			step_started = Time.get_ticks_usec()
 		_sauce_parts.advance_projectiles(delta, _is_authority())
 		_sauce_parts.advance_coins(delta, _is_authority())
 	if debug_profile_enabled:
-		debug_timings_us.emit_follow += Time.get_ticks_usec() - step_started
+		debug_timings_us["projectiles" if _sauce_parts != null else "emit_follow"] += +			Time.get_ticks_usec() - step_started
 		step_started = Time.get_ticks_usec()
 
 	for shooter in _shooters.values():
@@ -1656,13 +1709,16 @@ func _physics_process(delta: float) -> void:
 		step_started = Time.get_ticks_usec()
 	for shooter in _shooters.values():
 		_for_each_lane(shooter, _trim_safety_cap.bind(shooter))
-		_update_visuals(shooter)
+		if map_kind != MapKind.TOMATINA:
+			_update_visuals(shooter)
+	_ribbons_dirty = map_kind == MapKind.TOMATINA
 	if debug_profile_enabled:
 		debug_timings_us.ribbon_update += Time.get_ticks_usec() - step_started
 		step_started = Time.get_ticks_usec()
 	if _is_authority():
 		_finish_wipes()
 		_check_stage_clear()
+		_blast_grid_in_tick = false
 	if debug_profile_enabled:
 		debug_splats += _pending_splats.size() / SPLAT_STRIDE
 	if is_instance_valid(_net):
@@ -1862,10 +1918,7 @@ func _advance_part_trigger(shooter: Shooter, delta: float) -> void:
 		return
 	_decide_nozzle(shooter, delta, false)
 	shooter.part_cooldown = maxf(0.0, shooter.part_cooldown - delta)
-	# 저격 노즐은 누르고 있는 동안 조준하고, 떼는 순간 나간다. 나머지는 누르는 순간.
-	var sniper := shooter.sauce_part == SauceParts.Part.SNIPER
-	if (shooter.part_trigger_down and not shooter.firing) if sniper \
-			else (shooter.firing and not shooter.part_trigger_down):
+	if shooter.firing and not shooter.part_trigger_down:
 		shooter.part_press_left = PART_PRESS_BUFFER
 	else:
 		shooter.part_press_left = maxf(0.0, shooter.part_press_left - delta)
@@ -1902,21 +1955,6 @@ func _advance_part_trigger(shooter: Shooter, delta: float) -> void:
 
 
 const PART_PRESS_BUFFER := 0.3
-## 박격포가 나가는 속도 벡터. 방향은 시점의 좌우를 따르고, 올려 쏘는 각도는 시점의 상하를
-## 따르되 지면에서 45°보다 낮아지지 않는다(똑바로 위를 보면 90°). 세기는 흔들어 채운
-## `charge`(0~1)에 따라 `MORTAR_MIN_SPEED`에서 최고 속도까지다.
-func mortar_launch_velocity(shooter: Shooter, charge: float) -> Vector3:
-	var forward := shooter.attack_direction
-	var heading := Vector3(forward.x, 0.0, forward.z)
-	if heading.length_squared() < 0.0025:
-		# 거의 똑바로 위를 볼 때: 좌우는 시점의 "위쪽"이 가리키는 반대편이다.
-		var up := _aim_basis(shooter).y
-		heading = -Vector3(up.x, 0.0, up.z)
-	heading = heading.normalized() if heading.length_squared() > 0.000001 else Vector3.FORWARD
-	var elevation := clampf(asin(clampf(forward.y, -1.0, 1.0)), SauceParts.MORTAR_MIN_ELEVATION, PI * 0.5)
-	var speed := lerpf(SauceParts.MORTAR_MIN_SPEED,
-		float(SauceParts.PROJECTILES[SauceParts.Part.ARC].speed), clampf(charge, 0.0, 1.0))
-	return (heading * cos(elevation) + Vector3.UP * sin(elevation)) * speed
 
 
 ## 흔들기를 멈춘 뒤 게이지가 빠지기 시작할 때까지. 박격포는 거리를 재는 데 쓰므로 더 길다.
@@ -1925,13 +1963,14 @@ func _charge_hold_seconds(shooter: Shooter) -> float:
 		else bottle_charge_hold_seconds
 
 
-## 이 화면의 플레이어가 지금 저격 노즐로 조준하고 있는가: 저격 노즐을 끼고, 병을 들고,
-## 발사 버튼을 누르고 있는 동안. 떼면 한 발 나가고 화면이 돌아온다.
+## 휠 클릭을 누르는 동안만 저격 노즐의 화면을 확대한다.
 func _sniper_aiming() -> bool:
 	if _local == null or not _input_enabled or _local.sauce_part != SauceParts.Part.SNIPER:
 		return false
-	return _local.firing and _local.sauce > 0.0 and selected_item_slot(_local.peer_id) == 0 \
-		and _refuge_shop_room < 0 and _local.player.state == MayoPlayer.State.NORMAL
+	return Input.is_action_pressed("aim_sniper") and _local.sauce > 0.0 \
+		and selected_item_slot(_local.peer_id) == 0 and _hose_slot_of(_local.peer_id) < 0 \
+		and _refuge_shop_room < 0 and _local.player.state == MayoPlayer.State.NORMAL \
+		and not _local.player.is_wiping()
 
 
 func _is_three_way(shooter: Shooter) -> bool:
@@ -2011,16 +2050,16 @@ func _part_aim_direction(shooter: Shooter, origin: Vector3) -> Vector3:
 
 func _fire_part_volley(shooter: Shooter) -> void:
 	var origin := part_launch_origin(shooter, shooter.sauce_part)
-	var forward := _part_aim_direction(shooter, origin)
+	var forward: Vector3
 	if shooter.sauce_part == SauceParts.Part.ARC:
-		# 박격포: 흔들어 채운 만큼의 세기로, 45° 이상으로만. 세기는 `forward`의 길이에 실려
-		# 모든 화면에 간다 -- 떨어졌을 때의 피해도 거기서 다시 읽는다.
-		forward = mortar_launch_velocity(shooter, shooter.bottle_charge) \
+		forward = SauceParts.mortar_launch_velocity(shooter.attack_direction, shooter.bottle_charge) \
 			/ float(SauceParts.PROJECTILES[SauceParts.Part.ARC].speed)
+	else:
+		forward = _part_aim_direction(shooter, origin)
 	shooter.burst_index += 1
 	# The primed shot, for a part: thrown harder, so it carries further. The
-	# speed rides on the length of `forward`, which every peer is sent. Not the
-	# lob -- that one is aimed at a spot, and faster would only overshoot it.
+	# speed rides on the length of `forward`, which every peer is sent. The mortar
+	# already includes its own charge in its launch velocity.
 	var shaken := shooter.bottle_charge
 	_spend_bottle_buff(shooter)
 	# 덩어리 파츠는 흔들어 쏴도 빨라지지 않는다. 대신 파츠마다 다른 것이 달라지고(대포는 폭발,
@@ -2492,6 +2531,7 @@ func _is_authority() -> bool:
 
 
 func _process(_delta: float) -> void:
+	var render_started := Time.get_ticks_usec() if debug_profile_enabled else 0
 	if is_instance_valid(_boss_entrance) and not _boss_entrance.played and is_instance_valid(_press_king):
 		_boss_entrance.restore_breached()
 	if map_kind == MapKind.TOMATINA:
@@ -2514,6 +2554,15 @@ func _process(_delta: float) -> void:
 	# what the strand does and where the server thinks the body is are untouched.
 	_place_viewmodel()
 	_update_camera()
+	if map_kind == MapKind.TOMATINA:
+		_enemy_visual_lod_left -= _delta
+		if _enemy_visual_lod_left <= 0.0:
+			_enemy_visual_lod_left = 0.2
+			var camera: Camera3D = get_viewport().get_camera_3d()
+			if camera != null:
+				var at := camera.global_position
+				for enemy in _enemies:
+					enemy.near_visuals = enemy.global_position.distance_squared_to(at) <= 65.0 ** 2
 	if not is_instance_valid(_viewmodel_animation):
 		_viewmodel_animation = preload("res://scripts/viewmodel_animation.gd").new()
 		_viewmodel_animation.name = "FirstPersonAnimation"
@@ -2524,10 +2573,6 @@ func _process(_delta: float) -> void:
 	_viewmodel_inertia.advance(_delta, _local,
 		map_kind == MapKind.TOMATINA and _first_person and _input_enabled
 		and _local.player.state == MayoPlayer.State.NORMAL, camera_motion_scale)
-	_sync_camera_viewmodel()
-	# Only the short nozzle connection follows render-rate viewmodel motion.
-	# The full simulated ribbons keep their existing physics-rate update budget.
-	_update_nozzle_visual(_local)
 	_report_view(_delta)
 	_update_deep_readout(_delta)
 	for shooter in _shooters.values():
@@ -2537,6 +2582,22 @@ func _process(_delta: float) -> void:
 		_update_sauce_look(shooter)
 	_update_item_views()
 	_sync_camera_viewmodel()
+	# Multiple catch-up ticks can lead to one draw. Only build its latest ribbons.
+	if _ribbons_dirty:
+		var ribbon_started := Time.get_ticks_usec() if debug_profile_enabled else 0
+		for shooter in _shooters.values():
+			_update_visuals(shooter)
+		_ribbons_dirty = false
+		if debug_profile_enabled:
+			var ribbon_us := Time.get_ticks_usec() - ribbon_started
+			debug_timings_us.ribbon_update += ribbon_us
+			render_started += ribbon_us
+	# Only the short nozzle connection follows render-rate viewmodel motion.
+	_update_nozzle_visual(_local)
+	if debug_profile_enabled:
+		debug_timings_us.render_script += Time.get_ticks_usec() - render_started
+		debug_timings_us.floor_upload = _floor.grid.upload_time_us
+	_floor.grid.measure_uploads = debug_profile_enabled
 
 
 ## The capsule lies on its side while the player is down. A capsule is all the
@@ -2995,8 +3056,11 @@ func _build_world() -> void:
 	_floor.brush_radius = contamination_brush_radius
 	if map_kind == MapKind.TOMATINA:
 		_floor.clean_color = Color("5c5c5c")
+		_floor.upload_tiles_per_frame = 3
 		TomatinaVillageArt.configure_pavement(_floor)
 	add_child(_floor)
+	if staged_loading:
+		await get_tree().process_frame
 
 	# The three sandbox slabs that used to stand here are gone: the start plaza
 	# is a place to stand, and the street has walls and stalls to spray. The
@@ -3005,7 +3069,7 @@ func _build_world() -> void:
 	if map_kind == MapKind.TUTORIAL_RECTANGLE:
 		_build_tutorial_space()
 	elif map_kind == MapKind.TOMATINA:
-		_build_tomatina()
+		await _build_tomatina()
 	else:
 		_build_street()
 
@@ -3019,6 +3083,8 @@ func _build_world() -> void:
 		_net.bind(self)
 
 	_local = _create_shooter(1, true)
+	if staged_loading:
+		_local.player.frozen = true
 
 	_camera = Camera3D.new()
 	_camera.name = "ThirdPersonCamera"
@@ -3070,10 +3136,12 @@ func _build_world() -> void:
 	# Before the enemies: whether the tutorial is running decides whether the
 	# street's standing roster is placed at all.
 	_build_tutorial()
-	_build_enemies()
+	await _build_enemies()
 	_stage_roster_initialized = stage_mode and not _enemies.is_empty()
 	_update_stage_objective()
 	_build_sauce_audio()
+	if map_kind == MapKind.TOMATINA:
+		_prepare_tomatina_blast_effects()
 	# After the street, because it bakes the street's own cells into a texture.
 	# The tomato stage gets one too, in the same top-right corner.
 	if map_kind == MapKind.FESTIVAL_STREET or map_kind == MapKind.TOMATINA:
@@ -3171,6 +3239,7 @@ func reset_for_join() -> void:
 		for enemy in _enemies:
 			enemy.free()
 		_enemies.clear()
+		_bowled_tomatoes.clear()
 		_tutorial_spawned.clear()
 		_tutorial.reset_session()
 	_refresh_enemy_authority()
@@ -3237,6 +3306,12 @@ func apply_view(fov_degrees: float, aspect: float) -> void:
 		_local.player.visor.set_view(fov_degrees, aspect)
 	_view_layout = Rect2()
 	_layout_view()
+
+
+func set_fps_display_visible(showing: bool) -> void:
+	if _minimap != null:
+		_minimap.top_inset = 24.0 if showing else 0.0
+		_minimap.queue_redraw()
 
 
 ## The largest rect of the approved aspect that fits the window, and the frustum
@@ -3366,6 +3441,8 @@ func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
 	# between peers and between runs.
 	shooter.feel_rng.randomize()
 	shooter.player = PlayerScript.new()
+	if map_kind == MapKind.TOMATINA:
+		shooter.player.set_collision_layer_value(SauceParts.MORTAR_PREVIEW_ACTOR_LAYER, true)
 	shooter.player.peer_id = peer_id
 	# The name is the address the network state is applied through, so it must
 	# be derived from the peer id and nothing else.
@@ -4387,15 +4464,19 @@ func _fill_narrow_slots(props: Array) -> void:
 					continue
 				if far - near < 0.02 or far - near > SLOT_WIDEST:
 					continue
+				# A gap between raised props must not become a wall under their feet.
+				var bottom := maxf(0.0, maxf(low.y, other_low.y))
 				var top := minf(high.y, other_high.y)
+				if top - bottom < SLOT_LOWEST_SIDE:
+					continue
 				var block_size := Vector3.ZERO
 				block_size[axis] = far - near
 				block_size[across] = to - from
-				block_size.y = top
+				block_size.y = top - bottom
 				var block_at := Vector3.ZERO
 				block_at[axis] = (near + far) * 0.5
 				block_at[across] = (from + to) * 0.5
-				block_at.y = top * 0.5
+				block_at.y = (bottom + top) * 0.5
 				var body := StaticBody3D.new()
 				body.name = "SlotFill%03d" % filled
 				var collision := CollisionShape3D.new()
@@ -4548,15 +4629,76 @@ var _tomatina_entrance: Node3D
 var _tomatina_intro: Node3D
 
 
+func prepare_stage_intro() -> void:
+	if not has_stage_intro() or is_instance_valid(_tomatina_intro):
+		return
+	_tomatina_intro = preload("res://scripts/tomatina_intro.gd").new()
+	_tomatina_intro.name = "TomatinaIntro"
+	add_child(_tomatina_intro)
+	await _tomatina_intro.prepare(self, staged_loading)
+
+
+## The loading overlay stays up while GL first draws these combat materials.
+func warm_stage_materials() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	var warmup := SubViewport.new()
+	warmup.size = Vector2i(128, 128)
+	warmup.own_world_3d = true
+	warmup.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	add_child(warmup)
+	var camera := Camera3D.new()
+	camera.position.z = 2.4
+	camera.current = true
+	warmup.add_child(camera)
+	var light := DirectionalLight3D.new()
+	light.rotation_degrees = Vector3(-35.0, -35.0, 0.0)
+	light.shadow_enabled = ($KeyLight as DirectionalLight3D).shadow_enabled
+	warmup.add_child(light)
+	var materials: Array[Material] = [_floor.grid.tile_material(0), _mayo_material,
+		_landing_material, _pool_material, _sauce_parts._sauce_materials[0],
+		_sauce_parts._burst_materials[0]]
+	if _blast_material != null:
+		materials.append(_blast_material)
+	var sample_mesh := SphereMesh.new()
+	sample_mesh.radius = 0.18
+	sample_mesh.height = 0.36
+	for index in materials.size():
+		var sample := MeshInstance3D.new()
+		sample.mesh = sample_mesh
+		sample.material_override = materials[index]
+		sample.position = Vector3(float(index % 3 - 1) * 0.5, 0.48 - (index / 3) * 0.48, 0.0)
+		warmup.add_child(sample)
+	var impact := MultiMeshInstance3D.new()
+	var impact_mesh := MultiMesh.new()
+	impact_mesh.transform_format = MultiMesh.TRANSFORM_3D
+	impact_mesh.use_colors = true
+	impact_mesh.mesh = _speck_multimesh.mesh
+	impact_mesh.instance_count = 1
+	impact_mesh.set_instance_transform(0, Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * 0.24),
+		Vector3(0.0, -0.51, 0.0)))
+	impact_mesh.set_instance_color(0, Color.WHITE)
+	impact.multimesh = impact_mesh
+	warmup.add_child(impact)
+	if not _enemies.is_empty() and _enemies[0].contamination._visual_overlay != null:
+		var sample := MeshInstance3D.new()
+		sample.mesh = sample_mesh
+		sample.material_overlay = _enemies[0].contamination._visual_overlay
+		sample.position = Vector3(0.5, -0.51, 0.0)
+		warmup.add_child(sample)
+	warmup.render_target_update_mode = SubViewport.UPDATE_ONCE
+	await get_tree().process_frame
+	await get_tree().process_frame
+	warmup.queue_free()
+
+
 func play_stage_intro() -> void:
 	if map_kind != MapKind.TOMATINA or not is_instance_valid(_tomatina_entrance):
 		set_gameplay_input_enabled(true)
 		return
 	if tomatina_intro_active():
 		return
-	_tomatina_intro = preload("res://scripts/tomatina_intro.gd").new()
-	_tomatina_intro.name = "TomatinaIntro"
-	add_child(_tomatina_intro)
+	await prepare_stage_intro()
 	_tomatina_intro.begin(self)
 	_capture_mouse()
 
@@ -4622,6 +4764,8 @@ func _build_tomatina() -> void:
 	for box in TomatinaMap.boundary_boxes():
 		_create_wall("TomatinaWall%02d" % _walls.size(), box["position"], box["size"],
 			Color("c9ad90"), true, has_art)
+		if staged_loading and _walls.size() % LOAD_WALL_BATCH == 0:
+			await get_tree().process_frame
 	for box in debris + parked_trucks:
 		# Flat food smears are scenery; navigation already treats them as open.
 		if box.get("jumpable", false) and float(box["size"].y) <= 0.12:
@@ -4630,6 +4774,10 @@ func _build_tomatina() -> void:
 			box["size"], box["color"], not has_art, false, 0.14)
 		if TomatinaMap.is_supply_prop(box):
 			_add_tomatina_supply(box)
+		if staged_loading and _walls.size() % LOAD_WALL_BATCH == 0:
+			await get_tree().process_frame
+	if staged_loading:
+		await get_tree().process_frame
 	_fill_narrow_slots(debris + parked_trucks)
 	if has_art and _tomatina_map_nodes != null:
 		_attach_tomatina_map_art(_tomatina_art)
@@ -5219,6 +5367,7 @@ func _build_enemies() -> void:
 			for cell: Vector2i in TomatinaMap.market_gate_cells():
 				if _nav.is_walkable(cell):
 					_nav.grid.set_point_solid(cell, true)
+		var prepared := 0
 		for entry in TomatinaMap.roster():
 			var index := _add_tomatina_enemy(int(TOMATINA_KINDS[entry[0]]), TomatinaMap.at_cell(entry[1]))
 			var enemy := _enemies[index]
@@ -5233,6 +5382,9 @@ func _build_enemies() -> void:
 				enemy.set_meta("finale_guard", true)
 			for ball in enemy.ball_pool:
 				ball.set_meta("encounter", leg)
+			prepared += 1
+			if staged_loading and prepared % LOAD_ENEMY_BATCH == 0:
+				await get_tree().process_frame
 		_apply_enemy_sight_rings()
 		rescale_enemies()
 		return
@@ -5432,14 +5584,19 @@ func _deal_grunt_burst(index: int) -> Dictionary:
 ## wall a grunt walks into. Both ways, because an exception is one-sided: a
 ## ball that ignores the grunt is still a thing the grunt's own step hits.
 func _register_enemy(enemy: MayoEnemy) -> void:
-	for other in _enemies:
+	if map_kind == MapKind.TOMATINA and enemy.collision_layer != 0:
+		enemy.set_collision_layer_value(SauceParts.MORTAR_PREVIEW_ACTOR_LAYER, true)
+	var is_ball := enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL
+	for other in _enemies if is_ball else _bowled_tomatoes:
 		if not is_instance_valid(other):
 			continue
-		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL \
-				or other.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
-			enemy.add_collision_exception_with(other)
-			other.add_collision_exception_with(enemy)
+		enemy.add_collision_exception_with(other)
+		other.add_collision_exception_with(enemy)
+	if is_ball:
+		_bowled_tomatoes.append(enemy)
 	_enemies.push_back(enemy)
+	if _blast_grid_built and _blast_grid_in_tick:
+		_update_blast_cell(_enemies.size() - 1, enemy.global_position)
 
 
 func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
@@ -5593,7 +5750,7 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 ## null for a splash nobody owns.
 func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Shooter,
 		source: MayoEnemy = null, single_blast := false) -> void:
-	for other in _enemies:
+	for other in _blast_candidates(centre, radius):
 		if other == source or not is_instance_valid(other):
 			continue
 		if other.global_position.distance_to(centre) > radius:
@@ -5750,13 +5907,15 @@ func show_overripe_burst(at: Vector3, radius: float, priming: bool) -> void:
 		return
 	_play_combat_warning(at, 490.0, OVERRIPE_BURST_DELAY)
 	_pulse_blast_radius(Vector3(at.x, 0.0, at.z), radius, OVERRIPE_BURST_DELAY, Color("ffe0a3"))
-	var swelling := TomatoVisuals.grunt(0.91, 2)
-	swelling.name = "OverripeWarning"
-	add_child(swelling)
+	_prepare_tomatina_blast_effects()
+	var swelling: Node3D = _overripe_warnings.pop_back() if not _overripe_warnings.is_empty() \
+		else _make_overripe_warning()
+	swelling.scale = Vector3.ONE
 	swelling.global_position = at
+	swelling.show()
 	var pulse := create_tween()
 	pulse.tween_property(swelling, "scale", Vector3.ONE * 1.35, OVERRIPE_BURST_DELAY).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	pulse.tween_callback(swelling.queue_free)
+	pulse.tween_callback(_release_blast_effect.bind(swelling, _overripe_warnings))
 
 
 ## Burst bodies leave debris. Other bodies leave the path clear for movement.
@@ -5778,19 +5937,19 @@ func _tomato_down(enemy: MayoEnemy) -> void:
 		MayoEnemy.EnemyKind.PRESS_KING:
 			enemy.collision_layer = 0
 		_:
-			enemy.collision_layer = CORPSE_LAYER
+			enemy.collision_layer = CORPSE_LAYER | SauceParts.MORTAR_PREVIEW_ACTOR_MASK
 
 
 func _leave_debris(centre: Vector3, radius: float, skin: Color) -> void:
-	var debris := TomatoDebris.new()
-	debris.name = "TomatoDebris%d" % _debris.size()
-	add_child(debris)
+	var debris: TomatoDebris
+	if _debris.size() >= TOMATO_DEBRIS_CAP:
+		debris = _debris.pop_front()
+	else:
+		debris = TomatoDebris.new()
+		debris.name = "TomatoDebris%d" % _debris.size()
+		add_child(debris)
 	debris.setup(centre, radius, skin)
 	_debris.push_back(debris)
-	while _debris.size() > TOMATO_DEBRIS_CAP:
-		var oldest: TomatoDebris = _debris.pop_front()
-		if is_instance_valid(oldest):
-			oldest.queue_free()
 
 
 func _tomato_fragments(centre: Vector3, radius: float) -> void:
@@ -6573,6 +6732,7 @@ func _advance_enemies(delta: float) -> void:
 	# body reading every other. With the horde in that was 270 bodies squared
 	# a tick, and it was the whole of the lag -- see `_crowd_neighbours`.
 	var buckets := _crowd_buckets()
+	var neighbours_by_cell := {}
 	var target_load := {}
 	if map_kind == MapKind.TOMATINA and targets.size() > 1:
 		for enemy in _enemies:
@@ -6580,6 +6740,9 @@ func _advance_enemies(delta: float) -> void:
 				var peer := enemy._visible_target.peer_id
 				target_load[peer] = int(target_load.get(peer, 0)) + 1
 	var frame := Engine.get_physics_frames()
+	var budgeted := map_kind == MapKind.TOMATINA and _nav != null
+	if budgeted:
+		_nav.begin_enemy_tick(debug_profile_enabled)
 	for index in _enemies.size():
 		var enemy: MayoEnemy = _enemies[index]
 		# Which of the party this one is coming for. Normally all of them, and the
@@ -6614,8 +6777,15 @@ func _advance_enemies(delta: float) -> void:
 		# anyway, so a tick of age is nothing it can see.
 		enemy.crowd_hold = (frame + index) % 2 == 1
 		if not enemy.crowd_hold and enemy.is_alive() and enemy.needs_crowd_steering():
-			enemy.crowd_peers = _crowd_neighbours(buckets, enemy)
+			var cell := _crowd_cell(previous_position)
+			if not neighbours_by_cell.has(cell):
+				neighbours_by_cell[cell] = _crowd_neighbours(buckets, cell)
+			enemy.crowd_peers = neighbours_by_cell[cell]
 		var hit := enemy.advance(delta, chasing, target_load)
+		if _blast_grid_built and _blast_grid_in_tick:
+			_update_blast_cell(index, enemy.global_position)
+			for ball_index in enemy.ball_pool.size():
+				_update_blast_cell(index + 1 + ball_index, enemy.ball_pool[ball_index].global_position)
 		if map_kind == MapKind.TUTORIAL_RECTANGLE \
 				and _tutorial != null and _tutorial.stage == MayoTutorial.Stage.RUN \
 				and enemy.grade == MayoEnemy.Grade.HEAVY and not enemy.tutorial_trapped:
@@ -6639,6 +6809,13 @@ func _advance_enemies(delta: float) -> void:
 		if _tutorial != null and not _tutorial.allows_contact_damage(enemy, hit):
 			continue
 		_damage_player(hit, enemy.contact_damage)
+	if budgeted:
+		_nav.end_enemy_tick()
+		if debug_profile_enabled:
+			debug_timings_us.enemy_navigation += _nav.enemy_navigation_us
+			debug_timings_us.enemy_visibility += _nav.enemy_visibility_us
+			debug_timings_us.enemy_movement += _nav.enemy_movement_us
+			debug_timings_us.enemy_crowd += _nav.enemy_crowd_us
 
 
 ## The live bodies, by the coarse `CROWD_CELL` they stand in. Bowled tomatoes
@@ -6661,11 +6838,53 @@ func _crowd_cell(at: Vector3) -> Vector2i:
 	return Vector2i(int(floor(at.x / CROWD_CELL)), int(floor(at.z / CROWD_CELL)))
 
 
+## Only build the blast index if an explosion needs it. During the tick, moved
+## bodies update their cells before burst requests are resolved.
+func _blast_candidates(centre: Vector3, radius: float) -> Array[MayoEnemy]:
+	if not _blast_grid_in_tick:
+		return _enemies
+	if not _blast_grid_built:
+		_blast_cells.clear()
+		_blast_buckets.clear()
+		for index in _enemies.size():
+			var enemy := _enemies[index]
+			if is_instance_valid(enemy):
+				_update_blast_cell(index, enemy.global_position)
+		_blast_grid_built = true
+	var extent := Vector3(radius, 0.0, radius)
+	var low := _crowd_cell(centre - extent)
+	var high := _crowd_cell(centre + extent)
+	var indexes: Array[int] = []
+	for z in range(low.y, high.y + 1):
+		for x in range(low.x, high.x + 1):
+			var cell := Vector2i(x, z)
+			if _blast_buckets.has(cell):
+				indexes.append_array(_blast_buckets[cell])
+	# Preserve the order of simultaneous hits and the order they queue bursts.
+	indexes.sort()
+	var candidates: Array[MayoEnemy] = []
+	for index in indexes:
+		candidates.append(_enemies[index])
+	return candidates
+
+
+func _update_blast_cell(index: int, at: Vector3) -> void:
+	var cell := _crowd_cell(at)
+	if _blast_cells.has(index):
+		var previous := _blast_cells[index]
+		if previous == cell:
+			return
+		_blast_buckets[previous].erase(index)
+	_blast_cells[index] = cell
+	if not _blast_buckets.has(cell):
+		_blast_buckets[cell] = []
+	_blast_buckets[cell].append(index)
+
+
 ## The bodies within a cell of this one in every direction: everything the
 ## steering could be pushed by, and nothing it could not. It includes the body
 ## itself, which `_crowd_direction` already skips.
-func _crowd_neighbours(buckets: Dictionary, enemy: MayoEnemy) -> Array:
-	var centre := _crowd_cell(enemy.global_position)
+func _crowd_neighbours(buckets: Dictionary, centre: Vector2i) -> Array:
 	var out: Array = []
 	for dz in range(-1, 2):
 		for dx in range(-1, 2):
@@ -6842,6 +7061,7 @@ func debug_clear_enemies() -> void:
 	for enemy in _enemies:
 		enemy.queue_free()
 	_enemies.clear()
+	_bowled_tomatoes.clear()
 
 
 func enemy_count() -> int:
@@ -6861,12 +7081,18 @@ func enemy_at(index: int) -> MayoEnemy:
 func enemy_state(start := 0, count := -1) -> PackedFloat32Array:
 	var data := PackedFloat32Array()
 	var end := _enemies.size() if count < 0 else mini(_enemies.size(), start + count)
+	if end <= start:
+		return data
+	data.resize((end - start) * ENEMY_STATE_STRIDE)
 	for index in range(start, end):
 		var state: Array = _enemies[index].network_state()
 		var position: Vector3 = state[0]
-		data.append_array(PackedFloat32Array([
-			position.x, position.y, position.z, state[1], state[2], state[3],
-			state[4]]))
+		var offset := (index - start) * ENEMY_STATE_STRIDE
+		data[offset] = position.x
+		data[offset + 1] = position.y
+		data[offset + 2] = position.z
+		for field in range(1, 5):
+			data[offset + field + 2] = state[field]
 	return data
 
 
@@ -7157,7 +7383,8 @@ func _emit_point(shooter: Shooter = null) -> void:
 	point.launch_direction = direction
 	point.collision_slot = shooter.next_collision_slot
 	point.burst_index = shooter.burst_index
-	shooter.next_collision_slot = (shooter.next_collision_slot + 1) % maxi(raycast_frame_stride, 1)
+	var slots := maxi(raycast_frame_stride, 2 if map_kind == MapKind.TOMATINA else 1)
+	shooter.next_collision_slot = (shooter.next_collision_slot + 1) % slots
 	shooter.points.push_back(point)
 
 
@@ -7192,9 +7419,25 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 	if shooter == null:
 		shooter = _local
 	var points := shooter.points
+	if points.is_empty():
+		return
 	var space_state := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.new()
+	var own_body: Array[RID] = [shooter.player.get_rid()]
+	var no_exclusions: Array[RID] = []
 	var physics_frame := int(Engine.get_physics_frames())
 	var stride := maxi(raycast_frame_stride, 1)
+	var authority := _is_authority()
+	# Distant teammate ribbons are visual on guests. Sweep their accumulated
+	# path in staggered slots, while keeping floor contacts immediate.
+	var distant_remote := map_kind == MapKind.TOMATINA and not authority and _local != null \
+		and shooter != _local \
+		and shooter.player.global_position.distance_squared_to(_local.player.global_position) > 40.0 ** 2
+	if distant_remote:
+		stride = maxi(stride, 2)
+	var catch_up_motion := point_spacing * float(stride + 1)
+	if distant_remote:
+		catch_up_motion = maxf(catch_up_motion, extend_speed * 2.0 * delta)
 	# Faster travel compresses the entire flight, including the falling tail.
 	# Scaling velocity by k requires gravity * k² for the same spatial arc.
 	# stream_range only ends pressure; it does not stop a point or its damage.
@@ -7220,18 +7463,17 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 		var accumulated_motion := point.last_collision_position.distance_to(next)
 		var scheduled := physics_frame % stride == point.collision_slot % stride
 		var near_floor := next.y <= strand_thickness * 1.25
-		var must_catch_up := accumulated_motion >= point_spacing * float(stride + 1)
+		var must_catch_up := accumulated_motion >= catch_up_motion
 		var should_cast := accumulated_motion >= raycast_min_accumulated_motion \
 			and (scheduled or near_floor or must_catch_up)
 		if should_cast:
-			var query := PhysicsRayQueryParameters3D.create(point.last_collision_position, next)
-			if point.distance_travelled < self_hit_distance:
-				query.exclude = [shooter.player.get_rid()]
-			query.collide_with_areas = false
+			query.from = point.last_collision_position
+			query.to = next
+			query.exclude = own_body if point.distance_travelled < self_hit_distance else no_exclusions
 			if debug_profile_enabled:
 				debug_raycast_count += 1
 			var hit := space_state.intersect_ray(query)
-			if not _cheese_threads.is_empty() and _is_authority():
+			if not _cheese_threads.is_empty() and authority:
 				var end: Vector3 = next if hit.is_empty() else hit.position
 				_cut_cheese_by_stream(point.last_collision_position, end)
 			if not hit.is_empty():
@@ -7253,7 +7495,7 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 							hit.normal, point.velocity, shooter)
 					else:
 						_spawn_impact_spray(hit.position, hit.normal, point.velocity, false, shooter)
-				if _is_authority() and collider != null:
+				if authority and collider != null:
 					if on_floor:
 						_record_floor_splat(shooter, point.burst_index, hit.position)
 					elif collider.is_in_group("mayo_contaminable"):
@@ -7463,11 +7705,10 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 		1.0 if blast <= 0.0 else 3.0, blast > 0.0)
 	if not authority or target == null:
 		return
-	# The lob cap goes off like a thrown tomato, at half its damage, and that
-	# blast is the whole of it: no separate direct hit on what it landed on.
+	# The mortar's blast replaces the direct hit.
 	if shot.part == SauceParts.Part.ARC:
 		_explode_lob_cap(at + normal * 0.08, shooter, sauce,
-			SauceParts.mortar_charge(float(shot.get("launch_speed", 0.0))))
+			SauceParts.mortar_charge(shot.launch_velocity))
 		return
 	if target.is_in_group("mayo_floor"):
 		_record_floor_splat(shooter, shooter.burst_index, at, sauce)
@@ -8011,7 +8252,25 @@ func _update_visuals(shooter: Shooter = null) -> void:
 		shooter = _local
 	if shooter.air_visual == null:
 		return
+	var has_points := not shooter.points.is_empty()
+	if not has_points:
+		for lane in shooter.side_points:
+			if not lane.is_empty():
+				has_points = true
+				break
+	if not has_points:
+		shooter.air_visual.hide()
+		shooter.landing_visual.hide()
+		shooter.shadow_visual.hide()
+		shooter.nozzle_visual.hide()
+		return
 	var camera_position := _camera.global_position
+	var tick := Engine.get_physics_frames()
+	if map_kind == MapKind.TOMATINA and shooter != _local \
+			and shooter.player.global_position.distance_squared_to(camera_position) > 40.0 ** 2 \
+			and shooter.last_ribbon_tick >= 0 and tick - shooter.last_ribbon_tick < 2:
+		return
+	shooter.last_ribbon_tick = tick
 	var camera_forward := -_camera.global_basis.z
 	# 3갈래의 세 가닥은 한 리본에 이어 그린다. 가닥마다 굵기가 기본보다 가늘다.
 	var air_segments: Array = []
@@ -8026,7 +8285,8 @@ func _update_visuals(shooter: Shooter = null) -> void:
 	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, thickness, 0.004)
 	shooter.shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward,
 		thickness * 0.72, 0.012)
-	_update_nozzle_visual(shooter)
+	if shooter != _local or map_kind != MapKind.TOMATINA:
+		_update_nozzle_visual(shooter)
 
 
 ## A tapered visual connection from the recoiling nozzle to the newest sauce.
@@ -8792,25 +9052,18 @@ func _show_blast_hit(enemy: MayoEnemy) -> void:
 		return
 	var at := enemy.global_position
 	_tomato_fragments(at, 0.0)
-	var flash := MeshInstance3D.new()
-	flash.name = "BlastHitFlash"
-	var ball := SphereMesh.new()
-	ball.radial_segments = 10
-	ball.rings = 5
-	ball.radius = enemy.radius * 1.1
-	ball.height = maxf(enemy.height, enemy.radius * 2.0) * 1.05
-	flash.mesh = ball
-	flash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var tint := StandardMaterial3D.new()
-	tint.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	tint.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_prepare_tomatina_blast_effects()
+	var flash := _blast_hits.pop_back() as MeshInstance3D if not _blast_hits.is_empty() \
+		else _make_blast_hit()
+	var diameter := enemy.radius * 2.2
+	flash.scale = Vector3(diameter, maxf(enemy.height, enemy.radius * 2.0) * 1.05, diameter)
+	var tint := flash.material_override as StandardMaterial3D
 	tint.albedo_color = Color(1.0, 1.0, 1.0, 0.6)
-	flash.material_override = tint
-	add_child(flash)
 	flash.global_position = at
+	flash.show()
 	var fade := create_tween()
 	fade.tween_property(tint, "albedo_color:a", 0.0, 0.1)
-	fade.tween_callback(flash.queue_free)
+	fade.tween_callback(_release_blast_effect.bind(flash, _blast_hits))
 
 
 ## A blast near the local player rocks their view: `blast_shake_degrees` at the
@@ -10435,10 +10688,10 @@ func _tomato_blast_reaches(at: Vector3, body: PhysicsBody3D) -> bool:
 	return _tomatina_static_hit(at + Vector3.UP * 0.12, body.global_position).is_empty()
 
 
-func _tomatina_static_hit(from: Vector3, to: Vector3) -> Dictionary:
+func _tomatina_static_hit(from: Vector3, to: Vector3, layer_mask := 1) -> Dictionary:
 	if from.is_equal_approx(to):
 		return {}
-	var query := PhysicsRayQueryParameters3D.create(from, to, 1)
+	var query := PhysicsRayQueryParameters3D.create(from, to, layer_mask)
 	var ignored: Array[RID] = []
 	var space := get_world_3d().direct_space_state
 	while true:
@@ -10487,69 +10740,144 @@ func _show_tomato_fuse(at: Vector3) -> void:
 	_pulse_blast_radius(at, thrown_tomato_splash_radius, THROWN_TOMATO_FUSE, Color("b8ecff"))
 
 
+var _blast_marker_pool: Array[MeshInstance3D] = []
+const BLAST_EFFECT_POOL_LIMIT := 12
+var _blast_effects: Array[Node3D] = []
+var _blast_hits: Array[Node3D] = []
+var _overripe_warnings: Array[Node3D] = []
+var _blast_material: StandardMaterial3D
+var _blast_sphere: SphereMesh
+var _blast_hit_sphere: SphereMesh
+var _blast_ring: TorusMesh
+
+
+func _prepare_tomatina_blast_effects() -> void:
+	if _blast_material != null:
+		return
+	_blast_material = StandardMaterial3D.new()
+	_blast_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_blast_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_blast_material.albedo_color = Color(1.0, 0.36, 0.08, 0.82)
+	_blast_sphere = SphereMesh.new()
+	_blast_sphere.radial_segments = 12
+	_blast_sphere.rings = 6
+	_blast_hit_sphere = SphereMesh.new()
+	_blast_hit_sphere.radial_segments = 10
+	_blast_hit_sphere.rings = 5
+	_blast_ring = TorusMesh.new()
+	_blast_ring.inner_radius = 0.92
+	_blast_ring.outer_radius = 1.0
+	_blast_ring.rings = 32
+	_blast_ring.ring_segments = 5
+	_tomato_blast_sound = _placeholder_tone(56.0, 0.24, true)
+	if _warning_sound == null:
+		_warning_sound = _placeholder_tone(220.0, 0.50)
+	for _index in 4:
+		_blast_effects.append(_make_blast_effect())
+		_blast_hits.append(_make_blast_hit())
+		_overripe_warnings.append(_make_overripe_warning())
+
+
+func _blast_mesh(mesh: Mesh, tint: Material) -> MeshInstance3D:
+	var visual := MeshInstance3D.new()
+	visual.mesh = mesh
+	visual.material_override = tint
+	visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	return visual
+
+
+func _make_blast_hit() -> MeshInstance3D:
+	var flash := _blast_mesh(_blast_hit_sphere, _blast_material.duplicate())
+	flash.name = "BlastHitFlash"
+	flash.hide()
+	add_child(flash)
+	return flash
+
+
+func _make_blast_effect() -> Node3D:
+	var effect := Node3D.new()
+	effect.name = "TomatoBlast"
+	var tint := _blast_material.duplicate()
+	effect.add_child(_blast_mesh(_blast_sphere, tint))
+	var shock := _blast_mesh(_blast_ring, tint)
+	shock.position.y = 0.08
+	effect.add_child(shock)
+	effect.hide()
+	add_child(effect)
+	return effect
+
+
+func _make_overripe_warning() -> Node3D:
+	var swelling := TomatoVisuals.grunt(0.91, 2)
+	swelling.name = "OverripeWarning"
+	swelling.hide()
+	add_child(swelling)
+	return swelling
+
+
+func _release_blast_effect(effect: Node3D, pool: Array[Node3D]) -> void:
+	effect.hide()
+	if pool.size() < BLAST_EFFECT_POOL_LIMIT:
+		pool.append(effect)
+	else:
+		effect.queue_free()
+
+
 func _pulse_blast_radius(at: Vector3, radius: float, duration: float, color: Color) -> void:
-	var marker := MeshInstance3D.new()
-	marker.name = "TomatoFuseWarning"
-	var ring := TorusMesh.new()
+	var marker: MeshInstance3D
+	if _blast_marker_pool.is_empty():
+		marker = MeshInstance3D.new()
+		marker.name = "TomatoFuseWarning"
+		marker.mesh = TorusMesh.new()
+		var material := StandardMaterial3D.new()
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		marker.material_override = material
+		marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		marker.scale.y = 0.25
+		add_child(marker)
+	else:
+		marker = _blast_marker_pool.pop_back()
+	var ring := marker.mesh as TorusMesh
 	ring.inner_radius = radius - 0.12
 	ring.outer_radius = radius
-	marker.mesh = ring
-	var tint := StandardMaterial3D.new()
-	tint.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	tint.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var tint := marker.material_override as StandardMaterial3D
 	tint.albedo_color = color
-	marker.material_override = tint
-	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	marker.scale.y = 0.25
-	add_child(marker)
 	marker.global_position = at + Vector3.UP * 0.04
+	marker.show()
 	var pulse := create_tween()
 	for index in 3:
 		pulse.tween_property(tint, "albedo_color:a", 0.22, duration / 6.0)
 		pulse.tween_property(tint, "albedo_color:a", 1.0, duration / 6.0)
-	pulse.tween_callback(marker.queue_free)
+	pulse.tween_callback(func():
+		if _blast_marker_pool.size() < 12:
+			marker.hide()
+			_blast_marker_pool.append(marker)
+		else:
+			marker.queue_free())
 
 
 func show_tomato_blast(at: Vector3, radius: float) -> void:
 	_shake_from_blast(at, radius)
 	_tomato_fragments(at, radius)
 	_leave_debris(at, 0.48, TomatoVisuals.TOMATO)
+	_prepare_tomatina_blast_effects()
 	if not muted:
-		if _tomato_blast_sound == null:
-			_tomato_blast_sound = _placeholder_tone(56.0, 0.24, true)
 		_play_contact_accent(_tomato_blast_sound, at, 0.72, 8.0)
-	var flash := MeshInstance3D.new()
-	flash.name = "TomatoBlast"
-	var ball := SphereMesh.new()
-	ball.radial_segments = 12
-	ball.rings = 6
-	flash.mesh = ball
-	flash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var tint := StandardMaterial3D.new()
-	tint.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	tint.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	tint.albedo_color = Color(1.0, 0.36, 0.08, 0.82)
-	flash.material_override = tint
-	add_child(flash)
-	flash.global_position = at
-	var shock := MeshInstance3D.new()
-	var ring := TorusMesh.new()
-	ring.inner_radius = 0.92
-	ring.outer_radius = 1.0
-	ring.rings = 32
-	ring.ring_segments = 5
-	shock.mesh = ring
-	shock.material_override = tint
-	shock.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(shock)
-	shock.global_position = at + Vector3.UP * 0.08
+	var effect: Node3D = _blast_effects.pop_back() if not _blast_effects.is_empty() else _make_blast_effect()
+	var flash := effect.get_child(0) as MeshInstance3D
+	var shock := effect.get_child(1) as MeshInstance3D
+	var tint := flash.material_override as StandardMaterial3D
+	tint.albedo_color.a = 0.82
+	flash.scale = Vector3.ONE
 	shock.scale = Vector3(0.3, 0.35, 0.3)
+	effect.global_position = at
+	effect.show()
 	var fade := create_tween().set_parallel()
 	fade.tween_property(flash, "scale", Vector3.ONE * minf(radius * 0.62, 3.1), 0.18)
 	fade.tween_property(shock, "scale", Vector3(radius, 0.35, radius), 0.24)
 	fade.tween_property(tint, "albedo_color:a", 0.0, 0.24)
-	fade.chain().tween_callback(flash.queue_free)
-	fade.tween_callback(shock.queue_free)
+	fade.chain().tween_callback(_release_blast_effect.bind(effect, _blast_effects))
 
 
 var _item_slots: Dictionary = {}

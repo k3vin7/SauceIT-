@@ -12,6 +12,7 @@ const STAGES := {
 	},
 	"stage_2": {
 		"display_name": "스테이지 2 · 토마토 축제",
+		# Release entry point. The editable scene is an independent F6 map preview.
 		"scene": "res://stage_2_tomatina.tscn",
 		"clear_condition": "all_elite_enemies_defeated_and_party_at_fire_truck",
 		"place": "스페인 · 부뇰",

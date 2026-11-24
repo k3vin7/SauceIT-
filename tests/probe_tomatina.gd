@@ -45,10 +45,14 @@ func _run() -> void:
 	StreetMap.layout_override = null
 	var festival_cells := StreetMap.floor_cells().size()
 
-	var scene = load("res://stage_2_tomatina.tscn").instantiate()
+	var scene = load(StageRegistry.scene_path("stage_2")).instantiate()
 	root.add_child(scene)
 	await _frames(2)
 	scene.set_process_unhandled_input(false)
+	_check(scene.tomatina_map_scene == null and scene.has_stage_intro(),
+		"the shipped stage needs its entrance and intro")
+	_probe_bottle_notice(scene)
+	_probe_victim_surfaces(scene._tomatina_art)
 
 	var village: Node3D = scene.get_node_or_null("TomatinaVillageArt")
 	_check(village != null and village.get_child_count() > 30, "the Blender village kit was not placed")
@@ -553,8 +557,9 @@ func _run() -> void:
 	ripe.burst_radius = 5.5
 	ripe.take_sauce_hit(Vector3.INF, ripe.max_health)
 	scene._pending_splats.clear()
+	var warning = scene._overripe_warnings.back()
 	scene._finish_tomato_kill(ripe, scene._local)
-	_check(scene.get_node_or_null("OverripeWarning") != null and ripe.vanished,
+	_check(warning.visible and ripe.vanished,
 		"the overripe tomato did not show its warning")
 	scene._advance_overripe_bursts(0.5)
 	_check(scene._overripe_bursts.has(ripe) and scene._pending_splats.is_empty(),
@@ -858,6 +863,53 @@ func _run() -> void:
 		quit(1)
 
 
+func _probe_victim_surfaces(art: TomatinaVillageArt) -> void:
+	for model in TomatinaVillageArt.VICTIM_MODELS:
+		var source := art.mesh_for(model)
+		var merged := art.victim_mesh_for(model)
+		_check(merged.get_surface_count() == 1, "%s needs one runtime render surface" % model)
+		_check(merged.get_faces() == source.get_faces(), "%s changed geometry during the merge" % model)
+		var source_colors := PackedColorArray()
+		for index in source.get_surface_count():
+			source_colors.append_array(source.surface_get_arrays(index)[Mesh.ARRAY_COLOR])
+		_check(merged.surface_get_arrays(0)[Mesh.ARRAY_COLOR] == source_colors,
+			"%s changed vertex colors during the merge" % model)
+
+
+func _probe_bottle_notice(scene) -> void:
+	var shooter = scene._local
+	var hud: HealthHud = scene._health_hud
+	_check(hud._bottle_status().is_empty(), "a ready bottle should not show a warning")
+	var full: float = shooter.sauce
+	shooter.sauce = (scene.steady_level + scene.spluttering_level) * 0.5
+	_check(hud._bottle_status().begins_with("소스 잔량 낮음"), "low bottle notice is missing")
+	shooter.nozzle = scene.Nozzle.CAUGHT
+	_check(hud._bottle_status().contains("마우스 흔들기"), "the caught nozzle should explain how to shake it")
+	shooter.nozzle = scene.Nozzle.IDLE
+	shooter.sauce = 0.0
+	_check(hud._bottle_status().begins_with("소스 부족"), "the empty bottle should explain where to refill")
+	scene._item_selected[shooter.peer_id] = 1
+	_check(hud._bottle_status().is_empty(), "the bottle notice should not cover another item")
+	scene._item_selected.erase(shooter.peer_id)
+	shooter.sauce = full
+	var saved_time: float = shooter.burst_time
+	shooter.burst_time = shooter.burst_allowance + 0.1
+	shooter.fire_cooldown = scene.spent_burst_cooldown
+	shooter.firing = true
+	_check(hud._bottle_status() == "압력 회복 중", "the spent burst should show pressure recovery")
+	shooter.burst_time = saved_time
+	shooter.fire_cooldown = 0.0
+	shooter.firing = false
+
+
+func _set_mouse_button(button: MouseButton, pressed: bool) -> void:
+	var event := InputEventMouseButton.new()
+	event.button_index = button
+	event.pressed = pressed
+	Input.parse_input_event(event)
+	Input.flush_buffered_events()
+
+
 func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 	var parts := preload("res://scripts/tomatina_sauce_parts.gd")
 	var shooter = scene._local
@@ -928,23 +980,35 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 	system.reset()
 
 	player.global_position = TomatinaMap.refuge_shop_at(1) + Vector3.UP * 1.28
-	# 저격 노즐: 누르고 있는 동안은 조준만 하고, 떼는 순간 가늘고 빠른 한 발이 나간다.
+	# 저격 노즐: 휠을 누르는 동안 조준하고 좌클릭을 누르면 한 발 나간다.
 	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.SNIPER), "sniper purchase failed")
-	shooter.firing = true
+	_set_mouse_button(MOUSE_BUTTON_MIDDLE, true)
 	for i in 5:
+		scene._read_local_input()
 		scene._advance_strand(shooter, 0.05)
-	_check(system._projectiles.is_empty() and shooter.points.is_empty(), "the sniper fired while the trigger was still held")
-	shooter.firing = false
+	_check(scene._sniper_aiming() and system._projectiles.is_empty() and shooter.points.is_empty(),
+		"holding the middle button did not aim independently of firing")
+	_set_mouse_button(MOUSE_BUTTON_LEFT, true)
+	scene._read_local_input()
 	scene._advance_strand(shooter, 0.01)
 	_check(system._projectiles.size() == 1 and absf(system._projectiles[0].velocity.length() - 55.0) < 0.5 \
 		and int(system._projectiles[0].pierce_limit) == parts.SNIPER_PIERCE,
-		"letting go did not fire one 55 m/s shot that pierces three")
+		"pressing the left button did not fire one 55 m/s shot that pierces three")
 	_check(absf((1.0 - shooter.sauce) - 0.06) < 0.001, "a sniper shot does not cost 6% of the tank")
+	_set_mouse_button(MOUSE_BUTTON_LEFT, false)
+	scene._read_local_input()
+	_check(scene._sniper_aiming(), "releasing the left button stopped sniper aim")
+	scene._advance_strand(shooter, 1.3)
+	_set_mouse_button(MOUSE_BUTTON_MIDDLE, false)
+	scene._read_local_input()
+	scene._advance_strand(shooter, 0.01)
+	_check(not scene._sniper_aiming() and system._projectiles.size() == 1,
+		"releasing the middle button did not end aim independently of firing")
 	system.reset()
 	# 흔들어 쏘면 한 마리 더 꿰뚫는다(더 빨라지지는 않는다).
-	scene._advance_strand(shooter, 1.3)
 	shooter.bottle_charge = 1.0
 	shooter.firing = true
+	_check(not scene._sniper_aiming(), "the fire button started sniper aim")
 	scene._advance_strand(shooter, 0.05)
 	shooter.firing = false
 	scene._advance_strand(shooter, 0.01)
@@ -971,6 +1035,8 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 		scene._advance_strand(shooter, 0.11)
 	_check(system._projectiles.size() == 3, "one burst press did not fire exactly three shots")
 	_check(absf(system._projectiles[0].velocity.length() - 32.0) < 0.5, "the burst does not leave at 32 m/s")
+	for shot: Dictionary in system._projectiles:
+		_check(shot.node is StreamVisual, "a burst shot did not use the sauce ribbon")
 	system.reset()
 	# 흔들어 쏜 점사는 한 발 더 나간다. 더 빨라지지는 않는다.
 	shooter.sauce = 1.0
@@ -987,26 +1053,66 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 	shooter.bottle_boosting = false
 	shooter.sauce = 1.0
 	system.reset()
+	# Give one shot open air so its ribbon can extend to full length before impact.
+	system.show_volley(player.peer_id, parts.Part.BURST, ContaminationGrid.KIND_MUSTARD,
+		player.global_position + Vector3.UP * 30.0, Vector3.FORWARD)
+	system.advance_projectiles(0.08, false)
+	_check(system._projectiles.size() == 1, "the open-air burst shot disappeared")
+	if system._projectiles.size() == 1:
+		var ribbon := system._projectiles[0].node as StreamVisual
+		_check(ribbon != null and ribbon.visible, "the burst shot did not draw its sauce clump")
+		if ribbon != null:
+			var size := ribbon.custom_aabb.size
+			_check(size.z >= 2.1 and maxf(size.x, size.y) >= scene.strand_thickness * 4.0,
+				"the burst shot did not grow in length and width: %s" % size)
+	system.reset()
 	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.ARC), "arc purchase failed")
+	var aim_before := Vector2(shooter.aim_yaw, shooter.aim_pitch)
+	var launch_position := player.global_position
+	player.global_position += Vector3.UP * 30.0
+	scene.debug_set_aim(37.0, -45.0)
+	var aim: Vector3 = shooter.attack_direction
+	var weak := parts.mortar_launch_velocity(aim, 0.0)
 	shooter.firing = true
 	scene._advance_strand(shooter, 0.01)
-	_check(system._projectiles.size() == 1 and system._projectiles[0].velocity.y > 0.0,
-		"arc did not launch upward")
-	# 박격포: 45° 이상으로만, 안 흔들면 가깝고 약하게, 다 채우면 멀고 세게.
+	_check(system._projectiles.size() == 1, "the mortar did not fire")
 	if system._projectiles.size() == 1:
-		var lob: Vector3 = system._projectiles[0].velocity
-		_check(rad_to_deg(asin(lob.normalized().y)) >= 44.0 and absf(lob.length() - parts.MORTAR_MIN_SPEED) < 0.2,
-			"an unshaken mortar did not leave at 45 degrees or more at its lowest speed: %s" % lob)
+		var shot: Dictionary = system._projectiles[0]
+		var lob: Vector3 = shot.velocity
+		_check(lob.is_equal_approx(weak) and lob.normalized().is_equal_approx(aim) and lob.y < 0.0,
+			"the mortar did not launch in the downward aim direction: %s" % lob)
+		scene.play_support._update_arc(Vector3.ZERO, aim)
+		var segments: PackedVector2Array = scene._crosshair.trajectory_segments
+		var origin: Vector3 = shot.origin
+		var step: float = scene.get_physics_process_delta_time()
+		system.advance_projectiles(step, false)
+		var head: Vector3 = shot.head
+		var expected_drop := lob.y * step - 0.5 * parts.GRAVITY * step * step
+		_check(system._projectiles.size() == 1 and is_equal_approx(head.y - origin.y, expected_drop),
+			"mortar flight did not follow the downward parabola")
+		var predicted_end: Vector2 = scene._camera.unproject_position(head)
+		var matching_point := false
+		for point in segments:
+			if point.distance_to(predicted_end) < 0.1:
+				matching_point = true
+				break
+		_check(matching_point and scene._crosshair.landing_marker.is_empty(),
+			"the mortar guide did not follow the actual flight")
 	shooter.firing = false
 	system.reset()
-	var weak: Vector3 = scene.mortar_launch_velocity(shooter, 0.0)
-	var strong: Vector3 = scene.mortar_launch_velocity(shooter, 1.0)
-	var near_range := weak.length_squared() / parts.GRAVITY
-	var far_range := strong.length_squared() / parts.GRAVITY
-	_check(near_range > 3.5 and near_range < 6.5 and far_range > 26.0 and far_range < 32.0,
-		"the mortar's reach is not about 5 m to 30 m: %.1f to %.1f" % [near_range, far_range])
-	_check(absf(parts.mortar_damage(parts.mortar_charge(weak.length())) - parts.MORTAR_MIN_DAMAGE) < 0.01 \
-		and absf(parts.mortar_damage(parts.mortar_charge(strong.length())) - 85.0) < 0.01 \
+	player.global_position = launch_position
+	var level_lob := parts.mortar_launch_velocity(Vector3.FORWARD, 0.0)
+	var ground_range := level_lob.length() * sqrt(2.0 * 1.5 / parts.GRAVITY)
+	_check(is_zero_approx(level_lob.y) and ground_range > 13.0,
+		"the uncharged, level mortar shot did not go straight out and travel over 13 m from 1.5 m up")
+	var up_aim := Vector3.FORWARD.rotated(Vector3.RIGHT, deg_to_rad(80.0))
+	var high_lob := parts.mortar_launch_velocity(up_aim, 1.0)
+	var high_apex := high_lob.y * high_lob.y / (2.0 * parts.GRAVITY)
+	_check(high_lob.normalized().is_equal_approx(up_aim) and absf(high_apex - parts.MORTAR_MAX_RISE) < 0.01,
+		"the steep mortar shot did not keep its aim direction and capped height: %s" % high_lob)
+	scene.debug_set_aim(rad_to_deg(aim_before.x), rad_to_deg(aim_before.y))
+	_check(absf(parts.mortar_damage(parts.mortar_charge(weak)) - parts.MORTAR_MIN_DAMAGE) < 0.01 \
+		and absf(parts.mortar_damage(parts.mortar_charge(high_lob)) - 85.0) < 0.01 \
 		and parts.mortar_damage(1.0) > scene.thrown_tomato_damage,
 		"the mortar's damage does not run from 45 to 85 with the shake")
 	_check(scene._charge_hold_seconds(shooter) == 5.0, "the mortar does not hold its shake for five seconds")

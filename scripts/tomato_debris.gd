@@ -24,6 +24,9 @@ var _velocities: Array[Vector3] = []
 var _spins: Array[Vector3] = []
 var _rest_heights: Array[float] = []
 var _settled := 0
+var _active_count := 0
+static var _shared_mesh: SphereMesh
+static var _skin_materials := {}
 
 
 ## `radius` is the body that burst; `skin` is its colour. The pieces are a
@@ -33,38 +36,52 @@ func setup(centre: Vector3, radius: float, skin: Color) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
 	var count := clampi(int(round(5.0 + radius * 4.0)), 5, 12)
-	var material := StandardMaterial3D.new()
-	material.albedo_color = skin
-	material.roughness = 0.55
-	for index in count:
+	if _shared_mesh == null:
+		_shared_mesh = SphereMesh.new()
+		_shared_mesh.radius = 1.0
+		_shared_mesh.height = 2.0
+		_shared_mesh.radial_segments = 12
+		_shared_mesh.rings = 6
+	if not _skin_materials.has(skin):
+		var material := StandardMaterial3D.new()
+		material.albedo_color = skin
+		material.roughness = 0.55
+		_skin_materials[skin] = material
+	while _pieces.size() < count:
 		var piece := MeshInstance3D.new()
-		piece.name = "Piece%d" % index
-		var mesh := SphereMesh.new()
+		piece.name = "Piece%d" % _pieces.size()
+		piece.mesh = _shared_mesh
+		piece.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		piece.visibility_range_end = 55.0
+		add_child(piece)
+		_pieces.push_back(piece)
+	for index in _pieces.size():
+		_pieces[index].visible = index < count
+	_active_count = count
+	_settled = 0
+	_velocities.resize(count)
+	_spins.resize(count)
+	_rest_heights.resize(count)
+	for index in count:
+		var piece := _pieces[index]
+		piece.material_override = _skin_materials[skin]
 		var piece_radius := radius * rng.randf_range(0.28, 0.5)
-		mesh.radius = piece_radius
-		mesh.height = piece_radius * 2.0
-		mesh.radial_segments = 12
-		mesh.rings = 6
-		mesh.material = material
-		piece.mesh = mesh
 		# Flattened: a piece of skin lying on the road, not a marble.
 		var squash := rng.randf_range(0.35, 0.55)
-		piece.scale = Vector3(rng.randf_range(0.8, 1.3), squash, rng.randf_range(0.8, 1.3))
-		piece.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		piece.scale = Vector3(rng.randf_range(0.8, 1.3), squash, rng.randf_range(0.8, 1.3)) * piece_radius
 		var angle := rng.randf_range(0.0, TAU)
 		var out := Vector3(cos(angle), 0.0, sin(angle))
 		piece.position = out * radius * 0.4 + Vector3.UP * maxf(centre.y, radius * 0.5)
 		piece.rotation = Vector3(0.0, rng.randf_range(0.0, TAU), 0.0)
-		add_child(piece)
-		_pieces.push_back(piece)
-		_velocities.push_back(out * rng.randf_range(2.0, 4.5 + radius)
-			+ Vector3.UP * rng.randf_range(2.0, 4.0))
-		_spins.push_back(Vector3(rng.randf_range(-6.0, 6.0), 0.0, rng.randf_range(-6.0, 6.0)))
-		_rest_heights.push_back(piece_radius * squash * 0.8)
+		_velocities[index] = out * rng.randf_range(2.0, 4.5 + radius) \
+			+ Vector3.UP * rng.randf_range(2.0, 4.0)
+		_spins[index] = Vector3(rng.randf_range(-6.0, 6.0), 0.0, rng.randf_range(-6.0, 6.0))
+		_rest_heights[index] = piece_radius * squash * 0.8
+	set_process(true)
 
 
 func _process(delta: float) -> void:
-	for index in _pieces.size():
+	for index in _active_count:
 		var velocity := _velocities[index]
 		if velocity == Vector3.ZERO:
 			continue
@@ -86,13 +103,13 @@ func _process(delta: float) -> void:
 		if velocity != Vector3.ZERO:
 			piece.rotation += _spins[index] * delta
 		_velocities[index] = velocity
-	if _settled >= _pieces.size():
+	if settled():
 		set_process(false)
 
 
 func piece_count() -> int:
-	return _pieces.size()
+	return _active_count
 
 
 func settled() -> bool:
-	return _settled >= _pieces.size()
+	return _settled >= _active_count

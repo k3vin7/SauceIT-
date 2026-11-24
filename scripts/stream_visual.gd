@@ -9,6 +9,7 @@ const CAP_STEPS := 10
 var ribbon_material: Material
 var _dynamic_mesh: ArrayMesh
 var _vertex_cache := PackedVector3Array()
+var _side_cache: Array[Vector3] = []
 var _max_vertices := 0
 var _used_vertices := 0
 var _previous_used_vertices := 0
@@ -50,6 +51,12 @@ func setup(material: Material, maximum_points: int = 192) -> void:
 	# still paint, so the stains keep landing while the strand blinks out as the
 	# view turns and the stale box leaves the frustum.
 	visible = false
+
+
+func set_ribbon_material(material: Material) -> void:
+	if ribbon_material != material:
+		ribbon_material = material
+		_dynamic_mesh.surface_set_material(0, material)
 
 
 func update_ribbon(
@@ -95,7 +102,7 @@ func _append_strip(points: Array, camera_position: Vector3, camera_forward: Vect
 		_append_round_cap(points[0], Vector3.RIGHT, camera_position, camera_forward, base_width, y_offset)
 		return
 
-	var sides: Array[Vector3] = []
+	var sides := _side_cache
 	sides.resize(points.size())
 	for i in points.size():
 		var position: Vector3 = points[i].position

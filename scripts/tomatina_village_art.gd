@@ -14,8 +14,10 @@ const ATTACK_AFTERMATH := ["FallenFront", "FallenBack", "FallenSide", "Collapsed
 	"OverturnedHandcart", "CollapsedStoneWall", "BrokenFestivalBarrier", "Rubble",
 	"OverturnedTomatoTruck", "WreckBody", "BrokenBoards", "TornBuntingHeap"]
 const CARDINAL := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
-const CHUNK_SIZE := 70.0
-const HOUSE_CHUNK_WIDTH := 110.0
+const CHUNK_SIZE := 42.0
+const HOUSE_CHUNK_WIDTH := 56.0
+const DISTANT_DETAILS := ["FacadeWindow", "FacadeLantern", "FacadePots",
+	"CrushedTomatoes", "BrokenBoards", "TornBuntingHeap"]
 const WALL_DEPTH := 0.54
 const STREET_ACCENTS := {"WaterFront": Color("447d87"), "MarketFront": Color("b87e41"), "FestivalFront": Color("934950"), "TrimStone": Color("dcc5a0")}
 
@@ -41,6 +43,7 @@ var _aftermath: Array[MultiMeshInstance3D] = []
 ## 있는 노드. 인트로의 "습격 전" 장면에서 묶음과 함께 숨긴다.
 var aftermath_nodes: Array[Node3D] = []
 var _stained_materials: Array[ShaderMaterial] = []
+static var _merged_victim_meshes: Dictionary[String, Mesh] = {}
 
 
 static func configure_pavement(floor_body: FloorContamination) -> void:
@@ -183,9 +186,13 @@ func emit_batches(parent: Node3D) -> void:
 			batch.material_override = finish
 			if name in NO_SHADOW:
 				batch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			if name in DISTANT_DETAILS:
+				batch.visibility_range_end = 70.0
+				batch.visibility_range_end_margin = 8.0
 			root.add_child(batch)
 			if name in ATTACK_AFTERMATH:
 				_aftermath.append(batch)
+	_add_boundary_occluder(parent)
 	# 습격 전/후를 바꿔 칠하는 벽 재질(집·교회, 길가 담장).
 	_stained_materials.clear()
 	for key in ["stained", "street"]:
@@ -193,6 +200,30 @@ func emit_batches(parent: Node3D) -> void:
 			_stained_materials.append(finishes[key])
 	_batches.clear()
 	_facades.clear()
+
+func _add_boundary_occluder(parent: Node3D) -> void:
+	var walls: Dictionary = _batches.get("BoundaryWall", {})
+	if walls.is_empty():
+		return
+	# Shrink each quad inside the actual opaque wall panel, ignoring props,
+	# doors and collision-only gap fillers.
+	var vertices := PackedVector3Array()
+	var indices := PackedInt32Array()
+	for placements: Array in walls.values():
+		for placement: Transform3D in placements:
+			var start := vertices.size()
+			for corner in [Vector3(-0.48, 0.03, 0), Vector3(0.48, 0.03, 0),
+					Vector3(0.48, 0.94, 0), Vector3(-0.48, 0.94, 0)]:
+				vertices.append(placement * corner)
+			for offset in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2]:
+				indices.append(start + offset)
+	var shape := ArrayOccluder3D.new()
+	shape.set_arrays(vertices, indices)
+	var occluder := OccluderInstance3D.new()
+	occluder.name = "TomatinaBoundaryOccluder"
+	occluder.occluder = shape
+	parent.add_child(occluder)
+
 
 
 func set_before_attack(enabled: bool) -> void:
@@ -524,6 +555,8 @@ func _add_fire(parent: Node3D, base: Vector3, size: Vector3, ember_mesh: Mesh,
 	volume.scale = size
 	volume.position.y = size.y * 0.5
 	volume.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	volume.visibility_range_end = 48.0
+	volume.visibility_range_end_margin = 5.0
 	var material := ShaderMaterial.new()
 	material.shader = FLAME_VOLUME
 	material.set_shader_parameter("phase", fposmod(base.x + base.z, 19.0))
@@ -540,6 +573,8 @@ func _add_fire(parent: Node3D, base: Vector3, size: Vector3, ember_mesh: Mesh,
 	embers.position.y = size.y * 0.27
 	embers.visibility_aabb = AABB(Vector3(-0.8, -0.3, -0.8), Vector3(1.6, 2.7, 1.6))
 	embers.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	embers.visibility_range_end = 42.0
+	embers.visibility_range_end_margin = 5.0
 	embers.draw_pass_1 = ember_mesh
 	embers.process_material = ember_process
 	fire.add_child(embers)
@@ -595,6 +630,21 @@ const VICTIM_SIZE := Vector3(1.65, 0.48, 2.15)
 
 func mesh_for(key: String) -> Mesh:
 	return _meshes.get(key)
+
+
+## Runtime victims use one material for the whole model. Keep the copied
+## vertex colours and normals while submitting one surface per body and pass.
+func victim_mesh_for(key: String) -> Mesh:
+	var source := mesh_for(key)
+	if source == null or source.get_surface_count() <= 1 or key not in VICTIM_MODELS:
+		return source
+	if not _merged_victim_meshes.has(key):
+		var surface := SurfaceTool.new()
+		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for index in source.get_surface_count():
+			surface.append_from(source, index, Transform3D.IDENTITY)
+		_merged_victim_meshes[key] = surface.commit()
+	return _merged_victim_meshes[key]
 
 
 ## Where `_place` puts a model: standing on `at`, turned to `facing`, stretched

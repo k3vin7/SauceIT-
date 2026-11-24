@@ -19,7 +19,7 @@ extends TruckLobby
 signal character_requested
 
 const CharacterSelectScript := preload("res://scripts/character_select.gd")
-const ROOM_SCENE := preload("res://maps/command.tscn")
+const ROOM_SCENE := preload("res://maps/command_runtime.scn")
 
 ## 아래 세 값은 방 씬에 해당 노드가 없을 때만 쓰는 기본값이다.
 const SCREEN_POSITION := Vector3(0.0, 2.35, -8.65)

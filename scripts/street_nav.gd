@@ -1,6 +1,42 @@
 class_name StreetNav
 extends RefCounted
 
+enum EnemyWork { SENSE, CHECK_STRAIGHT, REPATH }
+# Requests beyond the budget stay due for the following tick. The enemy
+# keeps following its last path during that time.
+const ENEMY_WORK_PER_TICK := [72, 80, 24]
+var _enemy_work_left := PackedInt32Array()
+var _enemy_path_cells := {}
+var measure_enemy_work := false
+var enemy_navigation_us := 0
+var enemy_visibility_us := 0
+var enemy_movement_us := 0
+var enemy_crowd_us := 0
+
+
+func begin_enemy_tick(measure := false) -> void:
+	_enemy_work_left = PackedInt32Array(ENEMY_WORK_PER_TICK)
+	measure_enemy_work = measure
+	enemy_navigation_us = 0
+	enemy_visibility_us = 0
+	enemy_movement_us = 0
+	enemy_crowd_us = 0
+
+
+func end_enemy_tick() -> void:
+	_enemy_work_left.clear()
+	_enemy_path_cells.clear()
+	measure_enemy_work = false
+
+
+func spend_enemy_work(kind: int) -> bool:
+	if _enemy_work_left.is_empty():
+		return true
+	if _enemy_work_left[kind] <= 0:
+		return false
+	_enemy_work_left[kind] -= 1
+	return true
+
 ## Routes across the street, for anything that has to get somewhere it cannot
 ## see.
 ##
@@ -74,6 +110,15 @@ func nearest_walkable(cell: Vector2i) -> Vector2i:
 ##
 ## Sampled at a third of a cell, so no cell the line crosses is stepped over.
 func line_is_walkable(from: Vector3, to: Vector3) -> bool:
+	if not measure_enemy_work:
+		return _line_is_walkable(from, to)
+	var started := Time.get_ticks_usec()
+	var walkable := _line_is_walkable(from, to)
+	enemy_navigation_us += Time.get_ticks_usec() - started
+	return walkable
+
+
+func _line_is_walkable(from: Vector3, to: Vector3) -> bool:
 	if passage.has_area() and absf(to.z - from.z) > 0.001:
 		for z in [passage.position.y, passage.end.y]:
 			var fraction: float = (z - from.z) / (to.z - from.z)
@@ -110,12 +155,28 @@ func line_is_walkable(from: Vector3, to: Vector3) -> bool:
 ## The route from one world position to another, as world points on the ground.
 ## Empty if there is no way through.
 func route(from: Vector3, to: Vector3, lateral := 0.0) -> PackedVector3Array:
+	if not measure_enemy_work:
+		return _route(from, to, lateral)
+	var started := Time.get_ticks_usec()
+	var points := _route(from, to, lateral)
+	enemy_navigation_us += Time.get_ticks_usec() - started
+	return points
+
+
+func _route(from: Vector3, to: Vector3, lateral: float) -> PackedVector3Array:
 	var start := nearest_walkable(StreetMap.cell_at(from))
 	var goal := nearest_walkable(StreetMap.cell_at(to))
 	var points := PackedVector3Array()
 	if not is_walkable(start) or not is_walkable(goal):
 		return points
-	var cells := grid.get_id_path(start, goal)
+	var key := Vector4i(start.x, start.y, goal.x, goal.y)
+	var cells: Array[Vector2i]
+	if _enemy_path_cells.has(key):
+		cells = _enemy_path_cells[key]
+	else:
+		cells = grid.get_id_path(start, goal)
+		if not _enemy_work_left.is_empty():
+			_enemy_path_cells[key] = cells
 	for index in cells.size():
 		var cell := cells[index]
 		var point := StreetMap.cell_middle(cell)

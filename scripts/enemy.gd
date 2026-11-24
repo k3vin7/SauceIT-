@@ -434,6 +434,7 @@ var _memory_left := 0.0
 var _last_seen := Vector3.INF
 var _remote_position := Vector3.INF
 var _direct_left := 0.0
+var near_visuals := true
 var _direct_goal := Vector3.INF
 var _direct_route := false
 var _direct_offset := Vector3.ZERO
@@ -1712,11 +1713,16 @@ func _clear_escape_collision() -> void:
 func _perceive(targets: Array, delta: float, target_load: Dictionary) -> MayoPlayer:
 	sense_left -= delta
 	_memory_left = maxf(0.0, _memory_left - delta)
-	if sense_left <= 0.0:
+	if sense_left <= 0.0 and (targets.is_empty() or nav == null \
+			or nav.spend_enemy_work(StreetNav.EnemyWork.SENSE)):
 		sense_left = 0.10
 		var previous := _visible_target
 		var limit := give_up_range if _alerted else sight_range
+		var timed := nav != null and nav.measure_enemy_work
+		var started := Time.get_ticks_usec() if timed else 0
 		var candidate := _choose_pursuit_target(targets, limit, target_load)
+		if timed:
+			nav.enemy_visibility_us += Time.get_ticks_usec() - started
 		if candidate != previous:
 			_noticed_for = 0.0
 			if is_instance_valid(previous):
@@ -1751,9 +1757,10 @@ func _choose_pursuit_target(targets: Array, limit: float, target_load: Dictionar
 		var player := target as MayoPlayer
 		if not is_instance_valid(player) or player.state == MayoPlayer.State.DEAD:
 			continue
-		var distance := global_position.distance_to(player.global_position)
-		if distance > limit:
+		var distance_squared := global_position.distance_squared_to(player.global_position)
+		if distance_squared > limit * limit:
 			continue
+		var distance := sqrt(distance_squared)
 		var current := player == _visible_target
 		var assigned := int(target_load.get(player.peer_id, 0)) - int(current)
 		# Grunts favor a nearby player but ease off an already crowded target.
@@ -1841,6 +1848,8 @@ func _process(delta: float) -> void:
 		if _remote_position != Vector3.INF:
 			global_position = global_position.lerp(_remote_position, minf(delta * 24.0, 1.0))
 		_update_escape_clearance(delta)
+	if not near_visuals and _sight_ring == null:
+		return
 	if _brute_motion != null and is_alive():
 		var charging := is_charging() if authority else _remote_brute_charging
 		_brute_motion.advance_pose(delta, _brute_walking, charging)
@@ -2367,9 +2376,11 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 		# something. Facing `atan2(direction.x, direction.z)` instead turns its
 		# *back* to the target: it walks at you backwards, and then topples onto
 		# that back, which looks for all the world like falling forwards.
-		facing_yaw = rotate_toward(facing_yaw,
+		var next_yaw := rotate_toward(facing_yaw,
 			atan2(-flat.x, -flat.z), turn_speed * delta)
-		_apply_pose()
+		if next_yaw != facing_yaw:
+			facing_yaw = next_yaw
+			_apply_pose()
 	else:
 		velocity.x = 0.0
 		velocity.z = 0.0
@@ -2401,7 +2412,11 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 	else:
 		velocity.y -= fall_gravity * delta
 	var stood_at := global_position
+	var measuring := nav != null and nav.measure_enemy_work
+	var movement_started := Time.get_ticks_usec() if measuring else 0
 	move_and_slide()
+	if measuring:
+		nav.enemy_movement_us += Time.get_ticks_usec() - movement_started
 	var charge_hit: MayoPlayer
 	if brute_charge_step:
 		var hit_wall := false
@@ -2503,40 +2518,45 @@ func _crowd_direction(forward: Vector3, delta := 1.0 / 60.0) -> Vector3:
 	_passing_left = maxf(0.0, _passing_left - delta)
 	if crowd_hold and _crowd_smoothed.length_squared() >= 0.001:
 		return _crowd_smoothed
+	var measuring := nav != null and nav.measure_enemy_work
+	var crowd_started := Time.get_ticks_usec() if measuring else 0
 	_crowd_speed = 1.0
 	var direction := forward.normalized()
 	var right := direction.cross(Vector3.UP)
 	var steering := Vector3.ZERO
 	var blocked := false
-	for peer in crowd_peers:
+	var at := global_position
+	for peer: MayoEnemy in crowd_peers:
 		if peer == self or not is_instance_valid(peer) or not peer.is_alive() \
 				or peer.kind == EnemyKind.TOMATO_BALL:
 			continue
-		var offset: Vector3 = peer.global_position - global_position
+		var offset := peer.global_position - at
 		if absf(offset.y) > (height + peer.height) * 0.5:
 			continue
 		offset.y = 0.0
-		var distance := offset.length()
-		var spacing: float = radius + peer.radius + 0.7
-		if distance > spacing * 2.5:
+		var distance_squared := offset.length_squared()
+		var spacing := radius + peer.radius + 0.7
+		var steering_range := spacing * 2.5
+		if distance_squared > steering_range * steering_range:
 			continue
 		var ahead := offset.dot(direction)
 		var lateral := offset.dot(right)
-		if ahead > 0.0 and ahead < spacing * 2.5 and absf(lateral) < spacing:
+		if ahead > 0.0 and ahead < steering_range and absf(lateral) < spacing:
 			blocked = true
 			# Keep a stable passing side instead of switching every frame.
 			if _passing_left <= 0.0:
 				_passing_side = -signf(lateral) if absf(lateral) > 0.2 else _crowd_side
 				_passing_left = 1.0
 			_crowd_speed = minf(_crowd_speed, clampf(ahead / spacing, 0.3, 1.0))
-			steering += right * _passing_side * (1.0 - ahead / (spacing * 2.5)) * 1.8
-		if distance > 0.01 and distance < spacing:
+			steering += right * _passing_side * (1.0 - ahead / steering_range) * 1.8
+		if distance_squared > 0.0001 and distance_squared < spacing * spacing:
+			var distance := sqrt(distance_squared)
 			steering -= offset / distance * (1.0 - distance / spacing)
 	var desired := direction
 	if blocked or steering.length_squared() >= 0.001:
 		desired = (direction + steering.limit_length(1.2)).normalized()
 	var lookahead := maxf(radius * 2.0, 1.5)
-	if not _can_walk_straight_to(global_position + desired * lookahead):
+	if not _can_walk_straight_to(at + desired * lookahead):
 		# Wait briefly instead of alternating passing sides against a wall.
 		desired = direction
 		_crowd_speed = minf(_crowd_speed, 0.4)
@@ -2548,8 +2568,10 @@ func _crowd_direction(forward: Vector3, delta := 1.0 / 60.0) -> Vector3:
 	else:
 		_crowd_smoothed = _crowd_smoothed.slerp(desired, 1.0 - exp(-delta / 0.22)).normalized()
 	# Smoothing must not introduce a shortcut through a corner.
-	if not _can_walk_straight_to(global_position + _crowd_smoothed * lookahead):
+	if _crowd_smoothed != desired and not _can_walk_straight_to(at + _crowd_smoothed * lookahead):
 		_crowd_smoothed = direction
+	if measuring:
+		nav.enemy_crowd_us += Time.get_ticks_usec() - crowd_started
 	return _crowd_smoothed
 
 
@@ -2558,7 +2580,8 @@ func _step_toward(goal: Vector3, delta: float) -> Vector3:
 		return goal
 	if staged_senses:
 		_direct_left -= delta
-		if _direct_left <= 0.0 or _direct_goal.distance_squared_to(goal) > 4.0:
+		var new_goal := _direct_goal.distance_squared_to(goal) > 4.0
+		if (_direct_left <= 0.0 or new_goal) and nav.spend_enemy_work(StreetNav.EnemyWork.CHECK_STRAIGHT):
 			_direct_left = 0.13 + sense_left * 0.4
 			_direct_goal = goal
 			_direct_route = nav.line_is_walkable(global_position, goal)
@@ -2574,7 +2597,7 @@ func _step_toward(goal: Vector3, delta: float) -> Vector3:
 					var offset := side * _crowd_side * minf(radius * 2.0, 1.5)
 					if nav.line_is_walkable(global_position, goal + offset):
 						_direct_offset = offset
-		if _direct_route:
+		if _direct_route and _direct_goal.distance_squared_to(goal) <= 4.0:
 			_route.clear()
 			_repath_timer = 0.0
 			return goal + _direct_offset if global_position.distance_squared_to(goal) > 25.0 else goal
@@ -2583,14 +2606,18 @@ func _step_toward(goal: Vector3, delta: float) -> Vector3:
 		return goal
 
 	_repath_timer -= delta
+	var deferred := false
 	# Redone when the timer runs out, or at once if the player has left the part
 	# of the street the current route was drawn to.
 	if _repath_timer <= 0.0 or (not staged_senses and _route.is_empty()) \
 			or StreetMap.cell_at(goal) != StreetMap.cell_at(_route_goal):
-		_repath_timer = repath_interval
-		_route_goal = goal
-		_route = nav.route(global_position, goal, _crowd_side * radius if staged_senses else 0.0)
-		_route_step = 0
+		if nav.spend_enemy_work(StreetNav.EnemyWork.REPATH):
+			_repath_timer = repath_interval
+			_route_goal = goal
+			_route = nav.route(global_position, goal, _crowd_side * radius if staged_senses else 0.0)
+			_route_step = 0
+		else:
+			deferred = true
 
 	# Waypoints already passed are dropped rather than walked back to.
 	while _route_step < _route.size():
@@ -2599,7 +2626,7 @@ func _step_toward(goal: Vector3, delta: float) -> Vector3:
 		if flat.length() > StreetMap.CELL * waypoint_reached_cells:
 			return _route[_route_step]
 		_route_step += 1
-	return goal
+	return global_position if deferred else goal
 
 
 ## Whether the straight line to that point is walkable, which the router is

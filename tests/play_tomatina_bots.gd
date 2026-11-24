@@ -15,7 +15,6 @@ func run() -> void:
 	root.mode = Window.MODE_WINDOWED
 	root.size = Vector2i(1280, 720)
 	root.content_scale_size = Vector2i(1280, 720)
-	Engine.max_fps = 60
 	world = load("res://stage_2_tomatina.tscn").instantiate()
 	root.add_child(world)
 	team = preload("res://scripts/player_bot_team.gd").new()

@@ -1,7 +1,7 @@
 extends RefCounted
 const UI := preload("res://scripts/sauce_ui.gd")
 const DEFAULTS := {"window_mode": 2, "resolution": 0, "quality": 1,
-	"fov": 74.0, "motion": 1.0, "ui_scale": 1.0, "viewmodel": 0.88}
+	"fov": 74.0, "motion": 1.0, "ui_scale": 1.0, "viewmodel": 0.88, "show_fps": false}
 const RESOLUTIONS := [Vector2i(1280, 720), Vector2i(1600, 900), Vector2i(1920, 1080)]
 const ACTIONS := {"move_forward": "앞으로", "move_backward": "뒤로", "move_left": "왼쪽",
 	"move_right": "오른쪽", "run": "달리기", "jump": "점프", "wipe_screen": "고글 닦기",
@@ -72,6 +72,8 @@ func apply_world(world: Node) -> void:
 		light.shadow_enabled = int(settings.quality) > 0
 		light.directional_shadow_max_distance = 65.0 if int(settings.quality) == 1 else 95.0
 	world.get_viewport().scaling_3d_scale = [0.7, 0.85, 1.0][int(settings.quality)]
+	if world.has_method("set_fps_display_visible"):
+		world.set_fps_display_visible(bool(settings.show_fps))
 
 func build(display: VBoxContainer, view: VBoxContainer, keys: VBoxContainer) -> void:
 	cancel_key_capture()
@@ -81,6 +83,12 @@ func build(display: VBoxContainer, view: VBoxContainer, keys: VBoxContainer) -> 
 	_choice(display, "해상도 (창 모드)", "resolution", ["1280 × 720", "1600 × 900", "1920 × 1080"])
 	_choice(display, "그래픽 품질", "quality", ["낮음", "중간", "높음"])
 	_slider(display, "UI 크기", "ui_scale", 0.85, 1.25, 0.05)
+	var fps := CheckButton.new()
+	fps.name = "ShowFPS"
+	fps.text = "FPS 표시"
+	fps.button_pressed = bool(settings.show_fps)
+	display.add_child(fps)
+	_controls["show_fps"] = fps
 	_slider(view, "시야각", "fov", 60.0, 90.0, 1.0)
 	_slider(view, "화면 흔들림", "motion", 0.0, 1.0, 0.05)
 	_slider(view, "1인칭 소스통 크기", "viewmodel", 0.75, 1.0, 0.05)
@@ -152,7 +160,12 @@ func capture_key(event: InputEvent) -> bool:
 func commit() -> void:
 	for key in _controls:
 		var control: Control = _controls[key]
-		settings[key] = control.selected if control is OptionButton else control.value
+		if control is OptionButton:
+			settings[key] = control.selected
+		elif control is CheckButton:
+			settings[key] = control.button_pressed
+		else:
+			settings[key] = control.value
 	bindings = _binding_draft.duplicate()
 
 func _choice(parent: VBoxContainer, title: String, key: String, choices: Array) -> void:

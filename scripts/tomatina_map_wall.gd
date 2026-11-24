@@ -24,8 +24,9 @@ func _ready() -> void:
 
 
 func to_box(xf: Transform3D) -> Dictionary:
-	var turns := posmod(roundi(xf.basis.get_euler().y / (PI * 0.5)), 4)
-	var world_size := size if turns % 2 == 0 else Vector3(size.z, size.y, size.x)
+	var turns := posmod(roundi(xf.basis.orthonormalized().get_euler().y / (PI * 0.5)), 4)
+	var scaled := size * xf.basis.get_scale().abs()
+	var world_size := scaled if turns % 2 == 0 else Vector3(scaled.z, scaled.y, scaled.x)
 	return {"position": xf.origin + Vector3.UP * world_size.y * 0.5, "size": world_size}
 
 
