@@ -1,8 +1,8 @@
 extends Node3D
 
-enum Part { STANDARD, FAN, FOCUS, BURST, ARC, CANNON }
+enum Part { STANDARD, FAN, FOCUS, BURST, ARC, CANNON, SNIPER }
 
-## 번호는 `Part`와 같다. 이름만 바뀐 것: FAN은 이제 3갈래 노즐, ARC는 박격포 캡이다.
+## 번호는 `Part`와 같다. 이름만 바뀐 것: FAN은 3갈래 노즐, ARC는 박격포 캡이다.
 const CATALOG := [
 	["기본 노즐", "기본 연속 분사", 0, 0],
 	["3갈래 노즐", "기본 줄기 세 가닥 · 가닥마다 조금 가늘고 약함 · 소스 두 배 소모", 0, 5],
@@ -10,12 +10,15 @@ const CATALOG := [
 	["점사 밸브", "한 번 누를 때 짧게 세 발 분사", 1, 5],
 	["박격포 캡", "높이 쏘아 올려 떨어지며 터지는 소스 덩어리 · 흔들수록 멀리, 세게 · 아군도 맞음", 1, 6],
 	["대포형 소스통", "낮고 빠르게 날아가 터짐 · 한 발에 탱크 25%", 1, 7],
+	["저격 노즐", "가늘고 빠른 한 발 · 적 셋까지 꿰뚫음 · 누르고 있으면 조준, 떼면 발사", 1, 6],
 ]
 ## 덩어리를 쏘는 파츠. 전부 중력 `GRAVITY`를 받고 무언가에 닿을 때까지 난다 -- `life`는
 ## 허공으로 날아간 것을 치우는 상한일 뿐이다. `reach`는 조준점을 어디까지 찾는가(m).
 ## `blast`는 폭발 반경, `blast_damage`는 직접 맞지 않은 대상이 받는 피해(없으면 직격의 절반).
 const GRAVITY := 9.8
 const PROJECTILES := {
+	Part.SNIPER: {"speed": 55.0, "gravity": GRAVITY, "life": 4.0, "reach": 45.0, "size": 0.07,
+		"damage": 55.0, "blast": 0.0, "cost": 0.06, "cooldown": 1.2},
 	Part.BURST: {"speed": 32.0, "gravity": GRAVITY, "life": 6.0, "reach": 20.0, "size": 0.14,
 		"damage": 9.5, "blast": 0.0, "cost": 0.040, "cooldown": 0.48},
 	Part.ARC: {"speed": 17.0, "gravity": GRAVITY, "life": 10.0, "reach": 30.0, "size": 0.36,
@@ -25,6 +28,14 @@ const PROJECTILES := {
 }
 ## 3갈래 노즐: 기본 줄기와 똑같은 줄기 세 가닥이 이 각도씩 벌어져 나간다. 가닥마다 굵기와
 ## 피해가 `THREE_WAY_SCALE`배이고, 소스는 기본의 `THREE_WAY_FLOW`배로 나간다.
+## 저격 노즐: 발사 버튼을 누르고 있으면 화면이 `SNIPER_ZOOM`배로 당겨지고, 떼면 한 발 나간다.
+## 한 발이 적을 `SNIPER_PIERCE`마리까지 차례로 맞히고(병을 흔들어 쏘면 한 마리 더), 한 마리를
+## 지날 때마다 피해가 `SNIPER_PIERCE_FALLOFF`배가 된다. 벽이나 바닥에 닿으면 거기서 끝난다.
+const SNIPER_PIERCE := 3
+const SNIPER_PIERCE_FALLOFF := 0.8
+const SNIPER_ZOOM := 0.45
+## 흔들기 게이지가 이만큼은 차 있어야 한 마리 더 꿰뚫는다.
+const SNIPER_SHAKE_THRESHOLD := 0.5
 const THREE_WAY_ANGLE := deg_to_rad(15.0)
 const THREE_WAY_SCALE := 0.8
 const THREE_WAY_FLOW := 2.0
@@ -60,7 +71,7 @@ const COIN_PICKUP_RADIUS := 1.45
 const GRUNT_DROP_CHANCE := 0.15
 const SPECIAL_DROP_CHANCE := 0.50
 const TIP_COLORS := [Color.WHITE, Color("6bb9ac"), Color("78a3cf"),
-	Color("c589d9"), Color("dfab60"), Color("b85e41")]
+	Color("c589d9"), Color("dfab60"), Color("b85e41"), Color("3f4a5c")]
 
 var world: Node3D
 var dirty := false
@@ -89,6 +100,8 @@ static func tip_reach(part: int) -> float:
 			return 0.09
 		Part.CANNON:
 			return 0.205
+		Part.SNIPER:
+			return 0.26
 		_:
 			return 0.115
 
@@ -113,6 +126,11 @@ static func build_tip(part: int, mount: Node3D, at: Vector3) -> Node3D:
 		barrel.height = 0.23 if part != Part.CANNON else 0.41
 		barrel.bottom_radius = 0.085 if part != Part.CANNON else 0.16
 		barrel.top_radius = 0.04 if part == Part.FOCUS else barrel.bottom_radius * 0.87
+		if part == Part.SNIPER:
+			# 길고 가는 총열.
+			barrel.height = 0.52
+			barrel.bottom_radius = 0.05
+			barrel.top_radius = 0.03
 		body.mesh = barrel
 		body.rotation.x = -PI * 0.5 + (0.32 if part == Part.ARC else 0.0)
 	tip.add_child(body)
@@ -283,6 +301,8 @@ func show_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vec
 		var shot := {"node": glob, "peer": peer, "part": part, "sauce": sauce,
 			"velocity": direction * float(profile.speed), "left": profile.life,
 			"launch_speed": direction.length() * float(profile.speed),
+			# 저격 노즐을 흔들어 쏜 것은 `direction`이 그만큼 길다: 한 마리 더 꿰뚫는다.
+			"pierce_limit": SNIPER_PIERCE + (1 if direction.length() > 1.0001 else 0),
 			"head": origin, "origin": origin, "age": 0.0, "draw_offset": draw_offset}
 		if sweep_from.is_finite():
 			shot["sweep_from"] = sweep_from
@@ -307,14 +327,28 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 		shot.erase("sweep_from")
 		var query := PhysicsRayQueryParameters3D.create(sweep, to)
 		var shooter = world.shooter_for(shot.peer)
+		var skipped: Array = (shot.get("passed", []) as Array).duplicate()
 		if shooter != null:
-			query.exclude = [shooter.player.get_rid()]
+			skipped.push_back(shooter.player.get_rid())
+		query.exclude = skipped
 		var hit := get_world_3d().direct_space_state.intersect_ray(query)
 		shot.left -= delta
 		if authority:
 			world._cut_cheese_by_stream(from, to if hit.is_empty() else hit.position)
 		if not hit.is_empty():
 			world._part_projectile_impact(hit, shot, profile, shooter, authority)
+			# 저격 노즐: 적을 맞히고도 계속 난다, 정해진 수만큼. 맞힌 적은 다시 맞히지 않는다.
+			if shot.part == Part.SNIPER and hit.collider is MayoEnemy and shot.left > 0.0:
+				shot.pierced = int(shot.get("pierced", 0)) + 1
+				if int(shot.pierced) < int(shot.get("pierce_limit", SNIPER_PIERCE)):
+					var passed: Array = shot.get("passed", [])
+					passed.push_back((hit.collider as CollisionObject3D).get_rid())
+					shot.passed = passed
+					shot.damage_scale = float(shot.get("damage_scale", 1.0)) * SNIPER_PIERCE_FALLOFF
+					shot.head = hit.position
+					shot.age = float(shot.age) + delta
+					_place_shot(shot, profile)
+					continue
 		elif shot.left > 0.0:
 			shot.head = to
 			shot.age = float(shot.age) + delta

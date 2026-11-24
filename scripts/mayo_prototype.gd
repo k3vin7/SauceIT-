@@ -1152,6 +1152,8 @@ var _view_aspect := 16.0 / 9.0
 ## frustum is widened and the extra is covered by bars, so the part that is left
 ## showing is exactly the frustum the mask was painted against.
 var _rendered_fov := 74.0
+## 저격 노즐로 얼마나 당겨 보고 있는가, 0(평소)~1(다 당김). 이 화면의 것일 뿐 보내지 않는다.
+var _sniper_zoom := 0.0
 var _letterbox: Array[ColorRect] = []
 var _view_layout := Rect2()
 var _hud_layer: CanvasLayer
@@ -1860,7 +1862,10 @@ func _advance_part_trigger(shooter: Shooter, delta: float) -> void:
 		return
 	_decide_nozzle(shooter, delta, false)
 	shooter.part_cooldown = maxf(0.0, shooter.part_cooldown - delta)
-	if shooter.firing and not shooter.part_trigger_down:
+	# 저격 노즐은 누르고 있는 동안 조준하고, 떼는 순간 나간다. 나머지는 누르는 순간.
+	var sniper := shooter.sauce_part == SauceParts.Part.SNIPER
+	if (shooter.part_trigger_down and not shooter.firing) if sniper \
+			else (shooter.firing and not shooter.part_trigger_down):
 		shooter.part_press_left = PART_PRESS_BUFFER
 	else:
 		shooter.part_press_left = maxf(0.0, shooter.part_press_left - delta)
@@ -1887,7 +1892,7 @@ func _advance_part_trigger(shooter: Shooter, delta: float) -> void:
 				shooter.part_shots_left -= 1
 				shooter.part_cooldown = 0.10 if shooter.part_shots_left > 0 else cooldown
 				_fire_part_volley(shooter)
-		SauceParts.Part.ARC, SauceParts.Part.CANNON:
+		SauceParts.Part.SNIPER, SauceParts.Part.ARC, SauceParts.Part.CANNON:
 			if pressed and shooter.sauce >= cost:
 				shooter.sauce -= cost
 				shooter.part_cooldown = cooldown
@@ -1916,6 +1921,15 @@ func mortar_launch_velocity(shooter: Shooter, charge: float) -> Vector3:
 func _charge_hold_seconds(shooter: Shooter) -> float:
 	return SauceParts.MORTAR_CHARGE_HOLD if shooter.sauce_part == SauceParts.Part.ARC \
 		else bottle_charge_hold_seconds
+
+
+## 이 화면의 플레이어가 지금 저격 노즐로 조준하고 있는가: 저격 노즐을 끼고, 병을 들고,
+## 발사 버튼을 누르고 있는 동안. 떼면 한 발 나가고 화면이 돌아온다.
+func _sniper_aiming() -> bool:
+	if _local == null or not _input_enabled or _local.sauce_part != SauceParts.Part.SNIPER:
+		return false
+	return _local.firing and _local.sauce > 0.0 and selected_item_slot(_local.peer_id) == 0 \
+		and _refuge_shop_room < 0 and _local.player.state == MayoPlayer.State.NORMAL
 
 
 func _is_three_way(shooter: Shooter) -> bool:
@@ -2000,8 +2014,14 @@ func _fire_part_volley(shooter: Shooter) -> void:
 	# The primed shot, for a part: thrown harder, so it carries further. The
 	# speed rides on the length of `forward`, which every peer is sent. Not the
 	# lob -- that one is aimed at a spot, and faster would only overshoot it.
+	var shaken := shooter.bottle_charge
 	_spend_bottle_buff(shooter)
-	if shooter.bottle_boosting and shooter.sauce_part != SauceParts.Part.ARC:
+	if shooter.sauce_part == SauceParts.Part.SNIPER:
+		# 저격 노즐을 흔들어 쏘면 더 빨라지는 대신 한 마리를 더 꿰뚫는다. 그 표시는 `forward`의
+		# 길이에 아주 조금 실려 모든 화면에 간다(`SauceParts.show_volley`가 읽는다).
+		if shaken >= SauceParts.SNIPER_SHAKE_THRESHOLD:
+			forward *= 1.001
+	elif shooter.bottle_boosting and shooter.sauce_part != SauceParts.Part.ARC:
 		forward *= 1.0 + bottle_charge_speed_bonus * shooter.bottle_boost_strength
 	show_part_volley(shooter.peer_id, shooter.sauce_part, shooter.sauce_kind, origin, forward)
 	if is_instance_valid(_net) and _net.is_online():
@@ -2815,7 +2835,9 @@ func apply_look(relative: Vector2) -> void:
 	# only declines to move it for the beat it is talking over.
 	if _tutorial != null and not _tutorial.allows_looking():
 		return
-	var radians_per_pixel := deg_to_rad(mouse_sensitivity)
+	# 저격 노즐로 당겨 보는 동안에는 그만큼 천천히 돈다.
+	var radians_per_pixel := deg_to_rad(mouse_sensitivity) \
+		* lerpf(1.0, SauceParts.SNIPER_ZOOM, smoothstep(0.0, 1.0, _sniper_zoom))
 	_local.aim_yaw = wrapf(_local.aim_yaw - relative.x * radians_per_pixel, -PI, PI)
 	var limit := deg_to_rad(pitch_limit_degrees)
 	_local.aim_pitch = clampf(_local.aim_pitch - relative.y * radians_per_pixel, -limit, limit)
@@ -6985,7 +7007,9 @@ func _aim_basis(shooter: Shooter = null) -> Basis:
 func _update_camera() -> void:
 	if _local == null or not is_instance_valid(_camera) or not is_instance_valid(_player):
 		return
-	_camera.fov = _rendered_fov
+	_sniper_zoom = move_toward(_sniper_zoom, 1.0 if _sniper_aiming() else 0.0,
+		get_process_delta_time() * 7.0)
+	_camera.fov = _rendered_fov * lerpf(1.0, SauceParts.SNIPER_ZOOM, smoothstep(0.0, 1.0, _sniper_zoom))
 	var aim_basis := _aim_basis()
 	var eye := _player.render_position() + Vector3.UP * eye_height
 	var tilt := _player.fall_tilt()
@@ -7437,7 +7461,7 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 	if target.is_in_group("mayo_floor"):
 		_record_floor_splat(shooter, shooter.burst_index, at, sauce)
 	elif target.is_in_group("mayo_contaminable"):
-		var direct: float = profile.damage
+		var direct: float = float(profile.damage) * float(shot.get("damage_scale", 1.0))
 		if target is MayoEnemy:
 			direct = SauceParts.scaled_damage(direct, target as MayoEnemy)
 		_record_splat(target, at, normal, shooter, true, sauce, direct)

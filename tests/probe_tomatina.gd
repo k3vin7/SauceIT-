@@ -910,12 +910,48 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 	shooter.points.clear()
 	shooter.sauce = 1.0
 	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.FOCUS), "focus purchase failed")
+	_check(not scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.SNIPER), "first shop sold the sniper")
 	scene._emit_point(shooter)
 	_check(shooter.points.back().range_scale > 1.0, "focus did not extend the jet")
 	shooter.points.clear()
 	system.reset()
 
 	player.global_position = TomatinaMap.refuge_shop_at(1) + Vector3.UP * 1.28
+	# 저격 노즐: 누르고 있는 동안은 조준만 하고, 떼는 순간 가늘고 빠른 한 발이 나간다.
+	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.SNIPER), "sniper purchase failed")
+	shooter.firing = true
+	for i in 5:
+		scene._advance_strand(shooter, 0.05)
+	_check(system._projectiles.is_empty() and shooter.points.is_empty(), "the sniper fired while the trigger was still held")
+	shooter.firing = false
+	scene._advance_strand(shooter, 0.01)
+	_check(system._projectiles.size() == 1 and absf(system._projectiles[0].velocity.length() - 55.0) < 0.5 \
+		and int(system._projectiles[0].pierce_limit) == parts.SNIPER_PIERCE,
+		"letting go did not fire one 55 m/s shot that pierces three")
+	_check(absf((1.0 - shooter.sauce) - 0.06) < 0.001, "a sniper shot does not cost 6% of the tank")
+	system.reset()
+	# 흔들어 쏘면 한 마리 더 꿰뚫는다(더 빨라지지는 않는다).
+	scene._advance_strand(shooter, 1.3)
+	shooter.bottle_charge = 1.0
+	shooter.firing = true
+	scene._advance_strand(shooter, 0.05)
+	shooter.firing = false
+	scene._advance_strand(shooter, 0.01)
+	_check(system._projectiles.size() == 1 and int(system._projectiles[0].pierce_limit) == parts.SNIPER_PIERCE + 1 \
+		and absf(system._projectiles[0].velocity.length() - 55.0) < 0.5, "a shaken sniper shot does not pierce four")
+	# 일반 토마토는 한 발에, 네 번째로 꿰뚫린 것까지 쓰러진다.
+	var grunt_health := 40.0
+	var per_shot: float = parts.PROJECTILES[parts.Part.SNIPER].damage * 0.65 / parts.REFERENCE_HIT_DAMAGE
+	_check(per_shot * pow(parts.SNIPER_PIERCE_FALLOFF, 3.0) >= grunt_health,
+		"the fourth body a sniper shot passes is not downed in one: %.1f" % (per_shot * pow(parts.SNIPER_PIERCE_FALLOFF, 3.0)))
+	# 이 검사는 흔들기 게이지를 돌리는 단계(`_advance_bottle_charge`)를 부르지 않으므로, 방금
+	# 쓴 강화가 다음 파츠로 넘어가지 않게 손으로 끈다.
+	shooter.bottle_charge = 0.0
+	shooter.bottle_boosting = false
+	shooter.points.clear()
+	shooter.sauce = 1.0
+	system.reset()
+
 	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.BURST), "burst purchase failed")
 	shooter.firing = true
 	scene._advance_strand(shooter, 0.01)
