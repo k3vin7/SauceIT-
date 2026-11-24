@@ -1249,6 +1249,9 @@ var _press_king: PressKing
 const TRUCK_ARRIVAL_CUE := 20
 const TRUCK_ARRIVAL_TAG := -995
 const TRUCK_ESCAPE_CUE := 21
+const BREAKOUT_RATTLE_CUE := 22
+const BREAKOUT_BREACH_CUE := 23
+const BREAKOUT_TAG := -994
 var _truck_arrival: Node3D
 var _pump_generator: Node3D
 ## The festival-goers lying in the streets: searchable, and the sauce sticks.
@@ -3235,6 +3238,8 @@ func reset_for_join() -> void:
 	_hose_users.clear()
 	if map_kind == MapKind.TOMATINA:
 		_reset_tomatina_finale()
+		for breakout in _street_breakouts:
+			breakout.reset()
 		_sauce_parts.reset()
 	# A tutorial roster is appended by the host. Discard offline spawns before
 	# receiving that roster, otherwise late joining duplicates enemy indices.
@@ -4631,9 +4636,11 @@ func _build_street() -> void:
 var _tomatina_checkpoint := -1
 var tomatina_shortcut_open := false
 var _tomatina_art: TomatinaVillageArt
-var _market_ambush_enemy: MayoEnemy
-var _market_bowler: MayoEnemy
-var _market_ambush_started := false
+const TomatinaBreakout := preload("res://scripts/tomatina_breakout.gd")
+const BREAKOUT_RANGE := 16.0
+const BREAKOUT_RATTLE_SECONDS := 0.30
+const BREAKOUT_LATCH := preload("res://assets/audio/tomatina_intro/bongo_latch.wav")
+var _street_breakouts: Array[TomatinaBreakout] = []
 var _tomatina_entrance: Node3D
 var _tomatina_intro: Node3D
 
@@ -5404,23 +5411,22 @@ func _build_enemies() -> void:
 		for entry in TomatinaMap.roster():
 			var site := TomatinaMap.at_cell(entry[1])
 			var tag: Variant = entry[2] if entry.size() > 2 else null
-			if tag == &"terrace_spitter":
-				site.y = TomatinaMap.at_cell(TomatinaMap.STREET_PROFILE.TERRACE_CURB).y + TomatinaMap.ARCADE_DECK_TOP
+			var deck := TomatinaMap.balcony_deck_height(site) if tag == &"terrace_spitter" else INF
+			if deck != INF:
+				site.y = deck
 			var index := _add_tomatina_enemy(int(TOMATINA_KINDS[entry[0]]), site)
 			var enemy := _enemies[index]
-			match tag:
-				&"terrace_spitter":
-					enemy.move_speed = 0.0
-				&"market_bowler":
-					_market_bowler = enemy
-					var approach := TomatinaMap.at_cell(TomatinaMap.STREET_PROFILE.MARKET_APPROACH)
-					enemy.bowling_lane = Vector3(approach.x - site.x, 0.0, approach.z - site.z).normalized()
-				&"cross_street_bowler":
-					enemy.bowling_lane = Vector3.LEFT
-				&"market_ambush":
-					_market_ambush_enemy = enemy
 			var leg := TomatinaMap.encounter_at(StreetMap.cell_at(enemy.position))
 			enemy.set_meta("encounter", leg)
+			if deck != INF:
+				enemy.move_speed = 0.0
+				enemy.set_meta("balcony_guard", true)
+			elif TomatinaMap.BOWLER_TARGETS.has(tag):
+				var approach := TomatinaMap.at_cell(TomatinaMap.BOWLER_TARGETS[tag])
+				enemy.bowling_lane = Vector3(approach.x - site.x, 0.0, approach.z - site.z).normalized()
+				enemy.set_meta("bowling_post", tag)
+			elif tag in [&"market_ambush", &"truck_ambush"] and TomatinaMap.street_profile_enabled():
+				_build_street_breakout(enemy, tag, leg)
 			if entry.size() > 2:
 				if entry[2] is int:
 					enemy.set_meta("alley_ambush", entry[2])
@@ -5803,6 +5809,8 @@ func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Sho
 		source: MayoEnemy = null, single_blast := false) -> void:
 	for other in _blast_candidates(centre, radius):
 		if other == source or not is_instance_valid(other):
+			continue
+		if other.hidden_in_breakout:
 			continue
 		if other.global_position.distance_to(centre) > radius:
 			continue
@@ -6746,23 +6754,91 @@ const ALLEY_AMBUSH_HALF_WIDTH := 12.0
 var _sprung_alley_ambushes := {}
 
 
-func _advance_market_ambush(players: Array) -> void:
-	if _market_ambush_started or not is_instance_valid(_market_ambush_enemy) or not _market_ambush_enemy.is_alive():
+func _build_street_breakout(enemy: MayoEnemy, tag: StringName, leg: int) -> void:
+	var breakout := TomatinaBreakout.new()
+	breakout.name = "TruckBreakout" if tag == &"truck_ambush" else "MarketBreakout"
+	breakout.tag = tag
+	breakout.leg = leg
+	var cab: ContaminableObject
+	if tag == &"truck_ambush":
+		var truck := TomatinaMap.breakout_truck_boxes()
+		_create_wall(truck[1].name, truck[1].position, truck[1].size, truck[1].color, true, true)
+		cab = _walls.back()
+		_create_wall(truck[0].name, truck[0].position, truck[0].size, truck[0].color, true, true)
+		var occupied := TomatinaMap.blocked_cells(false)
+		occupied.merge(TomatinaMap._box_cells([truck[1]] as Array[Dictionary]))
+		var floor_cells := TomatinaMap.floor_cells()
+		for cell: Vector2i in TomatinaMap._box_cells([truck[0]] as Array[Dictionary]):
+			if floor_cells.has(cell) and not occupied.has(cell):
+				breakout.parking_cells.append(cell)
+	else:
+		var sill := TomatinaMap.at_cell(TomatinaMap.STREET_PROFILE.MARKET_SHUTTER)
+		var size := TomatinaBreakout.SHUTTER_SIZE
+		_create_wall("MarketShutter", sill + Vector3.UP * (size.y * 0.5), size, Color("725045"), true, true)
+	add_child(breakout)
+	breakout.build(enemy, _walls.back(), cab)
+	_street_breakouts.append(breakout)
+
+
+func _advance_street_breakout(breakout: TomatinaBreakout, delta: float, players: Array) -> void:
+	if not _is_authority() or breakout.opened:
 		return
-	if is_instance_valid(_market_bowler):
-		var crest := _market_bowler.global_position
-		for ball in _market_bowler.ball_pool:
-			if ball.is_ball_live() and ball.global_position.distance_squared_to(crest) < 144.0:
-				return
-	var trip := TomatinaMap.at_cell(TomatinaMap.STREET_PROFILE.MARKET_TRIP)
+	if breakout.windup > 0.0:
+		breakout.windup = maxf(0.0, breakout.windup - delta)
+		if breakout.windup <= 0.0001:
+			breakout.windup = 0.0
+			var direction := breakout.charge.normalized()
+			breakout.enemy.begin_breach_charge(direction, breakout.charge.length() + 2.8)
+			_emit_breakout_cue(breakout, BREAKOUT_BREACH_CUE, direction, 0.36)
+		return
+	var nearest := BREAKOUT_RANGE * BREAKOUT_RANGE
+	var charge := Vector3.ZERO
 	for player: MayoPlayer in players:
 		if player.state != MayoPlayer.State.NORMAL:
 			continue
-		var offset := player.global_position - trip
-		if Vector2(offset.x, offset.z).length_squared() <= 16.0 \
-				and _market_ambush_enemy.begin_corner_charge(player):
-			_market_ambush_started = true
-			return
+		var at := player.global_position
+		var offset := at - breakout.global_position
+		var ground := TomatinaMap.ground_height(at)
+		var distance := Vector2(offset.x, offset.z).length_squared()
+		if offset.z > -1.4 or distance > nearest \
+				or absf(at.y - ground - MayoPlayer.CAPSULE_HEIGHT * 0.5) > 1.5:
+			continue
+		if not _breakout_lane_clear(breakout, at, ground):
+			continue
+		nearest = distance
+		charge = at - breakout.enemy.global_position
+		charge.y = 0.0
+	if not charge.is_zero_approx():
+		breakout.charge = charge
+		breakout.windup = BREAKOUT_RATTLE_SECONDS
+		_emit_breakout_cue(breakout, BREAKOUT_RATTLE_CUE, Vector3.ZERO, BREAKOUT_RATTLE_SECONDS)
+
+
+func _breakout_lane_clear(breakout: TomatinaBreakout, at: Vector3, ground: float) -> bool:
+	# Sweep the brute's width so a clear eye line around the pier can't send
+	# its shoulders into stone. Only the breakable part is removed by the charge.
+	var brute := breakout.enemy
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = (brute.get_node("Body") as CollisionShape3D).shape
+	query.collision_mask = 1
+	query.transform.origin = brute.global_position + Vector3.UP * 0.14
+	query.motion = Vector3(at.x, ground + brute.stand_height() + 0.14, at.z) - query.transform.origin
+	var ignored: Array[RID] = [breakout.solid.get_rid()]
+	for shooter: Shooter in _shooters.values():
+		ignored.append(shooter.player.get_rid())
+	for body: MayoEnemy in _enemies:
+		if body.global_position.distance_squared_to(brute.global_position) < (BREAKOUT_RANGE + 5.0) ** 2:
+			ignored.append(body.get_rid())
+	query.exclude = ignored
+	var fraction := get_world_3d().direct_space_state.cast_motion(query)
+	return fraction.size() == 2 and fraction[0] >= 0.999
+
+
+func _emit_breakout_cue(breakout: TomatinaBreakout, cue: int, direction: Vector3, duration: float) -> void:
+	var at := breakout.global_position
+	show_combat_warning(at, direction, duration, cue)
+	if is_instance_valid(_net) and _net.is_online():
+		_net.broadcast_combat_warning(at, direction, duration, cue)
 
 
 func _advance_alley_ambushes(encounter_targets: Array) -> void:
@@ -6808,7 +6884,9 @@ func _advance_enemies(delta: float) -> void:
 					alley_targets.push_back(player)
 		if not _horde_spawned:
 			_advance_alley_ambushes(encounter_targets)
-			_advance_market_ambush(encounter_targets[1])
+		for breakout in _street_breakouts:
+			if breakout.leg >= 0:
+				_advance_street_breakout(breakout, delta, encounter_targets[breakout.leg])
 	# Who each body has to steer round, bucketed once a tick rather than every
 	# body reading every other. With the horde in that was 270 bodies squared
 	# a tick, and it was the whole of the lag -- see `_crowd_neighbours`.
@@ -6826,6 +6904,8 @@ func _advance_enemies(delta: float) -> void:
 		_nav.begin_enemy_tick(debug_profile_enabled)
 	for index in _enemies.size():
 		var enemy: MayoEnemy = _enemies[index]
+		if enemy.hidden_in_breakout:
+			continue
 		# Which of the party this one is coming for. Normally all of them, and the
 		# body picks the nearest; the tutorial narrows it for the opening fight so
 		# a party of two is not both rushers' problem while the other player
@@ -6834,8 +6914,6 @@ func _advance_enemies(delta: float) -> void:
 		if map_kind == MapKind.TOMATINA:
 			var leg := int(enemy.get_meta("encounter", 3))
 			chasing = encounter_targets[leg]
-			if enemy == _market_ambush_enemy and not _market_ambush_started:
-				chasing = []
 			if enemy.has_meta("alley_ambush"):
 				var group := int(enemy.get_meta("alley_ambush"))
 				if _horde_spawned or not _sprung_alley_ambushes.has(group):
@@ -6909,6 +6987,8 @@ func _crowd_buckets() -> Dictionary:
 	for other in _enemies:
 		if not is_instance_valid(other) or not other.is_alive() \
 				or other.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			continue
+		if other.hidden_in_breakout:
 			continue
 		var key := _crowd_cell(other.global_position)
 		if not buckets.has(key):
@@ -10235,6 +10315,23 @@ func _on_special_warning(enemy: MayoEnemy, direction: Vector3, duration: float) 
 
 
 func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: int) -> void:
+	if cue == BREAKOUT_RATTLE_CUE or cue == BREAKOUT_BREACH_CUE:
+		for breakout in _street_breakouts:
+			if at.distance_squared_to(breakout.global_position) > 0.01:
+				continue
+			var truck := breakout.tag == &"truck_ambush"
+			if cue == BREAKOUT_RATTLE_CUE and not breakout.opened:
+				breakout.rattle(duration)
+				_play_combat_warning(at, 170.0 if truck else 190.0, duration, BREAKOUT_LATCH)
+			elif cue == BREAKOUT_BREACH_CUE and not breakout.played_break:
+				if not breakout.opened:
+					breakout.set_open(true)
+				breakout.burst(direction)
+				if is_instance_valid(play_support):
+					play_support.prioritize_sound(0.55)
+				_play_combat_warning(at, 185.0 if truck else 265.0, duration, _tomato_blast_sound)
+			break
+		return
 	if cue == TRUCK_ARRIVAL_CUE:
 		if is_instance_valid(_truck_arrival):
 			_truck_arrival.start(at)
@@ -10513,6 +10610,12 @@ func tomatina_status() -> PackedFloat64Array:
 	data.append(_finale_elapsed if _horde_spawned else -1.0)
 	if is_instance_valid(_truck_arrival):
 		data.append_array(PackedFloat64Array([TRUCK_ARRIVAL_TAG,-1.0 if not _truck_arrival.played else (100.0 if _truck_arrival.arrived else _truck_arrival.elapsed)]))
+	var broken_covers := 0
+	for index in _street_breakouts.size():
+		if _street_breakouts[index].opened:
+			broken_covers |= 1 << index
+	if broken_covers != 0:
+		data.append_array(PackedFloat64Array([BREAKOUT_TAG, broken_covers]))
 	data.append_array(PackedFloat64Array([FINALE_CHECKPOINT_TAG, _tomatina_checkpoint, HOSE_PENDING_TAG, _hose_wave_pending]))
 	if is_instance_valid(_press_king):
 		data.append_array(PackedFloat64Array([PRESS_KING_WASH_TAG, _press_king.wash_progress()]))
@@ -10557,6 +10660,12 @@ func apply_tomatina_status(data: PackedFloat64Array) -> void:
 				elif not _truck_arrival.played:
 					_truck_arrival.start(_truck_arrival.final_at)
 					_truck_arrival.elapsed = data[at+1]
+			continue
+		if data[at] == BREAKOUT_TAG:
+			var broken_covers := int(data[at + 1])
+			for index in _street_breakouts.size():
+				if (broken_covers & (1 << index)) != 0 and not _street_breakouts[index].opened:
+					_street_breakouts[index].set_open(true)
 			continue
 		if data[at] == FINALE_CHECKPOINT_TAG:
 			_tomatina_checkpoint = int(data[at + 1])

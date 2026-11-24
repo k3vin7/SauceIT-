@@ -9,17 +9,21 @@ func _initialize() -> void:
 	var props := TomatinaMap.debris_boxes()
 	props.append_array(TomatinaMap.parked_trucks())
 	props.append(TomatinaMap.fire_truck_box())
+	props.append_array(TomatinaMap.breakout_truck_boxes())
 	var blocked := TomatinaMap._box_cells(props)
 	blocked.merge(TomatinaMap.market_gate_cells())
 	for entry in roster:
 		var at: Vector2 = entry[1]
 		var cell := Vector2i(at.floor())
 		assert(not occupied.has(cell), "overlapping enemy spawns")
-		assert(not blocked.has(cell), "enemy inside prop")
+		var tag: Variant = entry[2] if entry.size() > 2 else null
+		assert(not blocked.has(cell) or tag in [&"terrace_spitter", &"truck_ambush"], "enemy inside prop")
 		assert(TomatinaMap.safe_room_at(cell) < 0, "enemy in safe room")
 		assert(TomatinaMap.floor_cells().has(cell), "enemy outside floor")
 		occupied[cell] = true
-		if not TomatinaMap.PLAZA.has_point(cell):
+		if tag == &"terrace_spitter":
+			assert(TomatinaMap.balcony_deck_height(TomatinaMap.at_cell(at)) != INF, "balcony guard has no deck")
+		elif not TomatinaMap.PLAZA.has_point(cell):
 			assert(TomatinaMap.route_distance(at, TomatinaMap.encounter_at(cell)) <= TomatinaMap.ROSTER_ROUTE_REACH)
 		if entry.size() > 2 and entry[2] is int:
 			ambushes[entry[2]] = int(ambushes.get(entry[2], 0)) + 1

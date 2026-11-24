@@ -225,7 +225,20 @@ const STREET_ELITES := [
 	["BOWLING_TOMATO", STREET_PROFILE.MARKET_CREST, &"market_bowler"],
 	["BOWLING_TOMATO", STREET_PROFILE.CROSS_STREET_BOWLER, &"cross_street_bowler"],
 	["TOMATO_BRUTE", STREET_PROFILE.MARKET_AMBUSH, &"market_ambush"],
+	["TOMATO_BRUTE", STREET_PROFILE.TRUCK_AMBUSH, &"truck_ambush"],
+	["KETCHUP_SPITTER", Vector2(29.42, 218.5), &"terrace_spitter"],
+	["KETCHUP_SPITTER", Vector2(15.5, 166.42), &"terrace_spitter"],
+	["KETCHUP_SPITTER", Vector2(35.42, 71.5), &"terrace_spitter"],
+	["KETCHUP_SPITTER", Vector2(33.42, 38.5), &"terrace_spitter"],
+	["BOWLING_TOMATO", STREET_PROFILE.TERRACE_BOWLER, &"terrace_bowler"],
+	["BOWLING_TOMATO", STREET_PROFILE.RESCUE_CLIMB_BOWLER, &"rescue_climb_bowler"],
 ]
+const BOWLER_TARGETS := {
+	&"market_bowler": STREET_PROFILE.MARKET_APPROACH,
+	&"cross_street_bowler": STREET_PROFILE.CROSS_STREET_BOWLER + Vector2.LEFT,
+	&"terrace_bowler": Vector2(26.4, 215.8),
+	&"rescue_climb_bowler": Vector2(15.5, 97.25),
+}
 
 const ARCADES := [
 	[Vector2i(29, 218), Vector2i.RIGHT], [Vector2i(28, 217), Vector2i.RIGHT],
@@ -263,6 +276,31 @@ static func arcade_fronts() -> Array[Transform3D]:
 
 static func market_corner_box() -> Dictionary:
 	return metre_box(Vector2(21.75, 164.39), Vector3(1.35, 6.1, 5.8), "MarketCornerPier", Color("bda187"))
+
+
+static func balcony_deck_height(at: Vector3) -> float:
+	for front in arcade_fronts():
+		var local := front.affine_inverse() * at
+		if absf(local.x) < StreetMap.CELL * 0.5 and local.z > 0.0 and local.z < ARCADE_DEPTH:
+			return front.origin.y + ARCADE_DECK_TOP
+	return INF
+
+
+static func breakout_truck_boxes() -> Array[Dictionary]:
+	if not street_profile_enabled():
+		return []
+	var cargo := STREET_PROFILE.TRUCK_AMBUSH
+	if authored != null:
+		var entry: Array = authored.roster.filter(func(actor: Array) -> bool:
+			return actor.size() > 2 and actor[2] == &"truck_ambush")
+		if entry.is_empty():
+			return []
+		cargo = entry[0][1]
+	return [
+		metre_box(cargo, Vector3(3.5, 3.25, 3.85), "AmbushTruckCargo", Color("375b57")),
+		metre_box(cargo + Vector2.DOWN * (2.75 / StreetMap.CELL),
+			Vector3(3.45, 2.95, 1.76), "AmbushTruckCab", Color("bdd2ad")),
+	]
 
 
 # Each group is centred on a distance along its leg.
@@ -323,6 +361,7 @@ static func roster(changes: Array = []) -> Array:
 	var props := debris_boxes()
 	props.append_array(parked_trucks())
 	props.push_back(fire_truck_box())
+	props.append_array(breakout_truck_boxes())
 	var taken := _box_cells(props)
 	taken.merge(market_gate_cells())
 	taken[Vector2i(PRESS_KING_CELL)] = true
@@ -415,7 +454,11 @@ static func _align_roster_to_route(entries: Array, props: Array,
 	var keep := {}
 	for index in entries.size():
 		var cell := Vector2i((entries[index][1] as Vector2).floor())
-		if reachable.has(cell) and not used.has(cell):
+		var entry: Array = entries[index]
+		# Balcony guards stand on a deck above the street. The truck brute owns
+		# the cargo cell while concealed, until its first charge opens it.
+		var fixed: bool = entry.size() > 2 and entry[2] in [&"terrace_spitter", &"truck_ambush"]
+		if (reachable.has(cell) or fixed) and not used.has(cell):
 			used[cell] = true
 			keep[index] = true
 	var out: Array = []
@@ -701,7 +744,7 @@ static func market_gate_cells() -> Dictionary:
 		return String(box["name"]).begins_with("ClosedShortcut")))
 
 
-static func blocked_cells() -> Dictionary:
+static func blocked_cells(include_breakout_truck := true) -> Dictionary:
 	var props: Array[Dictionary] = []
 	for box in debris_boxes():
 		if box.get("jumpable", false):
@@ -709,6 +752,8 @@ static func blocked_cells() -> Dictionary:
 		props.push_back(box)
 	props.append_array(parked_trucks())
 	props.append_array(entrance_obstacles())
+	if include_breakout_truck:
+		props.append_array(breakout_truck_boxes())
 	return _box_cells(props)
 
 
@@ -845,12 +890,13 @@ static func debris_boxes() -> Array[Dictionary]:
 	for leg in ROUTE_POINTS.size():
 		var caches: Array = [
 			[Vector2(0.27, -1.76), Vector2(0.55, 1.72), Vector2(0.69, -1.77)],
-			[Vector2(0.15, 1.75), Vector2(0.37, 1.70), Vector2(0.57, -1.77), Vector2(0.93, 1.70)],
-			[Vector2(0.18, -1.72), Vector2(0.41, 1.76), Vector2(0.72, -1.76), Vector2(0.90, 1.70)],
+			[Vector2(0.37, 1.70), Vector2(0.93, 1.70)],
+			[Vector2(0.18, -1.72), Vector2(0.41, 1.76), Vector2(0.90, 1.70)],
 			[Vector2(0.26, 1.69), Vector2(0.46, -1.76), Vector2(0.73, -1.74)],
 		][leg]
 		for cache: Vector2 in caches:
 			_add_supply_crate(boxes, _alley_side(leg, cache.x, cache.y))
+	_add_side_street_cover(boxes)
 	_add_supply_crate(boxes, Vector2(28.0, 227.8))
 	_add_supply_crate(boxes, Vector2(33.5, 30.5))
 	_add_supply_crate(boxes, Vector2(27.0, 34.2))
@@ -902,6 +948,30 @@ static func debris_boxes() -> Array[Dictionary]:
 	return boxes
 
 
+static func _add_side_street_cover(boxes: Array[Dictionary]) -> void:
+	# Loading pocket on the outside of the bend before the market climb.
+	var cart := metre_box(Vector2(2.5, 168.5), Vector3(2.7, 1.6, 3.55), "OverturnedHandcart", RUBBLE)
+	cart["aftermath"] = true
+	cart["facing"] = Vector3.BACK
+	boxes.push_back(cart)
+	_add_supply_crate(boxes, Vector2(1.4, 169.35))
+
+	# The van divides the wide bend beyond the market into two lanes with a
+	# connection at each end. The outside lane also reaches the tomato cache.
+	var van := metre_box(Vector2(38.5, 139.0), Vector3(3.0, 3.2, 6.4), "ParkedVan", STEEL)
+	van["facing"] = Vector3.BACK
+	boxes.push_back(van)
+	_add_supply_crate(boxes, Vector2(40.55, 138.7))
+
+	# The low wall shelters the back of the rescue bay. Its street-side edge
+	# stays open for a teammate to see the crawler and cut a cheese line.
+	var wall := metre_box(Vector2(27.65, 70.5), Vector3(1.9, 1.45, 4.1), "CollapsedStoneWall", RUBBLE)
+	wall["aftermath"] = true
+	wall["facing"] = Vector3.RIGHT
+	boxes.push_back(wall)
+	_add_supply_crate(boxes, Vector2(26.65, 69.55))
+
+
 static func closed_passage_boxes() -> Array[Dictionary]:
 	var boxes: Array[Dictionary] = []
 	if authored != null:
@@ -950,6 +1020,7 @@ static func _add_festival_aftermath(boxes: Array[Dictionary]) -> void:
 	var occupied := boxes.duplicate()
 	occupied.append_array(parked_trucks())
 	occupied.push_back(fire_truck_box())
+	occupied.append_array(breakout_truck_boxes())
 	var taken := _box_cells(occupied)
 	_ensure_layout()
 	for leg in AFTERMATH_STOPS.size():

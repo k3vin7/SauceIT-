@@ -418,6 +418,7 @@ var _charge_left := 0.0
 var _charge_cooldown := 0.0
 var _charge_direction := Vector3.ZERO
 var _windup := 0.0
+var hidden_in_breakout := false
 var _escape_push := Vector3.ZERO
 var _escape_left := 0.0
 var _escape_source: MayoPlayer
@@ -1088,18 +1089,15 @@ func is_charging() -> bool:
 	return _charge_left > 0.0
 
 
-func begin_corner_charge(target: MayoPlayer) -> bool:
-	if not authority or not is_alive() or _charge_cooldown > 0.0 or _attack_lock_left > 0.0:
-		return false
-	var gap := target.global_position - global_position
-	gap.y = 0.0
-	if gap.length() > BRUTE_CHARGE_RANGE or gap.length() < 0.5 \
-			or not _has_clear_shot(target, global_position):
-		return false
-	if attack_permission.is_valid() and not attack_permission.call(self, target):
-		return false
-	_start_warning(gap.normalized(), 0.13)
-	return true
+func begin_breach_charge(direction: Vector3, distance: float) -> void:
+	_charge_direction = direction
+	_charge_left = minf(BRUTE_CHARGE_SECONDS,
+		distance / maxf(1.0, move_speed * BRUTE_CHARGE_SPEED_SCALE))
+	_charge_cooldown = BRUTE_CHARGE_COOLDOWN + _charge_left
+	_alerted = true
+	_memory_left = _charge_left
+	facing_yaw = atan2(-direction.x, -direction.z)
+	_apply_pose()
 
 
 func _advance_brute(delta: float, target: MayoPlayer) -> Dictionary:

@@ -5,21 +5,27 @@ extends RefCounted
 const MARKET_APPROACH := Vector2(10.1, 166.2)
 const MARKET_CREST := Vector2(18.7, 163.55)
 const MARKET_BEND := Vector2(20.5, 163.0)
-const MARKET_AMBUSH := Vector2(22.4, 163.8)
-const MARKET_TRIP := Vector2(22.0, 162.35)
+const MARKET_AMBUSH := Vector2(22.43, 164.67)
+const MARKET_SHUTTER := Vector2(22.34, 164.30)
+const TRUCK_AMBUSH := Vector2(24.4, 58.6)
+const TERRACE_BOWLER := Vector2(27.90, 210.25)
+const RESCUE_CLIMB_BOWLER := Vector2(17.0, 91.8)
 const CROSS_STREET_BOWLER := Vector2(32.1, 41.45)
 const TERRACE_SPITTER := Vector2(25.65, 211.5)
-const TERRACE_CURB := Vector2(25.0, 211.5)
 
 const PROFILES := [
 	[Vector2(26.0, 216.0), Vector2(29.2, 206.8), 14.0, 25.0,
-		[Vector2(-14.0, 0.0), Vector2(5.0, 0.85), Vector2(25.0, 0.85), Vector2(45.0, 0.0)]],
+		[Vector2(-9.0, 0.0), Vector2(5.0, 0.65), Vector2(23.0, 3.45),
+			Vector2(30.0, 3.45), Vector2(46.0, 0.0)]],
 	[MARKET_APPROACH, MARKET_BEND, 14.0, 27.0,
-		[Vector2(3.0, 0.0), Vector2(32.0, 2.5), Vector2(43.0, 2.5), Vector2(52.0, 0.0)]],
-	[Vector2(33.2, 77.2), Vector2(31.0, 66.1), 11.0, 20.0,
-		[Vector2(-14.0, 0.0), Vector2(8.0, -0.85), Vector2(34.0, -0.85), Vector2(52.0, 0.0)]],
+		[Vector2(3.0, 0.0), Vector2(28.0, 5.3), Vector2(42.0, 5.3), Vector2(55.0, 0.0)]],
+	[Vector2(14.8, 98.8), Vector2(17.0, 91.8), 12.0, 23.0,
+		[Vector2(-8.0, 0.0), Vector2(6.0, 0.35), Vector2(29.0, 4.05),
+			Vector2(34.0, 4.05), Vector2(51.0, 0.0)]],
+	[Vector2(33.2, 77.2), Vector2(31.0, 66.1), 22.0, 32.0,
+		[Vector2(-14.0, 0.0), Vector2(10.0, -2.45), Vector2(33.0, -2.45), Vector2(52.0, 0.0)]],
 	[Vector2(29.8, 43.0), Vector2(30.0, 39.0), 13.0, 25.0,
-		[Vector2(-22.0, 0.0), Vector2(-9.0, 0.9), Vector2(1.0, 0.9), Vector2(21.0, 0.0)]],
+		[Vector2(-22.0, 0.0), Vector2(-8.0, 2.85), Vector2(2.0, 2.85), Vector2(21.0, 0.0)]],
 ]
 
 

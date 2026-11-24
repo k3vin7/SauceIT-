@@ -67,7 +67,7 @@ func _run() -> void:
 					"%s lost the Blender vertex colors" % batch.name)
 			placed[model] = int(placed.get(model, 0)) + batch.multimesh.instance_count
 		_check(int(placed.get("TomatoTruck", 0)) == 6, "loaded tomato trucks are missing")
-		_check(int(placed.get("SauceVan", 0)) == 24, "decorative vans are missing")
+		_check(int(placed.get("SauceVan", 0)) == 25, "street vans are missing, including the market lane cover")
 		_check(int(placed.get("OverturnedTomatoTruck", 0)) == 2, "overturned tomato trucks are missing")
 		_check(int(placed.get("TomatoCrateStack", 0)) == 18, "tomato crate stacks are missing")
 		_check(int(placed.get("RefugeShower", 0)) == TomatinaMap.SAFE_ROOMS.size(),
@@ -193,7 +193,7 @@ func _run() -> void:
 	var buried := 0
 	for index in scene.enemy_count():
 		var body: MayoEnemy = scene.enemy_at(index)
-		if body.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+		if body.kind == MayoEnemy.EnemyKind.TOMATO_BALL or body.hidden_in_breakout or body.has_meta("balcony_guard"):
 			continue
 		if StreetMap.blocked_cells().has(StreetMap.cell_at(body.global_position)):
 			buried += 1
@@ -350,7 +350,8 @@ func _run() -> void:
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
 			_check(enemy.global_position.y < -40.0, "a ball is not parked under the floor")
 			continue
-		_check(scene._nav.is_walkable(StreetMap.cell_at(enemy.global_position)),
+		_check(enemy.hidden_in_breakout or enemy.has_meta("balcony_guard") \
+			or scene._nav.is_walkable(StreetMap.cell_at(enemy.global_position)),
 			"%s stands on a cell nothing can walk" % enemy.name)
 		_check(enemy.contamination != null and enemy._visual_root != null,
 			"%s has no stain grid or no visual" % enemy.name)
