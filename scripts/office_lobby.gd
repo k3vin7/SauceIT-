@@ -24,8 +24,6 @@ const ROOM_SCENE := preload("res://maps/command_runtime.scn")
 ## 아래 세 값은 방 씬에 해당 노드가 없을 때만 쓰는 기본값이다.
 const SCREEN_POSITION := Vector3(0.0, 2.35, -8.65)
 const LOCKER_POSITION := Vector3(-8.45, 1.5, 2.5)
-const INTERACT_DISTANCE := 4.6
-const LOOK_DOT := 0.8
 const OFFICE_WALK_SPEED := 5.2
 ## 전원이 출발 구역에 올라선 뒤 떠나기까지. 한 명이라도 내려서면 처음부터 다시 센다.
 const DEPART_COUNTDOWN := 3.0
@@ -40,7 +38,46 @@ const MAP_SIZE := Vector2(540.0, 330.0)
 ## 지도에서 사무실이 있는 곳(지도 크기에 대한 비율).
 const OFFICE_PIN := Vector2(0.12, 0.2)
 
-enum Target { NONE, MAP, LOCKER, SLOT }
+enum Target { NONE, MAP, LOCKER, SLOT, DOCTOR, WORKBENCH, CURTAIN, SHOWER }
+
+const Parts := preload("res://scripts/tomatina_sauce_parts.gd")
+## 사무실 소품의 상태 비트(`MayoNet.office_props`): 샤워 커튼이 닫혔다, 샤워기가 나온다.
+const PROP_CURTAIN := 1
+const PROP_SHOWER := 2
+## 커튼이 열려 있을 때와 닫혔을 때의 폭(레일 길이 방향), 그리고 닫는 데 걸리는 시간.
+const CURTAIN_CLOSED_SPAN := 1.4
+const CURTAIN_TIME := 0.45
+## 사무실의 물건은 이만큼 다가가야 쓸 수 있다. 사물함 앞에는 벤치가 있어 2 m보다 가까이
+## 서기 어렵다 -- 거기에 여유를 둔 값이다. 샤워기는 그 아래 이 반경 안에 서야 한다(스테이지의
+## 피난처 샤워와 같은 0.9 m).
+const OFFICE_REACH := 2.8
+const SHOWER_REACH := 0.9
+
+## 박사 홀로그램에게 말을 걸면 하는 말. 아무 쓸모 없는 혼잣말이다 -- 말 건 사람의 화면에만
+## 뜨고, 같은 말을 연달아 하지 않는다.
+const DOCTOR_LINES: Array[String] = [
+	"오늘은 왤케 머리가 비어 보이지...",
+	"와이프가 집에 들어오지 말라고 하네...",
+	"드디어 11연패를 깼어!",
+	"세계를 돌아다니고 싶다네.",
+	"마요네즈는 사실 과학이라네. 진짜야.",
+	"자네, 혹시 내 안경 못 봤나? ...아, 쓰고 있었군.",
+	"홀로그램이라 커피를 못 마셔. 이게 사는 건가.",
+	"어제 꿈에서 케첩이 나를 쫓아왔다네.",
+	"연구비가 또 깎였어. 슬롯머신이나 돌릴까.",
+	"내 박사 학위? 통신 강좌로 땄지. 비밀이네.",
+	"점심은 먹었나? 나는 3년째 못 먹었어.",
+	"사실 저 지도, 나도 볼 줄 몰라.",
+	"토마토는 채소일까 과일일까... 밤새 고민했네.",
+	"자네들 월급은 내가 주는 게 아니야. 나한테 묻지 말게.",
+	"12연패는 안 하겠지. 설마.",
+	"집에 가고 싶다... 아, 못 들어가지 참.",
+	"이 홀로그램 장치, 중고로 샀더니 자꾸 지지직거려.",
+	"머스타드를 발명한 사람은 천재야. 나는 아니고.",
+	"조용히 좀 해 주게. 지금 아무 생각도 안 하는 중이야.",
+	"은퇴하면 소스 가게를 차릴 걸세. 손님은 없겠지만.",
+]
+const DOCTOR_LINE_TIME := 4.0
 
 var _room: Node3D
 var _screen_position := SCREEN_POSITION
@@ -55,6 +92,25 @@ var _depart_sign: Label3D
 var _depart_hud: Label
 var _depart_fired := false
 var _slot_position := Vector3.INF
+var _doctor_position := Vector3.INF
+var _workbench_position := Vector3.INF
+var _bench_layer: CanvasLayer
+var _bench_money: Label
+var _bench_buttons: Array[Button] = []
+var _curtain: Node3D
+var _curtain_open := Transform3D.IDENTITY
+var _curtain_closed := Transform3D.IDENTITY
+var _curtain_tween: Tween
+var _curtain_position := Vector3.INF
+var _shower_position := Vector3.INF
+var _shower_anchor := Vector3.INF
+## 옆으로 긴 물건: Target -> [길이 방향(월드), 절반 길이(m)].
+var _spans: Dictionary = {}
+var _shower_water: CPUParticles3D
+var _doctor_label: Label
+var _doctor_tween: Tween
+var _doctor_last := -1
+var _doctor_rng := RandomNumberGenerator.new()
 var _slot_layer: CanvasLayer
 var _slot_money: Label
 var _slot_bet_label: Label
@@ -63,6 +119,8 @@ var _slot_message: Label
 var _slot_spin: Button
 var _slot_bet := 10
 var _slot_waiting := false
+## 자리를 달라고 해 놓고 방장의 답을 기다리는 중(팀원만).
+var _slot_seat_wanted := false
 var _slot_show: OfficeSlotShow
 var _slot_jackpot: Label
 var _slot_flash: ColorRect
@@ -77,7 +135,7 @@ var _slot_count_tween: Tween
 var _slot_announce: Label
 var _slot_announce_left := 0.0
 var _info_label: Label
-var _prompt: Label
+var _prompt: PromptChip
 var _screen_label: Label3D
 var _map_layer: CanvasLayer
 var _map_bots: HBoxContainer
@@ -98,11 +156,21 @@ func _ready() -> void:
 	super._ready()
 	if session != null and not session.slot_result.is_connected(_on_slot_result):
 		session.slot_result.connect(_on_slot_result)
+		session.slot_user_changed.connect(_on_slot_user_changed)
+		session.team_parts_changed.connect(_refresh_bench)
+		session.office_props_changed.connect(_on_props_changed)
+	_apply_props(false)
 
 
 func _exit_tree() -> void:
 	if session != null and session.slot_result.is_connected(_on_slot_result):
 		session.slot_result.disconnect(_on_slot_result)
+		session.slot_user_changed.disconnect(_on_slot_user_changed)
+		session.team_parts_changed.disconnect(_refresh_bench)
+		session.office_props_changed.disconnect(_on_props_changed)
+		# 기계 앞에 앉은 채로 방이 바뀌면 자리를 비우고 간다.
+		if is_slot_open() or _slot_seat_wanted:
+			session.release_slot_seat()
 	super._exit_tree()
 
 
@@ -115,18 +183,40 @@ func _physics_process(delta: float) -> void:
 	_update_departure(delta)
 	var target := _target() if not _busy() else Target.NONE
 	if _prompt != null:
+		# 스테이지와 같은 안내: 키 칸과 글자가 든 판이 그 물건 옆에 붙어 뜬다.
 		_prompt.visible = target != Target.NONE
+		_prompt.show_key = true
+		_prompt.anchor = _shower_anchor if target == Target.SHOWER else _target_position(target)
+		_prompt.camera = _view_camera()
 		if target == Target.MAP:
-			_prompt.text = "[ E ] 축제 지도 보기"
+			_prompt.text = "축제 지도 보기"
 		elif target == Target.LOCKER:
-			_prompt.text = "[ E ] 캐릭터 바꾸기"
+			_prompt.text = "캐릭터 바꾸기"
 		elif target == Target.SLOT:
-			_prompt.text = "[ E ] 슬롯머신 돌리기"
+			_prompt.show_key = not _slot_taken()
+			_prompt.text = "슬롯머신 돌리기" if not _slot_taken() \
+				else "P%d 사용 중" % session.slot_user
+		elif target == Target.DOCTOR:
+			_prompt.text = "박사에게 말 걸기"
+		elif target == Target.WORKBENCH:
+			_prompt.text = "파츠 해금하기"
+		elif target == Target.CURTAIN:
+			_prompt.text = "커튼 열기" if _prop_on(PROP_CURTAIN) else "커튼 닫기"
+		elif target == Target.SHOWER:
+			_prompt.text = "샤워기 끄기" if _prop_on(PROP_SHOWER) else "샤워기 켜기"
 	if target != Target.NONE and Input.is_action_just_pressed("interact"):
 		if target == Target.MAP:
 			open_map()
 		elif target == Target.SLOT:
 			open_slot()
+		elif target == Target.DOCTOR:
+			talk_to_doctor()
+		elif target == Target.WORKBENCH:
+			open_bench()
+		elif target == Target.CURTAIN:
+			toggle_prop(PROP_CURTAIN)
+		elif target == Target.SHOWER:
+			toggle_prop(PROP_SHOWER)
 		else:
 			character_requested.emit()
 
@@ -134,10 +224,11 @@ func _physics_process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if input_locked:
 		return
-	if is_map_open() or is_slot_open():
+	if is_map_open() or is_slot_open() or is_bench_open():
 		if event.is_action_pressed("ui_cancel"):
 			close_map()
 			close_slot()
+			close_bench()
 			get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
@@ -151,7 +242,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func set_input_locked(locked: bool) -> void:
 	super.set_input_locked(locked)
 	# 지도나 슬롯머신을 띄운 채로 메뉴를 열었다 닫으면 커서는 그 화면 것이다.
-	if is_map_open() or is_slot_open():
+	if is_map_open() or is_slot_open() or is_bench_open():
 		_cursor_free = true
 		_apply_mouse_mode()
 
@@ -182,15 +273,245 @@ func close_map() -> void:
 	_apply_mouse_mode()
 
 
+# -- 샤워 부스 ------------------------------------------------------------------
+
+func _on_props_changed() -> void:
+	_apply_props(true)
+
+
+func _prop_on(bit: int) -> bool:
+	return session != null and (session.office_props & bit) != 0
+
+
+## 소품 하나를 켜고 끈다. 방장을 거쳐 사무실의 모두에게 보인다.
+func toggle_prop(bit: int) -> void:
+	if session != null:
+		session.request_office_prop(bit, not _prop_on(bit))
+
+
+## 커튼과 샤워기를 찾아 둔다. 커튼은 레일 한쪽에 모여 있다가 닫으면 입구 폭만큼 펴진다.
+func _build_shower() -> void:
+	_curtain = _room.get_node_or_null("ShowerBooth/Curtain") as Node3D
+	if _curtain != null:
+		_curtain_open = _curtain.transform
+		var span := 0.6
+		if _curtain is MeshInstance3D and (_curtain as MeshInstance3D).mesh != null:
+			span = maxf((_curtain as MeshInstance3D).mesh.get_aabb().size.z, 0.05)
+		# 벽 쪽 끝은 제자리에 두고 반대쪽으로만 늘어난다.
+		var grow := CURTAIN_CLOSED_SPAN / span
+		_curtain_closed = _curtain_open.scaled_local(Vector3(1.0, 1.0, grow)) \
+			.translated_local(Vector3(0.0, 0.0, (CURTAIN_CLOSED_SPAN - span) * 0.5 / grow))
+		_curtain_position = _curtain.global_position
+	var head := _room.get_node_or_null("ShowerBooth/ShowerHead") as Node3D
+	if head == null:
+		return
+	_shower_position = head.global_position + Vector3.DOWN * 0.9
+	# The prompt is pinned beside the red valve on the pipe, as the stage pins
+	# its own beside the cross on the shower post.
+	_shower_anchor = (head.get_parent() as Node3D).to_global(head.position + Vector3(-0.36, -1.4, 0.0))
+	_shower_water = CPUParticles3D.new()
+	_shower_water.name = "ShowerWater"
+	_shower_water.emitting = false
+	_shower_water.amount = 90
+	_shower_water.lifetime = 0.75
+	_shower_water.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
+	_shower_water.emission_sphere_radius = 0.13
+	_shower_water.direction = Vector3.DOWN
+	_shower_water.spread = 9.0
+	_shower_water.initial_velocity_min = 2.6
+	_shower_water.initial_velocity_max = 3.4
+	_shower_water.gravity = Vector3(0.0, -7.0, 0.0)
+	var drop := BoxMesh.new()
+	drop.size = Vector3(0.018, 0.16, 0.018)
+	var water := StandardMaterial3D.new()
+	water.albedo_color = Color(0.72, 0.9, 1.0, 0.75)
+	water.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	water.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	drop.material = water
+	_shower_water.mesh = drop
+	_shower_water.position = Vector3(0.0, -0.06, 0.0)
+	head.add_child(_shower_water)
+
+
+## 소품을 세션이 말하는 상태로 맞춘다. `animate`가 아니면(처음 들어왔을 때) 바로 그 모습이다.
+func _apply_props(animate: bool) -> void:
+	if _curtain != null and is_instance_valid(_curtain):
+		var goal := _curtain_closed if _prop_on(PROP_CURTAIN) else _curtain_open
+		if _curtain_tween != null:
+			_curtain_tween.kill()
+		if animate and not _curtain.transform.is_equal_approx(goal):
+			_curtain_tween = _curtain.create_tween()
+			_curtain_tween.tween_property(_curtain, "transform", goal, CURTAIN_TIME) \
+				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		else:
+			_curtain.transform = goal
+	if _shower_water != null and is_instance_valid(_shower_water):
+		_shower_water.emitting = _prop_on(PROP_SHOWER)
+
+
+# -- 파츠 작업대 ----------------------------------------------------------------
+
+func is_bench_open() -> bool:
+	return _bench_layer != null and is_instance_valid(_bench_layer)
+
+
+## 작업대 화면: 파츠마다 한 줄, 팀 돈으로 해금한다. 해금한 파츠만 축제의 상점에 나온다.
+func open_bench() -> void:
+	if is_bench_open() or is_map_open() or is_slot_open() or session == null:
+		return
+	_bench_layer = CanvasLayer.new()
+	_bench_layer.name = "WorkbenchUI"
+	_bench_layer.layer = 4
+	add_child(_bench_layer)
+	var dim := ColorRect.new()
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dim.color = UI.SHADE
+	_bench_layer.add_child(dim)
+	var centre := CenterContainer.new()
+	centre.theme = UI.theme()
+	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_bench_layer.add_child(centre)
+	var panel := PanelContainer.new()
+	centre.add_child(panel)
+	var margin := _pad(22)
+	panel.add_child(margin)
+	var column := VBoxContainer.new()
+	column.custom_minimum_size.x = 620.0
+	column.add_theme_constant_override("separation", 8)
+	margin.add_child(column)
+	column.add_child(UI.eyebrow("장비 개조", UI.MINT))
+	var heading := Label.new()
+	heading.text = "파츠 작업대"
+	heading.add_theme_font_size_override("font_size", 30)
+	column.add_child(heading)
+	var sub := Label.new()
+	sub.text = "팀 돈으로 파츠를 해금합니다. 해금한 파츠는 축제의 피난처 상점에서 코인으로 살 수 있습니다."
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sub.add_theme_color_override("font_color", UI.MUTED)
+	column.add_child(sub)
+	_bench_money = Label.new()
+	_bench_money.add_theme_color_override("font_color", UI.MINT)
+	_bench_money.add_theme_font_size_override("font_size", 22)
+	column.add_child(_bench_money)
+	_bench_buttons.clear()
+	for part in range(1, Parts.CATALOG.size()):
+		var choice := Button.new()
+		choice.custom_minimum_size.y = 62.0
+		choice.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		choice.focus_mode = Control.FOCUS_NONE
+		choice.pressed.connect(unlock_part.bind(part))
+		column.add_child(choice)
+		_bench_buttons.push_back(choice)
+	var close := Button.new()
+	close.text = "닫기"
+	close.focus_mode = Control.FOCUS_NONE
+	close.pressed.connect(close_bench)
+	column.add_child(close)
+	_cursor_free = true
+	_apply_mouse_mode()
+	_refresh_bench()
+
+
+func close_bench() -> void:
+	if not is_bench_open():
+		return
+	_bench_layer.queue_free()
+	_bench_layer = null
+	_bench_buttons.clear()
+	_cursor_free = false
+	_apply_mouse_mode()
+
+
+## `part`를 해금해 달라고 한다. 값은 `Parts.UNLOCK_PRICES`, 팀 돈에서 나간다.
+func unlock_part(part: int) -> bool:
+	return session != null and session.request_part_unlock(part)
+
+
+func _refresh_bench() -> void:
+	if not is_bench_open() or session == null:
+		return
+	_bench_money.text = "팀 돈  %d" % session.team_money
+	for index in _bench_buttons.size():
+		var part := index + 1
+		var entry: Array = Parts.CATALOG[part]
+		var price := int(Parts.UNLOCK_PRICES[part])
+		var owned: bool = Parts.is_unlocked(session.team_parts, part)
+		var choice := _bench_buttons[index]
+		choice.disabled = owned or session.team_money < price
+		var state := "해금됨" if owned else ("해금  %d원" % price if session.team_money >= price \
+			else "%d원 · 돈이 모자랍니다" % price)
+		choice.text = "%s  ·  %s\n%s" % [entry[0], state, String(entry[1]).get_slice("\n", 0)]
+		if owned:
+			choice.add_theme_color_override("font_disabled_color", UI.MINT)
+		else:
+			choice.remove_theme_color_override("font_disabled_color")
+
+
+# -- 박사 ----------------------------------------------------------------------
+
+## 박사가 헛소리를 한마디 한다. 한 말을 돌려준다.
+func talk_to_doctor() -> String:
+	var pick := _doctor_rng.randi_range(0, DOCTOR_LINES.size() - 1)
+	if pick == _doctor_last:
+		pick = (pick + 1) % DOCTOR_LINES.size()
+	_doctor_last = pick
+	var line := DOCTOR_LINES[pick]
+	if _doctor_label != null:
+		_doctor_label.text = "박사:  %s" % line
+		_doctor_label.modulate.a = 1.0
+		_doctor_label.visible = true
+		if _doctor_tween != null:
+			_doctor_tween.kill()
+		_doctor_tween = _doctor_label.create_tween()
+		_doctor_tween.tween_interval(DOCTOR_LINE_TIME)
+		_doctor_tween.tween_property(_doctor_label, "modulate:a", 0.0, 0.4)
+		_doctor_tween.tween_callback(_doctor_label.hide)
+	return line
+
+
 # -- 슬롯머신 ------------------------------------------------------------------
 
 func is_slot_open() -> bool:
 	return _slot_layer != null and is_instance_valid(_slot_layer)
 
 
+## 다른 사람이 기계를 쓰고 있는가.
+func _slot_taken() -> bool:
+	return session != null and session.slot_user != 0 and session.slot_user != _local_id()
+
+
+## 기계 앞에 앉는다. 한 번에 한 명만 쓸 수 있다: 자리는 방장이 내주므로 팀원의 화면은 답이
+## 온 뒤에 열린다(`_on_slot_user_changed`).
 func open_slot() -> void:
-	if is_slot_open() or is_map_open() or session == null:
+	if is_slot_open() or is_map_open() or session == null or _slot_seat_wanted:
 		return
+	if _slot_taken() or not session.request_slot_seat():
+		_announce("P%d 님이 슬롯머신을 쓰고 있습니다" % session.slot_user if _slot_taken() \
+			else "지금은 슬롯머신을 쓸 수 없습니다", 2.0)
+		return
+	if session.slot_user == _local_id():
+		_show_slot_panel()
+	else:
+		_slot_seat_wanted = true
+
+
+func _on_slot_user_changed() -> void:
+	if _slot_seat_wanted and session.slot_user != 0:
+		_slot_seat_wanted = false
+		if session.slot_user == _local_id():
+			if is_map_open():
+				# 답을 기다리는 사이에 다른 화면이 떴다: 앉지 않는다.
+				session.release_slot_seat()
+			else:
+				_show_slot_panel()
+		else:
+			_announce("P%d 님이 슬롯머신을 쓰고 있습니다" % session.slot_user, 2.0)
+	elif is_slot_open() and session.slot_user != _local_id():
+		# 자리를 잃었다(방장이 비웠다): 화면도 닫는다.
+		close_slot()
+
+
+func _show_slot_panel() -> void:
 	_build_slot_panel()
 	_cursor_free = true
 	_apply_mouse_mode()
@@ -198,6 +519,7 @@ func open_slot() -> void:
 
 
 func close_slot() -> void:
+	_slot_seat_wanted = false
 	if not is_slot_open():
 		return
 	if _slot_count_tween != null:
@@ -209,6 +531,10 @@ func close_slot() -> void:
 	_slot_waiting = false
 	_cursor_free = false
 	_apply_mouse_mode()
+	# Last: on the host the seat changes hands inside this call, and the screen
+	# has to be gone already when `_on_slot_user_changed` looks.
+	if session != null and session.slot_user == _local_id():
+		session.release_slot_seat()
 
 
 ## 판돈을 정한다. 1부터 팀 돈 전부까지.
@@ -359,11 +685,13 @@ func _celebrate_slot(tier: int, pot: int) -> void:
 	_slot_banner.scale = Vector2.ONE * 0.3
 	_slot_banner.modulate.a = 1.0
 	_slot_banner.visible = true
-	var pop := create_tween()
+	# The banner's own tween: it ends with the screen if that is closed mid-cheer.
+	var banner := _slot_banner
+	var pop := banner.create_tween()
 	pop.tween_property(_slot_banner, "scale", Vector2.ONE, 0.32).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	pop.tween_interval(2.4 if tier == 4 else 0.9)
 	pop.tween_property(_slot_banner, "modulate:a", 0.0, 0.35)
-	pop.tween_callback(func(): _slot_banner.visible = false)
+	pop.tween_callback(func(): banner.visible = false)
 
 
 ## 사무실 화면 위쪽에 잠깐 뜨는 알림(누군가 황금 셋을 터뜨렸을 때).
@@ -588,27 +916,66 @@ func interact_target() -> int:
 
 
 func _busy() -> bool:
-	return input_locked or is_map_open() or is_slot_open()
+	return input_locked or is_map_open() or is_slot_open() or is_bench_open()
 
 
-func _target() -> int:
+func _view_camera() -> Camera3D:
 	if _camera_pivot == null or not is_instance_valid(_camera_pivot) \
 			or _camera_pivot.get_child_count() == 0:
+		return null
+	return _camera_pivot.get_child(0) as Camera3D
+
+
+## 그 대상이 있는 곳(안내가 붙는 자리). 없으면 INF.
+func _target_position(target: int) -> Vector3:
+	match target:
+		Target.MAP: return _screen_position
+		Target.LOCKER: return _locker_position
+		Target.SLOT: return _slot_position
+		Target.DOCTOR: return _doctor_position
+		Target.WORKBENCH: return _workbench_position
+		Target.CURTAIN: return _curtain_position
+		Target.SHOWER: return _shower_position
+	return Vector3.INF
+
+
+## 지금 쓸 수 있는 것. 사무실의 모든 것이 스테이지와 같은 규칙을 따른다
+## (`TomatinaPlaySupport._candidate`): 그 물건에서 `OFFICE_REACH` 안에 서 있고 등지고 있지
+## 않으면 되며, 여럿이면 가깝고 똑바로 보는 쪽을 고른다. 거리는 몸에서 물건까지 바닥으로 잰다
+## -- 지도 스크린이나 작업대처럼 옆으로 긴 것은 그 길이의 어디에 서도 된다(`_spans`).
+## 샤워기만 스테이지의 샤워처럼 그 아래(`SHOWER_REACH`)에 서야 한다.
+func _target() -> int:
+	var camera := _view_camera()
+	if camera == null:
 		return Target.NONE
-	var camera := _camera_pivot.get_child(0) as Camera3D
+	var body: Node3D = _occupants.get(_local_id())
+	var stand: Vector3 = body.global_position if body != null else camera.global_position
+	var facing := -camera.global_basis.z
 	var best := Target.NONE
-	var best_dot := LOOK_DOT
-	for entry in [[Target.MAP, _screen_position], [Target.LOCKER, _locker_position],
-			[Target.SLOT, _slot_position]]:
-		if entry[1] == Vector3.INF:
+	var best_score := INF
+	for target in [Target.MAP, Target.LOCKER, Target.SLOT, Target.DOCTOR, Target.WORKBENCH,
+			Target.CURTAIN, Target.SHOWER]:
+		var at := _target_position(target)
+		if at == Vector3.INF:
 			continue
-		var to_target: Vector3 = entry[1] - camera.global_position
-		if to_target.length() > INTERACT_DISTANCE:
+		# 옆으로 긴 물건: 그 길이 위에서 내게 가장 가까운 점까지 잰다.
+		var span: Array = _spans.get(target, [Vector3.ZERO, 0.0])
+		var axis: Vector3 = span[0]
+		var along := clampf((stand - at).dot(axis), -float(span[1]), float(span[1]))
+		var nearest := at + axis * along
+		var flat := Vector2(nearest.x - stand.x, nearest.z - stand.z).length()
+		if flat > (SHOWER_REACH if target == Target.SHOWER else OFFICE_REACH):
 			continue
-		var dot := (-camera.global_basis.z).dot(to_target.normalized())
-		if dot >= best_dot:
-			best_dot = dot
-			best = entry[0]
+		# 어디를 보고 있는가는 안내가 붙는 자리로 잰다.
+		var mark := _shower_anchor if target == Target.SHOWER else nearest
+		var to_mark := mark - camera.global_position
+		var alignment := facing.dot(to_mark.normalized()) if to_mark.length() > 0.01 else 1.0
+		if alignment < -0.1:
+			continue
+		var score := flat * 0.15 + (1.0 - alignment)
+		if score < best_score:
+			best_score = score
+			best = target
 	return best
 
 
@@ -625,6 +992,7 @@ func _build_truck() -> void:
 	var screen := _room.get_node_or_null("MapScreen/Screen") as Node3D
 	if screen != null:
 		_screen_position = screen.global_position
+		_spans[Target.MAP] = [screen.global_basis.x.normalized(), 3.4]
 	_screen_label = _room.get_node_or_null("MapScreen/Label") as Label3D
 	var locker := _room.get_node_or_null("Locker/Body") as Node3D
 	if locker != null:
@@ -642,6 +1010,14 @@ func _build_truck() -> void:
 	var slot := _room.get_node_or_null("SlotMachine/Upper") as Node3D
 	if slot != null:
 		_slot_position = slot.global_position
+	var bench := _room.get_node_or_null("PartsWorkbench/Top") as Node3D
+	if bench != null:
+		_workbench_position = bench.global_position + Vector3.UP * 0.6
+		_spans[Target.WORKBENCH] = [bench.global_basis.x.normalized(), 1.6]
+	_build_shower()
+	var doctor := _room.get_node_or_null("DoctorHologram") as Node3D
+	if doctor != null:
+		_doctor_position = doctor.global_position + Vector3.UP * 1.5
 	_slot_show = OfficeSlotShow.new()
 	_slot_show.name = "SlotShow"
 	add_child(_slot_show)
@@ -682,12 +1058,7 @@ func _build_ui() -> void:
 	hint.add_theme_color_override("font_color", UI.MUTED)
 	hint.add_theme_font_size_override("font_size", 14)
 	column.add_child(hint)
-	_prompt = Label.new()
-	_prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_prompt.add_theme_font_size_override("font_size", 24)
-	_prompt.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_prompt.position = Vector2(-200.0, -105.0)
-	_prompt.size = Vector2(400.0, 40.0)
+	_prompt = PromptChip.new()
 	_prompt.visible = false
 	layer.add_child(_prompt)
 	_depart_hud = Label.new()
@@ -710,6 +1081,19 @@ func _build_ui() -> void:
 	_slot_announce.size = Vector2(800.0, 54.0)
 	_slot_announce.visible = false
 	layer.add_child(_slot_announce)
+	_doctor_label = Label.new()
+	_doctor_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_doctor_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_doctor_label.add_theme_font_size_override("font_size", 26)
+	_doctor_label.add_theme_color_override("font_color", Color("9ff3ff"))
+	_doctor_label.add_theme_color_override("font_outline_color", Color("0b2a33"))
+	_doctor_label.add_theme_constant_override("outline_size", 8)
+	_doctor_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_doctor_label.position = Vector2(-450.0, -190.0)
+	_doctor_label.size = Vector2(900.0, 70.0)
+	_doctor_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_doctor_label.visible = false
+	layer.add_child(_doctor_label)
 	var cross := Label.new()
 	cross.text = "+"
 	cross.add_theme_font_size_override("font_size", 24)
@@ -747,6 +1131,7 @@ func _refresh_panel(assignments: Dictionary) -> void:
 		_info_label.text = "\n".join(lines)
 	_refresh_progress()
 	_refresh_slot()
+	_refresh_bench()
 	_refresh_map()
 
 
@@ -1039,3 +1424,47 @@ class MapCanvas extends Control:
 		draw_string(ThemeDB.fallback_font, from + Vector2(10.0, 5.0), "사무실",
 			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 14, Color("fff2dd"))
 		draw_rect(Rect2(Vector2.ZERO, size), Color("43545b"), false, 2.0)
+
+
+## 상호작용 안내 판. 스테이지의 것(`HealthHud._draw_action_chip`)과 같은 모양과 크기로, 그
+## 물건(`anchor`) 오른쪽에 붙어 뜬다. 물건이 화면 밖이면 그리지 않는다.
+class PromptChip extends Control:
+	const ZOOM := 2.0
+	var text := ""
+	var show_key := true
+	var anchor := Vector3.INF
+	var camera: Camera3D
+	var _plate := UI.box(Color(0.07, 0.11, 0.14, 0.93), UI.EDGE, 10)
+	var _key_box := UI.box(Color("443632"), UI.ACCENT, 7)
+
+	func _ready() -> void:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	func _process(_delta: float) -> void:
+		if visible:
+			queue_redraw()
+
+	func _draw() -> void:
+		if text.is_empty() or camera == null or not is_instance_valid(camera) \
+				or not anchor.is_finite() or camera.is_position_behind(anchor):
+			return
+		var at := camera.unproject_position(anchor)
+		if not Rect2(Vector2.ZERO, size).has_point(at):
+			return
+		var font := ThemeDB.fallback_font
+		var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, roundi(17 * ZOOM)).x
+		var lead := 43.0 if show_key else 12.0
+		var chip := Vector2(width + (lead + 19.0) * ZOOM, 38.0 * ZOOM)
+		# 물건 오른쪽에, 그 둘레 0.2 m는 비워 두고.
+		var clear := camera.unproject_position(anchor + camera.global_basis.x * 0.2).x - at.x
+		var corner := (at + Vector2(maxf(clear, 0.0) + 12.0, -chip.y * 0.5)).clamp(Vector2.ZERO, size - chip)
+		draw_style_box(_plate, Rect2(corner, chip))
+		if show_key:
+			var key := Rect2(corner + Vector2(8.0, 7.0) * ZOOM, Vector2(25.0, 24.0) * ZOOM)
+			draw_style_box(_key_box, key)
+			draw_string(font, key.position + Vector2(0.0, 17.0 * ZOOM),
+				preload("res://scripts/game_options.gd").key_label("interact", "E"),
+				HORIZONTAL_ALIGNMENT_CENTER, key.size.x, roundi(15 * ZOOM), UI.CREAM)
+		draw_string(font, corner + Vector2(lead, 25.0) * ZOOM, text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, roundi(17 * ZOOM), UI.CREAM)

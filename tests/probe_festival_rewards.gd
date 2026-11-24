@@ -192,7 +192,14 @@ func _party() -> void:
 	_check(not guest.session.request_slot_spin(91) and not guest.session.request_slot_spin(0),
 		"a bet above the team's money or of nothing was accepted")
 	host.session.slot_pick_override = 0.0          # 0.5%: 7 7 7, 10배
+	# 한 번에 한 명: 자리는 방장이 내주고, 앉은 사람만 돌린다.
+	_check(not host.session.request_slot_spin(10), "a spin with nobody at the machine was accepted")
 	guest_office.open_slot()
+	_check(await _until(func(): return guest_office.is_slot_open()), "the guest was not given the machine")
+	_check(host.session.slot_user == guest.session.local_id(), "the host does not know who is at the machine")
+	host_office.open_slot()
+	_check(not host_office.is_slot_open() and not host.session.request_slot_spin(10),
+		"a second player got on the machine while it was in use")
 	guest_office.set_slot_bet(40)
 	_check(guest_office.spin_slot(), "the guest could not spin")
 	_check(await _until(func(): return guest.session.team_money == 450 and host.session.team_money == 450),
@@ -202,7 +209,14 @@ func _party() -> void:
 		"the guest's machine never showed the win")
 	_check(guest_office._slot_reels[0].symbol == OfficeSlot.GOLDEN and guest_office._slot_reels[1].symbol == OfficeSlot.GOLDEN \
 		and guest_office._slot_reels[2].symbol == OfficeSlot.GOLDEN, "the 10x did not show three golden bottles")
+	guest_office.close_slot()
+	_check(await _until(func(): return host.session.slot_user == 0), "closing the machine did not free it")
 	host_office.open_slot()
+	_check(host_office.is_slot_open() and await _until(func(): return guest.session.slot_user == 1),
+		"the host could not take the freed machine")
+	guest_office.open_slot()
+	_check(not guest_office.is_slot_open() and not guest_office._slot_seat_wanted,
+		"the guest asked for a machine it knew was taken")
 	host.session.slot_pick_override = 0.01         # 1%: 같은 소스 셋, 4배
 	host_office.set_slot_bet(50)
 	_check(host_office.spin_slot(), "the host could not spin")
@@ -248,6 +262,34 @@ func _party() -> void:
 	_check(await _until(func(): return host_office._slot_shown_money == 321), "the money did not count up to 321")
 	_check(host.session.team_jackpot == 0 and host.save_store.jackpot == 0 and host.save_store.money == 321,
 		"the jackpot was not emptied and saved")
+	# --- workbench: anyone unlocks a part with the team's money, the host keeps it ---
+	host_office.close_slot()
+	var parts_script := preload("res://scripts/tomatina_sauce_parts.gd")
+	_check(host.session.team_parts == 1 and not guest.session.request_part_unlock(0) 		and not guest.session.request_part_unlock(99), "the basic nozzle or a part that does not exist can be unlocked")
+	guest_office.open_bench()
+	_check(guest_office.is_bench_open() and guest_office._bench_buttons.size() == parts_script.CATALOG.size() - 1,
+		"the workbench does not list every part but the basic one")
+	_check(guest_office.unlock_part(parts_script.Part.FAN), "the guest could not ask for an unlock")
+	_check(await _until(func(): return guest.session.team_parts == 3 and host.session.team_parts == 3 		and guest.session.team_money == 221), "unlocking the 3-way nozzle did not cost 100 for everyone")
+	_check(host.save_store.parts == 3 and host.save_store.money == 221, "the unlock was not saved for the host")
+	_check(guest_office._bench_buttons[0].disabled and guest_office._bench_buttons[0].text.contains("해금됨"),
+		"the workbench does not show the part as unlocked")
+	_check(not host.session.request_part_unlock(parts_script.Part.FAN), "a part was unlocked twice")
+	_check(host.session.request_part_unlock(parts_script.Part.SNIPER) and host.session.team_money == 101 		and not host.session.request_part_unlock(parts_script.Part.CANNON), "120 was not charged, or a part was sold for less than it costs")
+	var reread := SauceSaveStore.new(host.save_store.path)
+	reread.load_data()
+	_check(reread.parts == host.session.team_parts, "the unlocked parts did not survive a save and load")
+	guest_office.close_bench()
+	# --- shower booth: the curtain and the water are everybody's ---
+	_check(guest_office._curtain != null and guest_office._shower_water != null, "the booth has no curtain or shower head to use")
+	guest_office.toggle_prop(OfficeLobby.PROP_CURTAIN)
+	host_office.toggle_prop(OfficeLobby.PROP_SHOWER)
+	_check(await _until(func(): return host.session.office_props == 3 and guest.session.office_props == 3),
+		"the curtain and the shower were not shared")
+	_check(await _until(func(): return host_office._curtain.transform.is_equal_approx(host_office._curtain_closed)) 		and host_office._shower_water.emitting and guest_office._shower_water.emitting,
+		"the curtain did not close or the water did not run")
+	guest_office.toggle_prop(OfficeLobby.PROP_SHOWER)
+	_check(await _until(func(): return not host_office._shower_water.emitting), "the shower could not be turned off")
 	_check(await _until(func(): return guest_office._slot_announce.visible \
 		and guest_office._slot_announce.text.contains("잭팟")), "the guest was not told about the jackpot win")
 	_check(OfficeSlot.tier_of(PackedInt32Array([3, 3, 3])) == 4 and OfficeSlot.tier_of(PackedInt32Array([1, 1, 1])) == 3 \

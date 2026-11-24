@@ -1,7 +1,8 @@
 class_name OfficeSlotShow
 extends Node
 
-## 사무실에 놓인 슬롯머신이 직접 보여 주는 것: 레버가 내려가고, 기계의 세 칸이 돌다가
+## 사무실에 놓인 슬롯머신이 직접 보여 주는 것: 레버가 밑동을 축으로 호를 그리며 앞으로
+## 넘어갔다가 돌아오고, 기계의 세 칸이 돌다가
 ## 하나씩 멈추고, 맞으면 전구가 번쩍인다. 소리도 여기서 낸다.
 ## 누가 돌리든 사무실의 모두에게 보인다(`MayoNet.slot_result`가 전원에게 온다).
 ## 평소에는 전구가 느리게 번갈아 깜빡인다.
@@ -22,8 +23,18 @@ const TIER_FLASH := [0.0, 0.7, 2.0, 2.4, 5.0]
 var _machine: Node3D
 var _symbols: Array[ShaderMaterial] = []
 var _bulbs: Array[ShaderMaterial] = []
+## 레버가 넘어가는 각도와 걸리는 시간. 내려갈 때는 톱니를 넘기듯 `LEVER_NOTCHES`번 걸린다.
+const LEVER_PULL := deg_to_rad(78.0)
+const LEVER_DOWN_TIME := 0.34
+const LEVER_HOLD_TIME := 0.1
+const LEVER_BACK_TIME := 0.55
+const LEVER_NOTCHES := 6.0
+
 var _lever: Array[Node3D] = []
-var _lever_rest: Array[Vector3] = []
+var _lever_rest: Array[Transform3D] = []
+## 레버 밑동(기계 좌표). 레버의 모든 조각이 이 점을 지나는 가로축을 따라 돈다.
+var _lever_pivot := Vector3.ZERO
+var _lever_tween: Tween
 var _light: OmniLight3D
 var _voice: AudioStreamPlayer3D
 var _clock := 0.0
@@ -51,7 +62,9 @@ func setup(room: Node3D) -> void:
 		var node := _machine.get_node_or_null(part) as Node3D
 		if node != null:
 			_lever.push_back(node)
-			_lever_rest.push_back(node.position)
+			_lever_rest.push_back(node.transform)
+			if part == "LeverArm":
+				_lever_pivot = _foot_of(node)
 	_light = OmniLight3D.new()
 	_light.position = Vector3(0.0, 1.8, 1.4)
 	_light.light_color = Color("ffd257")
@@ -92,10 +105,39 @@ func spin(reels: PackedInt32Array, quiet: bool) -> void:
 	_flash_left = 0.0
 	_quiet = quiet
 	_say("lever")
+	if _lever_tween != null:
+		_lever_tween.kill()
+	_lever_tween = create_tween()
+	# 내려갈 때: 호를 따라가되 톱니 하나를 넘을 때마다 잠깐씩 걸린다.
+	_lever_tween.tween_method(func(t: float):
+		var eased := t * t * (3.0 - 2.0 * t)
+		var notch := floorf(eased * LEVER_NOTCHES) / LEVER_NOTCHES
+		_set_lever(LEVER_PULL * lerpf(eased, notch, 0.45) if t < 1.0 else LEVER_PULL),
+		0.0, 1.0, LEVER_DOWN_TIME)
+	_lever_tween.tween_interval(LEVER_HOLD_TIME)
+	# 놓으면 용수철로 되돌아가며 한 번 출렁인다.
+	_lever_tween.tween_method(_set_lever, LEVER_PULL, 0.0, LEVER_BACK_TIME) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+
+## 레버를 선 자리에서 앞으로 `angle`만큼 넘긴다: 밑동을 지나는 가로축(기계의 x) 둘레로 돈다.
+func _set_lever(angle: float) -> void:
+	var turn := Transform3D(Basis(Vector3.RIGHT, angle), _lever_pivot) \
+		* Transform3D(Basis.IDENTITY, -_lever_pivot)
 	for index in _lever.size():
-		var pull := create_tween()
-		pull.tween_property(_lever[index], "position", _lever_rest[index] + Vector3(0.0, -0.32, 0.12), 0.12)
-		pull.tween_property(_lever[index], "position", _lever_rest[index], 0.35)
+		if is_instance_valid(_lever[index]):
+			_lever[index].transform = turn * _lever_rest[index]
+
+
+## 레버 막대의 맨 아래 가운데(기계 좌표).
+func _foot_of(arm: Node3D) -> Vector3:
+	var box := AABB()
+	if arm is MeshInstance3D and (arm as MeshInstance3D).mesh != null:
+		box = (arm as MeshInstance3D).mesh.get_aabb()
+	elif arm is CSGBox3D:
+		box = AABB(-(arm as CSGBox3D).size * 0.5, (arm as CSGBox3D).size)
+	var centre := box.get_center()
+	return arm.transform * Vector3(centre.x, box.position.y, centre.z)
 
 
 func _process(delta: float) -> void:
