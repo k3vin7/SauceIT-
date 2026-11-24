@@ -36,6 +36,14 @@ func _until(condition: Callable, frames := 1200) -> bool:
 	return false
 
 
+## 방장 쪽 사무실에서 `peer_id`의 몸을 출발 구역에 세운다(방장이 모든 몸의 위치를 정한다).
+func _stand_on_zone(office: OfficeLobby, peer_id: int) -> void:
+	var body := office._occupants[peer_id] as CharacterBody3D
+	var at := office.depart_zone_position() + Vector3(-1.0 if peer_id == 1 else 1.0, 0.0, 0.0)
+	body.position = Vector3(at.x, body.position.y, at.z)
+	body.velocity = Vector3.ZERO
+
+
 func _make_app(view_name: String) -> SauceApp:
 	var viewport := SubViewport.new()
 	viewport.name = view_name
@@ -98,9 +106,15 @@ func _solo() -> void:
 	_check(office.is_map_open(), "the office map did not open")
 	office.pick_stage("stage_1")
 	_check(app.session.selected_stage == "stage_1", "the solo host could not pick a festival")
-	_check(office._map_pins["stage_1"].button_pressed and not office._map_start.disabled,
+	_check(office._map_pins["stage_1"].button_pressed and app.session.can_start_stage(),
 		"the map does not show the pick or will not start")
-	office.request_start()
+	office.close_map()
+	# 출발은 구역에 올라서야 일어난다: 지도에는 출발 버튼이 없다.
+	for _index in 30:
+		await physics_frame
+	_check(app.flow == SauceApp.Flow.OFFICE and office.occupants_in_depart_zone() == 0,
+		"the solo room left without anyone on the departure zone")
+	_stand_on_zone(office, 1)
 	_check(await _until(func(): return app._arrival != null and is_instance_valid(app._arrival) \
 		and app._arrival.active, 3600), "the arrival shot did not start after loading")
 	_check(app.flow == SauceApp.Flow.LOADING, "play began before the arrival shot ended")
@@ -194,8 +208,7 @@ func _party() -> void:
 	# --- 축제는 방장이 고른다 -------------------------------------------------
 	_check(not guest.session.set_selected_stage("stage_1"), "a guest changed the festival")
 	guest_office.open_map()
-	_check(guest_office._map_pins["stage_1"].disabled and not guest_office._map_start.visible,
-		"the guest's map lets them pick or start")
+	_check(guest_office._map_pins["stage_1"].disabled, "the guest's map lets them pick")
 	host_office.open_map()
 	host_office.pick_stage("stage_1")
 	_check(await _until(func(): return guest.session.selected_stage == "stage_1"),
@@ -204,7 +217,20 @@ func _party() -> void:
 	_check(host.session.can_start_stage(), "a dressed party cannot start")
 
 	# --- 출발: 연출, 방장만 건너뛰기, 인원 고정 --------------------------------
-	host_office.request_start()
+	# 한 명만 올라서서는 떠나지 않는다. 둘 다 올라서면 센 뒤 떠난다.
+	host_office.close_map()
+	guest_office.close_map()
+	_stand_on_zone(host_office, 1)
+	for _index in int(OfficeLobby.DEPART_COUNTDOWN * 60.0) + 60:
+		await physics_frame
+	_check(host.flow == SauceApp.Flow.OFFICE and host_office.occupants_in_depart_zone() == 1,
+		"the party left with one player off the departure zone")
+	_check(await _until(func(): return guest_office.occupants_in_depart_zone() == 1),
+		"the guest does not see the host on the departure zone")
+	_stand_on_zone(host_office, guest_id)
+	_check(await _until(func(): return host_office.depart_countdown < OfficeLobby.DEPART_COUNTDOWN \
+		and guest_office.depart_countdown < OfficeLobby.DEPART_COUNTDOWN),
+		"the countdown did not start on both screens")
 	var arriving := await _until(func() -> bool:
 		return host._arrival != null and is_instance_valid(host._arrival) and host._arrival.active \
 			and guest._arrival != null and is_instance_valid(guest._arrival) and guest._arrival.active, 3600)

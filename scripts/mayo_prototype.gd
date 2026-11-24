@@ -10466,6 +10466,18 @@ func item_slots(peer: int) -> Array:
 		_item_slots[peer] = [2,0,0,0,0]
 	return _item_slots[peer]
 
+## 팀 전원의 지닌물건에 지금 담겨 있는 토마토 수(1번 칸은 병이라 세지 않는다).
+## 축제를 마칠 때 사무실로 가져가는 양이다 -- `FestivalRewards.settle`.
+func carried_tomato_count() -> int:
+	var total := 0
+	for shooter: Shooter in _shooters.values():
+		var slots := item_slots(shooter.peer_id)
+		for slot in range(1, slots.size()):
+			if int(slots[slot]) == 1:
+				total += 1
+	return total
+
+
 func selected_item_slot(peer: int) -> int:
 	return int(_item_selected.get(peer,0))
 

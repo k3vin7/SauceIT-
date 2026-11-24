@@ -113,7 +113,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 13
+const PROTOCOL_VERSION := 14
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
@@ -175,6 +175,10 @@ signal result_votes_changed(ready: int, total: int)
 signal truck_returned
 signal session_ended(reason: String)
 signal late_join_waiting
+## 방장 쪽에서만: 사무실에서 팀 돈이 바뀌었다(슬롯머신 등). 앱이 저장 파일에 적는다.
+signal team_money_spent
+## 누군가 슬롯머신을 돌린 결과. 사무실에 있는 전원에게 온다.
+signal slot_result(peer_id: int, bet: int, won: bool, reels: PackedInt32Array)
 ## The host cut the arrival shot short, for everybody.
 signal intro_skipped(transition_id: int)
 
@@ -263,6 +267,11 @@ var _joined := false
 var lobby_flow := false
 var session_phase: int = SessionPhase.OFFLINE
 var selected_stage := "stage_1"
+## 팀 공용 돈·전리품·축제별 완료 횟수. 원본은 방장의 저장 파일이고(`SauceSaveStore`),
+## 방장이 `set_team_progress`로 올리면 사무실에 있는 팀원에게 명단과 함께 간다.
+var team_money := 0
+var team_trophies := PackedStringArray()
+var team_clears: Dictionary = {}
 var _lobby_ready: Dictionary = {}
 ## Which of the four characters each player picked at the truck's door, peer id
 ## -> index. The same index means the same character in the truck
@@ -455,6 +464,70 @@ func all_characters_chosen() -> bool:
 
 func can_start_stage() -> bool:
 	return lobby_flow and is_server() and all_lobby_ready() and all_characters_chosen()
+
+
+## 슬롯머신이 맞을 확률. 검사에서 0이나 1로 바꿔 쓴다.
+var slot_win_chance := OfficeSlot.WIN_CHANCE
+var _slot_rng := RandomNumberGenerator.new()
+
+
+## 팀 돈 `bet`을 걸고 슬롯머신을 돌린다. 사무실에 있는 누구나 할 수 있고, 굴리는 것은 방장이다.
+func request_slot_spin(bet: int) -> bool:
+	if not lobby_flow or session_phase != SessionPhase.TRUCK or bet < 1 or bet > team_money:
+		return false
+	if is_server():
+		return _resolve_slot_spin(local_id(), bet)
+	_request_slot_spin.rpc_id(1, bet)
+	return true
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_slot_spin(bet: int) -> void:
+	if multiplayer.is_server():
+		_resolve_slot_spin(multiplayer.get_remote_sender_id(), bet)
+
+
+func _resolve_slot_spin(peer_id: int, bet: int) -> bool:
+	if not is_server() or session_phase != SessionPhase.TRUCK or not _slots.has(peer_id) \
+			or bet < 1 or bet > team_money:
+		return false
+	var outcome := OfficeSlot.roll(_slot_rng, slot_win_chance)
+	team_money += bet if outcome.won else -bet
+	team_money_spent.emit()
+	_broadcast_lobby()
+	for id in _slots.keys():
+		if int(id) != 1 and _peer_can_receive(int(id)):
+			_slot_result.rpc_id(int(id), peer_id, bet, outcome.won, outcome.reels)
+	slot_result.emit(peer_id, bet, outcome.won, outcome.reels)
+	return true
+
+
+@rpc("authority", "call_remote", "reliable")
+func _slot_result(peer_id: int, bet: int, won: bool, reels: PackedInt32Array) -> void:
+	if not multiplayer.is_server() and reels.size() == 3:
+		slot_result.emit(peer_id, bet, won, reels)
+
+
+## 방장이 자기 저장 파일의 돈·전리품을 방에 올린다. 팀원이 부르면 아무 일도 없다.
+func set_team_progress(money: int, trophies: PackedStringArray, clears: Dictionary) -> void:
+	if not is_server():
+		return
+	team_money = money
+	team_trophies = trophies.duplicate()
+	team_clears = clears.duplicate()
+	_broadcast_lobby()
+	if not lobby_flow:
+		roster_changed.emit()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_team_progress(money: int, trophies: PackedStringArray, clears: Dictionary) -> void:
+	if multiplayer.is_server():
+		return
+	team_money = maxi(money, 0)
+	team_trophies = trophies
+	team_clears = clears
+	roster_changed.emit()
 
 
 ## The festival on the office map. The host's to choose, while the party is
@@ -1373,6 +1446,7 @@ func _broadcast_lobby() -> void:
 	var characters := _character_packet()
 	for peer_id in _slots.keys():
 		if int(peer_id) != 1 and _peer_can_receive(int(peer_id)):
+			_sync_team_progress.rpc_id(int(peer_id), team_money, team_trophies, team_clears)
 			_sync_lobby.rpc_id(int(peer_id), packet, ready, selected_stage, session_phase,
 				characters)
 	roster_changed.emit()

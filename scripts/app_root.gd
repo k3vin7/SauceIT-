@@ -130,6 +130,7 @@ func _connect_session() -> void:
 	session.session_ended.connect(_on_session_ended)
 	session.intro_skipped.connect(_on_intro_skipped)
 	session.roster_changed.connect(_settle_character_pick)
+	session.team_money_spent.connect(func(): save_store.set_money(session.team_money))
 
 
 func _on_late_join_waiting() -> void:
@@ -399,6 +400,9 @@ func _show_office() -> void:
 	office.mouse_sensitivity = save_store.mouse_sensitivity
 	office.start_requested.connect(_request_start)
 	office.character_requested.connect(_show_character_select)
+	# 방의 돈과 전리품은 방장의 저장 파일에서 온다. 축제를 마치고 돌아올 때마다 다시 올린다.
+	if session.is_server():
+		session.set_team_progress(save_store.money, save_store.trophies, save_store.clears)
 	space_root.add_child(office)
 	current_space = office
 	call_deferred("_report_office_ready")
@@ -477,6 +481,12 @@ func _on_transition_requested(stage_id: String, transition: int) -> void:
 	_active_transition = transition
 	_show_loading("%s 로딩 중…\n모든 참가자를 기다립니다." % StageRegistry.display_name(stage_id))
 	_clear_space()
+	# 스테이지를 읽는 동안 화면이 멈춘다. 로딩 화면이 먼저 그려지도록 두 프레임을 넘긴 뒤에
+	# 읽는다 -- 그러지 않으면 멈춘 화면이 사무실의 마지막 장면("출발까지 1")이다.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if flow != Flow.LOADING or _active_transition != transition:
+		return
 	var packed := load(StageRegistry.scene_path(stage_id)) as PackedScene
 	if packed == null:
 		_on_transition_failed("stage scene could not be loaded")
@@ -613,7 +623,38 @@ func _on_stage_cleared() -> void:
 	if is_instance_valid(bot_team):
 		_on_result_ready(summary)
 		return
+	summary["reward"] = _settle_reward(int(summary.players))
 	session.finish_stage(summary)
+
+
+## 축제를 마친 방장이 번 것을 셈해 자기 저장 파일에 더한다. 결과 화면에 보여 줄 것을 돌려준다.
+func _settle_reward(players: int) -> Dictionary:
+	var tomatoes := 0
+	if current_space != null and current_space.has_method("carried_tomato_count"):
+		tomatoes = int(current_space.call("carried_tomato_count"))
+	var reward := FestivalRewards.settle(session.selected_stage, tomatoes, players)
+	reward["owned"] = save_store.trophies.has(str(reward.trophy))
+	var error := save_store.add_reward(session.selected_stage, int(reward.money), str(reward.trophy))
+	if error != OK:
+		push_warning("보상 저장 실패 (오류 %d)" % error)
+	reward["total"] = save_store.money
+	return reward
+
+
+static func reward_text(reward: Dictionary) -> String:
+	var lines: Array[String] = ["보상  돈 +%d  (보유 %d)" % [int(reward.get("money", 0)),
+		int(reward.get("total", 0))]]
+	var needed := int(reward.get("needed", 0))
+	var trophy := str(reward.get("trophy", ""))
+	if needed > 0:
+		var carried := "가져온 토마토 %d / %d개" % [int(reward.get("tomatoes", 0)), needed]
+		if trophy.is_empty():
+			lines.push_back("전리품 없음 · %s" % carried)
+		elif bool(reward.get("owned", false)):
+			lines.push_back("전리품 %s (이미 진열 중) · %s" % [FestivalRewards.trophy_name(trophy), carried])
+		else:
+			lines.push_back("전리품 획득! %s · %s" % [FestivalRewards.trophy_name(trophy), carried])
+	return "\n".join(lines)
 
 
 func _on_result_ready(summary: Dictionary) -> void:
@@ -667,6 +708,13 @@ func _on_result_ready(summary: Dictionary) -> void:
 	detail.text = "%s\n참가자 %d명" % [summary.get("stage", ""), summary.get("players", 1)]
 	detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(detail)
+	if summary.get("reward") is Dictionary:
+		var reward_label := Label.new()
+		reward_label.name = "RewardLabel"
+		reward_label.text = reward_text(summary.reward)
+		reward_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		reward_label.add_theme_color_override("font_color", UI.GOLD)
+		column.add_child(reward_label)
 	var has_statistics: bool = not summary.get("statistics", {}).is_empty()
 	if has_statistics:
 		preload("res://scripts/mission_statistics.gd").build(column, summary.statistics)
