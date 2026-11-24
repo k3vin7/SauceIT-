@@ -31,8 +31,11 @@ var current_space: Node
 var _title_layer: CanvasLayer
 var _options_layer: CanvasLayer
 var _pause_layer: CanvasLayer
-## 같이하기: the make-or-join panel, over the title.
+## 같이하기: the make-or-join panel, over the office map.
 var _party_layer: CanvasLayer
+var _party_stage := ""
+var _party_character := -1
+var _practice_character := 0
 ## The character select: up on the way into the office and from its locker.
 var _character_layer: CanvasLayer
 ## The character this player asked for and has not been given yet.
@@ -45,6 +48,7 @@ var _result_continue_button: Button
 var _result_vote_label: Label
 var _result_reveal_tween: Tween
 var _status_label: Label
+var _host_button: Button
 var _join_button: Button
 var _cancel_join_button: Button
 var _address_field: LineEdit
@@ -197,11 +201,7 @@ func _show_title(message := "") -> void:
 	column.add_theme_constant_override("separation", 14)
 	margin.add_child(column)
 	column.add_child(UI.eyebrow("출격 메뉴"))
-	# The split is made here, before the office: a room is solo or shared from
-	# the start, and the fight is sized for the party that leaves the office.
-	column.add_child(_button("혼자하기", _start_solo, true))
-	column.add_child(_button("같이하기", _open_party_panel, true))
-	column.add_child(_button("봇 3명과 토마티나 연습", _show_bot_practice))
+	column.add_child(_button("플레이", _start_solo, true))
 	column.add_child(_button("튜토리얼", _show_tutorial))
 	column.add_child(_button("옵션", _open_options))
 	column.add_child(_button("종료", func(): get_tree().quit()))
@@ -216,8 +216,13 @@ func _show_title(message := "") -> void:
 
 
 func _show_bot_practice() -> void:
-	if session.is_online():
-		session.leave()
+	if session.is_online() or _party_layer != null:
+		return
+	if flow == Flow.OFFICE:
+		_practice_character = session.character_of(session.local_id())
+	elif flow == Flow.TITLE:
+		_practice_character = 0
+	session.leave()
 	_clear_space()
 	_clear_all_ui()
 	flow = Flow.STAGE
@@ -229,6 +234,7 @@ func _show_bot_practice() -> void:
 	space_root.add_child(world)
 	current_space = world
 	save_store.game_options.apply_world(world)
+	world.set_local_character(_practice_character)
 	bot_team = preload("res://scripts/player_bot_team.gd").new()
 	world.add_child(bot_team)
 	bot_team.configure(world, false)
@@ -236,8 +242,7 @@ func _show_bot_practice() -> void:
 	_show_intro_hint()
 
 
-## 혼자하기: a room of one, no port opened. The office, the pick, the map and
-## the start are the same ones a shared room uses.
+## 플레이 opens the office locally. The map is where the player can open or join a room.
 func _start_solo() -> void:
 	if flow != Flow.TITLE:
 		return
@@ -265,12 +270,13 @@ func _on_tutorial_completed() -> void:
 	_show_title("튜토리얼 완료 저장 실패 (오류 %d)" % error if error != OK else "")
 
 
-## 같이하기: make a room or join one. This is what the office terminal used to
-## ask; it is asked on the title now, so that everybody who reaches the office
-## is already in the room they will leave it with.
 func _open_party_panel() -> void:
-	if flow != Flow.TITLE or _party_layer != null:
+	if flow != Flow.OFFICE or _party_layer != null or session.is_online():
 		return
+	var office := current_space as OfficeLobby
+	_party_stage = session.selected_stage
+	_party_character = session.character_of(session.local_id())
+	office.set_input_locked(true)
 	_party_layer = CanvasLayer.new()
 	_party_layer.name = "PartyUI"
 	_party_layer.layer = 5
@@ -308,7 +314,7 @@ func _open_party_panel() -> void:
 	columns.add_child(join)
 	host.add_child(UI.eyebrow("01  방 만들기"))
 	join.add_child(UI.eyebrow("02  기존 방에 참여"))
-	host.add_child(UI.eyebrow("갈 축제는 사무실 지도에서 고릅니다.", UI.MUTED))
+	host.add_child(UI.eyebrow("선택한 목적지: %s" % StageRegistry.place(_party_stage), UI.MUTED))
 	_code_field = LineEdit.new()
 	_code_field.placeholder_text = "비우면 5자리 코드 자동 생성"
 	_open_room = CheckBox.new()
@@ -331,9 +337,9 @@ func _open_party_panel() -> void:
 	var actions := HBoxContainer.new()
 	actions.add_theme_constant_override("separation", 22)
 	column.add_child(actions)
-	var create := _button("방 만들기", _host_room, true)
-	create.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	actions.add_child(create)
+	_host_button = _button("방 만들기", _host_room, true)
+	_host_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(_host_button)
 	_join_button = _button("참여하기", _join_room, true)
 	_join_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	actions.add_child(_join_button)
@@ -349,9 +355,10 @@ func _open_party_panel() -> void:
 
 
 func _host_room() -> void:
-	session.leave()
+	_restore_solo_room()
 	if session.begin_host_room(_port(), _code_field.text.strip_edges(),
-			_open_room.button_pressed, DEFAULT_STAGE):
+			_open_room.button_pressed, _party_stage):
+		_close_party_panel()
 		return
 	_status_label.text = _status_text(session.status())
 
@@ -360,6 +367,7 @@ func _join_room() -> void:
 	session.leave()
 	if session.begin_join_room(_address_field.text.strip_edges(), _port(),
 			_code_field.text.strip_edges()):
+		_host_button.disabled = true
 		_join_button.disabled = true
 		_cancel_join_button.visible = true
 		_status_label.text = "접속 및 입장 코드 인증 중…"
@@ -369,22 +377,32 @@ func _join_room() -> void:
 
 func _cancel_join() -> void:
 	session.cancel_join()
-	_join_button.disabled = false
-	_cancel_join_button.visible = false
-	_status_label.text = _status_text(session.status())
+	var message := session.status()
+	_restore_solo_room()
+	_status_label.text = _status_text(message)
 
 
 func _close_party_panel() -> void:
-	if flow == Flow.TITLE and session.is_online():
-		session.cancel_join()
+	if _party_layer == null:
+		return
+	session.cancel_join()
+	_restore_solo_room()
 	_clear_ui(_party_layer)
 	_party_layer = null
 	_status_label = null
+	if current_space is OfficeLobby:
+		(current_space as OfficeLobby).set_input_locked(false)
+
+
+func _restore_solo_room() -> void:
+	if flow == Flow.OFFICE and not session.lobby_flow:
+		session.begin_solo_room(_party_stage)
+		session.choose_character(_party_character)
 
 
 ## Let into a room -- one made here, one joined, or a solo one: the office.
 func _on_lobby_joined() -> void:
-	if flow == Flow.TITLE:
+	if flow == Flow.TITLE or (flow == Flow.OFFICE and _party_layer != null and session.is_online()):
 		_show_office()
 
 
@@ -400,6 +418,8 @@ func _show_office() -> void:
 	office.mouse_sensitivity = save_store.mouse_sensitivity
 	office.start_requested.connect(_request_start)
 	office.character_requested.connect(_show_character_select)
+	office.party_requested.connect(_open_party_panel)
+	office.bot_practice_requested.connect(_show_bot_practice)
 	# 방의 돈과 전리품은 방장의 저장 파일에서 온다. 축제를 마치고 돌아올 때마다 다시 올린다.
 	if session.is_server():
 		session.set_team_progress(save_store.money, save_store.trophies, save_store.clears)
@@ -473,7 +493,8 @@ func _close_character_select() -> void:
 
 
 func _request_start() -> void:
-	session.request_stage_start()
+	if _party_layer == null:
+		session.request_stage_start()
 
 
 func _on_transition_requested(stage_id: String, transition: int) -> void:
@@ -915,7 +936,8 @@ func _leave_session() -> void:
 
 
 func _on_session_ended(reason: String) -> void:
-	_show_title(reason)
+	if _party_layer == null:
+		_show_title(reason)
 
 
 func _status_text(message: String) -> String:
@@ -926,6 +948,7 @@ func _on_session_status(message: String) -> void:
 	if _status_label != null and is_instance_valid(_status_label):
 		_status_label.text = _status_text(message)
 		if not session.is_online():
+			_host_button.disabled = false
 			_join_button.disabled = false
 			_cancel_join_button.visible = false
 
@@ -1164,6 +1187,8 @@ func _clear_space() -> void:
 	get_tree().paused = false
 	session.bind(null)
 	if current_space != null and is_instance_valid(current_space):
+		if current_space is OfficeLobby:
+			(current_space as OfficeLobby).stop_music()
 		# A space can request its own replacement from inside `_physics_process`
 		# (the tutorial completion signal does exactly that). Removing it from the
 		# tree in that callback leaves the rest of its current physics tick running

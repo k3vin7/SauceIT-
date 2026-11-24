@@ -342,18 +342,24 @@ func _lobby_space_ready() -> bool:
 
 func begin_host_room(port := DEFAULT_PORT, code := "", open_to_anyone := false,
 		stage_id := "stage_1") -> bool:
+	if _online:
+		return false
+	var from_solo := lobby_flow and session_phase == SessionPhase.TRUCK
+	var previous_code := lobby_code
 	lobby_flow = true
-	selected_stage = stage_id
 	lobby_code = code.strip_edges()
 	if not host(port, open_to_anyone):
-		lobby_flow = false
+		lobby_flow = from_solo
+		lobby_code = previous_code
 		return false
-	session_phase = SessionPhase.TRUCK
-	_joined = true
-	_slots = {1: 0}
-	_lobby_ready = {1: true}
-	_characters.clear()
-	lobby_joined.emit()
+	selected_stage = stage_id
+	if not from_solo:
+		session_phase = SessionPhase.TRUCK
+		_joined = true
+		_slots = {1: 0}
+		_lobby_ready = {1: true}
+		_characters.clear()
+		lobby_joined.emit()
 	roster_changed.emit()
 	return true
 
