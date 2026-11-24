@@ -651,7 +651,10 @@ func _settle_reward(players: int) -> Dictionary:
 	var tomatoes := 0
 	if current_space != null and current_space.has_method("carried_tomato_count"):
 		tomatoes = int(current_space.call("carried_tomato_count"))
-	var reward := FestivalRewards.settle(session.selected_stage, tomatoes, players)
+	var coins := 0
+	if current_space != null and current_space.has_method("leftover_coin_count"):
+		coins = int(current_space.call("leftover_coin_count"))
+	var reward := FestivalRewards.settle(session.selected_stage, tomatoes, players, coins)
 	reward["owned"] = save_store.trophies.has(str(reward.trophy))
 	var error := save_store.add_reward(session.selected_stage, int(reward.money), str(reward.trophy))
 	if error != OK:
@@ -663,6 +666,8 @@ func _settle_reward(players: int) -> Dictionary:
 static func reward_text(reward: Dictionary) -> String:
 	var lines: Array[String] = ["보상  돈 +%d  (보유 %d)" % [int(reward.get("money", 0)),
 		int(reward.get("total", 0))]]
+	if int(reward.get("coins", 0)) > 0:
+		lines.push_back("남긴 코인 %d 포함" % int(reward.get("coins", 0)))
 	var needed := int(reward.get("needed", 0))
 	var trophy := str(reward.get("trophy", ""))
 	if needed > 0:

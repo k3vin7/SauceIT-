@@ -60,10 +60,173 @@ var _slot_active := UI.box(Color("443632"), UI.ACCENT, 7)
 var _bottle_glass := UI.box(Color(0.85, 0.94, 1.0, 0.5), Color.TRANSPARENT, 5)
 
 
+## 코인이 들어오는 연출. 지갑(`world._local.coins`)이 늘어난 것을 이 화면이 스스로 알아채므로
+## 방장이든 팀원이든 똑같이 보이고, 따로 보내는 것이 없다. 늘어난 만큼을 `COIN_STEP`마다
+## 하나씩 센다: 하나에 소리 한 번, 날아오는 동전 하나. 한 번에 `RICH_AT`개 이상 들어오면 대박 연출.
+const COIN_STEP := 0.08
+const COIN_FLIGHT := 0.42
+const RICH_AT := 10
+const RICH_TIME := 2.4
+const COIN_SOUND: AudioStream = preload("res://assets/audio/slot/win_small.wav")
+const RICH_SOUND: AudioStream = preload("res://assets/audio/slot/jackpot.wav")
+const COIN_FACE := Color("ffd24a")
+const COIN_RIM := Color("9a6410")
+
+var _coin_known := -1
+## 아직 세지 않은 코인. 화면의 숫자는 지갑에서 이만큼을 뺀 값이다.
+var _coin_pending := 0
+var _coin_step_left := 0.0
+var _coin_combo := 0
+var _coin_idle := 0.0
+var _coin_pulse := 0.0
+## 날아오는 동전들: {origin(월드 좌표, 없으면 INF), age, sway}.
+var _coin_flights: Array[Dictionary] = []
+var _coin_origin := Vector3.INF
+var _coin_voices: Array[AudioStreamPlayer] = []
+var _coin_voice_next := 0
+var _rich_voice: AudioStreamPlayer
+var _rich_left := 0.0
+var _rich_gain := 0
+var _rich_rain: Array[Dictionary] = []
+
+
 func _ready() -> void:
 	name = "HealthHud"
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_preset(Control.PRESET_FULL_RECT)
+	for index in 6:
+		var voice := AudioStreamPlayer.new()
+		voice.stream = COIN_SOUND
+		voice.volume_db = -7.0
+		add_child(voice)
+		_coin_voices.push_back(voice)
+	_rich_voice = AudioStreamPlayer.new()
+	_rich_voice.stream = RICH_SOUND
+	_rich_voice.volume_db = -4.0
+	add_child(_rich_voice)
+
+
+## 화면에 적는 코인 수: 아직 날아오는 중인 것은 세지 않는다.
+func shown_coins() -> int:
+	if world == null or world._local == null:
+		return 0
+	return maxi(int(world._local.coins) - _coin_pending, 0)
+
+
+func _advance_coins(delta: float) -> void:
+	_coin_pulse = maxf(_coin_pulse - delta * 5.0, 0.0)
+	_rich_left = maxf(_rich_left - delta, 0.0)
+	for flight in _coin_flights:
+		flight.age += delta
+	_coin_flights = _coin_flights.filter(func(flight): return flight.age < COIN_FLIGHT)
+	if world == null or world._local == null:
+		_coin_known = -1
+		_coin_pending = 0
+		return
+	var have := int(world._local.coins)
+	if _coin_known >= 0 and have > _coin_known:
+		var gain := have - _coin_known
+		_coin_pending += gain
+		# 어디서 나온 코인인지: 방금 뒤진 시체나 쓰러진 보스. 바닥에서 주운 것은 출처가 없다.
+		var parts = world.get("_sauce_parts")
+		_coin_origin = Vector3.INF
+		if parts != null and Time.get_ticks_msec() - int(parts.burst_msec) < 500:
+			_coin_origin = parts.burst_at
+		if gain >= RICH_AT:
+			_start_rich(gain)
+	_coin_known = have
+	_coin_pending = mini(_coin_pending, have)
+	if _coin_pending <= 0:
+		_coin_step_left = 0.0
+		_coin_idle += delta
+		if _coin_idle > 0.5:
+			_coin_combo = 0
+		return
+	_coin_idle = 0.0
+	_coin_step_left -= delta
+	while _coin_pending > 0 and _coin_step_left <= 0.0:
+		_coin_step_left += COIN_STEP
+		_coin_pending -= 1
+		_coin_flights.push_back({"origin": _coin_origin, "age": 0.0,
+			"sway": sin(float(_coin_combo) * 2.4) * 46.0})
+		var voice := _coin_voices[_coin_voice_next]
+		_coin_voice_next = (_coin_voice_next + 1) % _coin_voices.size()
+		# 이어서 먹을수록 조금씩 높아진다.
+		voice.pitch_scale = 1.0 + minf(float(_coin_combo), 12.0) * 0.045
+		voice.play()
+		_coin_combo += 1
+		_coin_pulse = 1.0
+
+
+func _start_rich(gain: int) -> void:
+	_rich_left = RICH_TIME
+	_rich_gain = gain
+	_rich_voice.play()
+	_rich_rain.clear()
+	for index in 46:
+		# 난수 없이 고르게 흩는다: 화면마다 같은 그림이고, 겹쳐 보이지 않는다.
+		_rich_rain.push_back({
+			"x": fposmod(float(index) * 0.618034, 1.0),
+			"delay": fposmod(float(index) * 0.377, 1.0) * 0.9,
+			"speed": 0.75 + fposmod(float(index) * 0.271, 1.0) * 0.6,
+			"spin": float(index) * 1.7,
+		})
+
+
+## 코인 숫자가 적힌 자리(동전이 날아가 닿는 곳).
+func _coin_counter_at() -> Vector2:
+	return Vector2(frame.get_center().x + HUD_WIDTH * 0.5 - 34.0, frame.end.y - 108.0 + 14.0)
+
+
+func _draw_coin(at: Vector2, radius: float, spin: float, alpha := 1.0) -> void:
+	# 세로축으로 도는 동전: 가로로만 납작해진다.
+	draw_set_transform(at, 0.0, Vector2(0.18 + 0.82 * absf(cos(spin)), 1.0))
+	draw_circle(Vector2.ZERO, radius, Color(COIN_RIM, alpha))
+	draw_circle(Vector2.ZERO, radius * 0.78, Color(COIN_FACE, alpha))
+	draw_circle(Vector2(-radius * 0.22, -radius * 0.25), radius * 0.26, Color(1.0, 0.97, 0.78, alpha * 0.9))
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+func _draw_coin_effects() -> void:
+	var counter := _coin_counter_at()
+	var camera := world.get("_camera") as Camera3D
+	for flight in _coin_flights:
+		var from := counter + Vector2(0.0, -96.0)
+		var origin: Vector3 = flight.origin
+		if origin.is_finite() and camera != null and is_instance_valid(camera) \
+				and not camera.is_position_behind(origin):
+			var seen := camera.unproject_position(origin)
+			if frame.has_point(seen):
+				from = seen
+		var t := clampf(float(flight.age) / COIN_FLIGHT, 0.0, 1.0)
+		# 위로 튀어 올랐다가 숫자로 빨려 들어간다.
+		var lift := from + Vector2(float(flight.sway), -110.0)
+		var eased := t * t * (3.0 - 2.0 * t)
+		var at := from.lerp(lift, eased).lerp(lift.lerp(counter, eased), eased)
+		_draw_coin(at, lerpf(13.0, 8.0, t), float(flight.age) * 16.0)
+	if _rich_left <= 0.0:
+		return
+	var age := RICH_TIME - _rich_left
+	var flash := clampf(1.0 - age / 0.45, 0.0, 1.0)
+	if flash > 0.0:
+		draw_rect(frame, Color(1.0, 0.84, 0.3, 0.3 * flash * flash))
+	for drop in _rich_rain:
+		var fall := (age - float(drop.delay)) * float(drop.speed)
+		if fall <= 0.0 or fall > 1.25:
+			continue
+		var at := Vector2(frame.position.x + frame.size.x * float(drop.x),
+			frame.position.y - 30.0 + (frame.size.y + 60.0) * fall * 0.8)
+		_draw_coin(at, 15.0, float(drop.spin) + age * 9.0, clampf((1.25 - fall) * 4.0, 0.0, 1.0))
+	var fade := clampf(_rich_left / 0.5, 0.0, 1.0)
+	var pop := 1.0 + 0.35 * clampf(1.0 - age / 0.25, 0.0, 1.0)
+	var font := ThemeDB.fallback_font
+	var title := "대박! +%d 코인" % _rich_gain
+	var size_px := roundi(46.0 * pop)
+	var width := font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1.0, size_px).x
+	var where := Vector2(frame.get_center().x - width * 0.5, frame.position.y + frame.size.y * 0.3)
+	draw_string_outline(font, where, title, HORIZONTAL_ALIGNMENT_LEFT, -1.0, size_px, 10,
+		Color(0.16, 0.08, 0.0, fade))
+	draw_string(font, where, title, HORIZONTAL_ALIGNMENT_LEFT, -1.0, size_px, Color(COIN_FACE, fade))
 
 
 func set_frame(new_frame: Rect2) -> void:
@@ -94,6 +257,7 @@ func _process(_delta: float) -> void:
 	if _pickup_refresh_left <= 0.0:
 		_pickup_refresh_left = 0.1
 		_refresh_pickups()
+	_advance_coins(_delta)
 	for row in feedback_rows:
 		row.left -= _delta
 	feedback_rows = feedback_rows.filter(func(row): return row.left > 0.0)
@@ -128,6 +292,8 @@ func _draw() -> void:
 			var charge: float = world.tomato_charge_fraction(world._local.peer_id)
 			var meter := Rect2(frame.get_center() + Vector2(-60.0, 36.0), Vector2(120.0, 7.0))
 			_draw_bar(meter, charge, UI.GOLD, UI.ACCENT, 1.0)
+	if world.map_kind == world.MapKind.TOMATINA:
+		_draw_coin_effects()
 	var footer := Rect2(frame.get_center().x - 210.0, frame.end.y - 30.0, 420.0, 22.0)
 	draw_style_box(_slot_idle, footer)
 	draw_string(ThemeDB.fallback_font, footer.position + Vector2(0.0, 16.0), controls,
@@ -197,8 +363,10 @@ func _draw_player() -> void:
 	var stage_two: bool = world.map_kind == world.MapKind.TOMATINA
 	if stage_two:
 		draw_string(font, at, Parts.CATALOG[part][0], HORIZONTAL_ALIGNMENT_LEFT, -1.0, 14, UI.CREAM)
-		draw_string(font, at + Vector2(215.0, 0.0), "%d 코인" % world._local.coins,
-			HORIZONTAL_ALIGNMENT_RIGHT, HUD_WIDTH - 239.0, 14, UI.GOLD)
+		# 코인을 하나 셀 때마다 숫자가 잠깐 커지고 밝아진다.
+		draw_string(font, at + Vector2(215.0, 0.0), "%d 코인" % shown_coins(),
+			HORIZONTAL_ALIGNMENT_RIGHT, HUD_WIDTH - 239.0, 14 + roundi(4.0 * _coin_pulse),
+			UI.GOLD.lerp(Color.WHITE, _coin_pulse * 0.7))
 	else:
 		draw_string(font, at, "장비 상태", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 14, UI.CREAM)
 
@@ -311,6 +479,9 @@ func _draw_action_chip(text: String) -> void:
 		# it (the shower's cross) however near the camera stands.
 		var clear := camera.unproject_position(anchor + camera.global_basis.x * 0.2).x - at.x
 		card.position = at + Vector2(maxf(clear, 0.0) + 12.0, -chip_size.y * 0.5)
+		if target.get("kind", "") == "shop":
+			# The tent is the thing itself, and big: the prompt sits on it.
+			card.position = at - chip_size * 0.5
 		card.position = card.position.clamp(frame.position, frame.end - chip_size)
 	draw_style_box(_plate, card)
 	var key := Rect2(card.position + Vector2(8.0, 7.0) * zoom, Vector2(25.0, 24.0) * zoom)

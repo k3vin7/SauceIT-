@@ -533,6 +533,9 @@ func _dress_occupant(peer_id: int, body: CharacterBody3D, index: int) -> void:
 	visual.name = "Character"
 	visual.scale = Vector3.ONE * (OCCUPANT_HEIGHT / CHARACTER_HEIGHTS[index])
 	visual.position = Vector3(0.0, -OCCUPANT_HEIGHT * 0.5, 0.0)
+	# The GLBs face +Z; the body walks and looks along -Z. Same half-turn the
+	# stage gives them in `_build_player_visual`.
+	visual.rotation.y = PI
 	# Hidden on the screen of the player wearing it, exactly as the stage hides
 	# it in first person: the camera sits at eye height inside this mesh, and
 	# an unhidden one is the inside of a head filling the view. Every other

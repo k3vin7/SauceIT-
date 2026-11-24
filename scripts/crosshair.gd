@@ -46,6 +46,14 @@ var effective_range := false:
 			queue_redraw()
 var impact_kill := false
 var impact_weak_spot := false
+## 0~1: how far the sniper nozzle is pulled in. The small reticle gives way to a
+## scope -- a dark surround and hairlines across the glass -- as it rises.
+var scope := 0.0:
+	set(value):
+		var clamped := clampf(value, 0.0, 1.0)
+		if not is_equal_approx(clamped, scope):
+			scope = clamped
+			queue_redraw()
 
 
 func confirm_impact(killed: bool, weak_spot := false) -> void:
@@ -88,13 +96,16 @@ func _draw() -> void:
 		draw_polyline(outline, Color(0.25, 0.03, 0.02, 0.9), 2.0, true)
 		if landing_leaf.size() >= 3 and not Geometry2D.triangulate_polygon(landing_leaf).is_empty():
 			draw_colored_polygon(landing_leaf, Color(0.3, 0.68, 0.2, 0.95))
+	if scope > 0.0:
+		_draw_scope(centre)
 	# Opening outwards rather than closing in: the arms pull back off what they
 	# are marking, so the thing being hit is less obscured exactly when it is
 	# worth looking at.
 	var gap := centre_gap + connected_spread * connection
 	var width := thickness + connected_thickness * connection
 	var tint := (Color("75e3bc") if effective_range else arm_color).lerp(connected_color, connection)
-	if effective_range:
+	tint.a *= 1.0 - scope
+	if effective_range and scope <= 0.0:
 		draw_circle(centre, 3.5, outline_color)
 		draw_circle(centre, 2.0, Color("75e3bc"))
 	# Vertical then horizontal arm pairs, drawn from the gap outwards.
@@ -102,7 +113,7 @@ func _draw() -> void:
 	for arm in arms:
 		var from: Vector2 = centre + arm * gap
 		var to: Vector2 = centre + arm * (gap + arm_length)
-		draw_line(from, to, outline_color, width + 2.0)
+		draw_line(from, to, Color(outline_color, outline_color.a * (1.0 - scope)), width + 2.0)
 	for arm in arms:
 		var from: Vector2 = centre + arm * gap
 		var to: Vector2 = centre + arm * (gap + arm_length)
@@ -117,3 +128,27 @@ func _draw() -> void:
 		for diagonal in [Vector2(1, 1), Vector2(-1, 1), Vector2(1, -1), Vector2(-1, -1)]:
 			var direction: Vector2 = diagonal.normalized()
 			draw_line(centre + direction * 7.0, centre + direction * (14.0 if impact_kill else 11.0), accent, 2.0)
+
+
+## The scope: everything outside the glass goes dark, and hairlines cross it
+## with a gap at the middle for the dot. The lines take the reticle's colours --
+## green in effective range, gold while the shot is on a body.
+func _draw_scope(centre: Vector2) -> void:
+	var radius := minf(size.x, size.y) * 0.44
+	var far := size.length()
+	var dark := Color(0.0, 0.0, 0.0, 0.93 * scope)
+	var steps := 72
+	for step in steps:
+		var a := Vector2.from_angle(TAU * float(step) / steps)
+		var b := Vector2.from_angle(TAU * float(step + 1) / steps)
+		draw_colored_polygon(PackedVector2Array([centre + a * radius, centre + b * radius,
+			centre + b * far, centre + a * far]), dark)
+	draw_arc(centre, radius, 0.0, TAU, 96, Color(0.0, 0.0, 0.0, scope), 5.0, true)
+	var line := (Color("75e3bc") if effective_range else Color(0.05, 0.05, 0.06)).lerp(connected_color, connection)
+	line.a = 0.9 * scope
+	var gap := 10.0
+	for arm in [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]:
+		# Thin through the glass, thick towards the rim, as on a real reticle.
+		draw_line(centre + arm * gap, centre + arm * radius * 0.42, line, 1.5, true)
+		draw_line(centre + arm * radius * 0.42, centre + arm * radius, line, 4.0)
+	draw_circle(centre, 2.0, Color(0.9, 0.16, 0.12, scope))

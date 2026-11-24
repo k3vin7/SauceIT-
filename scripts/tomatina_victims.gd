@@ -4,17 +4,19 @@ extends Node3D
 ##
 ## Each is the village kit's body mesh with a `TomatinaVictimCorpse` box around
 ## it, so the sauce sticks to them, and each can be searched once with the
-## interact key for a few coins. The coins are dropped beside the body as
-## ordinary coin pickups -- the team's shared purse picks them up the usual way
-## -- so the only new state on the wire is which bodies have been searched,
-## and that rides on the coin state (see `TomatinaSauceParts.coin_state`).
+## interact key for a few coins. The coins go straight into every purse
+## (`TomatinaSauceParts.grant_coins`) and the HUD flies them in one at a time,
+## so the only new state on the wire is which bodies have been searched, and
+## that rides on the coin state (see `TomatinaSauceParts.coin_state`).
 
 ## How close, flat, a player has to stand to the middle of a body to search it.
 const LOOT_REACH := 1.9
-## What one body gives up. A special tomato is worth one coin half the time and
-## a part costs five to seven, so a body is worth a good fight, not a shop trip.
+## What one body gives up: one to five coins, 19% each, and `LOOT_JACKPOT` the
+## remaining 5% of the time.
 const LOOT_COINS_MIN := 1
-const LOOT_COINS_MAX := 2
+const LOOT_COINS_MAX := 5
+const LOOT_JACKPOT := 10
+const LOOT_JACKPOT_CHANCE := 0.05
 
 var world: Node3D
 var bodies: Array[TomatinaVictimCorpse] = []
@@ -84,24 +86,32 @@ func is_looted(index: int) -> bool:
 	return _looted.has(index)
 
 
-## Authority only: searches body `index` and drops its coins beside it.
+## How many coins a body holds, given a roll in [0, 1).
+static func coins_for(roll: float) -> int:
+	if roll < LOOT_JACKPOT_CHANCE:
+		return LOOT_JACKPOT
+	var span := LOOT_COINS_MAX - LOOT_COINS_MIN + 1
+	var rest := (roll - LOOT_JACKPOT_CHANCE) / (1.0 - LOOT_JACKPOT_CHANCE)
+	return LOOT_COINS_MIN + clampi(int(rest * span), 0, span - 1)
+
+
+## Authority only: searches body `index` and pays its coins into every purse.
 func loot(index: int) -> void:
 	if index < 0 or index >= positions.size() or _looted.has(index):
 		return
 	_looted[index] = true
-	var parts = world._sauce_parts
-	var count := _rng.randi_range(LOOT_COINS_MIN, LOOT_COINS_MAX)
-	for coin in count:
-		var angle := TAU * (float(coin) + _rng.randf_range(0.0, 0.6)) / float(count)
-		parts.drop_coin(positions[index] + Vector3(cos(angle), 0.0, sin(angle)) * 0.55)
-	parts.dirty = true
+	world._sauce_parts.grant_coins(coins_for(_rng.randf()), positions[index] + Vector3.UP * 0.4)
 
 
 ## What a peer has been told was searched.
 func set_looted(indices: Array) -> void:
-	_looted.clear()
+	var before := _looted
+	_looted = {}
 	for index in indices:
 		_looted[int(index)] = true
+		if not before.has(int(index)) and int(index) >= 0 and int(index) < positions.size() \
+				and world != null and world.get("_sauce_parts") != null:
+			world._sauce_parts.note_burst(positions[int(index)] + Vector3.UP * 0.4)
 
 
 func looted_indices() -> Array:

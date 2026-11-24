@@ -3693,7 +3693,10 @@ func buy_or_equip_sauce_part(peer: int, part: int) -> bool:
 	if (shooter.owned_parts & bit) == 0:
 		if room < int(entry[2]) or shooter.coins < int(entry[3]):
 			return false
-		shooter.coins -= int(entry[3])
+		# The purse is the team's: one spends, every balance drops.
+		var left := shooter.coins - int(entry[3])
+		for teammate: Shooter in _shooters.values():
+			teammate.coins = left
 		shooter.owned_parts |= bit
 	_equip_sauce_part(shooter, part)
 	return true
@@ -6517,11 +6520,19 @@ func local_bottle_charge() -> Vector3:
 	return Vector3(_local.bottle_charge, _local.bottle_charge_hold, _local.bottle_boost_strength if _local.bottle_boosting else 0.0)
 
 
+var _boss_bounty_paid_for := 0
+
+
 func _check_stage_clear() -> void:
 	if not stage_mode or not _stage_roster_initialized or _stage_clear_emitted:
 		return
 	if map_kind == MapKind.TOMATINA:
 		_update_stage_objective()
+		# 보스를 쓰러뜨린 값. 한 번만 준다 -- 어느 보스에게 주었는지 적어 둔다.
+		if _is_authority() and is_instance_valid(_press_king) and not _press_king.is_alive() \
+				and _sauce_parts != null and _boss_bounty_paid_for != _press_king.get_instance_id():
+			_boss_bounty_paid_for = _press_king.get_instance_id()
+			_sauce_parts.grant_coins(SauceParts.BOSS_BOUNTY, _press_king.global_position + Vector3.UP * 1.5)
 		if _is_authority() and is_instance_valid(_press_king) and not _press_king.is_alive() and _press_king.act_time >= 1.9 and is_instance_valid(_truck_arrival) and not _truck_arrival.played:
 			show_combat_warning(_truck_arrival.final_at,Vector3.ZERO,6.2,TRUCK_ARRIVAL_CUE)
 			if is_instance_valid(_net) and _net.is_online():
@@ -7241,6 +7252,8 @@ func _update_camera() -> void:
 	_sniper_zoom = move_toward(_sniper_zoom, 1.0 if _sniper_aiming() else 0.0,
 		get_process_delta_time() * 7.0)
 	_camera.fov = _rendered_fov * lerpf(1.0, SauceParts.SNIPER_ZOOM, smoothstep(0.0, 1.0, _sniper_zoom))
+	if _crosshair is Crosshair:
+		(_crosshair as Crosshair).scope = smoothstep(0.0, 1.0, _sniper_zoom)
 	var aim_basis := _aim_basis()
 	var eye := _player.render_position() + Vector3.UP * eye_height
 	var tilt := _player.fall_tilt()
@@ -10900,6 +10913,14 @@ func carried_tomato_count() -> int:
 			if int(slots[slot]) == 1:
 				total += 1
 	return total
+
+
+## 축제를 마칠 때 팀 공용 지갑에 남은 코인. `FestivalRewards.settle`에 들어간다.
+## 지갑은 하나다: 얻을 때도 쓸 때도 전원의 `coins`가 같이 움직이므로 누구의 것을 읽어도 같다.
+func leftover_coin_count() -> int:
+	for shooter: Shooter in _shooters.values():
+		return maxi(shooter.coins, 0)
+	return 0
 
 
 func selected_item_slot(peer: int) -> int:

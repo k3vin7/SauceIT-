@@ -991,7 +991,7 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 	_set_mouse_button(MOUSE_BUTTON_LEFT, true)
 	scene._read_local_input()
 	scene._advance_strand(shooter, 0.01)
-	_check(system._projectiles.size() == 1 and absf(system._projectiles[0].velocity.length() - 55.0) < 0.5 \
+	_check(system._projectiles.size() == 1 and absf(system._projectiles[0].velocity.length() - 100.0) < 0.5 \
 		and int(system._projectiles[0].pierce_limit) == parts.SNIPER_PIERCE,
 		"pressing the left button did not fire one 55 m/s shot that pierces three")
 	_check(absf((1.0 - shooter.sauce) - 0.06) < 0.001, "a sniper shot does not cost 6% of the tank")
@@ -1013,7 +1013,7 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 	shooter.firing = false
 	scene._advance_strand(shooter, 0.01)
 	_check(system._projectiles.size() == 1 and int(system._projectiles[0].pierce_limit) == parts.SNIPER_PIERCE + 1 \
-		and absf(system._projectiles[0].velocity.length() - 55.0) < 0.5, "a shaken sniper shot does not pierce four")
+		and absf(system._projectiles[0].velocity.length() - 100.0) < 0.5, "a shaken sniper shot does not pierce four")
 	# 일반 토마토는 한 발에, 네 번째로 꿰뚫린 것까지 쓰러진다.
 	var grunt_health := 40.0
 	var per_shot: float = parts.PROJECTILES[parts.Part.SNIPER].damage * 0.65 / parts.REFERENCE_HIT_DAMAGE
@@ -1353,8 +1353,8 @@ func _run_network() -> void:
 			break
 		await _frames(1)
 	_check(guest._local.sauce_part == parts.Part.FAN and guest._local.coins == 0
-		and host.shooter_for(peer).sauce_part == parts.Part.FAN and host._local.coins == 5,
-		"the guest's purchase did not equip and debit only the guest")
+		and host.shooter_for(peer).sauce_part == parts.Part.FAN and host._local.coins == 0,
+		"the guest's purchase did not equip and debit the team purse")
 	avatar.global_position = TomatinaMap.refuge_shower_at(0) + Vector3.UP * 1.28
 	for _frame in 120:
 		if not guest._refuge_shop.visible:

@@ -19,7 +19,7 @@ const CATALOG := [
 ## `blast`는 폭발 반경, `blast_damage`는 직접 맞지 않은 대상이 받는 피해(없으면 직격의 절반).
 const GRAVITY := 9.8
 const PROJECTILES := {
-	Part.SNIPER: {"speed": 55.0, "gravity": GRAVITY, "life": 4.0, "reach": 45.0, "size": 0.07,
+	Part.SNIPER: {"speed": 100.0, "gravity": GRAVITY, "life": 4.0, "reach": 45.0, "size": 0.07,
 		"damage": 55.0, "blast": 0.0, "cost": 0.06, "cooldown": 1.2},
 	Part.BURST: {"speed": 32.0, "gravity": GRAVITY, "life": 6.0, "reach": 20.0,
 		"damage": 9.5, "blast": 0.0, "cost": 0.040, "cooldown": 0.48},
@@ -118,8 +118,13 @@ const SPECIAL_DROP_CHANCE := 0.50
 const TIP_COLORS := [Color.WHITE, Color("6bb9ac"), Color("78a3cf"),
 	Color("c589d9"), Color("dfab60"), Color("b85e41"), Color("3f4a5c")]
 
+## 보스(프레스 킹)를 쓰러뜨리면 전원이 받는 코인.
+const BOSS_BOUNTY := 20
+
 var world: Node3D
 var dirty := false
+var burst_at := Vector3.INF
+var burst_msec := 0
 var _rng := RandomNumberGenerator.new()
 var _rolled_deaths := {}
 var _coins := {}
@@ -252,6 +257,26 @@ func drop_coin(at: Vector3) -> void:
 	_coin_serial += 1
 	_place_coin(_coin_serial, at + Vector3.UP * 0.37)
 	dirty = true
+
+
+## Authority only: `count` coins straight into every purse, with no coin on the
+## ground -- a searched body, the boss. `at` is where they came out of, which the
+## HUD flies them in from (see `note_burst`).
+func grant_coins(count: int, at := Vector3.INF) -> void:
+	if count <= 0:
+		return
+	for shooter in world._shooters.values():
+		shooter.coins += count
+	note_burst(at)
+	dirty = true
+	world._refresh_refuge_shop()
+
+
+## Where the coins about to land in the purse came from. Every peer notes it for
+## itself -- the host on granting, a guest on hearing a body was searched.
+func note_burst(at: Vector3) -> void:
+	burst_at = at
+	burst_msec = Time.get_ticks_msec()
 
 
 func _place_coin(id: int, at: Vector3) -> void:

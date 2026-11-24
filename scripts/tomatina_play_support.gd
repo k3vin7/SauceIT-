@@ -436,7 +436,7 @@ func context_candidates(shooter) -> Array:
 	room = world._refuge_shop_in_reach(at)
 	if room >= 0:
 		var shop := TomatinaMap.refuge_shop_at(room)
-		_candidate(out, shooter, "shop", room, shop, "장비 개조", 0.0, shop + Vector3.UP * 1.5)
+		_candidate(out, shooter, "shop", room, shop, "장비 개조", 0.0, TomatinaMap.refuge_tent_at(room))
 	var station: int = world.station_in_reach(player)
 	if station >= 0 and (shooter.sauce < 0.999 or world.station_sauce_for(player) != shooter.sauce_kind):
 		var stall: Vector3 = world._refill_stations[station]["position"]

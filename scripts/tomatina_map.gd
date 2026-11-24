@@ -245,6 +245,12 @@ static func refuge_shop_at(room: int) -> Vector3:
 	return at_cell(Vector2(safe_rooms()[room].position) + Vector2(0.82, 1.62))
 
 
+## The middle of the refuge's tent, 1.6 m up -- under the canopy. The shop
+## prompt is pinned here; `refuge_shop_at` stays where the player stands to use it.
+static func refuge_tent_at(room: int) -> Vector3:
+	return at_cell(Vector2(safe_rooms()[room].position) + Vector2(0.82, 0.82)) + Vector3.UP * 1.6
+
+
 static func safe_room_at(cell: Vector2i) -> int:
 	var rooms := safe_rooms()
 	for index in rooms.size():

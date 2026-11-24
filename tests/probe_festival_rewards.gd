@@ -83,6 +83,12 @@ func _rules() -> void:
 	_check(full.money == 50 and full.trophy == "tomato_ketchup", "the bonus is not capped at 50")
 	var first := FestivalRewards.settle("stage_1", 9, 2)
 	_check(first.money == 49 and first.trophy == "" and first.needed == 0, "stage 1 has a trophy it should not")
+	var rich := FestivalRewards.settle("stage_2", 2, 1, 23)
+	_check(rich.money == 65 and rich.coins == 23, "leftover coins are not added to the settlement")
+	_check(TomatinaVictims.coins_for(0.0) == 10 and TomatinaVictims.coins_for(0.049) == 10 \
+		and TomatinaVictims.coins_for(0.051) == 1 and TomatinaVictims.coins_for(0.24) == 2 \
+		and TomatinaVictims.coins_for(0.5) == 3 and TomatinaVictims.coins_for(0.999) == 5,
+		"a searched body does not pay 1-5 at 19% each and 10 at 5%")
 	var path := "res://tmp/sauce_it_reward_store_%d.cfg" % Time.get_ticks_usec()
 	var store := SauceSaveStore.new(path)
 	store.add_reward("stage_2", 42, "tomato_ketchup")
