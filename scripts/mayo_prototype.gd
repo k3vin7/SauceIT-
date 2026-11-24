@@ -1887,7 +1887,9 @@ func _advance_part_trigger(shooter: Shooter, delta: float) -> void:
 		SauceParts.Part.BURST:
 			if pressed and shooter.part_shots_left == 0 and shooter.sauce >= cost:
 				shooter.sauce -= cost
-				shooter.part_shots_left = 3
+				# 흔들어 쏘면 한 발 더 나간다.
+				shooter.part_shots_left = SauceParts.BURST_SHAKEN_SHOTS \
+					if shooter.bottle_charge >= SauceParts.SHAKE_THRESHOLD else SauceParts.BURST_SHOTS
 			if shooter.part_shots_left > 0:
 				shooter.part_shots_left -= 1
 				shooter.part_cooldown = 0.10 if shooter.part_shots_left > 0 else cooldown
@@ -1961,13 +1963,18 @@ func _emit_lanes(shooter: Shooter) -> void:
 	while shooter.side_points.size() < 2:
 		var lane: Array[MayoPoint] = []
 		shooter.side_points.push_back(lane)
+	# 흔들어 쏜 분사는 가닥 사이가 좁아져 한곳으로 모인다.
+	var spread := SauceParts.THREE_WAY_ANGLE
+	if shooter.bottle_boosting:
+		spread = lerpf(SauceParts.THREE_WAY_ANGLE, SauceParts.THREE_WAY_SHAKEN_ANGLE,
+			clampf(shooter.bottle_boost_strength, 0.0, 1.0))
 	var centre := shooter.points
 	for index in 2:
 		var lane: Array[MayoPoint] = shooter.side_points[index]
 		if lane.size() >= maximum_point_count:
 			continue
 		shooter.points = lane
-		shooter.lane_angle = SauceParts.THREE_WAY_ANGLE * (-1.0 if index == 0 else 1.0)
+		shooter.lane_angle = spread * (-1.0 if index == 0 else 1.0)
 		_emit_point(shooter)
 	shooter.points = centre
 	shooter.lane_angle = 0.0
@@ -2016,13 +2023,11 @@ func _fire_part_volley(shooter: Shooter) -> void:
 	# lob -- that one is aimed at a spot, and faster would only overshoot it.
 	var shaken := shooter.bottle_charge
 	_spend_bottle_buff(shooter)
-	if shooter.sauce_part == SauceParts.Part.SNIPER:
-		# 저격 노즐을 흔들어 쏘면 더 빨라지는 대신 한 마리를 더 꿰뚫는다. 그 표시는 `forward`의
-		# 길이에 아주 조금 실려 모든 화면에 간다(`SauceParts.show_volley`가 읽는다).
-		if shaken >= SauceParts.SNIPER_SHAKE_THRESHOLD:
-			forward *= 1.001
-	elif shooter.bottle_boosting and shooter.sauce_part != SauceParts.Part.ARC:
-		forward *= 1.0 + bottle_charge_speed_bonus * shooter.bottle_boost_strength
+	# 덩어리 파츠는 흔들어 쏴도 빨라지지 않는다. 대신 파츠마다 다른 것이 달라지고(대포는 폭발,
+	# 저격은 관통 -- `SauceParts`의 설명), 얼마나 흔들었는지는 `forward`의 길이에 아주 조금
+	# 얹혀 모든 화면에 간다. 점사는 발 수가 이미 정해졌고, 박격포는 위에서 세기로 썼다.
+	if shooter.sauce_part == SauceParts.Part.SNIPER or shooter.sauce_part == SauceParts.Part.CANNON:
+		forward *= 1.0 + SauceParts.SHAKE_MARK * clampf(shaken, 0.0, 1.0)
 	show_part_volley(shooter.peer_id, shooter.sauce_part, shooter.sauce_kind, origin, forward)
 	if is_instance_valid(_net) and _net.is_online():
 		_net.broadcast_part_volley(shooter.peer_id, shooter.sauce_part, shooter.sauce_kind, origin, forward)
@@ -7141,7 +7146,8 @@ func _emit_point(shooter: Shooter = null) -> void:
 		point.range_scale = 1.6
 	# A shaken bottle throws further: faster out of the nozzle, and carried
 	# longer before the pressure leaves it.
-	if shooter.bottle_boosting:
+	# 3갈래는 흔들어 쏘면 멀리 가는 대신 가닥이 모인다(`_emit_lanes`).
+	if shooter.bottle_boosting and not _is_three_way(shooter):
 		speed *= 1.0 + bottle_charge_speed_bonus * shooter.bottle_boost_strength
 		point.range_scale *= 1.0 + bottle_charge_range_bonus * shooter.bottle_boost_strength
 	var player_velocity := shooter.player.velocity
@@ -7447,6 +7453,11 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 	var normal: Vector3 = hit.normal
 	var target := hit.collider as Node
 	var blast: float = profile.blast
+	var blast_damage := float(profile.get("blast_damage", profile.damage * SauceParts.BLAST_DAMAGE_SHARE))
+	if shot.part == SauceParts.Part.CANNON:
+		# 흔들어 쏜 대포는 더 넓게, 더 세게 터진다.
+		blast = SauceParts.cannon_blast(float(shot.get("shake", 0.0)))
+		blast_damage = SauceParts.cannon_blast_damage(float(shot.get("shake", 0.0)))
 	var sauce: int = shot.sauce
 	_spawn_impact_spray(at, normal, shot.velocity, target is MayoEnemy, shooter,
 		1.0 if blast <= 0.0 else 3.0, blast > 0.0)
@@ -7476,8 +7487,7 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 		if enemy.global_position.distance_squared_to(center) <= blast * blast \
 				and _tomato_blast_reaches(center, enemy):
 			_record_splat(enemy, enemy.global_position, Vector3.UP, shooter,
-				true, sauce, SauceParts.scaled_damage(float(profile.get("blast_damage",
-					profile.damage * SauceParts.BLAST_DAMAGE_SHARE)), enemy))
+				true, sauce, SauceParts.scaled_damage(blast_damage, enemy))
 	for teammate: Shooter in _shooters.values():
 		var player := teammate.player
 		if player.state == MayoPlayer.State.DEAD:

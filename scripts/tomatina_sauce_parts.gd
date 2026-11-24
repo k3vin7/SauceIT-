@@ -3,14 +3,16 @@ extends Node3D
 enum Part { STANDARD, FAN, FOCUS, BURST, ARC, CANNON, SNIPER }
 
 ## 번호는 `Part`와 같다. 이름만 바뀐 것: FAN은 3갈래 노즐, ARC는 박격포 캡이다.
+## 칸은 [이름, 설명, 파는 피난처 번호, 가격]. 설명의 둘째 줄은 병을 흔들어 쏘았을 때의 효과다.
+## 그 수치는 게이지를 다 채웠을 때의 값을 손으로 적은 것이다 -- 아래 상수를 바꾸면 여기도 고친다.
 const CATALOG := [
-	["기본 노즐", "기본 연속 분사", 0, 0],
-	["3갈래 노즐", "기본 줄기 세 가닥 · 가닥마다 조금 가늘고 약함 · 소스 두 배 소모", 0, 5],
-	["집중 노즐", "가늘고 멀리 뻗는 연속 분사", 0, 5],
-	["점사 밸브", "한 번 누를 때 짧게 세 발 분사", 1, 5],
-	["박격포 캡", "높이 쏘아 올려 떨어지며 터지는 소스 덩어리 · 흔들수록 멀리, 세게 · 아군도 맞음", 1, 6],
-	["대포형 소스통", "낮고 빠르게 날아가 터짐 · 한 발에 탱크 25%", 1, 7],
-	["저격 노즐", "가늘고 빠른 한 발 · 적 셋까지 꿰뚫음 · 누르고 있으면 조준, 떼면 발사", 1, 6],
+	["기본 노즐", "기본 연속 분사\n흔들기: 속도 +30% · 사거리 +50%", 0, 0],
+	["3갈래 노즐", "기본 줄기 세 가닥 · 가닥마다 조금 가늘고 약함 · 소스 두 배 소모\n흔들기: 가닥 사이 각도 -60%", 0, 5],
+	["집중 노즐", "가늘고 멀리 뻗는 연속 분사\n흔들기: 속도 +30% · 사거리 +50%", 0, 5],
+	["점사 밸브", "한 번 누를 때 짧게 세 발 분사\n흔들기: 발사 수 +1", 1, 5],
+	["박격포 캡", "높이 쏘아 올려 떨어지며 터지는 소스 덩어리 · 아군도 맞음\n흔들기: 사거리 +500% · 피해 +89%", 1, 6],
+	["대포형 소스통", "낮고 빠르게 날아가 터짐 · 한 발에 탱크 25%\n흔들기: 폭발 범위 +50% · 주변 피해 +43%", 1, 7],
+	["저격 노즐", "가늘고 빠른 한 발 · 적 셋까지 꿰뚫음 · 누르고 있으면 조준, 떼면 발사\n흔들기: 관통 +1", 1, 6],
 ]
 ## 덩어리를 쏘는 파츠. 전부 중력 `GRAVITY`를 받고 무언가에 닿을 때까지 난다 -- `life`는
 ## 허공으로 날아간 것을 치우는 상한일 뿐이다. `reach`는 조준점을 어디까지 찾는가(m).
@@ -34,8 +36,35 @@ const PROJECTILES := {
 const SNIPER_PIERCE := 3
 const SNIPER_PIERCE_FALLOFF := 0.8
 const SNIPER_ZOOM := 0.45
-## 흔들기 게이지가 이만큼은 차 있어야 한 마리 더 꿰뚫는다.
-const SNIPER_SHAKE_THRESHOLD := 0.5
+## 병을 흔들어 쏘았을 때 파츠마다 달라지는 것(게이지 0~1):
+##   기본·집중  줄기가 더 빠르고 멀리 간다(스테이지의 `bottle_charge_*` 값).
+##   3갈래      가닥 사이가 `THREE_WAY_ANGLE`에서 `THREE_WAY_SHAKEN_ANGLE`로 모인다.
+##   점사       게이지가 `SHAKE_THRESHOLD` 이상이면 세 발 대신 `BURST_SHAKEN_SHOTS`발.
+##   박격포     멀리, 세게(위의 MORTAR_* 값).
+##   대포       폭발 반경과 주변 피해가 `CANNON_SHAKEN_*`까지 커진다.
+##   저격       게이지가 `SHAKE_THRESHOLD` 이상이면 한 마리 더 꿰뚫는다.
+## 덩어리 파츠는 더 빨라지지 않는다. 얼마나 흔들어 쏜 것인지는 발사 방향 벡터의 길이에
+## `SHAKE_MARK`만큼 얹어 모든 화면에 보낸다(`shake_of`가 다시 읽는다).
+const SHAKE_THRESHOLD := 0.5
+const SHAKE_MARK := 0.002
+const BURST_SHOTS := 3
+const BURST_SHAKEN_SHOTS := 4
+const THREE_WAY_SHAKEN_ANGLE := deg_to_rad(6.0)
+const CANNON_SHAKEN_BLAST := 2.7
+const CANNON_SHAKEN_BLAST_DAMAGE := 60.0
+
+
+## 발사 방향 벡터의 길이(`reach`, 평소 1)에서 얼마나 흔들어 쏜 것인지 읽는다, 0~1.
+static func shake_of(reach: float) -> float:
+	return clampf((reach - 1.0) / SHAKE_MARK, 0.0, 1.0)
+
+
+static func cannon_blast(shake: float) -> float:
+	return lerpf(float(PROJECTILES[Part.CANNON].blast), CANNON_SHAKEN_BLAST, clampf(shake, 0.0, 1.0))
+
+
+static func cannon_blast_damage(shake: float) -> float:
+	return lerpf(float(PROJECTILES[Part.CANNON].blast_damage), CANNON_SHAKEN_BLAST_DAMAGE, clampf(shake, 0.0, 1.0))
 const THREE_WAY_ANGLE := deg_to_rad(15.0)
 const THREE_WAY_SCALE := 0.8
 const THREE_WAY_FLOW := 2.0
@@ -301,8 +330,10 @@ func show_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vec
 		var shot := {"node": glob, "peer": peer, "part": part, "sauce": sauce,
 			"velocity": direction * float(profile.speed), "left": profile.life,
 			"launch_speed": direction.length() * float(profile.speed),
-			# 저격 노즐을 흔들어 쏜 것은 `direction`이 그만큼 길다: 한 마리 더 꿰뚫는다.
-			"pierce_limit": SNIPER_PIERCE + (1 if direction.length() > 1.0001 else 0),
+			# 얼마나 흔들어 쏜 것인가. 박격포는 길이가 곧 세기라 여기서 읽지 않는다.
+			"shake": shake_of(direction.length()) if part != Part.ARC else 0.0,
+			"pierce_limit": SNIPER_PIERCE + (1 if part == Part.SNIPER \
+				and shake_of(direction.length()) >= SHAKE_THRESHOLD - 0.001 else 0),
 			"head": origin, "origin": origin, "age": 0.0, "draw_offset": draw_offset}
 		if sweep_from.is_finite():
 			shot["sweep_from"] = sweep_from

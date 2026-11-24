@@ -890,6 +890,17 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 			rad_to_deg(centre.angle_to(left)), rad_to_deg(centre.angle_to(right))])
 	var three_way_spent: float = 1.0 - shooter.sauce
 	shooter.firing = false
+	# 흔들어 쏜 분사는 가닥 사이가 6°로 모이고, 더 빨라지지는 않는다.
+	var plain_speed: float = shooter.points.back().velocity.length()
+	shooter.bottle_boosting = true
+	shooter.bottle_boost_strength = 1.0
+	scene._emit_lanes(shooter)
+	var tight: float = rad_to_deg(shooter.points.back().velocity.normalized().angle_to(
+		shooter.side_points[1].back().velocity.normalized()))
+	_check(absf(tight - 6.0) < 2.0 and shooter.points.back().velocity.length() < plain_speed * 1.12,
+		"a shaken three-way squirt did not close to 6 degrees, or flew faster: %.1f" % tight)
+	shooter.bottle_boosting = false
+	shooter.bottle_boost_strength = 0.0
 	for i in 30:
 		scene._advance_strand(shooter, 0.05)
 	scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.STANDARD)
@@ -959,6 +970,22 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 	for i in 4:
 		scene._advance_strand(shooter, 0.11)
 	_check(system._projectiles.size() == 3, "one burst press did not fire exactly three shots")
+	_check(absf(system._projectiles[0].velocity.length() - 32.0) < 0.5, "the burst does not leave at 32 m/s")
+	system.reset()
+	# 흔들어 쏜 점사는 한 발 더 나간다. 더 빨라지지는 않는다.
+	shooter.sauce = 1.0
+	shooter.bottle_charge = 1.0
+	shooter.firing = true
+	scene._advance_strand(shooter, 0.6)
+	shooter.firing = false
+	for i in 5:
+		scene._advance_strand(shooter, 0.11)
+	_check(system._projectiles.size() == 4 and absf(system._projectiles[0].velocity.length() - 32.0) < 0.5 \
+		and absf((1.0 - shooter.sauce) - 0.04) < 0.001,
+		"a shaken burst did not fire four shots for the price of one press: %d" % system._projectiles.size())
+	shooter.bottle_charge = 0.0
+	shooter.bottle_boosting = false
+	shooter.sauce = 1.0
 	system.reset()
 	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.ARC), "arc purchase failed")
 	shooter.firing = true
@@ -996,6 +1023,24 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 		scene._advance_strand(shooter, 2.6)
 	_check(system._projectiles.size() == 4 and shooter.sauce == 0.0, "a full cannon did not fire exactly four shots")
 	_check(absf(system._projectiles[0].velocity.length() - 28.0) < 0.5, "the cannon does not leave at 28 m/s")
+	# 흔들어 쏜 대포는 더 넓고 세게 터진다. 더 빨라지지는 않는다.
+	system.reset()
+	shooter.sauce = 1.0
+	shooter.bottle_charge = 1.0
+	scene._advance_strand(shooter, 2.6)
+	shooter.firing = true
+	scene._advance_strand(shooter, 0.01)
+	shooter.firing = false
+	_check(system._projectiles.size() == 1 and absf(float(system._projectiles[0].shake) - 1.0) < 0.01 \
+		and absf(system._projectiles[0].velocity.length() - 28.0) < 0.5,
+		"a shaken cannon shot does not carry its shake, or left faster")
+	_check(absf(parts.cannon_blast(1.0) - 2.7) < 0.001 and absf(parts.cannon_blast(0.0) - 1.8) < 0.001 \
+		and absf(parts.cannon_blast_damage(1.0) - 60.0) < 0.001 and absf(parts.cannon_blast_damage(0.0) - 42.0) < 0.001 \
+		and absf(parts.cannon_blast(0.5) - 2.25) < 0.001, "the cannon's blast does not grow from 1.8 m / 42 to 2.7 m / 60")
+	shooter.bottle_charge = 0.0
+	shooter.bottle_boosting = false
+	scene._advance_strand(shooter, 2.6)
+	shooter.sauce = 0.0
 	var balance: int = shooter.coins
 	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.STANDARD)
 		and scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.CANNON)
