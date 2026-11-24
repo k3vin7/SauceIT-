@@ -2,7 +2,7 @@ extends SceneTree
 
 # 새 시작 흐름을 끝에서 끝까지 확인한다. 앱 세 개를 127.0.0.1에 세운다.
 #   혼자하기
-#     * 타이틀 -> 사무실 + 캐릭터 선택, 포트는 열지 않는다
+#     * 타이틀의 플레이 -> 사무실 + 캐릭터 선택, 포트는 열지 않는다
 #     * 지도에서 축제를 고르고 출발 -> 도착 연출 -> 플레이 -> 결과 -> 다시 사무실
 #   같이하기
 #     * 방장/참가자 모두 사무실로 들어온다. 캐릭터는 겹칠 수 없다(방장이 판정)
@@ -71,6 +71,15 @@ func _pick(app: SauceApp, index: int) -> void:
 	select._confirm_pick()
 
 
+func _press(parent: Node, caption: String) -> void:
+	for child in parent.find_children("*", "Button", true, false):
+		var button := child as Button
+		if button.text == caption and button.is_visible_in_tree() and not button.disabled:
+			button.pressed.emit()
+			return
+	failures.push_back("no available button: %s" % caption)
+
+
 func _run() -> void:
 	await _solo()
 	await _party()
@@ -87,10 +96,10 @@ func _solo() -> void:
 	var app := _make_app("SoloView")
 	await process_frame
 	_check(app.flow == SauceApp.Flow.TITLE, "the app did not open on the title")
-	app._start_solo()
+	_press(app._title_layer, "플레이")
 	await process_frame
 	_check(app.flow == SauceApp.Flow.OFFICE and app.current_space is OfficeLobby,
-		"혼자하기 did not lead to the office")
+		"플레이 did not lead to the office")
 	_check(not app.session.is_online(), "혼자하기 opened a port")
 	_check(_select_of(app) != null, "the office did not ask a new player for a character")
 	_check(not app.session.can_start_stage(), "a solo room could start before picking")
@@ -160,20 +169,48 @@ func _party() -> void:
 	var late := _make_app("LateView")
 	await process_frame
 
-	# --- 방장: 방을 만들면 사무실 -------------------------------------------
-	_check(host.session.begin_host_room(PORT, "", true, SauceApp.DEFAULT_STAGE),
-		"host could not open a room")
-	await process_frame
-	_check(host.flow == SauceApp.Flow.OFFICE and _select_of(host) != null,
-		"making a room did not lead to the office and its select")
+	# --- 방장: 사무실 지도에서 고른 목적지와 캐릭터로 방을 연다 -----------------
+	_press(host._title_layer, "플레이")
 	_pick(host, HOST_PICK)
+	var local_office := host.current_space as OfficeLobby
+	local_office.open_map()
+	local_office.pick_stage("stage_1")
+	_press(local_office._map_layer, "같이하기")
+	_check(local_office.input_locked, "the party panel did not lock the office")
+	host._port_field.text = str(PORT)
+	host._code_field.text = "test-code"
+	_press(host._party_layer, "방 만들기")
 	await process_frame
+	_check(host.session.is_online() and host.current_space == local_office \
+		and host._party_layer == null and local_office.is_map_open() and not local_office.input_locked,
+		"making a room did not keep the current office and restore the map")
+	_check(host.session.selected_stage == "stage_1", "making a room lost the map pick")
 	_check(_select_of(host) == null and host.session.character_of(1) == HOST_PICK,
 		"the host's pick did not take")
 	_check(host.session.can_start_stage(), "a host alone and dressed cannot start")
+	local_office.pick_stage("stage_2")
 
-	# --- 참가자: 사무실로 들어오고, 겹치는 캐릭터는 못 고른다 --------------------
-	_check(guest.session.begin_join_room("127.0.0.1", PORT, ""), "guest could not begin joining")
+	# --- 참가자: 잘못된 코드는 개인 방으로 돌아오고, 다시 접속할 수 있다 -----------
+	_press(guest._title_layer, "플레이")
+	_pick(guest, GUEST_PICK)
+	var guest_local_office := guest.current_space as OfficeLobby
+	guest_local_office.open_map()
+	guest_local_office.pick_stage("stage_1")
+	_press(guest_local_office._map_layer, "같이하기")
+	guest._port_field.text = str(PORT)
+	guest._code_field.text = "wrong-code"
+	_press(guest._party_layer, "참여하기")
+	_check(await _until(func(): return not guest.session.is_online()), "wrong code was admitted")
+	_check(guest._party_layer != null and guest._status_label.text == "입장 코드가 맞지 않습니다.",
+		"the failed join lost the panel or did not show the error")
+	_press(guest._party_layer, "닫기  (Esc)")
+	_check(guest.current_space == guest_local_office and guest.session.can_start_stage() \
+		and guest.session.character_of(1) == GUEST_PICK and guest.session.selected_stage == "stage_1",
+		"closing a failed join did not restore the prior solo choices")
+	_press(guest_local_office._map_layer, "같이하기")
+	guest._port_field.text = str(PORT)
+	guest._code_field.text = "test-code"
+	_press(guest._party_layer, "참여하기")
 	_check(await _until(func(): return guest.flow == SauceApp.Flow.OFFICE and _select_of(guest) != null),
 		"joining did not lead to the office and its select")
 	var guest_id := guest.session.local_id()
@@ -238,7 +275,7 @@ func _party() -> void:
 	_check(host._arrival.can_skip and not guest._arrival.can_skip, "the wrong player holds the skip")
 	_check(not guest.session.request_intro_skip(), "a guest skipped the arrival shot")
 	# 떠난 방에는 못 들어온다.
-	_check(late.session.begin_join_room("127.0.0.1", PORT, ""), "the latecomer could not knock")
+	_check(late.session.begin_join_room("127.0.0.1", PORT, "test-code"), "the latecomer could not knock")
 	_check(await _until(func(): return not late.session.is_online()), "the latecomer was not turned away")
 	_check(late.session.status() == "session is already in progress",
 		"the latecomer was not told why: '%s'" % late.session.status())
@@ -278,7 +315,7 @@ func _party() -> void:
 	await process_frame
 	_check(_select_of(host) == null and host.session.character_of(1) == HOST_PICK,
 		"the host lost its character on the way back")
-	_check(late.session.begin_join_room("127.0.0.1", PORT, ""), "the latecomer could not knock again")
+	_check(late.session.begin_join_room("127.0.0.1", PORT, "test-code"), "the latecomer could not knock again")
 	_check(await _until(func(): return late.flow == SauceApp.Flow.OFFICE),
 		"a room back in the office did not take a new player")
 	# 방장이 쥔 카드 위에는 설 수 없다: 눌러도 선택이 옮겨 가지 않고, 확정은 남은 것 중 하나다.

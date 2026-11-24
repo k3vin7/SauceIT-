@@ -5,7 +5,7 @@ extends TruckLobby
 ##
 ## 몸을 걷게 하고 서로에게 보여 주는 일은 전부 `TruckLobby`의 것이다(호스트가 모든 몸을
 ## 움직이고 자세를 보내 준다). 여기서 바뀌는 것은 방, 화면, 그리고 할 수 있는 일이다.
-##   * 큰 스크린의 지도 -- 방장이 갈 축제를 고른다. 팀원은 보기만 한다.
+##   * 큰 스크린의 지도 -- 플레이 모드와 갈 축제를 고른다. 팀원은 보기만 한다.
 ##   * 사물함 -- 캐릭터를 다시 고른다.
 ##   * 슬롯머신 -- 팀 돈을 걸고 돌린다. 누구나 할 수 있고 방장이 굴린다(`OfficeSlot`).
 ##   * 출발 구역 -- 전원이 올라서면 잠깐 센 뒤 떠난다. 지도에는 출발 버튼이 없다.
@@ -16,6 +16,8 @@ extends TruckLobby
 ## 그 씬을 불러와 스크린·사물함·시작 자리의 위치만 읽어 간다.
 
 signal character_requested
+signal party_requested
+signal bot_practice_requested
 
 const CharacterSelectScript := preload("res://scripts/character_select.gd")
 const ROOM_SCENE := preload("res://maps/command.tscn")
@@ -66,6 +68,8 @@ var _info_label: Label
 var _prompt: Label
 var _screen_label: Label3D
 var _map_layer: CanvasLayer
+var _map_modes: HBoxContainer
+var _map_subtitle: Label
 var _map_canvas: MapCanvas
 var _map_pins: Dictionary = {}
 var _map_title: Label
@@ -87,6 +91,10 @@ func _exit_tree() -> void:
 	if session != null and session.slot_result.is_connected(_on_slot_result):
 		session.slot_result.disconnect(_on_slot_result)
 	super._exit_tree()
+
+
+func stop_music() -> void:
+	$LobbyMusic.stop()
 
 
 func _physics_process(delta: float) -> void:
@@ -111,13 +119,13 @@ func _physics_process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if input_locked:
+		return
 	if is_map_open() or is_slot_open():
 		if event.is_action_pressed("ui_cancel"):
 			close_map()
 			close_slot()
 			get_viewport().set_input_as_handled()
-		return
-	if input_locked:
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		var motion := event as InputEventMouseMotion
@@ -490,7 +498,7 @@ func _build_ui() -> void:
 	_info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_info_label)
 	var hint := Label.new()
-	hint.text = "WASD 이동 · Space 점프 · E 상호작용 · Esc 메뉴\n모두 출발 구역에 올라서면 떠납니다"
+	hint.text = "WASD 이동 · Space 점프 · E 상호작용 · Esc 메뉴\n축제 지도에서 출격 준비\n모두 출발 구역에 올라서면 출발"
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", UI.MUTED)
 	hint.add_theme_font_size_override("font_size", 14)
@@ -531,8 +539,7 @@ func _refresh_panel(assignments: Dictionary) -> void:
 			visual.visible = int(peer_id) != _local_id() and session.has_character(int(peer_id))
 	var stage_name := StageRegistry.display_name(session.selected_stage)
 	if _screen_label != null:
-		_screen_label.text = "축제 지도\n▶ %s\n%s" % [stage_name,
-			"[E] 목적지 고르기" if session.is_server() else "[E] 지도 보기"]
+		_screen_label.text = "축제 지도\n▶ %s\n[E] 지도 열기" % stage_name
 	if _info_label != null:
 		var lines: Array[String] = []
 		if not session.is_online():
@@ -623,11 +630,18 @@ func _build_map_panel() -> void:
 	heading.text = "축제 지도"
 	heading.add_theme_font_size_override("font_size", 30)
 	column.add_child(heading)
-	var sub := Label.new()
-	sub.text = "갈 축제를 고르세요. 모두 출발 구역에 올라서면 떠납니다." if host \
-		else "방장이 갈 축제를 고릅니다."
-	sub.add_theme_color_override("font_color", UI.MUTED)
-	column.add_child(sub)
+	_map_subtitle = Label.new()
+	_map_subtitle.add_theme_color_override("font_color", UI.MUTED)
+	column.add_child(_map_subtitle)
+	_map_modes = HBoxContainer.new()
+	_map_modes.add_theme_constant_override("separation", 10)
+	column.add_child(_map_modes)
+	var solo := _add_mode_button("혼자하기")
+	solo.toggle_mode = true
+	solo.button_group = ButtonGroup.new()
+	solo.set_pressed_no_signal(true)
+	_add_mode_button("같이하기").pressed.connect(party_requested.emit)
+	_add_mode_button("봇 3명과 토마티나 연습").pressed.connect(bot_practice_requested.emit)
 	var body := HBoxContainer.new()
 	body.add_theme_constant_override("separation", 20)
 	column.add_child(body)
@@ -679,9 +693,25 @@ func _build_map_panel() -> void:
 	detail.add_child(close)
 
 
+func _add_mode_button(caption: String) -> Button:
+	var button := Button.new()
+	button.text = caption
+	button.custom_minimum_size.y = 42.0
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_map_modes.add_child(button)
+	return button
+
+
 func _refresh_map() -> void:
 	if not is_map_open() or session == null:
 		return
+	_map_modes.visible = not session.is_online()
+	if _map_modes.visible:
+		_map_subtitle.text = "플레이 모드와 갈 축제를 고르세요."
+	elif session.is_server():
+		_map_subtitle.text = "같이하기 · 갈 축제를 고르세요."
+	else:
+		_map_subtitle.text = "같이하기 · 방장이 갈 축제를 고릅니다."
 	var stage_id := session.selected_stage
 	for id in _map_pins:
 		(_map_pins[id] as Button).set_pressed_no_signal(id == stage_id)

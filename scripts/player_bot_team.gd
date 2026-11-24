@@ -20,10 +20,14 @@ func configure(play_world: Node3D, control_leader := false) -> void:
 		return
 	autoplay = control_leader
 	process_physics_priority = -30
+	var character := 0
 	for slot in range(1, 4):
+		if character == world._local.character_index:
+			character += 1
 		var shooter = world.create_avatar(9000 + slot, slot, false)
-		world.set_character_variant(shooter.peer_id, slot)
+		world.set_character_variant(shooter.peer_id, character)
 		_add_brain(shooter, slot)
+		character += 1
 	_add_brain(world._local, 0)
 	for leg in TomatinaMap.route_points().size():
 		for point: Vector2 in TomatinaMap.route_points()[leg]:

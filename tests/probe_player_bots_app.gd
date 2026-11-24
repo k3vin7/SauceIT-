@@ -7,13 +7,21 @@ func run() -> void:
 	var app = load("res://app.tscn").instantiate()
 	app.save_path_override = "res://reports/runtime_home/bot_app_probe.cfg"
 	root.add_child(app)
-	app._show_bot_practice()
+	app._start_solo()
+	app._on_character_chosen(2)
+	var office := app.current_space as OfficeLobby
+	office.open_map()
+	for button in office._map_modes.get_children():
+		if (button as Button).text == "봇 3명과 토마티나 연습":
+			(button as Button).pressed.emit()
 	await physics_frame
 	assert(app.flow == app.Flow.STAGE)
 	assert(app.current_space.party_size() == 4)
 	assert(app.session.selected_stage == "stage_2")
+	assert(not app.session.lobby_flow)
 	assert(is_instance_valid(app.bot_team) and not app.bot_team.autoplay)
 	var world = app.current_space
+	assert(world._local.character_index == 2)
 	var intro = world._tomatina_intro
 	assert(world.tomatina_intro_active() and not world.gameplay_input_enabled())
 	assert(intro.passengers.get_child_count() == 4 and not world._hud_layer.visible)
