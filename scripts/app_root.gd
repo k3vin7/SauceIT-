@@ -2,9 +2,11 @@ class_name SauceApp
 extends Node
 
 enum Flow { TITLE, TUTORIAL, OFFICE, LOADING, STAGE, RESULT }
+enum OptionsPage { AUDIO, DISPLAY, VIEW, KEYS }
 
 const TutorialScene := preload("res://tutorial_world.tscn")
 const OfficeScene := preload("res://office_lobby.tscn")
+const OPTIONS_CATEGORIES := ["음량", "화면", "시점·조작", "키 매핑"]
 ## What a new room is headed for until the host picks on the office map.
 const DEFAULT_STAGE := "stage_2"
 ## What the session says in its own words, in the player's.
@@ -88,6 +90,9 @@ func _process(_delta: float) -> void:
 ## The stage swallows every key while its cold open runs, so the skip is read
 ## here, ahead of it.
 func _input(event: InputEvent) -> void:
+	if _options_layer != null and save_store.game_options.capture_key(event):
+		get_viewport().set_input_as_handled()
+		return
 	if not _stage_intro_active() or not _may_skip_stage_intro():
 		return
 	if event.is_action_pressed("ui_accept") or (InputMap.has_action("jump")
@@ -97,9 +102,6 @@ func _input(event: InputEvent) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if _options_layer != null and save_store.game_options.capture_key(event):
-		get_viewport().set_input_as_handled()
-		return
 	if not event.is_action_pressed("ui_cancel"):
 		return
 	if _options_layer != null and is_instance_valid(_options_layer):
@@ -908,36 +910,90 @@ func _open_options() -> void:
 	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_options_layer.add_child(centre)
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(430.0, 0.0)
+	panel.custom_minimum_size.x = 760.0
 	centre.add_child(panel)
 	var margin := _margin(24)
 	panel.add_child(margin)
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 12)
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(460, 500)
-	margin.add_child(scroll)
-	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(column)
+	margin.add_child(column)
 	var heading := Label.new()
 	heading.text = "옵션"
 	heading.add_theme_font_size_override("font_size", 32)
 	column.add_child(heading)
-	_volume_slider = _audio_slider(column, "전체 음량", save_store.master_volume)
-	_bgm_slider = _audio_slider(column, "BGM", save_store.bgm_volume)
-	_sfx_slider = _audio_slider(column, "효과음", save_store.sfx_volume)
+	column.add_child(HSeparator.new())
+	var body := HBoxContainer.new()
+	body.add_theme_constant_override("separation", 20)
+	column.add_child(body)
+	var navigation := VBoxContainer.new()
+	navigation.custom_minimum_size.x = 150.0
+	navigation.add_theme_constant_override("separation", 8)
+	body.add_child(navigation)
+	body.add_child(VSeparator.new())
+	var tabs := TabContainer.new()
+	tabs.name = "OptionPages"
+	tabs.tabs_visible = false
+	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tabs.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+	body.add_child(tabs)
+	var pages: Array[VBoxContainer] = []
+	var buttons: Array[Button] = []
+	var category_group := ButtonGroup.new()
+	for category in OPTIONS_CATEGORIES:
+		var index := pages.size()
+		var button := _button(category, func(): tabs.current_tab = index)
+		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		button.toggle_mode = true
+		button.button_group = category_group
+		navigation.add_child(button)
+		buttons.append(button)
+		pages.append(_add_options_page(tabs, category))
+	buttons[OptionsPage.AUDIO].set_pressed_no_signal(true)
+	tabs.tab_changed.connect(func(index: int):
+		save_store.game_options.cancel_key_capture()
+		for i in buttons.size():
+			buttons[i].set_pressed_no_signal(i == index))
+	var audio := pages[OptionsPage.AUDIO]
+	_volume_slider = _audio_slider(audio, "전체 음량", save_store.master_volume)
+	_bgm_slider = _audio_slider(audio, "BGM", save_store.bgm_volume)
+	_sfx_slider = _audio_slider(audio, "효과음", save_store.sfx_volume)
+	var view := pages[OptionsPage.VIEW]
 	_sensitivity_slider = HSlider.new()
 	_sensitivity_slider.min_value = 0.02
 	_sensitivity_slider.max_value = 0.3
 	_sensitivity_slider.step = 0.005
 	_sensitivity_slider.value = save_store.mouse_sensitivity
-	column.add_child(_labeled("마우스 감도", _sensitivity_slider))
-	save_store.game_options.build(column)
-	column.add_child(_button("적용 및 저장", _save_options, true))
-	column.add_child(_button("닫기", _close_options))
+	view.add_child(_labeled("마우스 감도", _sensitivity_slider))
+	save_store.game_options.build(pages[OptionsPage.DISPLAY], view, pages[OptionsPage.KEYS])
+	column.add_child(HSeparator.new())
+	var footer := HBoxContainer.new()
+	footer.add_theme_constant_override("separation", 10)
+	column.add_child(footer)
 	if _options_owns_pause:
-		column.add_child(_button("나가기 / 게임 종료 메뉴", _show_pause_from_options))
+		footer.add_child(_button("나가기 / 게임 종료 메뉴", _show_pause_from_options))
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	footer.add_child(spacer)
+	footer.add_child(_button("닫기", _close_options))
+	footer.add_child(_button("적용 및 저장", _save_options, true))
 	_set_mouse_visible(true)
+
+
+func _add_options_page(tabs: TabContainer, title: String) -> VBoxContainer:
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size.y = 420.0
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.follow_focus = true
+	tabs.add_child(scroll)
+	var page := VBoxContainer.new()
+	page.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	page.add_theme_constant_override("separation", 8)
+	scroll.add_child(page)
+	var heading := Label.new()
+	heading.text = title
+	heading.add_theme_font_size_override("font_size", 24)
+	page.add_child(heading)
+	return page
 
 
 func _open_options_from_game() -> void:
@@ -965,6 +1021,7 @@ func _save_options() -> void:
 
 func _close_options() -> void:
 	_save_audio_options()
+	save_store.game_options.cancel_key_capture()
 	_clear_ui(_options_layer)
 	_options_layer = null
 	if _options_owns_pause:
@@ -976,6 +1033,7 @@ func _close_options() -> void:
 
 func _show_pause_from_options() -> void:
 	_save_audio_options()
+	save_store.game_options.cancel_key_capture()
 	_options_owns_pause = false
 	_clear_ui(_options_layer)
 	_options_layer = null
@@ -1144,6 +1202,8 @@ func _clear_all_ui() -> void:
 		_result_reveal_tween.kill()
 	_result_reveal_tween = null
 	_drop_arrival()
+	if _options_layer != null:
+		save_store.game_options.cancel_key_capture()
 	for layer in [_title_layer, _options_layer, _pause_layer, _party_layer,
 			_character_layer, _loading_layer, _result_layer, _intro_hint_layer]:
 		_clear_ui(layer)

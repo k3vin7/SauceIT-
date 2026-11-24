@@ -1,4 +1,5 @@
 extends RefCounted
+const UI := preload("res://scripts/sauce_ui.gd")
 const DEFAULTS := {"window_mode": 2, "resolution": 0, "quality": 1,
 	"fov": 74.0, "motion": 1.0, "ui_scale": 1.0, "viewmodel": 0.88}
 const RESOLUTIONS := [Vector2i(1280, 720), Vector2i(1600, 900), Vector2i(1920, 1080)]
@@ -8,10 +9,14 @@ const ACTIONS := {"move_forward": "앞으로", "move_backward": "뒤로", "move_
 const KEYS := {"move_forward": KEY_W, "move_backward": KEY_S, "move_left": KEY_A,
 	"move_right": KEY_D, "run": KEY_SHIFT, "jump": KEY_SPACE, "wipe_screen": KEY_R,
 	"interact": KEY_E, "shove": KEY_V}
+const MOVEMENT_ACTIONS: Array[String] = ["move_forward", "move_backward", "move_left",
+	"move_right", "run", "jump"]
+const INTERACTION_ACTIONS: Array[String] = ["wipe_screen", "interact", "shove"]
 var settings := DEFAULTS.duplicate()
 var bindings := {}
 var _pending := ""
 var _button: Button
+var _key_hint: Label
 var _controls := {}
 var _binding_draft := {}
 
@@ -68,25 +73,65 @@ func apply_world(world: Node) -> void:
 		light.directional_shadow_max_distance = 65.0 if int(settings.quality) == 1 else 95.0
 	world.get_viewport().scaling_3d_scale = [0.7, 0.85, 1.0][int(settings.quality)]
 
-func build(column: VBoxContainer) -> void:
-	_pending = ""
+func build(display: VBoxContainer, view: VBoxContainer, keys: VBoxContainer) -> void:
+	cancel_key_capture()
 	_controls.clear()
 	_binding_draft = bindings.duplicate()
-	_choice(column, "화면 모드", "window_mode", ["창", "전체 화면", "최대화"])
-	_choice(column, "해상도 (창 모드)", "resolution", ["1280 × 720", "1600 × 900", "1920 × 1080"])
-	_choice(column, "그래픽 품질", "quality", ["낮음", "중간", "높음"])
-	_slider(column, "시야각", "fov", 60.0, 90.0, 1.0)
-	_slider(column, "화면 흔들림", "motion", 0.0, 1.0, 0.05)
-	_slider(column, "UI 크기", "ui_scale", 0.85, 1.25, 0.05)
-	_slider(column, "1인칭 소스통 크기", "viewmodel", 0.75, 1.0, 0.05)
-	for action in ACTIONS:
+	_choice(display, "화면 모드", "window_mode", ["창", "전체 화면", "최대화"])
+	_choice(display, "해상도 (창 모드)", "resolution", ["1280 × 720", "1600 × 900", "1920 × 1080"])
+	_choice(display, "그래픽 품질", "quality", ["낮음", "중간", "높음"])
+	_slider(display, "UI 크기", "ui_scale", 0.85, 1.25, 0.05)
+	_slider(view, "시야각", "fov", 60.0, 90.0, 1.0)
+	_slider(view, "화면 흔들림", "motion", 0.0, 1.0, 0.05)
+	_slider(view, "1인칭 소스통 크기", "viewmodel", 0.75, 1.0, 0.05)
+	var groups := HBoxContainer.new()
+	groups.add_theme_constant_override("separation", 14)
+	keys.add_child(groups)
+	_key_group(groups, "이동", MOVEMENT_ACTIONS)
+	groups.add_child(VSeparator.new())
+	_key_group(groups, "행동", INTERACTION_ACTIONS)
+	_key_hint = UI.eyebrow("", UI.GOLD)
+	_key_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_key_hint.hide()
+	keys.add_child(_key_hint)
+
+func _key_group(parent: HBoxContainer, title: String, actions: Array[String]) -> void:
+	var group := VBoxContainer.new()
+	group.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	group.add_theme_constant_override("separation", 4)
+	parent.add_child(group)
+	group.add_child(UI.eyebrow(title))
+	for action in actions:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		group.add_child(row)
+		var label := Label.new()
+		label.text = ACTIONS[action]
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(label)
 		var button := Button.new()
-		button.text = "%s · %s" % [ACTIONS[action], OS.get_keycode_string(int(_binding_draft.get(action, KEYS[action])))]
+		button.name = action
+		button.text = _binding_text(action)
+		button.custom_minimum_size = Vector2(104.0, 34.0)
 		button.pressed.connect(func():
+			cancel_key_capture()
 			_pending = action
 			_button = button
-			button.text = "키를 누르세요 · Esc 취소")
-		column.add_child(button)
+			button.text = "입력 대기"
+			_key_hint.text = "새 키를 누르세요 · Esc 취소"
+			_key_hint.show())
+		row.add_child(button)
+
+func _binding_text(action: String) -> String:
+	return OS.get_keycode_string(int(_binding_draft.get(action, KEYS[action])))
+
+func cancel_key_capture() -> void:
+	if is_instance_valid(_button):
+		_button.text = _binding_text(_pending)
+	if is_instance_valid(_key_hint):
+		_key_hint.hide()
+	_pending = ""
+	_button = null
 
 func capture_key(event: InputEvent) -> bool:
 	if _pending.is_empty() or event is not InputEventKey or not event.pressed or event.echo:
@@ -94,15 +139,14 @@ func capture_key(event: InputEvent) -> bool:
 	var key: int = event.physical_keycode
 	if key != KEY_ESCAPE:
 		if key in [KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F6, KEY_C, KEY_M] or (key >= KEY_1 and key <= KEY_5):
-			_button.text = "예약된 키입니다 · 다른 키를 누르세요"
+			_key_hint.text = "예약된 키입니다 · 다른 키를 누르세요"
 			return true
 		for action in ACTIONS:
 			if action != _pending and int(_binding_draft.get(action, KEYS[action])) == key:
-				_button.text = "이미 사용 중인 키입니다 · 다른 키를 누르세요"
+				_key_hint.text = "이미 사용 중인 키입니다 · 다른 키를 누르세요"
 				return true
 		_binding_draft[_pending] = key
-	_button.text = "%s · %s" % [ACTIONS[_pending], OS.get_keycode_string(int(_binding_draft.get(_pending, KEYS[_pending])))]
-	_pending = ""
+	cancel_key_capture()
 	return true
 
 func commit() -> void:
