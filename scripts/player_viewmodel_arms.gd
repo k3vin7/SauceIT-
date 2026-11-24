@@ -48,7 +48,8 @@ func configure(owner_shooter, owner_world) -> void:
 func _process(_dt: float) -> void:
 	if shooter == null or not is_instance_valid(shooter.player):
 		return
-	visible = shooter.is_local and world._first_person and shooter.player.state == MayoPlayer.State.NORMAL
+	visible = shooter.is_local and world._first_person and shooter.player.state == MayoPlayer.State.NORMAL \
+		and not world.is_cinematic_active()
 	if not visible:
 		return
 	transform = world.first_person_visual_transform(shooter)

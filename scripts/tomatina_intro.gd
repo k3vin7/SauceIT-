@@ -11,6 +11,7 @@ const GROWL := preload("res://assets/audio/tomatina_intro/tomato_growl.wav")
 const SPLAT := preload("res://assets/audio/sauce/splat_2.wav")
 const PANIC_BREATH := preload("res://assets/audio/tomatina_intro/panic_breath.wav")
 const DISTRESS_GRADE := preload("res://scripts/tomatina_intro_grade.gdshader")
+const MARKET_ESTABLISH_END := 1.65
 const STREET_CLOSE := 3.6
 const PLAZA_WIDE := 7.1
 const SPLASH_CLOSE := 9.4
@@ -115,6 +116,7 @@ func prepare(stage: Node3D, staggered: bool) -> void:
 	party.name = "FestivalGuests"
 	performers.add_child(party)
 	_build_tomato_meshes()
+	_build_market()
 	_build_street()
 	if staggered:
 		await get_tree().process_frame
@@ -143,7 +145,7 @@ func begin(stage: Node3D) -> void:
 		_hide_temporarily(enemy)
 	for item in [world._boss_entrance, world._truck_arrival, world._pump_generator,
 			world._siren_label, world._camera, world.get_node_or_null("Siren"),
-			world.get_node_or_null("StartArrow")]:
+			world.get_node_or_null("StartArrow"), world.get_node_or_null("TomatinaRouteSigns")]:
 		_hide_temporarily(item)
 	for stand in world.find_children("HoseStand*", "Node3D", false, false):
 		_hide_temporarily(stand)
@@ -222,9 +224,16 @@ func _render(previous: float) -> void:
 		_animate_tosses(t)
 		_animate_monsters(t)
 		_animate_water(t)
-	if t < STREET_CLOSE:
+	if t < MARKET_ESTABLISH_END:
+		var curb := TomatinaMap.at_cell(Vector2(14.5, 167.0))
+		var crest := TomatinaMap.at_cell(TomatinaMap.STREET_PROFILE.MARKET_CREST)
+		_shot(curb, Vector3(-3.05, 1.85, -1.54), Vector3(-0.70, 2.13, -4.25),
+			crest - curb + Vector3(0.0, 2.1, 1.5), crest - curb + Vector3(0.0, 2.55, 1.4),
+			t / MARKET_ESTABLISH_END, 73.0, true)
+	elif t < STREET_CLOSE:
 		_shot(street, Vector3(6, 4.9, 10), Vector3(2.8, 3.45, 6.8),
-			Vector3(-.5, 1.24, -3.8), Vector3(-.2, 1.12, -5), t / STREET_CLOSE, 67)
+			Vector3(-.5, 1.24, -3.8), Vector3(-.2, 1.12, -5),
+			inverse_lerp(MARKET_ESTABLISH_END, STREET_CLOSE, t), 67)
 	elif t < PLAZA_WIDE:
 		_shot(street, Vector3(-4.8, 2.27, 4.1), Vector3(-3.68, 1.92, 3.35),
 			Vector3(-1.15, 1.61, -.4), Vector3(-.14, 1.7, -.62),
@@ -273,7 +282,7 @@ func _render(previous: float) -> void:
 	else:
 		_prepare_first_person()
 
-	var fade_in := 1.0 - smoothstep(.11, 1.18, t)
+	var fade_in := 1.0 - smoothstep(.11, .76, t)
 	var first_black := smoothstep(17.28, 17.95, t) * (1.0 - smoothstep(ARRIVAL, 19.03, t))
 	var second_black := smoothstep(21.96, 22.51, t) * (1.0 - smoothstep(FIRST_PERSON, DURATION, t))
 	blackout.color.a = maxf(fade_in, maxf(first_black, second_black))
@@ -285,9 +294,12 @@ func _render(previous: float) -> void:
 
 
 func _shot(anchor: Vector3, start: Vector3, end: Vector3, target_start: Vector3,
-		target_end: Vector3, progress: float, fov: float) -> void:
+		target_end: Vector3, progress: float, fov: float, follow_ground := false) -> void:
 	var blend := smoothstep(0.0, 1.0, progress)
-	camera.global_position = anchor + start.lerp(end, blend)
+	var position := anchor + start.lerp(end, blend)
+	if follow_ground:
+		position.y += TomatinaMap.ground_height(position) - anchor.y
+	camera.global_position = position
 	camera.look_at(anchor + target_start.lerp(target_end, blend))
 	camera.fov = fov
 
@@ -337,6 +349,13 @@ func _finish() -> void:
 	world.set_gameplay_input_enabled(true)
 	passengers.queue_free()
 	queue_free()
+
+
+func _build_market() -> void:
+	var court := TomatinaMap.at_cell(Vector2(16.25, 164.55))
+	_add_guest(court, Vector3(-1.65, 0, 1.1), 1.78, "Sip", .4)
+	_add_guest(court, Vector3(0.35, 0, -0.4), -1.03, "Cheer", .73)
+	_add_guest(court, Vector3(4.25, 0, -2.9), -2.16, "Sip", .2)
 
 
 func _build_street() -> void:
@@ -411,6 +430,7 @@ func _add_guest(anchor: Vector3, offset: Vector3, yaw: float, action: String, ph
 	guest.actor = GUEST.instantiate() as Node3D
 	party.add_child(guest.actor)
 	guest.start = anchor + offset
+	guest.start.y = TomatinaMap.ground_height(guest.start) + offset.y
 	guest.actor.position = guest.start
 	guest.yaw = yaw
 	guest.phase = phase

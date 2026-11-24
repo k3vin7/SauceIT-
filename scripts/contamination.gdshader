@@ -80,7 +80,7 @@ void vertex() {
 
 void fragment() {
 	float coverage = texture(mask_texture, UV).r;
-	float painted = step(paint_threshold, coverage);
+	float painted = festival_before_attack ? 0.0 : step(paint_threshold, coverage);
 	if (paint_only && painted < 0.5) {
 		discard;
 	}

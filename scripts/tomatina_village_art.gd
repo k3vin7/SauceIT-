@@ -43,6 +43,7 @@ var _aftermath: Array[MultiMeshInstance3D] = []
 ## 있는 노드. 인트로의 "습격 전" 장면에서 묶음과 함께 숨긴다.
 var aftermath_nodes: Array[Node3D] = []
 var _stained_materials: Array[ShaderMaterial] = []
+var _film_arcade_finish: ShaderMaterial
 static var _merged_victim_meshes: Dictionary[String, Mesh] = {}
 
 
@@ -268,6 +269,19 @@ func film_prop(key: String, parent: Node3D, at: Vector3, size: Vector3,
 	instance.material_override = material
 	parent.add_child(instance)
 	return instance
+
+
+func film_arcade(parent: Node3D, frontage: Transform3D) -> void:
+	if _film_arcade_finish == null:
+		_film_arcade_finish = ShaderMaterial.new()
+		_film_arcade_finish.shader = TOON_SHADER
+	for key in ["UrbanArcade", "UrbanArcadePier"]:
+		var instance := MeshInstance3D.new()
+		instance.name = key
+		instance.mesh = _meshes[key]
+		instance.material_override = _film_arcade_finish
+		instance.transform = frontage
+		parent.add_child(instance)
 
 
 const NO_SHADOW := ["BrokenBoards", "CrushedTomatoes", "FestivalTrashPile",

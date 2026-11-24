@@ -241,6 +241,7 @@ func start_escape() -> void:
 	_build_escape_road()
 	title.text = "축제를 빠져나갑니다"
 	subtitle.text = "모두 탑승 완료 · 부뇰 외곽 도로"
+	blackout.modulate.a = 0.0
 	layer.show()
 	set_process(true)
 
@@ -273,13 +274,16 @@ func _build_escape_road() -> void:
 				Vector3(0.24, 0.025, 4.8), stripe)
 		for side in [-1.0, 1.0]:
 			if segment < 5:
-				# The first seconds still belong to Buñol: pastel festival fronts,
-				# low roofs and bunting recede behind the truck before open country.
-				var house_at := Vector3(side * 15.0, 2.35, z)
-				_box(escape_root, house_at, Vector3(7.2, 4.8, 12.5),
+				# The last village blocks use the same overhangs as the playable town.
+				var house_at := Vector3(side * 15.0, 3.6, z)
+				_box(escape_root, house_at, Vector3(7.2, 7.2, 12.5),
 					village[(segment + (0 if side < 0.0 else 2)) % village.size()])
-				_box(escape_root, house_at + Vector3.UP * 3.0,
+				_box(escape_root, house_at + Vector3.UP * 4.0,
 					Vector3(7.7, 1.25, 13.0), roof)
+				var frontage := Basis(Vector3.UP, -float(side) * PI * 0.5)
+				for bay_offset in [-StreetMap.CELL * 0.5, StreetMap.CELL * 0.5]:
+					world._tomatina_art.film_arcade(escape_root, Transform3D(frontage,
+						Vector3(side * 11.39, 0.0, z + bay_offset)))
 			else:
 				# The country repeats every fifteen segments.  The truck can loop this
 				# exact 300 m stretch indefinitely without a different tree pattern
@@ -355,7 +359,7 @@ func _process(delta: float) -> void:
 	_update_escape_riders()
 	# Like a travelling end-credit shot, the vehicle stays readable while the
 	# framing opens from a close three-quarter departure to a calm, wide road.
-	var close_offset := Vector3(9.4, 4.9, -10.5)
+	var close_offset := Vector3(3.6, 5.7, -11.8)
 	var follow_offset := Vector3(1.8, 6.0, -16.8)
 	var wide_offset := Vector3(-7.5, 8.1, -21.5)
 	var camera_offset := close_offset.lerp(follow_offset,
@@ -431,21 +435,25 @@ func _finish_escape() -> void:
 
 func present(t: float) -> void:
 	var camera: Camera3D = world._camera
-	var shot_at := wall_at+Vector3(16,6.5,15)
-	var focus := wall_at+Vector3.UP*2.7
+	var shot_at := wall_at + Vector3(10.5, 5.3, 20.5)
+	var focus := wall_at + Vector3.UP * 2.7
+	if breached and is_instance_valid(actor):
+		focus = focus.lerp(actor.global_position + Vector3.UP * 2.45,
+			smoothstep(impact_time, impact_time + .85, t) * .72)
 	var shot := Transform3D(Basis.looking_at((focus-shot_at).normalized()),shot_at)
-	var pose := start_camera.interpolate_with(shot,smoothstep(.55,1.6,t))
-	if t<.6:
+	var pose := start_camera if t < BLACKOUT_IN_END else shot
+	if t < BLACKOUT_IN_END:
 		pose.origin += Vector3(sin(t*77),cos(t*91),0)*.035
 	if breached:
 		var burst := t-impact_time
 		if burst<.35:
 			pose.origin += Vector3(sin(burst*83),cos(burst*71),0)*.15*(1-burst/.35)
-	if t>5.1:
-		pose = pose.interpolate_with(camera.global_transform,smoothstep(5.1,DURATION,t))
+	if t >= RETURN_CUT:
+		pose = camera.global_transform
 	camera.global_transform = pose
-	camera.fov = lerpf(lerpf(prior_fov,64.0,smoothstep(.55,1.6,t)),prior_fov,smoothstep(5.1,DURATION,t))
+	camera.fov = 64.0 if t >= BLACKOUT_IN_END and t < RETURN_CUT else prior_fov
 	var size: Vector2 = world.get_viewport().get_visible_rect().size
+	_set_camera_blackout(t, size)
 	var bars := 1-smoothstep(5.1,DURATION,t)
 	top_bar.size = Vector2(size.x,58*bars)
 	bottom_bar.position = Vector2(0,size.y-90*bars)

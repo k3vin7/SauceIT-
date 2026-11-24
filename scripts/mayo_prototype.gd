@@ -4944,6 +4944,9 @@ func _build_tomatina_route_signs() -> void:
 	if _tomatina_map_nodes != null:
 		return
 	TomatinaVillageArt.build_plaza_waymarks(self)
+	var signage := Node3D.new()
+	signage.name = "TomatinaRouteSigns"
+	add_child(signage)
 	var labels := [
 		[Vector2(10.9, 166.0), "지름길 폐쇄 · 큰길 이용"],
 		[Vector2(15.5, 164.8), "시장 큰길 · 볼러 주의"],
@@ -4957,7 +4960,7 @@ func _build_tomatina_route_signs() -> void:
 		label.font_size = 64
 		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		label.modulate = Color("e7f1b1")
-		add_child(label)
+		signage.add_child(label)
 
 
 func _add_tomatina_supply(box: Dictionary) -> void:

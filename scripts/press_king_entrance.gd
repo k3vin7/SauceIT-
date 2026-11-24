@@ -8,6 +8,9 @@ const BLACKOUT_IN_END := 0.18
 const BLACKOUT_HOLD_END := 0.48
 const BLACKOUT_OUT_END := 0.82
 const RETURN_START := 5.0
+const RETURN_CUT := 5.55
+const BREACH_FRONTAGE := ["BoundaryWall", "UrbanUpperShutters", "UrbanUpperCasements",
+	"FacadeWindow", "FacadeLantern", "FacadePots", "TrimStone", "FestivalFront"]
 var world
 var active := false
 var played := false
@@ -208,7 +211,7 @@ func _remove_old_wall() -> void:
 	if art == null:
 		return
 	for batch in art.get_children():
-		if not batch is MultiMeshInstance3D or not str(batch.name).begins_with("BoundaryWall"):
+		if not batch is MultiMeshInstance3D or str(batch.name).get_slice("_", 0) not in BREACH_FRONTAGE:
 			continue
 		for index in batch.multimesh.instance_count:
 			var pose: Transform3D = batch.multimesh.get_instance_transform(index)
@@ -266,17 +269,13 @@ func present(t: float) -> void:
 				* 0.12 * (1.0-burst/0.4)
 		var look_at := actor.global_position + Vector3.UP * 3.0
 		pose.basis = pose.basis.slerp(Basis.looking_at((look_at-pose.origin).normalized()), smoothstep(2.1,3.4,t)*0.7)
-	if t > RETURN_START:
-		# The normal camera has already been placed by the world this frame.
-		pose = pose.interpolate_with(camera.global_transform, smoothstep(RETURN_START,DURATION,t))
+	if t >= RETURN_CUT:
+		# The world has already placed the player's normal camera this frame.
+		pose = camera.global_transform
 	camera.global_transform = pose
-	camera.fov = 62.0 if t >= BLACKOUT_IN_END else prior_fov
-	camera.fov = lerpf(camera.fov,prior_fov,smoothstep(RETURN_START,DURATION,t))
+	camera.fov = 62.0 if t >= BLACKOUT_IN_END and t < RETURN_CUT else prior_fov
 	var size: Vector2 = world.get_viewport().get_visible_rect().size
-	blackout.position = Vector2.ZERO
-	blackout.size = size
-	blackout.modulate.a = smoothstep(0.0,BLACKOUT_IN_END,t) \
-		* (1.0-smoothstep(BLACKOUT_HOLD_END,BLACKOUT_OUT_END,t))
+	_set_camera_blackout(t, size)
 	var bars := 1.0 - smoothstep(RETURN_START,DURATION,t)
 	top_bar.position = Vector2.ZERO
 	top_bar.size = Vector2(size.x,58*bars)
@@ -292,6 +291,16 @@ func present(t: float) -> void:
 	for shooter in world._shooters.values():
 		if is_instance_valid(shooter.camera_viewmodel): shooter.camera_viewmodel.hide()
 		if is_instance_valid(shooter.first_person_arms): shooter.first_person_arms.hide()
+
+func _set_camera_blackout(t: float, size: Vector2) -> void:
+	blackout.position = Vector2.ZERO
+	blackout.size = size
+	var entrance := smoothstep(0.0, BLACKOUT_IN_END, t) \
+		* (1.0 - smoothstep(BLACKOUT_HOLD_END, BLACKOUT_OUT_END, t))
+	var return_fade := smoothstep(RETURN_START, RETURN_CUT, t) \
+		* (1.0 - smoothstep(RETURN_CUT + 0.07, DURATION, t))
+	blackout.modulate.a = maxf(entrance, return_fade)
+
 
 func finish() -> void:
 	if not active:

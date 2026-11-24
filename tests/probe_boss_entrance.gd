@@ -17,6 +17,11 @@ func run() -> void:
 	intro.start(spawn)
 	intro.set_process(false)
 	check(intro.active and scene._player.frozen and not scene._input_enabled, "cutscene did not freeze input")
+	var replaced_facades: Array = intro.removed_instances.filter(func(entry: Dictionary) -> bool:
+		return String(entry.batch.name).begins_with("UrbanUpper"))
+	# The headless render server does not retain the live MultiMesh transforms.
+	if DisplayServer.get_name() != "headless":
+		check(not replaced_facades.is_empty(), "the new upper-storey frontage was not replaced for the breach")
 	var health: float = scene._player.health
 	scene._damage_player(scene._player,30.0)
 	check(scene._player.health == health, "player took cutscene damage")
@@ -26,6 +31,7 @@ func run() -> void:
 	var index := 0
 	for time in [0.1,0.35,0.7,1.6,2.4,3.8,5.6]:
 		scene._update_camera()
+		var gameplay_view: Transform3D = scene._camera.global_transform
 		intro.present(time)
 		check(scene._camera.global_transform.is_finite(), "invalid cutscene camera")
 		if is_equal_approx(time,0.35):
@@ -37,6 +43,9 @@ func run() -> void:
 				"entrance camera still viewed the boss from the side")
 		if is_equal_approx(time,0.7):
 			check(intro.blackout.modulate.a < 0.5, "blackout did not reveal the frontal wall shot")
+		if is_equal_approx(time, 5.6):
+			check(intro.blackout.modulate.a > 0.99 and scene._camera.global_transform.is_equal_approx(gameplay_view),
+				"the camera returned through the town instead of cutting under blackout")
 		if capture:
 			await process_frame
 			scene._update_camera()
@@ -56,6 +65,9 @@ func run() -> void:
 	check(not intro.active, "duplicate event restarted cutscene")
 	intro.reset_intro()
 	check(not intro.played, "checkpoint did not reset intro")
+	for entry: Dictionary in replaced_facades:
+		var restored: Transform3D = entry.batch.multimesh.get_instance_transform(entry.index)
+		check(restored.is_equal_approx(entry.pose), "checkpoint did not restore an upper-storey detail")
 	for failure in failures: push_error(failure)
 	if failures.is_empty(): print("BOSS_ENTRANCE_OK")
 	scene.queue_free()
