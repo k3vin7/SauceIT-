@@ -164,14 +164,18 @@ func _party() -> void:
 		"the guest's office does not show the team's money and trophy")
 	_check(guest.save_store.money == 0, "the team's money leaked into the guest's own save")
 	print("party: guest sees the host's 90 and the ketchup OK")
-	# --- 디버그 키: 방장만 팀 돈을 100씩 더한다 ----------------------------------
-	var press := InputEventKey.new()
-	press.keycode = OfficeLobby.DEBUG_MONEY_KEY
-	press.pressed = true
-	guest_office._unhandled_input(press)
-	(host.current_space as OfficeLobby)._unhandled_input(press)
-	_check(await _until(func(): return guest.session.team_money == 190), "the debug key did not add 100 for the host only")
+	# --- 디버그 모드: 방장이 켠 방에서만, 그 방의 누구나 팀 돈을 더한다 ------------------
+	_check(not guest.session.debug_active() and not guest.session.request_debug_money(100),
+		"debug money worked with debug mode off")
+	_check(not guest.session.set_debug_mode(true) and not host.session.debug_active(),
+		"a guest switched the room's debug mode on")
+	_check(host.session.set_debug_mode(true), "the host could not switch debug mode on")
+	_check(await _until(func(): return guest.session.debug_active()), "the guest was not told debug mode is on")
+	_check(guest.session.request_debug_money(100), "the guest could not ask for debug money")
+	_check(await _until(func(): return guest.session.team_money == 190), "debug money did not add 100")
 	_check(host.save_store.money == 190, "the debug money was not saved")
+	host.session.set_debug_mode(false)
+	_check(await _until(func(): return not guest.session.debug_active()), "the guest was not told debug mode is off")
 	host.session.set_team_progress(90, host.session.team_trophies, host.session.team_clears)
 	host.save_store.set_money(90)
 	_check(await _until(func(): return guest.session.team_money == 90), "could not put the money back for the next checks")

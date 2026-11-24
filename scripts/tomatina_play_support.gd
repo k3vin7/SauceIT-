@@ -172,7 +172,7 @@ func _update_aim_feedback() -> void:
 	var part: int = shooter.sauce_part
 	if world.SauceParts.PROJECTILES.has(part):
 		var profile: Dictionary = world.SauceParts.PROJECTILES[part]
-		reach = float(profile.speed) * float(profile.life)
+		reach = float(profile.reach)
 	elif part == world.SauceParts.Part.FOCUS:
 		reach *= 1.6
 	var valid := false
@@ -207,6 +207,8 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 	var velocity := Vector3.ZERO
 	var gravity := 9.8
 	var life := 2.0
+	# 박격포는 멀리 던지는 토마토처럼 앞부분 곡선만 보인다: 착탄 지점은 가까워도 표시하지 않는다.
+	var shows_landing := true
 	if world.local_holds_tomato():
 		origin = world.thrown_tomato_origin(world._local)
 		var charge: float = world.tomato_charge_fraction(world._local.peer_id)
@@ -215,9 +217,10 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 		var profile: Dictionary = world.SauceParts.PROJECTILES[world.SauceParts.Part.ARC]
 		# Drawn from where the lob really leaves, the cap's mouth.
 		origin = world.part_launch_origin(world._local, world.SauceParts.Part.ARC)
-		velocity = world._arc_launch_direction(world._local, origin) * float(profile.speed)
+		velocity = world.mortar_launch_velocity(world._local, world._local.bottle_charge)
 		gravity = profile.gravity
-		life = profile.life
+		life = 4.0
+		shows_landing = false
 	else:
 		return
 	# The flight, cut at the first surface it meets.
@@ -238,7 +241,8 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 	# Near: the whole arc, solid, and a tomato where it lands. Far: solid out to
 	# ARC_SOLID_LENGTH, then dashes that fade out before the end, so a long
 	# throw shows its line but never its landing point.
-	var near := not landing.is_empty() and origin.distance_to(landing.position) <= ARC_NEAR_DISTANCE
+	var near := shows_landing and not landing.is_empty() \
+		and origin.distance_to(landing.position) <= ARC_NEAR_DISTANCE
 	var camera: Camera3D = world._camera
 	var travelled := 0.0
 	for index in points.size() - 1:

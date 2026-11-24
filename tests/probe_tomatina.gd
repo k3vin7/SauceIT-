@@ -868,11 +868,47 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 	_check(not scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.CANNON),
 		"first shop sold a later part")
 	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.FAN) and shooter.coins == 35,
-		"fan purchase did not debit the wallet")
+		"three-way purchase did not debit the wallet")
+	# 3갈래: 덩어리가 아니라 기본 줄기 세 가닥이 15°씩 벌어져 나가고, 소스는 두 배로 든다.
+	shooter.points.clear()
+	shooter.sauce = 1.0
 	shooter.firing = true
-	scene._advance_strand(shooter, 0.01)
-	_check(system._projectiles.size() == 5, "fan did not emit five streams")
+	for i in 6:
+		scene._advance_strand(shooter, 0.01)
+	_check(system._projectiles.is_empty(), "the three-way nozzle fired projectiles instead of streams")
+	_check(shooter.points.size() > 0 and shooter.side_points.size() == 2 \
+		and shooter.side_points[0].size() == shooter.points.size() \
+		and shooter.side_points[1].size() == shooter.points.size(),
+		"the three-way nozzle did not lay three strands: %d + %s" % [shooter.points.size(),
+			shooter.side_points.map(func(lane): return lane.size())])
+	if shooter.side_points.size() == 2 and not shooter.points.is_empty() and not shooter.side_points[0].is_empty():
+		var centre: Vector3 = shooter.points.back().velocity.normalized()
+		var left: Vector3 = shooter.side_points[0].back().velocity.normalized()
+		var right: Vector3 = shooter.side_points[1].back().velocity.normalized()
+		_check(absf(rad_to_deg(centre.angle_to(left)) - 15.0) < 2.5 and absf(rad_to_deg(centre.angle_to(right)) - 15.0) < 2.5 \
+			and rad_to_deg(left.angle_to(right)) > 25.0, "the three strands are not 15 degrees apart: %.1f / %.1f" % [
+			rad_to_deg(centre.angle_to(left)), rad_to_deg(centre.angle_to(right))])
+	var three_way_spent: float = 1.0 - shooter.sauce
 	shooter.firing = false
+	for i in 30:
+		scene._advance_strand(shooter, 0.05)
+	scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.STANDARD)
+	shooter.points.clear()
+	for lane in shooter.side_points:
+		lane.clear()
+	shooter.sauce = 1.0
+	shooter.firing = true
+	for i in 6:
+		scene._advance_strand(shooter, 0.01)
+	var plain_spent: float = 1.0 - shooter.sauce
+	shooter.firing = false
+	_check(shooter.side_points[0].is_empty() and plain_spent > 0.0 \
+		and absf(three_way_spent / plain_spent - 2.0) < 0.2,
+		"the three-way nozzle does not spend twice the sauce: %.4f vs %.4f" % [three_way_spent, plain_spent])
+	for i in 30:
+		scene._advance_strand(shooter, 0.05)
+	shooter.points.clear()
+	shooter.sauce = 1.0
 	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.FOCUS), "focus purchase failed")
 	scene._emit_point(shooter)
 	_check(shooter.points.back().range_scale > 1.0, "focus did not extend the jet")
@@ -893,8 +929,27 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 	scene._advance_strand(shooter, 0.01)
 	_check(system._projectiles.size() == 1 and system._projectiles[0].velocity.y > 0.0,
 		"arc did not launch upward")
+	# 박격포: 45° 이상으로만, 안 흔들면 가깝고 약하게, 다 채우면 멀고 세게.
+	if system._projectiles.size() == 1:
+		var lob: Vector3 = system._projectiles[0].velocity
+		_check(rad_to_deg(asin(lob.normalized().y)) >= 44.0 and absf(lob.length() - parts.MORTAR_MIN_SPEED) < 0.2,
+			"an unshaken mortar did not leave at 45 degrees or more at its lowest speed: %s" % lob)
 	shooter.firing = false
 	system.reset()
+	var weak: Vector3 = scene.mortar_launch_velocity(shooter, 0.0)
+	var strong: Vector3 = scene.mortar_launch_velocity(shooter, 1.0)
+	var near_range := weak.length_squared() / parts.GRAVITY
+	var far_range := strong.length_squared() / parts.GRAVITY
+	_check(near_range > 3.5 and near_range < 6.5 and far_range > 26.0 and far_range < 32.0,
+		"the mortar's reach is not about 5 m to 30 m: %.1f to %.1f" % [near_range, far_range])
+	_check(absf(parts.mortar_damage(parts.mortar_charge(weak.length())) - parts.MORTAR_MIN_DAMAGE) < 0.01 \
+		and absf(parts.mortar_damage(parts.mortar_charge(strong.length())) - 85.0) < 0.01 \
+		and parts.mortar_damage(1.0) > scene.thrown_tomato_damage,
+		"the mortar's damage does not run from 45 to 85 with the shake")
+	_check(scene._charge_hold_seconds(shooter) == 5.0, "the mortar does not hold its shake for five seconds")
+	_check(parts.PROJECTILES[parts.Part.CANNON].gravity == parts.GRAVITY \
+		and parts.PROJECTILES[parts.Part.BURST].gravity == parts.GRAVITY \
+		and parts.PROJECTILES[parts.Part.ARC].gravity == parts.GRAVITY, "a projectile part does not fall at 9.8")
 
 	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.CANNON), "cannon purchase failed")
 	shooter.sauce = 1.0
@@ -902,13 +957,23 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 		shooter.firing = true
 		scene._advance_strand(shooter, 0.01)
 		shooter.firing = false
-		scene._advance_strand(shooter, 3.7)
+		scene._advance_strand(shooter, 2.6)
 	_check(system._projectiles.size() == 4 and shooter.sauce == 0.0, "a full cannon did not fire exactly four shots")
+	_check(absf(system._projectiles[0].velocity.length() - 28.0) < 0.5, "the cannon does not leave at 28 m/s")
 	var balance: int = shooter.coins
 	_check(scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.STANDARD)
 		and scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.CANNON)
 		and shooter.coins == balance, "switching an owned part charged again")
 	scene.buy_or_equip_sauce_part(player.peer_id, parts.Part.STANDARD)
+	# 디버그 장착: 코인도 피난처도 없이 바로 낀다.
+	shooter.coins = 0
+	shooter.owned_parts = 1
+	player.global_position += Vector3(60.0, 0.0, 0.0)
+	_check(scene.debug_equip_part(player.peer_id, parts.Part.ARC) and shooter.sauce_part == parts.Part.ARC \
+		and shooter.coins == 0 and not scene.debug_equip_part(player.peer_id, 99),
+		"the debug equip did not fit a part for free, or took an invalid one")
+	player.global_position -= Vector3(60.0, 0.0, 0.0)
+	scene.debug_equip_part(player.peer_id, parts.Part.STANDARD)
 	shooter.coins = 0
 	shooter.owned_parts = 1
 	shooter.sauce = 1.0

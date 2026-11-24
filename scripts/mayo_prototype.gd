@@ -232,6 +232,11 @@ class Shooter:
 	var weapon: Node3D
 	var muzzle: Node3D
 	var points: Array[MayoPoint] = []
+	## 3갈래 노즐의 왼쪽·오른쪽 가닥. 가운데 가닥은 `points` 그대로다. 줄기를 다루는 함수들은
+	## `points` 하나만 알기 때문에, 옆 가닥을 다룰 때는 잠깐 `points`에 바꿔 끼운다
+	## (`_for_each_lane`). `lane_angle`은 그때 새 점이 벌어져 나갈 각도.
+	var side_points: Array = []
+	var lane_angle := 0.0
 	var coins := 0
 	var owned_parts := 1
 	var sauce_part := 0
@@ -1608,7 +1613,7 @@ func _physics_process(delta: float) -> void:
 				shooter.bottle_boost_time += delta
 			# Only the gauge comes over the wire. The hold before it drains is
 			# kept here off the shake input every peer already has, for the HUD.
-			shooter.bottle_charge_hold = bottle_charge_hold_seconds if shooter.bottle_shake_input > 0.0 \
+			shooter.bottle_charge_hold = _charge_hold_seconds(shooter) if shooter.bottle_shake_input > 0.0 \
 				else maxf(shooter.bottle_charge_hold - delta, 0.0)
 		# The shake everyone sees, on the bottle and in the character's hands.
 		# How hard the hand is going travels in the state packet, so it is the
@@ -1625,8 +1630,8 @@ func _physics_process(delta: float) -> void:
 		step_started = Time.get_ticks_usec()
 
 	for shooter in _shooters.values():
-		_simulate_points(delta, shooter)
-		_update_connections(shooter)
+		_for_each_lane(shooter, _simulate_points.bind(delta, shooter))
+		_for_each_lane(shooter, _update_connections.bind(shooter))
 	_simulate_droplets(delta)
 	_simulate_specks(delta)
 	_update_juice_kickup(delta)
@@ -1643,12 +1648,12 @@ func _physics_process(delta: float) -> void:
 		# was_firing is the held state _advance_strand settled on, not the raw
 		# trigger: a tap's points want holding together too.
 		if shooter.was_firing:
-			_enforce_spacing_constraint(shooter)
+			_for_each_lane(shooter, _enforce_spacing_constraint.bind(shooter))
 	if debug_profile_enabled:
 		debug_timings_us.constraint += Time.get_ticks_usec() - step_started
 		step_started = Time.get_ticks_usec()
 	for shooter in _shooters.values():
-		_trim_safety_cap(shooter)
+		_for_each_lane(shooter, _trim_safety_cap.bind(shooter))
 		_update_visuals(shooter)
 	if debug_profile_enabled:
 		debug_timings_us.ribbon_update += Time.get_ticks_usec() - step_started
@@ -1677,7 +1682,7 @@ func _physics_process(delta: float) -> void:
 func _advance_bottle_charge(shooter: Shooter, delta: float) -> void:
 	if shooter.bottle_shake_input > 0.0:
 		shooter.bottle_charge += shooter.bottle_shake_input * delta / maxf(bottle_charge_seconds, 0.01)
-		shooter.bottle_charge_hold = bottle_charge_hold_seconds
+		shooter.bottle_charge_hold = _charge_hold_seconds(shooter)
 	elif shooter.bottle_charge_hold > 0.0:
 		shooter.bottle_charge_hold = maxf(shooter.bottle_charge_hold - delta, 0.0)
 	else:
@@ -1818,7 +1823,7 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 			shooter.burst_index += 1
 			# A new squeeze starts at full pressure.
 			shooter.burst_elapsed = 0.0
-		_apply_inertial_follow(shooter.player.frame_movement, shooter)
+		_for_each_lane(shooter, _apply_inertial_follow.bind(shooter.player.frame_movement, shooter))
 		# The nozzle feeds the strand at the speed it is actually delivering, so
 		# a squeeze running out of pressure lays its points down more slowly
 		# instead of packing them closer together.
@@ -1835,11 +1840,11 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 			# nothing disappears.
 			if shooter.points.size() >= maximum_point_count:
 				break
-			_emit_point(shooter)
+			_emit_lanes(shooter)
 	else:
 		shooter.emit_distance = 0.0
 		if shooter.was_firing:
-			_apply_release_pressure_loss(shooter)
+			_for_each_lane(shooter, _apply_release_pressure_loss.bind(shooter))
 	if _is_authority():
 		_advance_sauce(shooter, delta, delivering or shooter.nozzle == Nozzle.AIR)
 	shooter.was_firing = delivering
@@ -1874,11 +1879,6 @@ func _advance_part_trigger(shooter: Shooter, delta: float) -> void:
 	var cost: float = profile.cost
 	var cooldown: float = profile.cooldown
 	match shooter.sauce_part:
-		SauceParts.Part.FAN:
-			if shooter.firing and shooter.sauce >= cost:
-				shooter.sauce -= cost
-				shooter.part_cooldown = cooldown
-				_fire_part_volley(shooter)
 		SauceParts.Part.BURST:
 			if pressed and shooter.part_shots_left == 0 and shooter.sauce >= cost:
 				shooter.sauce -= cost
@@ -1895,38 +1895,68 @@ func _advance_part_trigger(shooter: Shooter, delta: float) -> void:
 
 
 const PART_PRESS_BUFFER := 0.3
-## How far ahead the lob looks for something under the crosshair to land on.
-const ARC_AIM_REACH := 30.0
-
-
-## Which way the lob leaves so that it comes down on what the crosshair is on.
-## The low arc of the two that get there. With nothing under the crosshair, or
-## something further than the lob can carry, it is thrown up and forward as
-## before.
-func _arc_launch_direction(shooter: Shooter, origin: Vector3) -> Vector3:
+## 박격포가 나가는 속도 벡터. 방향은 시점의 좌우를 따르고, 올려 쏘는 각도는 시점의 상하를
+## 따르되 지면에서 45°보다 낮아지지 않는다(똑바로 위를 보면 90°). 세기는 흔들어 채운
+## `charge`(0~1)에 따라 `MORTAR_MIN_SPEED`에서 최고 속도까지다.
+func mortar_launch_velocity(shooter: Shooter, charge: float) -> Vector3:
 	var forward := shooter.attack_direction
-	var fallback := (forward + Vector3.UP * 0.43).normalized()
-	# What the crosshair is on is found from the eyes; the lob is solved from
-	# where it leaves, the part's mouth.
-	var eye := shooter.aim_pivot.global_position
-	var query := PhysicsRayQueryParameters3D.create(eye, eye + forward * ARC_AIM_REACH)
-	query.exclude = [shooter.player.get_rid()]
-	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	if hit.is_empty():
-		return fallback
-	var profile: Dictionary = SauceParts.PROJECTILES[SauceParts.Part.ARC]
-	var speed: float = profile.speed
-	var gravity: float = profile.gravity
-	var offset: Vector3 = hit.position - origin
-	var flat := Vector3(offset.x, 0.0, offset.z)
-	var distance := flat.length()
-	if distance < 0.05:
-		return forward
-	var root := speed ** 4 - gravity * (gravity * distance * distance + 2.0 * offset.y * speed * speed)
-	if root < 0.0:
-		return fallback
-	var pitch := atan2(speed * speed - sqrt(root), gravity * distance)
-	return (flat / distance * cos(pitch) + Vector3.UP * sin(pitch)).normalized()
+	var heading := Vector3(forward.x, 0.0, forward.z)
+	if heading.length_squared() < 0.0025:
+		# 거의 똑바로 위를 볼 때: 좌우는 시점의 "위쪽"이 가리키는 반대편이다.
+		var up := _aim_basis(shooter).y
+		heading = -Vector3(up.x, 0.0, up.z)
+	heading = heading.normalized() if heading.length_squared() > 0.000001 else Vector3.FORWARD
+	var elevation := clampf(asin(clampf(forward.y, -1.0, 1.0)), SauceParts.MORTAR_MIN_ELEVATION, PI * 0.5)
+	var speed := lerpf(SauceParts.MORTAR_MIN_SPEED,
+		float(SauceParts.PROJECTILES[SauceParts.Part.ARC].speed), clampf(charge, 0.0, 1.0))
+	return (heading * cos(elevation) + Vector3.UP * sin(elevation)) * speed
+
+
+## 흔들기를 멈춘 뒤 게이지가 빠지기 시작할 때까지. 박격포는 거리를 재는 데 쓰므로 더 길다.
+func _charge_hold_seconds(shooter: Shooter) -> float:
+	return SauceParts.MORTAR_CHARGE_HOLD if shooter.sauce_part == SauceParts.Part.ARC \
+		else bottle_charge_hold_seconds
+
+
+func _is_three_way(shooter: Shooter) -> bool:
+	return shooter.sauce_part == SauceParts.Part.FAN
+
+
+## `action`을 이 사람의 줄기 가닥마다 한 번씩 부른다: 가운데 가닥, 그리고 3갈래 노즐이
+## 만든 옆 가닥 둘. 옆 가닥 차례에는 `shooter.points`가 그 가닥으로 바뀌어 있다.
+## 파츠를 바꾼 뒤에도 날아가던 옆 가닥은 다 떨어질 때까지 계속 다뤄진다.
+func _for_each_lane(shooter: Shooter, action: Callable) -> void:
+	action.call()
+	if shooter.side_points.is_empty():
+		return
+	var centre := shooter.points
+	for index in shooter.side_points.size():
+		var lane: Array[MayoPoint] = shooter.side_points[index]
+		if lane.is_empty():
+			continue
+		shooter.points = lane
+		action.call()
+	shooter.points = centre
+
+
+## 새 점 하나를 내보낸다. 3갈래 노즐이면 옆 가닥 둘에도 하나씩, 좌우로 벌려서.
+func _emit_lanes(shooter: Shooter) -> void:
+	_emit_point(shooter)
+	if not _is_three_way(shooter):
+		return
+	while shooter.side_points.size() < 2:
+		var lane: Array[MayoPoint] = []
+		shooter.side_points.push_back(lane)
+	var centre := shooter.points
+	for index in 2:
+		var lane: Array[MayoPoint] = shooter.side_points[index]
+		if lane.size() >= maximum_point_count:
+			continue
+		shooter.points = lane
+		shooter.lane_angle = SauceParts.THREE_WAY_ANGLE * (-1.0 if index == 0 else 1.0)
+		_emit_point(shooter)
+	shooter.points = centre
+	shooter.lane_angle = 0.0
 
 
 ## Where a fitted part's shot leaves: the mouth of the part on the first-person
@@ -1945,7 +1975,7 @@ func part_launch_origin(shooter: Shooter, part: int) -> Vector3:
 func _part_aim_direction(shooter: Shooter, origin: Vector3) -> Vector3:
 	var forward := shooter.attack_direction
 	var profile: Dictionary = SauceParts.PROJECTILES[shooter.sauce_part]
-	var reach := float(profile.speed) * float(profile.life)
+	var reach := float(profile.reach)
 	var eye := shooter.aim_pivot.global_position
 	var query := PhysicsRayQueryParameters3D.create(eye, eye + forward * reach)
 	query.exclude = [shooter.player.get_rid()]
@@ -1962,7 +1992,10 @@ func _fire_part_volley(shooter: Shooter) -> void:
 	var origin := part_launch_origin(shooter, shooter.sauce_part)
 	var forward := _part_aim_direction(shooter, origin)
 	if shooter.sauce_part == SauceParts.Part.ARC:
-		forward = _arc_launch_direction(shooter, origin)
+		# 박격포: 흔들어 채운 만큼의 세기로, 45° 이상으로만. 세기는 `forward`의 길이에 실려
+		# 모든 화면에 간다 -- 떨어졌을 때의 피해도 거기서 다시 읽는다.
+		forward = mortar_launch_velocity(shooter, shooter.bottle_charge) \
+			/ float(SauceParts.PROJECTILES[SauceParts.Part.ARC].speed)
 	shooter.burst_index += 1
 	# The primed shot, for a part: thrown harder, so it carries further. The
 	# speed rides on the length of `forward`, which every peer is sent. Not the
@@ -2309,7 +2342,7 @@ func _advance_sauce(shooter: Shooter, delta: float, spending: bool) -> void:
 	if spending:
 		shooter.burst_time += delta
 		shooter.sauce = SauceTank.after_spending(shooter.sauce, delta,
-			sauce_flow_per_second)
+			sauce_flow_per_second * (SauceParts.THREE_WAY_FLOW if _is_three_way(shooter) else 1.0))
 		return
 	if sauce_refill_per_second > 0.0:
 		shooter.sauce = SauceTank.after_idle(shooter.sauce, delta,
@@ -3558,6 +3591,12 @@ func buy_or_equip_sauce_part(peer: int, part: int) -> bool:
 			return false
 		shooter.coins -= int(entry[3])
 		shooter.owned_parts |= bit
+	_equip_sauce_part(shooter, part)
+	return true
+
+
+## `part`를 병에 낀다. 값을 치르는 일은 부른 쪽이 이미 끝냈다.
+func _equip_sauce_part(shooter: Shooter, part: int) -> void:
 	if shooter.sauce_part != part:
 		shooter.sauce_part = part
 		shooter.part_shots_left = 0
@@ -3568,6 +3607,17 @@ func buy_or_equip_sauce_part(peer: int, part: int) -> bool:
 		shooter.was_firing = false
 	_sauce_parts.dirty = true
 	_refresh_refuge_shop()
+
+
+## 디버그 모드(`SauceDebug`): 코인도 피난처도 없이 `part`를 바로 낀다. 방장만 부른다.
+func debug_equip_part(peer: int, part: int) -> bool:
+	if _sauce_parts == null or not _is_authority() or part < 0 or part >= SauceParts.CATALOG.size():
+		return false
+	var shooter: Shooter = _shooters.get(peer)
+	if shooter == null:
+		return false
+	shooter.owned_parts |= 1 << part
+	_equip_sauce_part(shooter, part)
 	return true
 
 
@@ -7044,6 +7094,8 @@ func _emit_point(shooter: Shooter = null) -> void:
 	var convergence := shooter.aim_pivot.global_position + shooter.attack_direction * aim_convergence_distance
 	var angle := shooter.rng.randf_range(-yaw_angle_jitter, yaw_angle_jitter) * spread
 	var direction := (convergence - point.position).normalized().rotated(aim_basis.y, angle).normalized()
+	if shooter.lane_angle != 0.0:
+		direction = direction.rotated(aim_basis.y, shooter.lane_angle).normalized()
 	# The first cast runs from the eyes, not from the nozzle. The nozzle is the
 	# better part of a metre ahead of the aim pivot, so a body pressed up
 	# against the player has the point born *inside* it, where a ray finds no
@@ -7175,7 +7227,11 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 					if on_floor:
 						_record_floor_splat(shooter, point.burst_index, hit.position)
 					elif collider.is_in_group("mayo_contaminable"):
-						_record_splat(collider, hit.position, hit.normal, shooter)
+						# 3갈래의 가닥은 한 점이 주는 피해가 기본 줄기보다 적다.
+						var lane_damage := -1.0
+						if _is_three_way(shooter) and collider is MayoEnemy:
+							lane_damage = (collider as MayoEnemy).sauce_damage_per_hit * SauceParts.THREE_WAY_SCALE
+						_record_splat(collider, hit.position, hit.normal, shooter, true, -1, lane_damage)
 				_begin_landing(point, hit.position, hit.normal, on_floor)
 			else:
 				point.position = next
@@ -7375,7 +7431,8 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 	# The lob cap goes off like a thrown tomato, at half its damage, and that
 	# blast is the whole of it: no separate direct hit on what it landed on.
 	if shot.part == SauceParts.Part.ARC:
-		_explode_lob_cap(at + normal * 0.08, shooter, sauce)
+		_explode_lob_cap(at + normal * 0.08, shooter, sauce,
+			SauceParts.mortar_charge(float(shot.get("launch_speed", 0.0))))
 		return
 	if target.is_in_group("mayo_floor"):
 		_record_floor_splat(shooter, shooter.burst_index, at, sauce)
@@ -7395,8 +7452,8 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 		if enemy.global_position.distance_squared_to(center) <= blast * blast \
 				and _tomato_blast_reaches(center, enemy):
 			_record_splat(enemy, enemy.global_position, Vector3.UP, shooter,
-				true, sauce, SauceParts.scaled_damage(
-					profile.damage * SauceParts.BLAST_DAMAGE_SHARE, enemy))
+				true, sauce, SauceParts.scaled_damage(float(profile.get("blast_damage",
+					profile.damage * SauceParts.BLAST_DAMAGE_SHARE)), enemy))
 	for teammate: Shooter in _shooters.values():
 		var player := teammate.player
 		if player.state == MayoPlayer.State.DEAD:
@@ -7922,13 +7979,19 @@ func _update_visuals(shooter: Shooter = null) -> void:
 		return
 	var camera_position := _camera.global_position
 	var camera_forward := -_camera.global_basis.z
-	var air_segments := _segments_for_phase(PointPhase.AIR, camera_position, shooter)
-	var landing_segments := _segments_for_phase(PointPhase.LANDING, camera_position, shooter)
-	var shadow_segments := _shadow_segments(camera_position, shooter)
-	shooter.air_visual.update_ribbon(air_segments, camera_position, camera_forward, strand_thickness)
-	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, strand_thickness, 0.004)
+	# 3갈래의 세 가닥은 한 리본에 이어 그린다. 가닥마다 굵기가 기본보다 가늘다.
+	var air_segments: Array = []
+	var landing_segments: Array = []
+	var shadow_segments: Array = []
+	_for_each_lane(shooter, func():
+		air_segments.append_array(_segments_for_phase(PointPhase.AIR, camera_position, shooter))
+		landing_segments.append_array(_segments_for_phase(PointPhase.LANDING, camera_position, shooter))
+		shadow_segments.append_array(_shadow_segments(camera_position, shooter)))
+	var thickness := strand_thickness * (SauceParts.THREE_WAY_SCALE if _is_three_way(shooter) else 1.0)
+	shooter.air_visual.update_ribbon(air_segments, camera_position, camera_forward, thickness)
+	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, thickness, 0.004)
 	shooter.shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward,
-		strand_thickness * 0.72, 0.012)
+		thickness * 0.72, 0.012)
 	_update_nozzle_visual(shooter)
 
 
@@ -10365,19 +10428,18 @@ func _explode_thrown_tomato(at: Vector3, owner: Shooter) -> void:
 	_blast_players(at, radius, thrown_tomato_player_damage)
 
 
-## The lob cap's landing: a thrown tomato's blast -- the same radius, flash,
-## shake and friend-or-foe reach -- at `LOB_CAP_DAMAGE_SHARE` of its damage,
-## and in the shooter's own sauce rather than a ketchup puddle. Authority only;
-## the flash goes to the peers like a thrown tomato's does.
-const LOB_CAP_DAMAGE_SHARE := 0.5
-func _explode_lob_cap(at: Vector3, owner: Shooter, sauce: int) -> void:
-	var radius := thrown_tomato_splash_radius
+## 박격포의 착탄: 던진 토마토처럼 터진다 -- 같은 번쩍임과 흔들림, 아군도 가리지 않는다.
+## 반경은 토마토의 `MORTAR_RADIUS_SHARE`배, 피해는 얼마나 채워 쐈는가(`charge`)에 따라
+## `SauceParts.mortar_damage`이고, 웅덩이는 케찹이 아니라 쏜 사람의 소스다. 방장만 부른다.
+func _explode_lob_cap(at: Vector3, owner: Shooter, sauce: int, charge := 1.0) -> void:
+	var radius := thrown_tomato_splash_radius * SauceParts.MORTAR_RADIUS_SHARE
+	var damage := SauceParts.mortar_damage(charge)
 	show_tomato_blast(at, radius)
 	_cut_cheese_by_blast(at, radius)
 	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
 		_net.broadcast_tomato_blast(at, radius)
-	_splash_enemies(at, radius, thrown_tomato_damage * LOB_CAP_DAMAGE_SHARE, owner, null, true)
-	_blast_players(at, radius, thrown_tomato_player_damage * LOB_CAP_DAMAGE_SHARE)
+	_splash_enemies(at, radius, damage, owner, null, true)
+	_blast_players(at, radius, thrown_tomato_player_damage * damage / maxf(thrown_tomato_damage, 0.001))
 	for index in 12:
 		var angle := TAU * float(index) / 12.0
 		var foot := Vector3(at.x, 0.14, at.z) + Vector3(cos(angle), 0.0, sin(angle)) \

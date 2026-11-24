@@ -113,7 +113,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 16
+const PROTOCOL_VERSION := 17
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
@@ -391,6 +391,7 @@ func begin_join_room(address: String, port := DEFAULT_PORT, code := "") -> bool:
 	lobby_flow = true
 	lobby_code = code.strip_edges()
 	_characters.clear()
+	_debug_host = false  # DEBUG
 	_refused_busy = false
 	_refused_full = false
 	_refused_version = false
@@ -525,7 +526,80 @@ func _slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array, po
 		slot_result.emit(peer_id, bet, gain, reels, pot)
 
 
-## 디버그용: 팀 돈을 그냥 더한다(방장만). 사무실의 디버그 키가 부른다 -- `OfficeLobby.DEBUG_MONEY_STEP`.
+# -- DEBUG -------------------------------------------------------------------
+# 디버그 모드(`scripts/debug_tools.gd`)가 쓰는 것. 걷어낼 때는 "# -- /DEBUG"까지 지운다.
+
+## 디버그 모드가 켜지거나 꺼졌다(이 화면에서 보기에).
+signal debug_mode_changed
+## 이 플레이어가 켠 디버그 모드. 저장하지 않으므로 게임을 켤 때마다 꺼져 있다.
+var _debug_here := false
+## 들어가 있는 방의 방장이 켰는가(참가자일 때만 본다).
+var _debug_host := false
+
+
+## 지금 디버그 기능을 쓸 수 있는가: 참가자는 방장이 켰을 때, 그 밖에는 자기가 켰을 때.
+func debug_active() -> bool:
+	if not SauceDebug.available():
+		return false
+	return _debug_host if _online and not is_server() else _debug_here
+
+
+## 디버그 모드를 켜고 끈다. 남의 방에 들어가 있는 참가자는 바꿀 수 없다.
+func set_debug_mode(on: bool) -> bool:
+	if not SauceDebug.available() or (_online and not is_server()):
+		return false
+	_debug_here = on
+	if _online:
+		for id in _slots.keys():
+			if int(id) != 1 and _peer_can_receive(int(id)):
+				_sync_debug_mode.rpc_id(int(id), on)
+	debug_mode_changed.emit()
+	return true
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_debug_mode(on: bool) -> void:
+	if not multiplayer.is_server():
+		_debug_host = on
+		debug_mode_changed.emit()
+
+
+## 팀 돈을 그냥 더한다. 디버그 모드가 켜진 방의 사무실에서, 누구나.
+func request_debug_money(amount: int) -> bool:
+	if not debug_active() or amount <= 0:
+		return false
+	if is_server():
+		return add_team_money(amount)
+	_debug_money.rpc_id(1, amount)
+	return true
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _debug_money(amount: int) -> void:
+	if multiplayer.is_server() and debug_active() and _slots.has(multiplayer.get_remote_sender_id()):
+		add_team_money(clampi(amount, 1, 100000))
+
+
+## 파츠를 코인·피난처와 무관하게 바로 낀다. 디버그 모드가 켜진 방의 스테이지에서, 누구나.
+func request_debug_part(part: int) -> bool:
+	if not debug_active() or not _world_ready() or not world.has_method("debug_equip_part"):
+		return false
+	if is_server():
+		return world.debug_equip_part(local_id(), part)
+	_debug_part.rpc_id(1, part)
+	return true
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _debug_part(part: int) -> void:
+	if multiplayer.is_server() and debug_active() and _world_ready() \
+			and world.has_method("debug_equip_part"):
+		world.debug_equip_part(multiplayer.get_remote_sender_id(), part)
+
+# -- /DEBUG ------------------------------------------------------------------
+
+
+## 팀 돈을 그냥 더한다(방장만, 사무실에 있는 동안).
 func add_team_money(amount: int) -> bool:
 	if not lobby_flow or not is_server() or session_phase != SessionPhase.TRUCK or amount <= 0:
 		return false
@@ -1478,6 +1552,7 @@ func _broadcast_lobby() -> void:
 	for peer_id in _slots.keys():
 		if int(peer_id) != 1 and _peer_can_receive(int(peer_id)):
 			_sync_team_progress.rpc_id(int(peer_id), team_money, team_trophies, team_clears, team_jackpot)
+			_sync_debug_mode.rpc_id(int(peer_id), _debug_here)  # DEBUG
 			_sync_lobby.rpc_id(int(peer_id), packet, ready, selected_stage, session_phase,
 				characters)
 	roster_changed.emit()

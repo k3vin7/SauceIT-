@@ -29,10 +29,6 @@ const LOOK_DOT := 0.8
 const OFFICE_WALK_SPEED := 5.2
 ## 전원이 출발 구역에 올라선 뒤 떠나기까지. 한 명이라도 내려서면 처음부터 다시 센다.
 const DEPART_COUNTDOWN := 3.0
-## 디버그용: 사무실에서 이 키를 누를 때마다 팀 돈이 `DEBUG_MONEY_STEP`만큼 늘어난다(방장·혼자하기만).
-## 출시 전에 `DEBUG_MONEY_STEP`을 0으로 바꾸면 키도 안내 문구도 사라진다.
-const DEBUG_MONEY_KEY := KEY_F9
-const DEBUG_MONEY_STEP := 100
 ## 네 자리. 문 쪽에 나란히 서서 스크린을 본다.
 const SPAWNS := [
 	{"position": Vector3(-0.9, 0.0, 5.5), "yaw": 0.0},
@@ -137,11 +133,6 @@ func _physics_process(delta: float) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if input_locked:
-		return
-	if DEBUG_MONEY_STEP > 0 and session != null and event is InputEventKey and event.pressed \
-			and not event.echo and (event as InputEventKey).keycode == DEBUG_MONEY_KEY:
-		session.add_team_money(DEBUG_MONEY_STEP)
-		get_viewport().set_input_as_handled()
 		return
 	if is_map_open() or is_slot_open():
 		if event.is_action_pressed("ui_cancel"):
@@ -687,8 +678,6 @@ func _build_ui() -> void:
 	column.add_child(_info_label)
 	var hint := Label.new()
 	hint.text = "WASD 이동 · Space 점프 · E 상호작용 · Esc 메뉴\n축제 지도에서 출격 준비\n모두 출발 구역에 올라서면 출발"
-	if DEBUG_MONEY_STEP > 0:
-		hint.text += "\n[디버그] %s: 팀 돈 +%d" % [OS.get_keycode_string(DEBUG_MONEY_KEY), DEBUG_MONEY_STEP]
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", UI.MUTED)
 	hint.add_theme_font_size_override("font_size", 14)

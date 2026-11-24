@@ -948,6 +948,17 @@ func _open_options() -> void:
 		navigation.add_child(button)
 		buttons.append(button)
 		pages.append(_add_options_page(tabs, category))
+	# DEBUG: 개발용 실행에서만 "디버그" 분류가 하나 더 붙는다 -- `scripts/debug_tools.gd`.
+	if SauceDebug.available():
+		var debug_index := pages.size()
+		var debug_button := _button("디버그", func(): tabs.current_tab = debug_index)
+		debug_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		debug_button.toggle_mode = true
+		debug_button.button_group = category_group
+		navigation.add_child(debug_button)
+		buttons.append(debug_button)
+		SauceDebug.build_page(_add_options_page(tabs, "디버그"), self)
+	# /DEBUG
 	buttons[OptionsPage.AUDIO].set_pressed_no_signal(true)
 	tabs.tab_changed.connect(func(index: int):
 		save_store.game_options.cancel_key_capture()
