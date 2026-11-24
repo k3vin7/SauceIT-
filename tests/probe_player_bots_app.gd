@@ -7,18 +7,33 @@ func run() -> void:
 	var app = load("res://app.tscn").instantiate()
 	app.save_path_override = "res://reports/runtime_home/bot_app_probe.cfg"
 	root.add_child(app)
-	app._start_solo()
-	app._on_character_chosen(2)
-	var office := app.current_space as OfficeLobby
-	office.open_map()
-	for button in office._map_modes.get_children():
-		if (button as Button).text == "봇 3명과 토마티나 연습":
-			(button as Button).pressed.emit()
-	await physics_frame
+	for count in range(1, 4):
+		app._start_solo()
+		app._on_character_chosen(2)
+		var office := app.current_space as OfficeLobby
+		office.open_map()
+		assert(office._map_bots.visible and office._map_bot_buttons[0].button_pressed)
+		office._map_bot_buttons[count].pressed.emit()
+		assert(office.practice_bot_count == count and app.flow == app.Flow.OFFICE)
+		office._map_bot_buttons[0].pressed.emit()
+		assert(office.practice_bot_count == 0)
+		office._map_bot_buttons[count].pressed.emit()
+		office.pick_stage("stage_1")
+		assert(not office._map_bots.visible)
+		office.pick_stage("stage_2")
+		office.close_map()
+		office.request_start()
+		while app.flow == app.Flow.LOADING:
+			await process_frame
+		assert(app.flow == app.Flow.STAGE and app.current_space.party_size() == count + 1)
+		assert(app.bot_team.brains.size() == count + 1)
+		if count < 3:
+			app._show_title()
+			await process_frame
 	assert(app.flow == app.Flow.STAGE)
 	assert(app.current_space.party_size() == 4)
 	assert(app.session.selected_stage == "stage_2")
-	assert(not app.session.lobby_flow)
+	assert(app.session.lobby_flow and not app.session.is_online())
 	assert(is_instance_valid(app.bot_team) and not app.bot_team.autoplay)
 	var world = app.current_space
 	assert(world._local.character_index == 2)
@@ -56,11 +71,21 @@ func run() -> void:
 	assert(panel != null and panel.get_parent() is HBoxContainer \
 		and panel.get_parent().alignment == BoxContainer.ALIGNMENT_END)
 	app._retry_current_stage()
+	while app.flow == app.Flow.LOADING:
+		await process_frame
 	assert(app.flow == app.Flow.STAGE and app.current_space.party_size() == 4)
 	assert(app.current_space.tomatina_intro_active())
+	assert(app.session.request_intro_skip())
+	app._on_stage_cleared()
+	assert(app.session.request_result_continue())
+	while app.flow == app.Flow.RESULT:
+		await process_frame
+	assert(app.flow == app.Flow.OFFICE and app.current_space.practice_bot_count == 3)
+	await process_frame
 	app._show_title()
 	assert(app.flow == app.Flow.TITLE and app.bot_team == null)
 	app.queue_free()
+	await process_frame
 	await process_frame
 	print("PLAYER_BOTS_APP_OK")
 	quit()

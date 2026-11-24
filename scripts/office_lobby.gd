@@ -5,7 +5,7 @@ extends TruckLobby
 ##
 ## 몸을 걷게 하고 서로에게 보여 주는 일은 전부 `TruckLobby`의 것이다(호스트가 모든 몸을
 ## 움직이고 자세를 보내 준다). 여기서 바뀌는 것은 방, 화면, 그리고 할 수 있는 일이다.
-##   * 큰 스크린의 지도 -- 플레이 모드와 갈 축제를 고른다. 팀원은 보기만 한다.
+##   * 큰 스크린의 지도 -- 갈 축제와 토마티나 연습 봇을 고른다.
 ##   * 사물함 -- 캐릭터를 다시 고른다.
 ##   * 슬롯머신 -- 팀 돈을 걸고 돌린다. 누구나 할 수 있고 방장이 굴린다. 배당은 `OfficeSlot`.
 ##   * 출발 구역 -- 전원이 올라서면 잠깐 센 뒤 떠난다. 지도에는 출발 버튼이 없다.
@@ -16,8 +16,6 @@ extends TruckLobby
 ## 그 씬을 불러와 스크린·사물함·시작 자리의 위치만 읽어 간다.
 
 signal character_requested
-signal party_requested
-signal bot_practice_requested
 
 const CharacterSelectScript := preload("res://scripts/character_select.gd")
 const ROOM_SCENE := preload("res://maps/command.tscn")
@@ -49,6 +47,7 @@ var _locker_position := LOCKER_POSITION
 var _spawns: Array = SPAWNS
 ## 출발까지 남은 시간(초). 세고 있지 않으면 `DEPART_COUNTDOWN`.
 var depart_countdown := DEPART_COUNTDOWN
+var practice_bot_count := 0
 var _depart_area: Area3D
 var _depart_half := Vector2(3.0, 1.3)
 var _depart_sign: Label3D
@@ -68,7 +67,8 @@ var _info_label: Label
 var _prompt: Label
 var _screen_label: Label3D
 var _map_layer: CanvasLayer
-var _map_modes: HBoxContainer
+var _map_bots: HBoxContainer
+var _map_bot_buttons: Array[Button] = []
 var _map_subtitle: Label
 var _map_canvas: MapCanvas
 var _map_pins: Dictionary = {}
@@ -164,6 +164,7 @@ func close_map() -> void:
 	_map_layer.queue_free()
 	_map_layer = null
 	_map_pins.clear()
+	_map_bot_buttons.clear()
 	_cursor_free = false
 	_apply_mouse_mode()
 
@@ -353,6 +354,16 @@ func pick_stage(stage_id: String) -> void:
 	if session != null:
 		session.set_selected_stage(stage_id)
 	_refresh_map()
+
+
+func _can_add_bots() -> bool:
+	return session != null and not session.is_online() and session.selected_stage == "stage_2"
+
+
+func _pick_bot_count(count: int) -> void:
+	if _can_add_bots():
+		practice_bot_count = count
+		_refresh_panel(session.seat_assignments())
 
 
 ## 지금 바로 떠난다(방장만). 평소에는 출발 구역의 카운트다운이 끝날 때 불린다.
@@ -602,6 +613,8 @@ func _roster_text(assignments: Dictionary) -> String:
 		lines.push_back("%s — %s" % [who,
 			CharacterSelectScript.NAMES[session.character_of(int(peer_id))]
 			if session.has_character(int(peer_id)) else "캐릭터 고르는 중"])
+	if _can_add_bots() and practice_bot_count > 0:
+		lines.push_back("연습 봇 %d명 · 출발 시 합류" % practice_bot_count)
 	return "\n".join(lines)
 
 
@@ -634,15 +647,23 @@ func _build_map_panel() -> void:
 	_map_subtitle = Label.new()
 	_map_subtitle.add_theme_color_override("font_color", UI.MUTED)
 	column.add_child(_map_subtitle)
-	_map_modes = HBoxContainer.new()
-	_map_modes.add_theme_constant_override("separation", 10)
-	column.add_child(_map_modes)
-	var solo := _add_mode_button("혼자하기")
-	solo.toggle_mode = true
-	solo.button_group = ButtonGroup.new()
-	solo.set_pressed_no_signal(true)
-	_add_mode_button("같이하기").pressed.connect(party_requested.emit)
-	_add_mode_button("봇 3명과 토마티나 연습").pressed.connect(bot_practice_requested.emit)
+	_map_bots = HBoxContainer.new()
+	_map_bots.add_theme_constant_override("separation", 10)
+	column.add_child(_map_bots)
+	var bot_label := UI.eyebrow("연습 봇")
+	bot_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_map_bots.add_child(bot_label)
+	var bot_group := ButtonGroup.new()
+	for count in range(MayoNet.MAX_CLIENTS + 1):
+		var button := Button.new()
+		button.text = "%d명" % count
+		button.toggle_mode = true
+		button.button_group = bot_group
+		button.custom_minimum_size.y = 42.0
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.pressed.connect(_pick_bot_count.bind(count))
+		_map_bots.add_child(button)
+		_map_bot_buttons.append(button)
 	var body := HBoxContainer.new()
 	body.add_theme_constant_override("separation", 20)
 	column.add_child(body)
@@ -694,25 +715,15 @@ func _build_map_panel() -> void:
 	detail.add_child(close)
 
 
-func _add_mode_button(caption: String) -> Button:
-	var button := Button.new()
-	button.text = caption
-	button.custom_minimum_size.y = 42.0
-	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_map_modes.add_child(button)
-	return button
-
-
 func _refresh_map() -> void:
 	if not is_map_open() or session == null:
 		return
-	_map_modes.visible = not session.is_online()
-	if _map_modes.visible:
-		_map_subtitle.text = "플레이 모드와 갈 축제를 고르세요."
-	elif session.is_server():
-		_map_subtitle.text = "같이하기 · 갈 축제를 고르세요."
-	else:
-		_map_subtitle.text = "같이하기 · 방장이 갈 축제를 고릅니다."
+	_map_bots.visible = _can_add_bots()
+	for count in _map_bot_buttons.size():
+		_map_bot_buttons[count].set_pressed_no_signal(count == practice_bot_count)
+	_map_subtitle.text = "갈 축제를 고르세요." if session.is_server() else "방장이 갈 축제를 고릅니다."
+	if not session.is_online() and not _map_bots.visible:
+		_map_subtitle.text = "연습 봇은 토마티나에서 추가할 수 있습니다."
 	var stage_id := session.selected_stage
 	for id in _map_pins:
 		(_map_pins[id] as Button).set_pressed_no_signal(id == stage_id)

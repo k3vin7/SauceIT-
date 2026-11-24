@@ -12,7 +12,7 @@ var finished := false
 var events: Array[Dictionary] = []
 var _hud_clock := 0.0
 
-func configure(play_world: Node3D, control_leader := false) -> void:
+func configure(play_world: Node3D, control_leader := false, bot_count := 3) -> void:
 	world = play_world
 	if world.map_kind != world.MapKind.TOMATINA or world._net.is_online():
 		push_error("Player bots currently support offline Tomatina practice only")
@@ -21,7 +21,7 @@ func configure(play_world: Node3D, control_leader := false) -> void:
 	autoplay = control_leader
 	process_physics_priority = -30
 	var character := 0
-	for slot in range(1, 4):
+	for slot in range(1, 1 + clampi(bot_count, 0, 3)):
 		if character == world._local.character_index:
 			character += 1
 		var shooter = world.create_avatar(9000 + slot, slot, false)

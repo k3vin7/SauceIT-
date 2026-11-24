@@ -2,7 +2,7 @@ extends SceneTree
 
 # 새 시작 흐름을 끝에서 끝까지 확인한다. 앱 세 개를 127.0.0.1에 세운다.
 #   혼자하기
-#     * 타이틀의 플레이 -> 사무실 + 캐릭터 선택, 포트는 열지 않는다
+#     * 타이틀의 혼자하기 -> 사무실 + 캐릭터 선택, 포트는 열지 않는다
 #     * 지도에서 축제를 고르고 출발 -> 도착 연출 -> 플레이 -> 결과 -> 다시 사무실
 #   같이하기
 #     * 방장/참가자 모두 사무실로 들어온다. 캐릭터는 겹칠 수 없다(방장이 판정)
@@ -96,10 +96,10 @@ func _solo() -> void:
 	var app := _make_app("SoloView")
 	await process_frame
 	_check(app.flow == SauceApp.Flow.TITLE, "the app did not open on the title")
-	_press(app._title_layer, "플레이")
+	_press(app._title_layer, "혼자하기")
 	await process_frame
 	_check(app.flow == SauceApp.Flow.OFFICE and app.current_space is OfficeLobby,
-		"플레이 did not lead to the office")
+		"혼자하기 did not lead to the office")
 	_check(not app.session.is_online(), "혼자하기 opened a port")
 	_check(_select_of(app) != null, "the office did not ask a new player for a character")
 	_check(not app.session.can_start_stage(), "a solo room could start before picking")
@@ -169,34 +169,22 @@ func _party() -> void:
 	var late := _make_app("LateView")
 	await process_frame
 
-	# --- 방장: 사무실 지도에서 고른 목적지와 캐릭터로 방을 연다 -----------------
-	_press(host._title_layer, "플레이")
-	_pick(host, HOST_PICK)
-	var local_office := host.current_space as OfficeLobby
-	local_office.open_map()
-	local_office.pick_stage("stage_1")
-	_press(local_office._map_layer, "같이하기")
-	_check(local_office.input_locked, "the party panel did not lock the office")
+	# --- 방장: 타이틀에서 방을 만든 뒤 사무실에서 캐릭터를 고른다 ----------------
+	_press(host._title_layer, "같이하기")
 	host._port_field.text = str(PORT)
 	host._code_field.text = "test-code"
 	_press(host._party_layer, "방 만들기")
 	await process_frame
-	_check(host.session.is_online() and host.current_space == local_office \
-		and host._party_layer == null and local_office.is_map_open() and not local_office.input_locked,
-		"making a room did not keep the current office and restore the map")
-	_check(host.session.selected_stage == "stage_1", "making a room lost the map pick")
+	_check(host.session.is_online() and host.flow == SauceApp.Flow.OFFICE \
+		and host._party_layer == null and _select_of(host) != null,
+		"making a room did not lead to the office and its select")
+	_pick(host, HOST_PICK)
 	_check(_select_of(host) == null and host.session.character_of(1) == HOST_PICK,
 		"the host's pick did not take")
 	_check(host.session.can_start_stage(), "a host alone and dressed cannot start")
-	local_office.pick_stage("stage_2")
 
-	# --- 참가자: 잘못된 코드는 개인 방으로 돌아오고, 다시 접속할 수 있다 -----------
-	_press(guest._title_layer, "플레이")
-	_pick(guest, GUEST_PICK)
-	var guest_local_office := guest.current_space as OfficeLobby
-	guest_local_office.open_map()
-	guest_local_office.pick_stage("stage_1")
-	_press(guest_local_office._map_layer, "같이하기")
+	# --- 참가자: 잘못된 코드를 받은 뒤 타이틀에서 다시 접속할 수 있다 -------------
+	_press(guest._title_layer, "같이하기")
 	guest._port_field.text = str(PORT)
 	guest._code_field.text = "wrong-code"
 	_press(guest._party_layer, "참여하기")
@@ -204,10 +192,9 @@ func _party() -> void:
 	_check(guest._party_layer != null and guest._status_label.text == "입장 코드가 맞지 않습니다.",
 		"the failed join lost the panel or did not show the error")
 	_press(guest._party_layer, "닫기  (Esc)")
-	_check(guest.current_space == guest_local_office and guest.session.can_start_stage() \
-		and guest.session.character_of(1) == GUEST_PICK and guest.session.selected_stage == "stage_1",
-		"closing a failed join did not restore the prior solo choices")
-	_press(guest_local_office._map_layer, "같이하기")
+	_check(guest.flow == SauceApp.Flow.TITLE and guest._party_layer == null,
+		"closing a failed join did not return to the title menu")
+	_press(guest._title_layer, "같이하기")
 	guest._port_field.text = str(PORT)
 	guest._code_field.text = "test-code"
 	_press(guest._party_layer, "참여하기")
