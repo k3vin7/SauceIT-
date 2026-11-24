@@ -7,7 +7,7 @@ extends TruckLobby
 ## 움직이고 자세를 보내 준다). 여기서 바뀌는 것은 방, 화면, 그리고 할 수 있는 일이다.
 ##   * 큰 스크린의 지도 -- 방장이 갈 축제를 고른다. 팀원은 보기만 한다.
 ##   * 사물함 -- 캐릭터를 다시 고른다.
-##   * 슬롯머신 -- 팀 돈을 걸고 돌린다. 누구나 할 수 있고 방장이 굴린다(`OfficeSlot`).
+##   * 슬롯머신 -- 팀 돈을 걸고 돌린다. 누구나 할 수 있고 방장이 굴린다. 배당은 `OfficeSlot`.
 ##   * 출발 구역 -- 전원이 올라서면 잠깐 센 뒤 떠난다. 지도에는 출발 버튼이 없다.
 ## 출발 조건은 "전원이 캐릭터를 골랐고(`MayoNet.can_start_stage`) 전원이 구역 위에 있다"이다.
 ## 누가 구역에 있는지는 각자 자기 화면의 몸 위치로 세고(방장이 보내 준 자세), 실제 출발은
@@ -203,9 +203,10 @@ func spin_slot() -> bool:
 	return true
 
 
-func _on_slot_result(peer_id: int, bet: int, won: bool, reels: PackedInt32Array) -> void:
+func _on_slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array) -> void:
 	var who := "나" if peer_id == _local_id() else "P%d" % peer_id
-	var text := "%s: %d 걸고 %s" % [who, bet, "당첨! +%d" % bet if won else "꽝  -%d" % bet]
+	var outcome := "당첨! +%d" % gain if gain > 0 else ("본전" if gain == 0 else "꽝  %d" % gain)
+	var text := "%s: %d 걸고 %s" % [who, bet, outcome]
 	if not is_slot_open() or peer_id != _local_id():
 		# 남이 돌린 것, 또는 화면을 닫은 뒤에 온 결과: 한 줄로만 알린다.
 		if is_slot_open():
@@ -222,7 +223,7 @@ func _on_slot_result(peer_id: int, bet: int, won: bool, reels: PackedInt32Array)
 	_slot_tween.tween_callback(func():
 		_show_reels(reels, 3, 0)
 		_slot_message.text = text
-		_slot_message.add_theme_color_override("font_color", UI.MINT if won else UI.GOLD)
+		_slot_message.add_theme_color_override("font_color", UI.MINT if gain > 0 else UI.GOLD)
 		_slot_waiting = false
 		_refresh_slot())
 
@@ -274,7 +275,7 @@ func _build_slot_panel() -> void:
 	heading.add_theme_font_size_override("font_size", 30)
 	column.add_child(heading)
 	var sub := Label.new()
-	sub.text = "세 칸이 같으면 건 돈이 두 배. 아니면 건 돈을 잃습니다. 팀 공용 돈을 겁니다."
+	sub.text = "7 셋 10배 · 같은 소스 셋 4배 · 7 둘 2배 · 같은 소스 둘 본전 · 다 다르면 꽝.\n팀 공용 돈을 겁니다."
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	sub.add_theme_color_override("font_color", UI.MUTED)
 	column.add_child(sub)

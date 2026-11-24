@@ -113,7 +113,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 14
+const PROTOCOL_VERSION := 15
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 var _tomatina_snapshot_phase := 0
 const AUTH_VERSION_PREFIX := "mayo-version:"
@@ -177,8 +177,8 @@ signal session_ended(reason: String)
 signal late_join_waiting
 ## 방장 쪽에서만: 사무실에서 팀 돈이 바뀌었다(슬롯머신 등). 앱이 저장 파일에 적는다.
 signal team_money_spent
-## 누군가 슬롯머신을 돌린 결과. 사무실에 있는 전원에게 온다.
-signal slot_result(peer_id: int, bet: int, won: bool, reels: PackedInt32Array)
+## 누군가 슬롯머신을 돌린 결과. 사무실에 있는 전원에게 온다. `gain`은 팀 돈이 변한 양.
+signal slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array)
 ## The host cut the arrival shot short, for everybody.
 signal intro_skipped(transition_id: int)
 
@@ -466,8 +466,8 @@ func can_start_stage() -> bool:
 	return lobby_flow and is_server() and all_lobby_ready() and all_characters_chosen()
 
 
-## 슬롯머신이 맞을 확률. 검사에서 0이나 1로 바꿔 쓴다.
-var slot_win_chance := OfficeSlot.WIN_CHANCE
+## 검사용: 0 이상이면 슬롯머신이 난수 대신 이 값으로 배당을 뽑는다(`OfficeSlot.multiplier_for`).
+var slot_pick_override := -1.0
 var _slot_rng := RandomNumberGenerator.new()
 
 
@@ -491,21 +491,22 @@ func _resolve_slot_spin(peer_id: int, bet: int) -> bool:
 	if not is_server() or session_phase != SessionPhase.TRUCK or not _slots.has(peer_id) \
 			or bet < 1 or bet > team_money:
 		return false
-	var outcome := OfficeSlot.roll(_slot_rng, slot_win_chance)
-	team_money += bet if outcome.won else -bet
+	var outcome := OfficeSlot.roll(_slot_rng, slot_pick_override)
+	var gain := OfficeSlot.gain_for(bet, outcome.multiplier)
+	team_money += gain
 	team_money_spent.emit()
 	_broadcast_lobby()
 	for id in _slots.keys():
 		if int(id) != 1 and _peer_can_receive(int(id)):
-			_slot_result.rpc_id(int(id), peer_id, bet, outcome.won, outcome.reels)
-	slot_result.emit(peer_id, bet, outcome.won, outcome.reels)
+			_slot_result.rpc_id(int(id), peer_id, bet, gain, outcome.reels)
+	slot_result.emit(peer_id, bet, gain, outcome.reels)
 	return true
 
 
 @rpc("authority", "call_remote", "reliable")
-func _slot_result(peer_id: int, bet: int, won: bool, reels: PackedInt32Array) -> void:
+func _slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array) -> void:
 	if not multiplayer.is_server() and reels.size() == 3:
-		slot_result.emit(peer_id, bet, won, reels)
+		slot_result.emit(peer_id, bet, gain, reels)
 
 
 ## 방장이 자기 저장 파일의 돈·전리품을 방에 올린다. 팀원이 부르면 아무 일도 없다.
