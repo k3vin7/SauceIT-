@@ -25,6 +25,7 @@ var _spins: Array[Vector3] = []
 var _rest_heights: Array[float] = []
 var _settled := 0
 var _active_count := 0
+var terrain_height: Callable
 static var _shared_mesh: SphereMesh
 static var _skin_materials := {}
 
@@ -89,6 +90,8 @@ func _process(delta: float) -> void:
 		velocity.y -= GRAVITY * delta
 		var at := piece.position + velocity * delta
 		var rest := _rest_heights[index]
+		if terrain_height.is_valid():
+			rest += float(terrain_height.call(global_position + at))
 		if at.y <= rest:
 			at.y = rest
 			if absf(velocity.y) < SETTLE_SPEED * 4.0 or velocity.length() < SETTLE_SPEED:

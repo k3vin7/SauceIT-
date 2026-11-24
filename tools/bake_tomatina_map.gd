@@ -39,6 +39,7 @@ func _initialize() -> void:
 
 	var root := TomatinaMapEditor.new()
 	root.name = "TomatinaMap"
+	root.set_meta(&"tomatina_street_profile", true)
 
 	# --- 바닥 칸 -------------------------------------------------------------
 	var floor_map := GridMap.new()

@@ -236,7 +236,8 @@ func _rebuild() -> void:
 
 
 func _build_face_quad(normal: Vector3, u_axis: Vector3, v_axis: Vector3, face_extent: Vector2) -> ArrayMesh:
-	var centre := normal * (_extent_along(normal) * 0.5)
+	# Paint-only quads sit just outside meshes built flush with the collider.
+	var centre := normal * (_extent_along(normal) * 0.5 + (0.006 if paint_only else 0.0))
 	var half_u := u_axis * (face_extent.x * 0.5)
 	var half_v := v_axis * (face_extent.y * 0.5)
 	# The same +extent/2 offset is used here and in ContaminationGrid.cell_of,

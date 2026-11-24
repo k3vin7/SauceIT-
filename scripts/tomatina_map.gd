@@ -13,6 +13,7 @@ extends RefCounted
 ## Trace the village from the reference: an irregular south-to-north spine
 ## with the refuge courts staggered east, west and east.
 const SEED := 0x70A7A70
+const STREET_PROFILE := preload("res://scripts/tomatina_street_profile.gd")
 const BOUNDARY_HEIGHT := 6.8
 const START_PLAZA := Rect2i(26, 224, 8, 6)
 const FESTIVAL_ENTRANCE := Rect2i(26, 230, 8, 6)
@@ -150,8 +151,15 @@ static func boundary_boxes() -> Array[Dictionary]:
 	for box in StreetMap.wall_boxes():
 		var position: Vector3 = box["position"]
 		var size: Vector3 = box["size"]
-		position.y = BOUNDARY_HEIGHT * 0.5
-		size.y = BOUNDARY_HEIGHT
+		var low := ground_height(position)
+		var high := low
+		var half_run := Vector3(size.x, 0.0, size.z) * 0.5
+		for fraction in [-1.0, -0.5, 0.5, 1.0]:
+			var at_height := ground_height(position + half_run * float(fraction))
+			low = minf(low, at_height)
+			high = maxf(high, at_height)
+		size.y = BOUNDARY_HEIGHT + high - low
+		position.y = low + size.y * 0.5
 		out.push_back({"position": position, "size": size})
 	return out
 
@@ -210,16 +218,59 @@ const PLAZA_ELITES := [
 	["KETCHUP_SPITTER", Vector2(36.0, 26.5)],
 ]
 const ALLEY_ELITES := [
-	["KETCHUP_SPITTER", 0, 0.61], ["CAPRESE_CRAWLER", 0, 0.83],
-	["BOWLING_TOMATO", 1, 0.29], ["BOWLING_TOMATO", 1, 0.81],
-	["TOMATO_BRUTE", 2, 0.45],
+	["CAPRESE_CRAWLER", 2, 0.36],
 ]
+const STREET_ELITES := [
+	["KETCHUP_SPITTER", STREET_PROFILE.TERRACE_SPITTER, &"terrace_spitter"],
+	["BOWLING_TOMATO", STREET_PROFILE.MARKET_CREST, &"market_bowler"],
+	["BOWLING_TOMATO", STREET_PROFILE.CROSS_STREET_BOWLER, &"cross_street_bowler"],
+	["TOMATO_BRUTE", STREET_PROFILE.MARKET_AMBUSH, &"market_ambush"],
+]
+
+const ARCADES := [
+	[Vector2i(29, 218), Vector2i.RIGHT], [Vector2i(28, 217), Vector2i.RIGHT],
+	[Vector2i(25, 211), Vector2i.LEFT], [Vector2i(25, 210), Vector2i.LEFT],
+	[Vector2i(13, 166), Vector2i.DOWN], [Vector2i(14, 166), Vector2i.DOWN],
+	[Vector2i(15, 166), Vector2i.DOWN], [Vector2i(16, 165), Vector2i.DOWN],
+	[Vector2i(19, 165), Vector2i.DOWN], [Vector2i(20, 165), Vector2i.DOWN],
+	[Vector2i(21, 164), Vector2i.DOWN], [Vector2i(22, 164), Vector2i.DOWN],
+	[Vector2i(35, 71), Vector2i.RIGHT], [Vector2i(36, 72), Vector2i.RIGHT],
+	[Vector2i(33, 37), Vector2i.RIGHT], [Vector2i(33, 38), Vector2i.RIGHT],
+	[Vector2i(33, 39), Vector2i.RIGHT], [Vector2i(33, 40), Vector2i.RIGHT],
+]
+const ARCADE_CLEARANCE := 3.45
+const ARCADE_DECK_TOP := 3.91
+const ARCADE_DEPTH := 3.45
+const ARCADE_PIER_X := -1.62
+const ARCADE_PIER_Z := 3.03
+
+
+static func arcade_fronts() -> Array[Transform3D]:
+	var fronts: Array[Transform3D] = []
+	if not street_profile_enabled():
+		return fronts
+	_ensure_layout()
+	for entry in ARCADES:
+		var cell: Vector2i = entry[0]
+		var edge: Vector2i = entry[1]
+		if not _floor_legs.has(cell) or _floor_legs.has(cell + edge):
+			continue
+		var curb := Vector2(cell) + Vector2.ONE * 0.5 + Vector2(edge) * 0.5
+		var facing := Vector3(-edge.x, 0.0, -edge.y)
+		fronts.push_back(Transform3D(Basis(Vector3.UP, atan2(facing.x, facing.z)), at_cell(curb)))
+	return fronts
+
+
+static func market_corner_box() -> Dictionary:
+	return metre_box(Vector2(21.75, 164.39), Vector3(1.35, 6.1, 5.8), "MarketCornerPier", Color("bda187"))
+
+
 # Each group is centred on a distance along its leg.
 const GRUNT_PACKS := [
 	[0, 0.19, 16], [0, 0.46, 20], [0, 0.77, 24],
-	[1, 0.13, 14], [1, 0.34, 16], [1, 0.53, 16], [1, 0.72, 18], [1, 0.89, 16],
-	[2, 0.21, 16], [2, 0.51, 20], [2, 0.81, 18],
-	[3, 0.36, 16], [3, 0.73, 18],
+	[1, 0.13, 14], [1, 0.30, 13], [1, 0.48, 12], [1, 0.68, 19], [1, 0.89, 14],
+	[2, 0.21, 16], [2, 0.51, 17], [2, 0.76, 14],
+	[3, 0.36, 16], [3, 0.66, 14],
 ]
 # Leg, trip point past the mouth of a side alley, then the forward and rear threats.
 const ALLEY_AMBUSHES := []
@@ -294,6 +345,10 @@ static func roster(changes: Array = []) -> Array:
 			var cell: Vector2i = cells[0]
 			taken[cell] = true
 			out.push_back([entry[0], Vector2(cell) + Vector2(0.5, 0.5)])
+	for entry in STREET_ELITES:
+		var at: Vector2 = entry[1]
+		taken[Vector2i(at.floor())] = true
+		out.push_back(entry.duplicate())
 	for cell in _grunt_cells(taken):
 		out.push_back(["TOMATO_GRUNT", cell])
 	# Keep the plaza guard order, including the grunt burst tiers keyed by index.
@@ -679,10 +734,20 @@ static func _box_cells(props: Array[Dictionary]) -> Dictionary:
 
 ## A fractional cell as a point on the ground.
 static func at_cell(cell: Vector2) -> Vector3:
-	return Vector3(
+	var at := Vector3(
 		(cell.x - float(StreetMap.ORIGIN_CELL.x)) * StreetMap.CELL,
 		0.0,
 		(cell.y - float(StreetMap.ORIGIN_CELL.y)) * StreetMap.CELL)
+	at.y = ground_height(at)
+	return at
+
+
+static func ground_height(at: Vector3) -> float:
+	return STREET_PROFILE.height_at(at) if street_profile_enabled() else 0.0
+
+
+static func street_profile_enabled() -> bool:
+	return authored == null or authored.street_profile_enabled
 
 
 ## A box given in cells: its centre cell, its footprint in cells, its height in
@@ -1077,7 +1142,7 @@ static func _truck_against_wall(wall_cell: Vector2, facing: Vector3, size: Vecto
 	var face := at_cell(wall_cell)
 	var depth: float = size.x if absf(facing.x) > 0.5 else size.z
 	var position := face + facing * (depth * 0.5)
-	position.y = size.y * 0.5
+	position.y = ground_height(position) + size.y * 0.5
 	var footprint := size
 	# The open cargo bed runs parallel to the curb and is visible from the road.
 	var direction := facing.cross(Vector3.UP) if loaded else facing

@@ -39,6 +39,11 @@ func to_entry(xf: Transform3D) -> Array:
 		entry.append(TomatinaMap.ALLEY_REINFORCEMENT)
 	elif tag.is_valid_int():
 		entry.append(tag.to_int())
+	else:
+		for role in TomatinaMap.STREET_ELITES:
+			if tag == String(role[2]):
+				entry.append(role[2])
+				break
 	return entry
 
 

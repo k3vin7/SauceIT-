@@ -3057,6 +3057,9 @@ func _build_world() -> void:
 	if map_kind == MapKind.TOMATINA:
 		_floor.clean_color = Color("5c5c5c")
 		_floor.upload_tiles_per_frame = 3
+		if TomatinaMap.street_profile_enabled():
+			_floor.terrain_height = TomatinaMap.STREET_PROFILE.height_at
+			_floor.terrain_regions = TomatinaMap.STREET_PROFILE.relief_bounds()
 		TomatinaVillageArt.configure_pavement(_floor)
 	add_child(_floor)
 	if staged_loading:
@@ -4628,6 +4631,9 @@ func _build_street() -> void:
 var _tomatina_checkpoint := -1
 var tomatina_shortcut_open := false
 var _tomatina_art: TomatinaVillageArt
+var _market_ambush_enemy: MayoEnemy
+var _market_bowler: MayoEnemy
+var _market_ambush_started := false
 var _tomatina_entrance: Node3D
 var _tomatina_intro: Node3D
 
@@ -4741,6 +4747,7 @@ func _attach_tomatina_map_art(art: TomatinaVillageArt) -> void:
 	for piece in pieces:
 		piece.get_parent().remove_child(piece)
 		piece.free()
+	art.add_arcades()
 	art.emit_batches(self)
 	map.name = "TomatinaMapNodes"
 	add_child(map)
@@ -4752,6 +4759,24 @@ func _attach_tomatina_map_art(art: TomatinaVillageArt) -> void:
 	for fire in map.find_children("Fire", "Node3D", true, false):
 		if fire.is_in_group("tomatina_fire"):
 			fire.reparent(self)
+
+
+func _build_tomatina_arcade_solids(has_art: bool) -> void:
+	var clearance := TomatinaMap.ARCADE_CLEARANCE
+	var top := TomatinaMap.ARCADE_DECK_TOP
+	var depth := TomatinaMap.ARCADE_DEPTH
+	var stone := Color("baa086")
+	var fronts := TomatinaMap.arcade_fronts()
+	for index in fronts.size():
+		var front := fronts[index]
+		var deck := front * Vector3(0.0, (clearance + top) * 0.5, depth * 0.5)
+		var deck_size := (front.basis * Vector3(StreetMap.CELL + 0.035, top - clearance, depth + 0.08)).abs()
+		_create_wall("ArcadeDeck%02d" % index, deck, deck_size, stone, true, has_art)
+		var pier := front * Vector3(TomatinaMap.ARCADE_PIER_X, clearance * 0.5 - 0.20,
+			TomatinaMap.ARCADE_PIER_Z)
+		_create_wall("ArcadePier%02d" % index, pier, Vector3(0.68, clearance + 0.4, 0.68), stone, true, has_art)
+	var corner := TomatinaMap.market_corner_box()
+	_create_wall(corner.name, corner.position, corner.size, corner.color)
 
 
 func _build_tomatina() -> void:
@@ -4782,6 +4807,8 @@ func _build_tomatina() -> void:
 	if staged_loading:
 		await get_tree().process_frame
 	_fill_narrow_slots(debris + parked_trucks)
+	if TomatinaMap.street_profile_enabled():
+		_build_tomatina_arcade_solids(has_art)
 	if has_art and _tomatina_map_nodes != null:
 		_attach_tomatina_map_art(_tomatina_art)
 	elif has_art:
@@ -5372,8 +5399,23 @@ func _build_enemies() -> void:
 					_nav.grid.set_point_solid(cell, true)
 		var prepared := 0
 		for entry in TomatinaMap.roster():
-			var index := _add_tomatina_enemy(int(TOMATINA_KINDS[entry[0]]), TomatinaMap.at_cell(entry[1]))
+			var site := TomatinaMap.at_cell(entry[1])
+			var tag: Variant = entry[2] if entry.size() > 2 else null
+			if tag == &"terrace_spitter":
+				site.y = TomatinaMap.at_cell(TomatinaMap.STREET_PROFILE.TERRACE_CURB).y + TomatinaMap.ARCADE_DECK_TOP
+			var index := _add_tomatina_enemy(int(TOMATINA_KINDS[entry[0]]), site)
 			var enemy := _enemies[index]
+			match tag:
+				&"terrace_spitter":
+					enemy.move_speed = 0.0
+				&"market_bowler":
+					_market_bowler = enemy
+					var approach := TomatinaMap.at_cell(TomatinaMap.STREET_PROFILE.MARKET_APPROACH)
+					enemy.bowling_lane = Vector3(approach.x - site.x, 0.0, approach.z - site.z).normalized()
+				&"cross_street_bowler":
+					enemy.bowling_lane = Vector3.LEFT
+				&"market_ambush":
+					_market_ambush_enemy = enemy
 			var leg := TomatinaMap.encounter_at(StreetMap.cell_at(enemy.position))
 			enemy.set_meta("encounter", leg)
 			if entry.size() > 2:
@@ -5661,7 +5703,7 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 	if is_instance_valid(play_support):
 		enemy.attack_permission = play_support.request_special
 		enemy.contact_permission = play_support.request_contact
-	enemy.position = Vector3(at.x, enemy.stand_height(), at.z)
+	enemy.position = at + Vector3.UP * enemy.stand_height()
 	if kind == MayoTutorial.KIND_PRESS_KING:
 		enemy.facing_yaw = TomatinaMap.PRESS_KING_YAW
 		enemy.rotation.y = enemy.facing_yaw
@@ -5677,6 +5719,9 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 			ball.authority = _is_authority()
 			add_child(ball)
 			ball.build_tomato_ball(body_cell_size, contamination_brush_radius, enemy)
+			if _floor.terrain_height.is_valid():
+				ball.terrain_height = _floor.terrain_height
+				ball.floor_snap_length = 0.3
 			ball.burst_radius = 1.5
 			ball.position = MayoEnemy.BALL_PARK
 			enemy.ball_pool.push_back(ball)
@@ -5909,7 +5954,8 @@ func show_overripe_burst(at: Vector3, radius: float, priming: bool) -> void:
 		_leave_debris(at, 0.91, TomatoVisuals.OVERRIPE)
 		return
 	_play_combat_warning(at, 490.0, OVERRIPE_BURST_DELAY)
-	_pulse_blast_radius(Vector3(at.x, 0.0, at.z), radius, OVERRIPE_BURST_DELAY, Color("ffe0a3"))
+	var ground: float = _floor.terrain_height.call(at) if _floor.terrain_height.is_valid() else 0.0
+	_pulse_blast_radius(Vector3(at.x, ground, at.z), radius, OVERRIPE_BURST_DELAY, Color("ffe0a3"))
 	_prepare_tomatina_blast_effects()
 	var swelling: Node3D = _overripe_warnings.pop_back() if not _overripe_warnings.is_empty() \
 		else _make_overripe_warning()
@@ -5951,6 +5997,7 @@ func _leave_debris(centre: Vector3, radius: float, skin: Color) -> void:
 		debris = TomatoDebris.new()
 		debris.name = "TomatoDebris%d" % _debris.size()
 		add_child(debris)
+	debris.terrain_height = _floor.terrain_height
 	debris.setup(centre, radius, skin)
 	_debris.push_back(debris)
 
@@ -6696,6 +6743,25 @@ const ALLEY_AMBUSH_HALF_WIDTH := 12.0
 var _sprung_alley_ambushes := {}
 
 
+func _advance_market_ambush(players: Array) -> void:
+	if _market_ambush_started or not is_instance_valid(_market_ambush_enemy) or not _market_ambush_enemy.is_alive():
+		return
+	if is_instance_valid(_market_bowler):
+		var crest := _market_bowler.global_position
+		for ball in _market_bowler.ball_pool:
+			if ball.is_ball_live() and ball.global_position.distance_squared_to(crest) < 144.0:
+				return
+	var trip := TomatinaMap.at_cell(TomatinaMap.STREET_PROFILE.MARKET_TRIP)
+	for player: MayoPlayer in players:
+		if player.state != MayoPlayer.State.NORMAL:
+			continue
+		var offset := player.global_position - trip
+		if Vector2(offset.x, offset.z).length_squared() <= 16.0 \
+				and _market_ambush_enemy.begin_corner_charge(player):
+			_market_ambush_started = true
+			return
+
+
 func _advance_alley_ambushes(encounter_targets: Array) -> void:
 	for group in TomatinaMap.ALLEY_AMBUSHES.size():
 		if _sprung_alley_ambushes.has(group):
@@ -6739,6 +6805,7 @@ func _advance_enemies(delta: float) -> void:
 					alley_targets.push_back(player)
 		if not _horde_spawned:
 			_advance_alley_ambushes(encounter_targets)
+			_advance_market_ambush(encounter_targets[1])
 	# Who each body has to steer round, bucketed once a tick rather than every
 	# body reading every other. With the horde in that was 270 bodies squared
 	# a tick, and it was the whole of the lag -- see `_crowd_neighbours`.
@@ -6764,6 +6831,8 @@ func _advance_enemies(delta: float) -> void:
 		if map_kind == MapKind.TOMATINA:
 			var leg := int(enemy.get_meta("encounter", 3))
 			chasing = encounter_targets[leg]
+			if enemy == _market_ambush_enemy and not _market_ambush_started:
+				chasing = []
 			if enemy.has_meta("alley_ambush"):
 				var group := int(enemy.get_meta("alley_ambush"))
 				if _horde_spawned or not _sprung_alley_ambushes.has(group):
@@ -10196,13 +10265,21 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 		get_tree().create_timer(duration).timeout.connect(warning.queue_free)
 		return
 	_play_combat_warning(at, [180.0, 230.0, 110.0, 150.0, 310.0, 420.0, 500.0, 170.0][cue], duration)
-	if direction.is_zero_approx():
+	if direction.is_zero_approx() or (cue == 3 and duration < 0.15):
 		return
 	var length: float = [0.0, 0.0, 0.0, 9.0, 12.0, 5.0, 10.0, 22.0][cue]
+	if length <= 0.0:
+		return
 	var marker := MeshInstance3D.new()
-	var mesh := BoxMesh.new()
-	mesh.size = Vector3(3.64 if cue == 7 else 0.48, 0.035, length)
-	marker.mesh = mesh
+	var width := 3.64 if cue == 7 else 0.48
+	if map_kind == MapKind.TOMATINA and _floor.terrain_height.is_valid():
+		marker.mesh = _tomatina_ground_warning(at, direction, length, width)
+	else:
+		var mesh := BoxMesh.new()
+		mesh.size = Vector3(width, 0.035, length)
+		marker.mesh = mesh
+		marker.position = Vector3(at.x, 0.07, at.z) + direction * length * 0.5
+		marker.rotation.y = atan2(-direction.x, -direction.z)
 	var material := StandardMaterial3D.new()
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	material.albedo_color = Color("fff1ac") if cue == 5 else Color("ff823f")
@@ -10211,9 +10288,25 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 	marker.material_override = material
 	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(marker)
-	marker.global_position = Vector3(at.x, 0.07, at.z) + direction * length * 0.5
-	marker.rotation.y = atan2(-direction.x, -direction.z)
 	get_tree().create_timer(duration).timeout.connect(marker.queue_free)
+
+
+func _tomatina_ground_warning(at: Vector3, direction: Vector3, length: float, width: float) -> ArrayMesh:
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var across := Vector3.UP.cross(direction) * (width * 0.5)
+	var strips := ceili(length)
+	for index in range(strips + 1):
+		var centre := at + direction * (length * float(index) / strips)
+		for edge in [centre - across, centre + across]:
+			var vertex: Vector3 = edge
+			vertex.y = float(_floor.terrain_height.call(vertex)) + 0.08
+			surface.add_vertex(vertex)
+	for index in strips:
+		var edge := index * 2
+		for vertex in [edge, edge + 1, edge + 2, edge + 1, edge + 3, edge + 2]:
+			surface.add_index(vertex)
+	return surface.commit()
 
 
 func _show_rise_rubble(at: Vector3, duration: float) -> void:

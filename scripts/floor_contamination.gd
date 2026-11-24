@@ -1,7 +1,7 @@
 class_name FloorContamination
 extends StaticBody3D
 
-## Flat floor carrying one contamination grid. The grid is also the source of
+## Floor carrying one projected contamination grid. The grid is also the source of
 ## truth for the slip test, so what is drawn and what trips the player are the
 ## same data.
 
@@ -12,6 +12,8 @@ extends StaticBody3D
 @export var clean_color := Color("53616d")
 var pavement_mask: Texture2D
 var pavement_bounds := Rect2()
+var terrain_height: Callable
+var terrain_regions: Array[Rect2] = []
 @export var mayo_color := Color("fff0a8")
 ## How much thicker a cell gets per **pass** -- one trigger pull -- rather than
 ## per splat that lands on it. A burst lays one layer down over everything it
@@ -283,37 +285,100 @@ func _rebuild_floor() -> void:
 		remove_child(child)
 		child.queue_free()
 
-	# One quad per tile rather than one plane for the floor. The mask is uploaded
-	# a tile at a time, and a tile is a texture, so each needs its own surface to
-	# be sampled on. The floor stays perfectly flat and the quads abut exactly:
-	# they are cut on cell boundaries, which is where the mask's own cells are.
+	_rebuild_grid()
+	var terrain_faces := _rebuild_tiles()
 	var collision := CollisionShape3D.new()
 	collision.name = "FloorCollision"
-	var box := BoxShape3D.new()
-	box.size = Vector3(floor_size.x, 0.04, floor_size.y)
-	collision.shape = box
-	collision.position.y = -0.02
+	if terrain_height.is_valid():
+		var surface := ConcavePolygonShape3D.new()
+		surface.set_faces(terrain_faces)
+		collision.shape = surface
+	else:
+		var box := BoxShape3D.new()
+		box.size = Vector3(floor_size.x, 0.04, floor_size.y)
+		collision.shape = box
+		collision.position.y = -0.02
 	add_child(collision)
-	_rebuild_grid()
-	_rebuild_tiles()
 
 
-## A quad per mask tile, laid flat and carrying that tile's material.
-func _rebuild_tiles() -> void:
+## Each tile keeps its planar UVs so every peer still addresses the same sauce
+## cells. The terrain collision is assembled from the rendered triangles.
+func _rebuild_tiles() -> PackedVector3Array:
+	var faces := PackedVector3Array()
 	for index in grid.tile_count():
 		var region := grid.tile_region(index)
 		var quad := MeshInstance3D.new()
 		quad.name = "FloorTile%03d" % index
-		var mesh := PlaneMesh.new()
-		mesh.size = region.size
-		quad.mesh = mesh
-		quad.position = Vector3(region.position.x + region.size.x * 0.5, 0.0,
-			region.position.y + region.size.y * 0.5)
+		if terrain_height.is_valid():
+			var mesh := _terrain_tile(region, _tile_has_relief(region))
+			quad.mesh = mesh
+			faces.append_array(mesh.get_faces())
+		else:
+			var mesh := PlaneMesh.new()
+			mesh.size = region.size
+			quad.mesh = mesh
+			quad.position = Vector3(region.position.x + region.size.x * 0.5, 0.0,
+				region.position.y + region.size.y * 0.5)
 		quad.material_override = grid.tile_material(index)
 		quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(quad)
 		if index == 0:
 			_floor_mesh = quad
+	return faces
+
+
+func _tile_has_relief(region: Rect2) -> bool:
+	if terrain_regions.is_empty():
+		return true
+	var origin := Vector2(global_position.x, global_position.z)
+	# Normals sample up to a metre beyond each tile. Keep that margin so a
+	# coarse flat tile always meets a flat edge even beside a sloped tile.
+	var world_region := Rect2(region.position + origin, region.size).grow(1.0)
+	for bounds in terrain_regions:
+		if world_region.intersects(bounds):
+			return true
+	return false
+
+
+func _terrain_tile(region: Rect2, has_relief: bool) -> ArrayMesh:
+	var columns := maxi(1, ceili(region.size.x / 2.0)) if has_relief else 1
+	var rows := maxi(1, ceili(region.size.y / 2.0)) if has_relief else 1
+	var stride := columns + 1
+	var vertices := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var indices := PackedInt32Array()
+	for row in range(rows + 1):
+		for column in range(columns + 1):
+			var uv := Vector2(float(column) / columns, float(row) / rows)
+			var flat := region.position + uv * region.size
+			var at := Vector3(flat.x, -global_position.y, flat.y)
+			var normal := Vector3.UP
+			if has_relief:
+				var sample := at + global_position
+				at.y += float(terrain_height.call(sample))
+				var rise_x: float = terrain_height.call(sample + Vector3.RIGHT) \
+					- terrain_height.call(sample + Vector3.LEFT)
+				var rise_z: float = terrain_height.call(sample + Vector3.BACK) \
+					- terrain_height.call(sample + Vector3.FORWARD)
+				normal = Vector3(-rise_x, 2.0, -rise_z).normalized()
+			vertices.push_back(at)
+			normals.push_back(normal)
+			uvs.push_back(uv)
+	for row in rows:
+		for column in columns:
+			var corner := row * stride + column
+			indices.append_array(PackedInt32Array([corner, corner + 1, corner + stride,
+				corner + 1, corner + stride + 1, corner + stride]))
+	var surface := []
+	surface.resize(Mesh.ARRAY_MAX)
+	surface[Mesh.ARRAY_VERTEX] = vertices
+	surface[Mesh.ARRAY_NORMAL] = normals
+	surface[Mesh.ARRAY_TEX_UV] = uvs
+	surface[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, surface)
+	return mesh
 
 
 ## Pushes the look and the threshold into every tile's material. The shader

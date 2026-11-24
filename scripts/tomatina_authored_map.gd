@@ -37,6 +37,7 @@ var has_walls := false
 var walls: Array[Dictionary] = []
 var has_victims := false
 var victims: Array[Dictionary] = []
+var street_profile_enabled := false
 
 
 static func from_scene(scene: PackedScene) -> TomatinaAuthoredMap:
@@ -48,6 +49,7 @@ static func from_scene(scene: PackedScene) -> TomatinaAuthoredMap:
 
 static func from_root(root: Node) -> TomatinaAuthoredMap:
 	var data := TomatinaAuthoredMap.new()
+	data.street_profile_enabled = bool(root.get_meta(&"tomatina_street_profile", false))
 	var floor_map := root.get_node_or_null("Floor") as GridMap
 	if floor_map != null:
 		# GridMap을 옮겨 놓았으면 그만큼 칸을 민다(칸 단위로 반올림).

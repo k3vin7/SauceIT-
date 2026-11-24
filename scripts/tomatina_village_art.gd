@@ -112,6 +112,10 @@ func load_kit() -> bool:
 		_meshes[model.name] = model.mesh
 	fallen.free()
 	_meshes["BoundaryWall"] = _boundary_mesh()
+	_meshes["UrbanArcade"] = _arcade_mesh()
+	_meshes["UrbanArcadePier"] = _arcade_pier_mesh()
+	_meshes["UrbanUpperShutters"] = _upper_storey_mesh(Color("536b6c"))
+	_meshes["UrbanUpperCasements"] = _upper_storey_mesh(Color("825747"))
 	for name in STREET_ACCENTS:
 		_meshes[name] = BoxMesh.new()
 	return _meshes.has("HouseCream")
@@ -120,6 +124,8 @@ func load_kit() -> bool:
 func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dictionary], fire_truck: Dictionary) -> void:
 	record_tag = "street"
 	_build_frontages()
+	if not recording:
+		add_arcades()
 	FESTIVAL_DECOR.build(parent, _facades)
 	var ember_mesh := _make_ember_mesh()
 	var ember_process := _make_ember_process()
@@ -129,7 +135,7 @@ func build(parent: Node3D, debris: Array[Dictionary], parked_trucks: Array[Dicti
 		_add_debris(box)
 		if box["name"] == "RefugeBrazier":
 			var centre: Vector3 = box["position"]
-			_add_fire(parent, Vector3(centre.x, 0.38, centre.z),
+			_add_fire(parent, Vector3(centre.x, TomatinaMap.ground_height(centre) + 0.38, centre.z),
 				Vector3(1.24, 1.63, 1.21), ember_mesh, ember_process)
 	for index in parked_trucks.size():
 		record_tag = "parked:%d" % index
@@ -151,6 +157,14 @@ var record_tag := ""
 var recorded: Array = []
 
 
+func add_arcades() -> void:
+	for front in TomatinaMap.arcade_fronts():
+		add_placement("UrbanArcade", front)
+		add_placement("UrbanArcadePier", front)
+		_place("FacadeWindow", front * Vector3(0.0, TomatinaMap.ARCADE_DECK_TOP + 0.09, 0.33), front.basis.z,
+			Vector3(1.55, 2.25, 0.18))
+
+
 ## 노드 맵의 아트 조각 하나를 묶음에 넣는다(`emit_batches` 전에).
 func add_placement(key: String, placement: Transform3D) -> void:
 	if not _meshes.has(key):
@@ -162,6 +176,8 @@ func add_placement(key: String, placement: Transform3D) -> void:
 	if not _batches[key].has(chunk):
 		_batches[key][chunk] = []
 	_batches[key][chunk].push_back(placement)
+	if recording:
+		recorded.push_back([key, placement, record_tag])
 
 
 ## 모아 둔 조각을 모델·구역별 MultiMesh로 `parent` 아래 "TomatinaVillageArt"에 만든다.
@@ -292,6 +308,11 @@ static func finish_for(name: String, cache: Dictionary) -> Material:
 func _build_frontages() -> void:
 	var floor := TomatinaMap.floor_cells()
 	var blocked := TomatinaMap.blocked_cells()
+	var street_profile := TomatinaMap.street_profile_enabled()
+	var arcade_edges := {}
+	if street_profile:
+		for entry in TomatinaMap.ARCADES:
+			arcade_edges[Vector4i(entry[0].x, entry[0].y, entry[1].x, entry[1].y)] = true
 	for cell: Vector2i in floor:
 		var open := not blocked.has(cell)
 		var patch := posmod((cell.x * 73) ^ (cell.y * 157), 83)
@@ -306,9 +327,17 @@ func _build_frontages() -> void:
 			var facing := Vector3(-step.x, 0.0, -step.y)
 			var curb := Vector2(cell) + Vector2(0.5, 0.5) + Vector2(step) * 0.5
 			var base := TomatinaMap.at_cell(curb)
-			_place("BoundaryWall", base - facing * (WALL_DEPTH * 0.5 + 0.016), facing,
-				Vector3(StreetMap.CELL + 0.06, TomatinaMap.BOUNDARY_HEIGHT, WALL_DEPTH))
+			var wall_base := base - facing * (WALL_DEPTH * 0.5 + 0.016)
+			var half_panel := Vector2(tangent) * 0.5
+			wall_base.y = minf(base.y, minf(TomatinaMap.at_cell(curb - half_panel).y,
+				TomatinaMap.at_cell(curb + half_panel).y)) - 0.25
+			_place("BoundaryWall", wall_base, facing,
+				Vector3(StreetMap.CELL + 0.06, TomatinaMap.BOUNDARY_HEIGHT + base.y - wall_base.y, WALL_DEPTH))
 			var scatter := posmod(cell.x * 31 + cell.y * 47 + step.x * 13 + step.y * 7, 19)
+			var edge_key := Vector4i(cell.x, cell.y, step.x, step.y)
+			if street_profile and not at_entrance and scatter < 15 and not arcade_edges.has(edge_key):
+				var panel := "UrbanUpperShutters" if scatter < 8 else "UrbanUpperCasements"
+				add_placement(panel, Transform3D(Basis(Vector3.UP, atan2(facing.x, facing.z)), base))
 			if scatter < 6:
 				_place_street_front(base, facing, cell)
 			elif scatter < 15:
@@ -335,7 +364,11 @@ func _build_frontages() -> void:
 			var behind := base + Vector3(tangent.x, 0.0, tangent.y) * shift
 			behind -= facing * (depth * 0.5 + 0.18)
 			var variant := posmod(cell.x * 71 + cell.y * 29, HOUSES.size())
-			var height := 9.0 + 0.6 * float(posmod(cell.x * 17 + cell.y * 31, 6))
+			var height := 8.7 + 0.9 * float(posmod(cell.x * 17 + cell.y * 31, 6))
+			if cell.y > 120 and cell.y < 185:
+				height += 1.35
+			elif cell.y < 48:
+				height -= 0.85
 			var width := StreetMap.CELL * (1.92 if paired else 0.94)
 			_place(HOUSES[variant], behind, facing, Vector3(width, height, depth))
 			var anchor := behind + facing * (depth * 0.46 + 0.07) + Vector3.UP * (height * 0.84)
@@ -388,6 +421,74 @@ func _boundary_mesh() -> ArrayMesh:
 			surface.set_normal(arrays[Mesh.ARRAY_NORMAL][index])
 			surface.add_vertex(arrays[Mesh.ARRAY_VERTEX][index] + base)
 	return surface.commit()
+
+
+func _arcade_mesh() -> ArrayMesh:
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var width := StreetMap.CELL + 0.035
+	var clearance := TomatinaMap.ARCADE_CLEARANCE
+	var top := TomatinaMap.ARCADE_DECK_TOP
+	var depth := TomatinaMap.ARCADE_DEPTH
+	var stone := Color("c1a487")
+	var trim := Color("dfc3a2")
+	var iron := Color("394044")
+	_append_box(surface, Vector3(0, (clearance + top) * 0.5, depth * 0.5),
+		Vector3(width, top - clearance, depth + 0.08), stone)
+	_append_box(surface, Vector3(0, top - 0.08, depth - 0.03), Vector3(width, 0.14, 0.25), trim)
+	_append_box(surface, Vector3(0, clearance + 0.04, depth - 0.08), Vector3(width, 0.11, 0.30), trim)
+	for level in [0.16, 0.91]:
+		_append_box(surface, Vector3(0, top + level, depth - 0.13), Vector3(width, 0.06, 0.095), iron)
+		for side in [-1.0, 1.0]:
+			_append_box(surface, Vector3(side * (width - 0.10) * 0.5, top + level, depth * 0.5),
+				Vector3(0.075, 0.06, depth - 0.14), iron)
+	for index in 13:
+		var x := lerpf(-width * 0.47, width * 0.47, float(index) / 12.0)
+		_append_box(surface, Vector3(x, top + 0.50, depth - 0.13), Vector3(0.048, 0.82, 0.052), iron)
+	for x in [-1.62, 0.0, 1.62]:
+		_append_box(surface, Vector3(x, clearance - 0.066, depth * 0.48), Vector3(0.18, 0.15, depth), stone.darkened(0.18))
+	return surface.commit()
+
+
+func _arcade_pier_mesh() -> ArrayMesh:
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var centre := Vector3(TomatinaMap.ARCADE_PIER_X, 0.0, TomatinaMap.ARCADE_PIER_Z)
+	var rise := TomatinaMap.ARCADE_CLEARANCE
+	var stone := Color("b39980")
+	_append_box(surface, centre + Vector3.UP * (rise * 0.5 - 0.20), Vector3(0.62, rise + 0.4, 0.62), stone)
+	for level in [0.08, 0.37, rise - 0.18]:
+		_append_box(surface, centre + Vector3.UP * level, Vector3(0.81, 0.18, 0.81), stone.lightened(0.14))
+	return surface.commit()
+
+
+func _upper_storey_mesh(shutter: Color) -> ArrayMesh:
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var limestone := Color("d9baa0")
+	var shade := Color("393737")
+	_append_box(surface, Vector3(0, 3.77, 0.06), Vector3(StreetMap.CELL + 0.015, 0.16, 0.16), limestone)
+	for x in [-1.06, 1.06]:
+		_append_box(surface, Vector3(x, 5.18, 0.078), Vector3(1.05, 1.56, 0.16), limestone)
+		_append_box(surface, Vector3(x, 5.19, 0.165), Vector3(0.74, 1.30, 0.04), shade)
+		_append_box(surface, Vector3(x, 4.41, 0.20), Vector3(1.16, 0.15, 0.26), limestone.lightened(0.08))
+		_append_box(surface, Vector3(x, 6.00, 0.13), Vector3(1.14, 0.13, 0.20), limestone)
+		for side in [-1.0, 1.0]:
+			var shutter_x: float = x + side * 0.48
+			_append_box(surface, Vector3(shutter_x, 5.18, 0.15), Vector3(0.30, 1.26, 0.15), shutter)
+			for level in [4.86, 5.17, 5.48]:
+				_append_box(surface, Vector3(shutter_x, level, 0.24), Vector3(0.27, 0.035, 0.04), shutter.darkened(0.22))
+	return surface.commit()
+
+
+func _append_box(surface: SurfaceTool, centre: Vector3, size: Vector3, tint: Color) -> void:
+	var box := BoxMesh.new()
+	box.size = size
+	var arrays := box.surface_get_arrays(0)
+	for index: int in arrays[Mesh.ARRAY_INDEX]:
+		surface.set_color(tint)
+		surface.set_normal(arrays[Mesh.ARRAY_NORMAL][index])
+		surface.add_vertex(arrays[Mesh.ARRAY_VERTEX][index] + centre)
 
 
 ## A second row of homes makes the winding roads read as lanes within a village.
@@ -478,7 +579,7 @@ func _add_debris(box: Dictionary) -> void:
 				key = name
 		if name == "OverturnedTomatoTruck":
 			var at: Vector3 = box["position"]
-			at.y = 0.0
+			at.y = TomatinaMap.ground_height(at)
 			_place("BrokenBoards", at + Vector3(4.7, 0.0, 1.9), Vector3.BACK, Vector3(2.8, 0.10, 1.7))
 		facing = box["facing"]
 		if absf(facing.x) > 0.5:
@@ -664,24 +765,4 @@ func placement_transform(key: String, at: Vector3, facing := Vector3.BACK, size 
 
 
 func _place(key: String, at: Vector3, facing := Vector3.BACK, size := Vector3.ZERO) -> void:
-	var mesh: Mesh = _meshes.get(key)
-	if mesh == null:
-		return
-	var bounds := mesh.get_aabb()
-	var offset := bounds.get_center()
-	offset.y = bounds.position.y
-	if key == "RefugeShower":
-		# The authored origin is under the nozzle, ahead of the post.
-		offset = Vector3.ZERO
-	var scale := size / bounds.size if size != Vector3.ZERO else Vector3.ONE
-	var basis := Basis(Vector3.UP, atan2(facing.x, facing.z))
-	basis = basis.scaled_local(scale)
-	var chunk_width := HOUSE_CHUNK_WIDTH if key in HOUSES else CHUNK_SIZE
-	var chunk := Vector2i(floori(at.x / chunk_width), floori(at.z / CHUNK_SIZE))
-	if not _batches.has(key):
-		_batches[key] = {}
-	if not _batches[key].has(chunk):
-		_batches[key][chunk] = []
-	_batches[key][chunk].push_back(Transform3D(basis, at - basis * offset))
-	if recording:
-		recorded.push_back([key, Transform3D(basis, at - basis * offset), record_tag])
+	add_placement(key, placement_transform(key, at, facing, size))

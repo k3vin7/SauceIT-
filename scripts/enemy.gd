@@ -454,6 +454,8 @@ var ball_owner: MayoEnemy = null
 var _launch_cooldown := 2.0
 var _ball_velocity := Vector3.ZERO
 var _ball_live := false
+var terrain_height: Callable
+var bowling_lane := Vector3.ZERO
 var _ball_left := 0.0
 ## Player instance id -> seconds until the ball may knock them down again.
 var _ball_hit_cooldown: Dictionary = {}
@@ -1076,14 +1078,28 @@ func _has_clear_shot(target: MayoPlayer, origin: Vector3) -> bool:
 	return false
 
 
-func _start_warning(direction: Vector3) -> void:
+func _start_warning(direction: Vector3, duration := SPECIAL_WINDUP) -> void:
 	_charge_direction = direction
-	_windup = SPECIAL_WINDUP
+	_windup = duration
 	special_warning.emit(self, direction, _windup)
 
 
 func is_charging() -> bool:
 	return _charge_left > 0.0
+
+
+func begin_corner_charge(target: MayoPlayer) -> bool:
+	if not authority or not is_alive() or _charge_cooldown > 0.0 or _attack_lock_left > 0.0:
+		return false
+	var gap := target.global_position - global_position
+	gap.y = 0.0
+	if gap.length() > BRUTE_CHARGE_RANGE or gap.length() < 0.5 \
+			or not _has_clear_shot(target, global_position):
+		return false
+	if attack_permission.is_valid() and not attack_permission.call(self, target):
+		return false
+	_start_warning(gap.normalized(), 0.13)
+	return true
 
 
 func _advance_brute(delta: float, target: MayoPlayer) -> Dictionary:
@@ -1129,12 +1145,15 @@ func _advance_bowler(delta: float, target: MayoPlayer) -> Dictionary:
 		target.global_position.z - global_position.z)
 	if gap.length() > BOWLING_RANGE or gap.length() < radius * 2.0 or not _can_see_straight(target):
 		return hold
+	if not bowling_lane.is_zero_approx() and (gap.dot(bowling_lane) <= 0.0 \
+			or gap.cross(bowling_lane).length() > 3.6):
+		return hold
 	var ball := _free_ball()
 	if ball == null:
 		return hold
 	if attack_permission.is_valid() and not attack_permission.call(self, target):
 		return hold
-	_start_warning(gap.normalized())
+	_start_warning(gap.normalized() if bowling_lane.is_zero_approx() else bowling_lane)
 	return {"flat": _charge_direction, "pace": 0.0}
 
 
@@ -1188,6 +1207,13 @@ func _advance_ball(delta: float, _targets: Array) -> void:
 		_ball_hit_cooldown[id] = float(_ball_hit_cooldown[id]) - delta
 		if _ball_hit_cooldown[id] <= 0.0:
 			_ball_hit_cooldown.erase(id)
+	if terrain_height.is_valid() and is_on_floor():
+		var heading := _ball_velocity.normalized()
+		var ahead: float = terrain_height.call(global_position + heading)
+		var behind: float = terrain_height.call(global_position - heading)
+		var speed := clampf(_ball_velocity.length() + (behind - ahead) * 7.5 * delta,
+			BALL_SPEED * 0.8, BALL_SPEED * 1.3)
+		_ball_velocity = heading * speed
 	velocity.x = _ball_velocity.x
 	velocity.z = _ball_velocity.z
 	if is_on_floor():
@@ -1232,7 +1258,8 @@ func launch(from: Vector3, direction: Vector3) -> void:
 	var flat := Vector3(direction.x, 0.0, direction.z)
 	if flat.length_squared() < 0.000001:
 		return
-	global_position = Vector3(from.x, stand_height(), from.z)
+	var ground: float = terrain_height.call(from) if terrain_height.is_valid() else 0.0
+	global_position = Vector3(from.x, ground + stand_height() + 0.035, from.z)
 	_ball_velocity = flat.normalized() * BALL_SPEED
 	_ball_live = true
 	_ball_left = BALL_LIFETIME
