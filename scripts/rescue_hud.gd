@@ -117,10 +117,14 @@ func _draw_standing(state: Dictionary) -> void:
 			var tag := "팀원 %.0fm · %d초" % [camera.global_position.distance_to(at), ceili(float(entry["left"]))]
 			_text(screen, tag, TAG_SIZE, RESCUE if entry.get("in_reach", false) else DOWN)
 	var centre := frame.get_center()
-	if state.get("rescue_progress", -1.0) >= 0.0:
-		_text(Vector2(centre.x, centre.y + 70.0), "구조 중 · 가만히", LINE_SIZE, RESCUE)
+	var rescue := float(state.get("rescue_progress", -1.0))
+	var loot := float(state.get("loot_progress", -1.0))
+	if rescue >= 0.0 or loot >= 0.0:
+		var label := "구조 중 · 가만히" if rescue >= 0.0 else "시체 수색 중…"
+		var tint := RESCUE if rescue >= 0.0 else WAIT
+		_text(Vector2(centre.x, centre.y + 70.0), label, LINE_SIZE, tint)
 		var bar := Rect2(Vector2(centre.x - BAR.x * 0.5, centre.y + 84.0), BAR)
-		_bar(bar, float(state["rescue_progress"]), RESCUE)
+		_bar(bar, rescue if rescue >= 0.0 else loot, tint)
 	elif state.get("in_reach", false):
 		var key := preload("res://scripts/game_options.gd").key_label("interact", "E")
 		_text(Vector2(centre.x, centre.y + 70.0), "[%s] 구조 (1초, 사격·이동 금지)" % key, LINE_SIZE, RESCUE)

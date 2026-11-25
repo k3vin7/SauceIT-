@@ -3,14 +3,15 @@ extends Node3D
 ## The festival-goers already lying in the streets when the party arrives.
 ##
 ## Each is the village kit's body mesh with a `TomatinaVictimCorpse` box around
-## it, so the sauce sticks to them, and each can be searched once with the
-## interact key for a few coins. The coins go straight into every purse
+## it, so the sauce sticks to them. Each body can be searched once by holding
+## interact for a full second. The coins go straight into every purse
 ## (`TomatinaSauceParts.grant_coins`) and the HUD flies them in one at a time,
 ## so the only new state on the wire is which bodies have been searched, and
 ## that rides on the coin state (see `TomatinaSauceParts.coin_state`).
 
 ## How close, flat, a player has to stand to the middle of a body to search it.
 const LOOT_REACH := 1.9
+const LOOT_TIME := 1.0
 ## What one body gives up: one to five coins, 19% each, and `LOOT_JACKPOT` the
 ## remaining 5% of the time.
 const LOOT_COINS_MIN := 1
@@ -84,6 +85,13 @@ func in_reach(at: Vector3) -> int:
 
 func is_looted(index: int) -> bool:
 	return _looted.has(index)
+
+
+func can_loot(index: int, at: Vector3) -> bool:
+	if index < 0 or index >= positions.size() or is_looted(index):
+		return false
+	var offset := positions[index] - at
+	return Vector2(offset.x, offset.z).length_squared() <= LOOT_REACH * LOOT_REACH and absf(offset.y) < 2.5
 
 
 ## How many coins a body holds, given a roll in [0, 1).

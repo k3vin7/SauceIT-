@@ -451,9 +451,22 @@ func context_candidates(shooter) -> Array:
 	if is_instance_valid(world._victims):
 		var body: int = world._victims.in_reach(at)
 		if body >= 0:
-			var lying: Vector3 = world._victims.positions[body] + Vector3.UP * 0.35
-			_candidate(out, shooter, "loot", body, lying, "시체 뒤지기", 0.2, lying + Vector3.UP * 0.3)
+			_add_loot_candidate(out, shooter, body)
 	return out
+
+
+func can_search_body(shooter, body: int) -> bool:
+	if not is_instance_valid(world._victims) or not world._victims.can_loot(body, shooter.player.global_position):
+		return false
+	var candidates: Array = []
+	_add_loot_candidate(candidates, shooter, body)
+	return not candidates.is_empty()
+
+
+func _add_loot_candidate(out: Array, shooter, body: int) -> void:
+	var lying: Vector3 = world._victims.positions[body] + Vector3.UP * 0.35
+	_candidate(out, shooter, "loot", body, lying, "시체 수색 · %d초간 누르기" % TomatinaVictims.LOOT_TIME,
+		0.2, lying + Vector3.UP * 0.3)
 
 func _candidate(out: Array, shooter, kind: String, id: int, at: Vector3, text: String, priority: float,
 		anchor := Vector3.INF) -> void:

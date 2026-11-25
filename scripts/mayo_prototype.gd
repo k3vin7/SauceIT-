@@ -1378,6 +1378,8 @@ var _press_king_wave_side := 0
 var _siren_zone := Rect2()
 var _escape_shove_times := {}
 var _rescue_attempts := {}
+var _loot_attempts := {}
+var _local_loot_hold := {}
 ## Hose stand index -> peer id of whoever has it open. Authority state,
 ## carried to clients in the Tomatina status packet for the jet to draw.
 var _hose_users := {}
@@ -1631,6 +1633,7 @@ func _physics_process(delta: float) -> void:
 	var frame_started := Time.get_ticks_usec() if debug_profile_enabled else 0
 	var step_started := frame_started
 	_read_local_input()
+	_advance_local_loot_hold(delta)
 	# Every peer simulates every strand off the aim it has for that shooter, so
 	# nothing about the strand itself goes over the wire. Only the server's copy
 	# is allowed to paint, and it broadcasts the cells it painted.
@@ -1668,6 +1671,7 @@ func _physics_process(delta: float) -> void:
 		_burst_ground_budget = TOMATO_BURST_TICK_CAP
 		if map_kind == MapKind.TOMATINA:
 			_advance_tomatina_rescues(delta)
+			_advance_tomatina_loot(delta)
 			_advance_overripe_bursts(delta)
 			_advance_cheese_threads(delta)
 		_advance_splash_ripples(delta)
@@ -2913,6 +2917,12 @@ func _update_fallen_body(shooter: Shooter) -> void:
 			-shooter.body_mesh.rotation.x, PI, -shooter.body_mesh.rotation.z)
 
 
+func _input(event: InputEvent) -> void:
+	if not _local_loot_hold.is_empty() and event.is_action_released("interact") \
+			and not Input.is_action_pressed("interact"):
+		_end_local_loot_hold("loot_cancel")
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if tomatina_intro_active():
 		if event.is_action_pressed("mute_sound"):
@@ -2975,6 +2985,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		if not target.is_empty():
 			if target.kind == "shop":
 				_try_open_refuge_shop()
+			elif target.kind == "loot":
+				_start_local_loot_hold(int(target.id))
 			elif _is_authority():
 				perform_context_action(_local.peer_id, target.kind, target.id)
 			else:
@@ -3358,6 +3370,7 @@ func remove_avatar(peer_id: int) -> void:
 		return
 	_free_shooter(_shooters[peer_id])
 	_shooters.erase(peer_id)
+	_loot_attempts.erase(peer_id)
 	# And somebody left, which walks it back the same way.
 	rescale_enemies()
 	# Somebody who has gone is not waited for: a stage that needs everybody to
@@ -3377,6 +3390,8 @@ func reset_for_join() -> void:
 	_local = null
 	_escape_shove_times.clear()
 	_rescue_attempts.clear()
+	_loot_attempts.clear()
+	_local_loot_hold.clear()
 	_hose_users.clear()
 	if map_kind == MapKind.TOMATINA:
 		_reset_tomatina_finale()
@@ -4158,6 +4173,8 @@ func set_network_panel_open(open: bool) -> void:
 
 func set_menu_input_enabled(enabled: bool) -> void:
 	_input_enabled = enabled
+	if not enabled and not _local_loot_hold.is_empty():
+		_end_local_loot_hold("loot_cancel")
 	if _local != null:
 		_local.player.frozen = not enabled
 		if not enabled:
@@ -4173,6 +4190,10 @@ func set_menu_input_enabled(enabled: bool) -> void:
 func set_gameplay_input_enabled(enabled: bool) -> void:
 	if not enabled and _refuge_shop_room >= 0:
 		_close_refuge_shop()
+	if not enabled:
+		if not _local_loot_hold.is_empty():
+			_end_local_loot_hold("loot_cancel")
+		_loot_attempts.clear()
 	_input_enabled = enabled
 	set_physics_process(enabled)
 	if _local != null:
@@ -7038,6 +7059,8 @@ func _tomatina_refuge_status() -> String:
 
 
 func _tomatina_action_hint() -> String:
+	if not _local_loot_hold.is_empty():
+		return ""
 	if is_instance_valid(play_support) and _local != null:
 		return play_support.interaction_hint()
 	if _local == null or _local.player.state != MayoPlayer.State.NORMAL:
@@ -10017,6 +10040,8 @@ func rescue_hud_state() -> Dictionary:
 	state["downed_teammates"] = downed
 	state["in_reach"] = any_in_reach
 	state["rescue_progress"] = -1.0
+	state["loot_progress"] = -1.0 if _local_loot_hold.is_empty() else \
+		1.0 - clampf(float(_local_loot_hold.left) / TomatinaVictims.LOOT_TIME, 0.0, 1.0)
 	if _rescue_attempts.has(_local.peer_id):
 		var attempt: Dictionary = _rescue_attempts[_local.peer_id]
 		state["rescue_progress"] = 1.0 - clampf(float(attempt.left) / TOMATINA_RESCUE_TIME, 0.0, 1.0)
@@ -10055,6 +10080,64 @@ func _advance_tomatina_rescues(delta: float) -> void:
 				play_support.note_rescue(int(peer))
 			_wiping.erase(target.peer_id)
 			_rescue_attempts.erase(peer)
+
+
+func _new_loot_hold(shooter: Shooter, body: int) -> Dictionary:
+	return {"body": body, "left": TomatinaVictims.LOOT_TIME, "finished": false,
+		"health": shooter.player.health, "position": shooter.player.global_position}
+
+
+func _start_local_loot_hold(body: int) -> void:
+	if not _local_loot_hold.is_empty() or _rescue_attempts.has(_local.peer_id) or _local.firing:
+		return
+	_local_loot_hold = _new_loot_hold(_local, body)
+	_send_loot_action("loot", body)
+
+
+func _send_loot_action(kind: String, body: int) -> void:
+	if _is_authority():
+		perform_context_action(_local.peer_id, kind, body)
+	elif is_instance_valid(_net):
+		_net.request_context_action(kind, body)
+
+
+func _end_local_loot_hold(kind: String) -> void:
+	var body := int(_local_loot_hold.body)
+	_local_loot_hold.clear()
+	if _local != null:
+		_send_loot_action(kind, body)
+
+
+func _loot_hold_valid(shooter: Shooter, attempt: Dictionary) -> bool:
+	return shooter != null and shooter.player.state == MayoPlayer.State.NORMAL and not shooter.firing \
+		and shooter.player.health >= float(attempt.health) \
+		and shooter.player.global_position.distance_to(attempt.position) <= 0.45 \
+		and is_instance_valid(play_support) and play_support.can_search_body(shooter, int(attempt.body))
+
+
+func _advance_local_loot_hold(delta: float) -> void:
+	if _local_loot_hold.is_empty():
+		return
+	if not _input_enabled or not Input.is_action_pressed("interact") \
+			or not _loot_hold_valid(_local, _local_loot_hold):
+		_end_local_loot_hold("loot_cancel")
+		return
+	_local_loot_hold.left -= delta
+	if _local_loot_hold.left <= 0.0:
+		_end_local_loot_hold("loot_finish")
+
+
+func _advance_tomatina_loot(delta: float) -> void:
+	for peer in _loot_attempts.keys():
+		var attempt: Dictionary = _loot_attempts[peer]
+		if not _loot_hold_valid(_shooters.get(peer), attempt):
+			_loot_attempts.erase(peer)
+			continue
+		attempt.left = maxf(0.0, float(attempt.left) - delta)
+		# A late or lost release must not turn a tap into a completed search.
+		if attempt.left == 0.0 and attempt.finished:
+			_loot_attempts.erase(peer)
+			_victims.loot(int(attempt.body))
 
 
 func _hose_slot(at: Vector3) -> int:
@@ -11146,7 +11229,17 @@ func apply_tomatina_status(data: PackedFloat64Array) -> void:
 
 
 func perform_context_action(peer: int, kind: String, target_id: int) -> void:
-	if not _is_authority() or not is_instance_valid(play_support) or not _shooters.has(peer) or is_cinematic_active():
+	if not _is_authority() or not is_instance_valid(play_support) or not _shooters.has(peer):
+		return
+	if kind == "loot_cancel" or kind == "loot_finish":
+		var attempt: Dictionary = _loot_attempts.get(peer, {})
+		if not attempt.is_empty() and int(attempt.body) == target_id:
+			if kind == "loot_cancel":
+				_loot_attempts.erase(peer)
+			else:
+				attempt.finished = true
+		return
+	if is_cinematic_active():
 		return
 	var shooter: Shooter = _shooters[peer]
 	var valid := false
@@ -11173,8 +11266,8 @@ func perform_context_action(peer: int, kind: String, target_id: int) -> void:
 		"refill":
 			refill_for(peer, STATION_SAUCE_HERE)
 		"loot":
-			if is_instance_valid(_victims):
-				_victims.loot(target_id)
+			if not _loot_attempts.has(peer) and not _rescue_attempts.has(peer) and not shooter.firing:
+				_loot_attempts[peer] = _new_loot_hold(shooter, target_id)
 		"pickup":
 			if not _healing_tomatoes.has(target_id):
 				return

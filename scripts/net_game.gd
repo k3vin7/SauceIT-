@@ -115,7 +115,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 23
+const PROTOCOL_VERSION := 24
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 const ENEMY_SNAPSHOT_NEAR_DISTANCE := 42.0
 const ENEMY_SNAPSHOT_FAR_PERIOD := 5
@@ -2893,6 +2893,10 @@ func _context_action(kind: String, target: int) -> void:
 	if not is_server() or not _world_ready() or kind.length() > 16:
 		return
 	var sender := multiplayer.get_remote_sender_id()
+	# A release or completed hold belongs to the already rate-limited start.
+	if kind == "loot_cancel" or kind == "loot_finish":
+		world.perform_context_action(sender, kind, target)
+		return
 	if float(_refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND)) < 1.0:
 		return
 	_refill_budget[sender] = float(_refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND)) - 1.0
