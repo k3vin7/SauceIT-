@@ -36,6 +36,8 @@ func _probe_offline() -> void:
 	world.set_physics_process(false)
 	world.debug_clear_enemies()
 	world.catch_chance = 0.0
+	world.lateral_position_jitter = 0.0
+	world.yaw_angle_jitter = 0.0
 	world.set_gameplay_input_enabled(true)
 	var shooter = world._local
 	shooter.player.set_physics_process(false)
@@ -44,23 +46,88 @@ func _probe_offline() -> void:
 
 	for part in Parts.STREAM_AIM_RECOIL:
 		_prepare(world, shooter, part)
-		var before: Vector3 = shooter.attack_direction
+		var view_before: Vector3 = -world._camera.global_basis.z
+		var arms = shooter.first_person_arms
+		world._apply_nozzle_sway(shooter)
+		arms._process(STEP)
+		var palm: Node3D = arms.palms[0]
+		var palm_before := palm.position
 		shooter.firing = true
-		for tick in 20:
+		var launch_min := INF
+		var launch_max := -INF
+		var side := 0.0
+		var reversals := 0
+		var grip_travel := 0.0
+		var palm_travel := 0.0
+		var previous_pitch := view_before.y
+		var smooth_climb := true
+		var reticle_aligned := true
+		var early_pitch := 0.0
+		var quarter_second_pitch := 0.0
+		var sustained_pitch := 0.0
+		var leftmost := 0.0
+		var rightmost := 0.0
+		for tick in 46:
 			_step(world, shooter)
-		_check(shooter.attack_direction.y > before.y + 0.02 and shooter.points.size() > 1,
-			"held stream %s did not climb" % part)
-		if shooter.points.size() > 1:
-			_check(shooter.points.back().launch_direction.y > shooter.points.front().launch_direction.y + 0.02,
-				"stream %s moved the view without moving the emitted sauce" % part)
-		world.camera_motion_scale = 0.0
-		world._update_camera()
-		_check((-world._camera.global_basis.z).is_equal_approx(shooter.attack_direction),
-			"camera-motion setting separated the reticle from the firing direction")
+			world._update_camera()
+			var view := _reticle_direction(world)
+			reticle_aligned = reticle_aligned and view.is_equal_approx(shooter.attack_direction)
+			leftmost = minf(leftmost, view.x)
+			rightmost = maxf(rightmost, view.x)
+			smooth_climb = smooth_climb and view.y >= previous_pitch - 0.00001
+			previous_pitch = view.y
+			if tick < 10:
+				early_pitch += view.y / 10.0
+			elif tick == 14:
+				quarter_second_pitch = view.y
+			elif tick >= 36:
+				sustained_pitch += view.y / 10.0
+			world._apply_nozzle_sway(shooter)
+			var grip: Vector3 = shooter.weapon_sway.position
+			grip_travel = maxf(grip_travel, absf(grip.x))
+			if absf(grip.x) > 0.00025:
+				var next_side := signf(grip.x)
+				if side != 0.0 and next_side != side:
+					reversals += 1
+				side = next_side
+			arms._process(STEP)
+			var hand_shift := palm.position - palm_before
+			palm_travel = maxf(palm_travel, absf(hand_shift.x))
+			if not shooter.points.is_empty():
+				var direction: Vector3 = shooter.points.back().launch_direction
+				launch_min = minf(launch_min, direction.y)
+				launch_max = maxf(launch_max, direction.y)
+		var peak: float = Parts.STREAM_AIM_RECOIL[part].lift
+		_check(smooth_climb and quarter_second_pitch > deg_to_rad(1.3)
+			and sustained_pitch - early_pitch > deg_to_rad(6.5) and is_equal_approx(asin(previous_pitch), peak),
+			"stream %s did not lift the camera smoothly" % part)
+		_check(leftmost < -0.0035 and rightmost > 0.0035 and maxf(-leftmost, rightmost) < deg_to_rad(1.03),
+			"stream %s side recoil was missing or too strong" % part)
+		_check(grip_travel > 0.001 and grip_travel < 0.009 and reversals >= 7,
+			"stream %s did not keep fine vibration in the grip (%d reversals)" % [part, reversals])
+		_check(palm_travel > 0.001 and palm_travel < 0.0125,
+			"stream %s first-person hand moved %.1f mm" % [part, palm_travel * 1000.0])
+		_check(reticle_aligned, "stream %s no longer aimed through the screen centre" % part)
+		_check(launch_max - launch_min > deg_to_rad(6.5), "stream %s did not lift the emitted sauce" % part)
+		_check(is_zero_approx(shooter.player.rotation.y), "stream recoil turned the movement body")
 		shooter.firing = false
 		for tick in 75:
 			_step(world, shooter)
-		_check(is_zero_approx(shooter.aim_recoil_pitch), "stream %s did not settle after release" % part)
+		world._update_camera()
+		_check(is_zero_approx(shooter.stream_recoil_pitch) and is_zero_approx(shooter.stream_recoil_yaw)
+			and _reticle_direction(world).is_equal_approx(view_before),
+			"stream %s camera did not settle after release" % part)
+
+	_prepare(world, shooter, Parts.Part.STANDARD)
+	world.set_first_person(false)
+	var shoulder_before: Vector3 = -world._camera.global_basis.z
+	shooter.stream_recoil_pitch = deg_to_rad(2.2)
+	shooter.stream_recoil_yaw = deg_to_rad(0.32)
+	world._update_aim()
+	world._update_camera()
+	_check(_reticle_direction(world).y > shoulder_before.y + 0.03, "stream did not raise the shoulder camera")
+	_check(_reticle_direction(world).is_equal_approx(shooter.attack_direction), "shoulder reticle missed the nozzle direction")
+	world.set_first_person(true)
 
 	_fire_burst(world, shooter, false)
 	var shots: Array[Dictionary] = world._sauce_parts._projectiles
@@ -90,7 +157,7 @@ func _probe_offline() -> void:
 			world._sauce_parts.advance_projectiles(STEP, true)
 		_check(shots.is_empty(), "pulling the mouse down did not land all three shots")
 
-	var expected_lift := {Parts.Part.ARC: 12.0, Parts.Part.CANNON: 16.0, Parts.Part.SNIPER: 3.0}
+	var expected_lift := {Parts.Part.ARC: 14.0, Parts.Part.CANNON: 19.0, Parts.Part.SNIPER: 6.0}
 	for part in expected_lift:
 		_prepare(world, shooter, part)
 		shooter.firing = true
@@ -100,6 +167,9 @@ func _probe_offline() -> void:
 			_step(world, shooter)
 		_check(is_equal_approx(rad_to_deg(asin(shooter.attack_direction.y)), expected_lift[part]),
 			"projectile part %s did not reach its full aim lift" % part)
+		world._update_camera()
+		_check(_reticle_direction(world).is_equal_approx(shooter.attack_direction),
+			"projectile part %s lost its camera recoil" % part)
 		_prepare(world, shooter, part)
 		shooter.sauce = 0.0
 		shooter.firing = true
@@ -112,9 +182,10 @@ func _probe_offline() -> void:
 	shooter.firing = true
 	for tick in 9:
 		_step(world, shooter)
-	_check(is_equal_approx(rad_to_deg(asin(shooter.attack_direction.y)), 18.0),
+	_check(is_equal_approx(rad_to_deg(asin(shooter.attack_direction.y)), 21.0),
 		"the charged mortar did not reach its full aim lift")
 
+	_probe_projectile_ribbons(world, shooter)
 	await _probe_sniper_range(world, shooter)
 
 	shooter.aim_pitch = deg_to_rad(world.pitch_limit_degrees)
@@ -122,6 +193,47 @@ func _probe_offline() -> void:
 	world.apply_look(Vector2(0.0, 1.0 / world.mouse_sensitivity))
 	_check(is_equal_approx(rad_to_deg(world.effective_aim_pitch(shooter)), world.pitch_limit_degrees - 1.0),
 		"recoil at the pitch limit hid the player's downward mouse correction")
+
+
+func _reticle_direction(world) -> Vector3:
+	var point: Vector2 = world._crosshair.size * 0.5
+	return world._camera.project_ray_normal(point)
+
+
+func _probe_projectile_ribbons(world, shooter) -> void:
+	var system = world._sauce_parts
+	system.reset()
+	var origin: Vector3 = shooter.aim_pivot.global_position + Vector3.UP * 12.0
+	var parts := [Parts.Part.BURST, Parts.Part.ARC, Parts.Part.CANNON, Parts.Part.SNIPER]
+	var widths := {}
+	var lengths := {}
+	var pooled_ribbon: StreamVisual
+	for i in parts.size():
+		var part: int = parts[i]
+		var sauce: int = i % world.SAUCE_TINTS.size()
+		system.show_volley(shooter.peer_id, part, sauce, origin, Vector3.FORWARD)
+		system.advance_projectiles(0.18, false)
+		_check(system._projectiles.size() == 1, "open-air projectile %s did not survive" % part)
+		if system._projectiles.size() != 1:
+			continue
+		var shot: Dictionary = system._projectiles[0]
+		var ribbon := shot.node as StreamVisual
+		_check(ribbon != null and ribbon.visible, "part %s did not draw a sauce ribbon" % part)
+		if ribbon != null:
+			_check(pooled_ribbon == null or pooled_ribbon == ribbon, "part %s did not reuse a ribbon" % part)
+			var material := ribbon.ribbon_material as StandardMaterial3D
+			_check(material.albedo_color == world.SAUCE_TINTS[sauce], "part %s drew the wrong sauce colour" % part)
+			_check(ribbon.custom_aabb.has_point(shot.head), "part %s ribbon missed its own projectile tip" % part)
+			var size := ribbon.custom_aabb.size
+			widths[part] = maxf(size.x, size.y)
+			lengths[part] = size.z
+			pooled_ribbon = ribbon
+		system.reset()
+	if widths.size() == parts.size():
+		_check(widths[Parts.Part.ARC] > widths[Parts.Part.BURST] and widths[Parts.Part.CANNON] > widths[Parts.Part.BURST],
+			"heavy projectile ribbons were not thicker than the burst")
+		_check(widths[Parts.Part.SNIPER] < widths[Parts.Part.BURST] and lengths[Parts.Part.SNIPER] > lengths[Parts.Part.ARC]
+			and lengths[Parts.Part.SNIPER] > lengths[Parts.Part.CANNON], "sniper ribbon was not the longest and thinnest")
 
 
 func _probe_sniper_range(world, shooter) -> void:
@@ -144,6 +256,12 @@ func _probe_sniper_range(world, shooter) -> void:
 	var health := target.health
 	shooter.firing = true
 	_step(world, shooter)
+	shooter.firing = false
+	for tick in 3:
+		_step(world, shooter)
+	world._update_camera()
+	_check(world._crosshair.scope > 0.99 and is_equal_approx(rad_to_deg(asin(_reticle_direction(world).y)), 6.0),
+		"scoped sniper pitch did not reach six degrees")
 	for tick in 36:
 		world._sauce_parts.advance_projectiles(STEP, true)
 	_check(target.health < health, "the sniper shot did not hit the target 52 m away")
@@ -164,6 +282,9 @@ func _prepare(world, shooter, part: int) -> void:
 	shooter.fire_hold = 0.0
 	shooter.part_cooldown = 0.0
 	shooter.part_trigger_down = false
+	shooter.stream_recoil_pitch = 0.0
+	shooter.stream_recoil_yaw = 0.0
+	shooter.stream_recoil_time = 0.0
 	shooter.aim_recoil_pitch = 0.0
 	shooter.aim_recoil_pending = 0.0
 	shooter.aim_recoil_hold = 0.0
@@ -171,6 +292,7 @@ func _prepare(world, shooter, part: int) -> void:
 
 
 func _step(world, shooter) -> void:
+	world._advance_stream_aim_recoil(shooter, STEP)
 	world._advance_aim_recoil(shooter, STEP)
 	world._update_aim(shooter)
 	world._advance_strand(shooter, STEP)
@@ -253,3 +375,30 @@ func _probe_network() -> void:
 	var cannon_lift := float(Parts.SHOT_AIM_RECOIL[Parts.Part.CANNON].lift)
 	_check(absf(remote_peak - cannon_lift) < 0.25 and is_zero_approx(remote_copy.aim_recoil_pitch),
 		"the guest did not display the host's cannon recoil once (peak %.2f°)" % remote_peak)
+
+	host_copy.sauce = 1.0
+	_check(host.debug_equip_part(host_copy.peer_id, Parts.Part.FAN), "host could not equip the guest's three-way nozzle")
+	for frame in 60:
+		if guest._local.sauce_part == Parts.Part.FAN:
+			break
+		await _network_tick()
+	guest.debug_set_aim(0.0, 0.0)
+	guest.debug_set_input(Vector2.ZERO, false, true)
+	var recoil_peak := 0.0
+	var camera_peak := 0.0
+	var side_peak := 0.0
+	var camera_side_peak := 0.0
+	for frame in 62:
+		await _network_tick()
+		recoil_peak = maxf(recoil_peak, guest._local.stream_recoil_pitch)
+		camera_peak = maxf(camera_peak, asin(_reticle_direction(guest).y))
+		side_peak = maxf(side_peak, absf(guest._local.stream_recoil_yaw))
+		camera_side_peak = maxf(camera_side_peak, absf(guest._camera.global_basis.get_euler().y))
+	guest.debug_clear_input_override()
+	_check(recoil_peak > deg_to_rad(9.5) and absf(camera_peak - recoil_peak) < deg_to_rad(0.2),
+		"the guest camera did not follow the authoritative stream pitch")
+	_check(side_peak > deg_to_rad(0.75) and side_peak < deg_to_rad(1.03)
+		and absf(camera_side_peak - side_peak) < deg_to_rad(0.1),
+		"the guest camera did not follow the small authoritative side recoil")
+	_check(is_zero_approx(host_copy.aim_yaw) and is_zero_approx(host_copy.aim_pitch),
+		"the guest sent the stream offset back as mouse input")

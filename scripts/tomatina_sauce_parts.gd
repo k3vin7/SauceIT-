@@ -32,13 +32,13 @@ static func is_unlocked(mask: int, part: int) -> bool:
 const GRAVITY := 9.8
 const PROJECTILES := {
 	# Keep the drop at 55 m close to the old drop at 45 m.
-	Part.SNIPER: {"speed": 100.0, "gravity": 6.5, "life": 4.0, "reach": 55.0, "size": 0.07,
+	Part.SNIPER: {"speed": 100.0, "gravity": 6.5, "life": 4.0, "reach": 55.0,
 		"damage": 55.0, "blast": 0.0, "cost": 0.06, "cooldown": 1.2},
 	Part.BURST: {"speed": 32.0, "gravity": GRAVITY, "life": 6.0, "reach": 20.0,
 		"damage": 9.5, "blast": 0.0, "cost": 0.040, "cooldown": 0.48},
-	Part.ARC: {"speed": 28.0, "gravity": GRAVITY, "life": 10.0, "reach": 40.0, "size": 0.36,
+	Part.ARC: {"speed": 28.0, "gravity": GRAVITY, "life": 10.0, "reach": 40.0,
 		"damage": 85.0, "blast": 3.6, "cost": 0.15, "cooldown": 1.5},
-	Part.CANNON: {"speed": 28.0, "gravity": GRAVITY, "life": 6.0, "reach": 30.0, "size": 0.32,
+	Part.CANNON: {"speed": 28.0, "gravity": GRAVITY, "life": 6.0, "reach": 30.0,
 		"damage": 100.0, "blast": 1.8, "blast_damage": 42.0, "cost": 0.25, "cooldown": 2.5},
 }
 
@@ -48,23 +48,27 @@ const RECOIL := {
 	Part.FAN: {"distance": 0.055, "pitch": 2.3, "roll": -3.6, "attack": 0.038, "recovery": 0.16, "pressure": 0.019},
 	Part.FOCUS: {"distance": 0.031, "pitch": 0.7, "attack": 0.022, "recovery": 0.075, "pressure": 0.004},
 	Part.BURST: {"distance": 0.034, "pitch": 1.9, "attack": 0.022, "recovery": 0.065},
-	Part.ARC: {"distance": 0.075, "pitch": 17.0, "attack": 0.055, "recovery": 0.38},
-	Part.CANNON: {"distance": 0.17, "pitch": 12.0, "attack": 0.048, "recovery": 0.44},
-	Part.SNIPER: {"distance": 0.061, "pitch": 3.4, "attack": 0.024, "recovery": 0.13},
+	Part.ARC: {"distance": 0.075, "pitch": 19.0, "attack": 0.055, "recovery": 0.38},
+	Part.CANNON: {"distance": 0.17, "pitch": 14.0, "attack": 0.048, "recovery": 0.44},
+	Part.SNIPER: {"distance": 0.061, "pitch": 6.8, "attack": 0.024, "recovery": 0.13},
 }
 
-## Actual aim climb and recovery, in degrees and seconds. A stream's rate is
-## per second of delivery. A projectile's lift begins just after it leaves.
+## Fine grip vibration, sustained aim lift and slight side drift. Angles are radians and frequency is in Hz.
 const STREAM_AIM_RECOIL := {
-	Part.STANDARD: {"rise": 10.0, "limit": 5.0, "return_speed": 10.0},
-	Part.FAN: {"rise": 14.0, "limit": 6.5, "return_speed": 11.0},
-	Part.FOCUS: {"rise": 7.0, "limit": 3.5, "return_speed": 12.0},
+	Part.STANDARD: {"amplitude": Vector2(0.36, 0.29) * (PI / 180.0), "frequency": 7.0,
+		"lift": deg_to_rad(9.0), "side_drift": deg_to_rad(0.64)},
+	Part.FAN: {"amplitude": Vector2(0.50, 0.40) * (PI / 180.0), "frequency": 7.6,
+		"lift": deg_to_rad(11.5), "side_drift": deg_to_rad(0.96)},
+	Part.FOCUS: {"amplitude": Vector2(0.23, 0.18) * (PI / 180.0), "frequency": 8.8,
+		"lift": deg_to_rad(7.0), "side_drift": deg_to_rad(0.48)},
 }
+
+## Actual projectile aim lift and recovery, in degrees and seconds.
 const SHOT_AIM_RECOIL := {
 	Part.BURST: {"lift": 1.35, "limit": 8.0, "rise_speed": 100.0, "hold": 0.13, "return_speed": 14.0},
-	Part.ARC: {"lift": 12.0, "limit": 22.0, "rise_speed": 180.0, "hold": 0.20, "return_speed": 8.0},
-	Part.CANNON: {"lift": 16.0, "limit": 22.0, "rise_speed": 220.0, "hold": 0.28, "return_speed": 6.5},
-	Part.SNIPER: {"lift": 3.0, "limit": 8.0, "rise_speed": 130.0, "hold": 0.13, "return_speed": 2.0},
+	Part.ARC: {"lift": 14.0, "limit": 26.0, "rise_speed": 210.0, "hold": 0.20, "return_speed": 9.3},
+	Part.CANNON: {"lift": 19.0, "limit": 26.0, "rise_speed": 260.0, "hold": 0.28, "return_speed": 7.7},
+	Part.SNIPER: {"lift": 6.0, "limit": 16.0, "rise_speed": 260.0, "hold": 0.13, "return_speed": 4.0},
 }
 
 ## 3갈래 노즐: 기본 줄기와 똑같은 줄기 세 가닥이 이 각도씩 벌어져 나간다. 가닥마다 굵기와
@@ -170,16 +174,23 @@ var _coins := {}
 var _coin_serial := 0
 var _projectiles: Array[Dictionary] = []
 var _coin_mesh: CylinderMesh
-var _sauce_mesh := SphereMesh.new()
-var _sauce_materials: Array[StandardMaterial3D] = []
-var _burst_materials: Array[StandardMaterial3D] = []
-var _free_burst_ribbons: Array[StreamVisual] = []
+var _projectile_materials: Array[StandardMaterial3D] = []
+var _free_projectile_ribbons: Array[StreamVisual] = []
+var _projectile_segments: Array = [[]]
 
 const BURST_SIZE_SCALE := 1.5
-const BURST_RIBBON_POOL_LIMIT := 16
 const BURST_DRAW_LENGTH := 1.45 * BURST_SIZE_SCALE
 const BURST_WIDTH_SCALE := 1.7 * BURST_SIZE_SCALE
 const BURST_WIDTHS := [0.68, 1.0, 0.83, 0.91, 0.62, 0.43, 0.16]
+const PROJECTILE_RIBBON_POOL_LIMIT := 24
+const PROJECTILE_RIBBON_POINTS := 7
+## Cross-sections start at the leading edge and taper along the flight path.
+const PROJECTILE_RIBBONS := {
+	Part.BURST: {"length": BURST_DRAW_LENGTH, "width": BURST_WIDTH_SCALE, "bend": 0.30, "sections": BURST_WIDTHS},
+	Part.ARC: {"length": 2.75, "width": 5.5, "bend": 0.32, "sections": [0.55, 1.0, 0.96, 0.77, 0.57, 0.28, 0.08]},
+	Part.CANNON: {"length": 2.4, "width": 6.2, "bend": 0.25, "sections": [0.65, 1.0, 0.82, 0.91, 0.52, 0.34, 0.11]},
+	Part.SNIPER: {"length": 4.1, "width": 1.55, "bend": 0.23, "sections": [0.48, 1.0, 0.76, 0.59, 0.43, 0.20, 0.06]},
+}
 
 ## How long a shot is drawn bending from where it visibly left (the part on the
 ## character's bottle) onto the line it really flies, as the stream does with
@@ -261,16 +272,14 @@ func _ready() -> void:
 	gold.emission = Color("b7761e")
 	gold.emission_energy_multiplier = 0.38
 	_coin_mesh.material = gold
-	_sauce_mesh.radial_segments = 10
-	_sauce_mesh.rings = 5
 	for color: Color in world.SAUCE_TINTS:
 		var material := StandardMaterial3D.new()
 		material.albedo_color = color
-		_sauce_materials.append(material)
-		var burst_material := material.duplicate() as StandardMaterial3D
-		burst_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		burst_material.cull_mode = BaseMaterial3D.CULL_DISABLED
-		_burst_materials.append(burst_material)
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_projectile_materials.append(material)
+	for i in PROJECTILE_RIBBON_POINTS:
+		_projectile_segments[0].append({"position": Vector3.ZERO, "width_scale": 0.0})
 
 
 func drop_for(enemy: MayoEnemy) -> void:
@@ -411,32 +420,21 @@ func show_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vec
 		draw_from := Vector3.INF, sweep_from := Vector3.INF) -> void:
 	var profile: Dictionary = PROJECTILES[part]
 	var draw_offset := draw_from - origin if draw_from.is_finite() else Vector3.ZERO
-	var node: MeshInstance3D
-	if part == Part.BURST:
-		var ribbon: StreamVisual
-		if _free_burst_ribbons.is_empty():
-			ribbon = StreamVisual.new()
-			ribbon.setup(_burst_materials[sauce], BURST_WIDTHS.size())
-			add_child(ribbon)
-		else:
-			ribbon = _free_burst_ribbons.pop_back()
-			ribbon.set_ribbon_material(_burst_materials[sauce])
-		node = ribbon
+	var ribbon: StreamVisual
+	if _free_projectile_ribbons.is_empty():
+		ribbon = StreamVisual.new()
+		ribbon.setup(_projectile_materials[sauce], PROJECTILE_RIBBON_POINTS)
+		add_child(ribbon)
 	else:
-		var glob := MeshInstance3D.new()
-		glob.mesh = _sauce_mesh
-		glob.material_override = _sauce_materials[sauce]
-		glob.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		glob.scale = Vector3.ONE * (2.0 * float(profile.size))
-		add_child(glob)
-		node = glob
-	# `head` is where the shot really is; the node is only drawn from it.
+		ribbon = _free_projectile_ribbons.pop_back()
+		ribbon.set_ribbon_material(_projectile_materials[sauce])
+	# `head` is the simulated tip. The ribbon follows behind it for display.
 	# The mortar carries real speed in the direction vector. Cannon and sniper
 	# carry a small shake marker instead, so their launch speeds stay constant.
 	var shake := shake_of(forward.length()) if part == Part.CANNON or part == Part.SNIPER else 0.0
 	var launch_vector := forward if part == Part.ARC else forward.normalized()
 	var launch_velocity := launch_vector * float(profile.speed)
-	var shot := {"node": node, "peer": peer, "part": part, "sauce": sauce,
+	var shot := {"node": ribbon, "peer": peer, "part": part, "sauce": sauce,
 		"velocity": launch_velocity, "left": profile.life,
 		"launch_velocity": launch_velocity,
 		"shake": shake,
@@ -444,27 +442,18 @@ func show_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vec
 		"head": origin, "origin": origin, "age": 0.0, "draw_offset": draw_offset}
 	if sweep_from.is_finite():
 		shot["sweep_from"] = sweep_from
-	_place_shot(shot, profile)
 	_projectiles.append(shot)
 
 
-func _release_projectile(node: MeshInstance3D) -> void:
-	if node is StreamVisual and _free_burst_ribbons.size() < BURST_RIBBON_POOL_LIMIT:
-		node.hide()
-		_free_burst_ribbons.append(node as StreamVisual)
+func _release_projectile(ribbon: StreamVisual) -> void:
+	if _free_projectile_ribbons.size() < PROJECTILE_RIBBON_POOL_LIMIT:
+		ribbon.hide()
+		_free_projectile_ribbons.append(ribbon)
 	else:
-		node.queue_free()
+		ribbon.queue_free()
 
 
-func _place_shot(shot: Dictionary, profile: Dictionary) -> void:
-	if shot.part == Part.BURST:
-		_draw_burst_shot(shot, float(profile.gravity))
-		return
-	var offset: Vector3 = shot.draw_offset * (1.0 - smoothstep(0.0, DRAW_BLEND, float(shot.age)))
-	(shot.node as MeshInstance3D).global_position = shot.head + offset
-
-
-func _draw_burst_shot(shot: Dictionary, gravity: float) -> void:
+func _draw_projectile(shot: Dictionary, gravity: float) -> void:
 	var age: float = shot.age
 	if age <= 0.0:
 		return
@@ -472,27 +461,31 @@ func _draw_burst_shot(shot: Dictionary, gravity: float) -> void:
 	var camera: Camera3D = world._camera
 	var head: Vector3 = shot.head
 	var velocity: Vector3 = shot.velocity
-	var trail_seconds := minf(age, BURST_DRAW_LENGTH / maxf(velocity.length(), 0.01))
-	var strand_width: float = world.strand_thickness * BURST_WIDTH_SCALE
+	var profile: Dictionary = PROJECTILE_RIBBONS[shot.part]
+	var trail_seconds := minf(age, float(profile.length) / maxf(velocity.length(), 0.01))
+	var strand_width: float = world.strand_thickness * float(profile.width)
+	var bend := strand_width * float(profile.bend)
+	var sections: Array = profile.sections
 	var side := velocity.normalized().cross(Vector3.UP)
-	var segment: Array = []
-	for i in BURST_WIDTHS.size():
-		var progress := float(i) / float(BURST_WIDTHS.size() - 1)
+	var segment: Array = _projectile_segments[0]
+	for i in PROJECTILE_RIBBON_POINTS:
+		var progress := float(i) / float(PROJECTILE_RIBBON_POINTS - 1)
 		var back_time := trail_seconds * progress
 		# Draw only the part of the trail that has already left the muzzle.
 		var point_age := age - back_time
 		var offset: Vector3 = shot.draw_offset * (1.0 - smoothstep(0.0, DRAW_BLEND, point_age))
 		var position := head - velocity * back_time + Vector3.DOWN * (0.5 * gravity * back_time ** 2)
-		position += offset + side * (sin(progress * TAU) * strand_width * 0.3)
-		segment.append({"position": position, "width_scale": BURST_WIDTHS[i]})
-	ribbon.update_ribbon([segment], camera.global_position, -camera.global_basis.z, strand_width)
+		position += offset + side * (sin(progress * TAU) * bend)
+		segment[i].position = position
+		segment[i].width_scale = sections[i]
+	ribbon.update_ribbon(_projectile_segments, camera.global_position, -camera.global_basis.z, strand_width)
 
 
 func advance_projectiles(delta: float, authority: bool) -> void:
 	for i in range(_projectiles.size() - 1, -1, -1):
 		var shot: Dictionary = _projectiles[i]
 		var profile: Dictionary = PROJECTILES[shot.part]
-		var node: MeshInstance3D = shot.node
+		var ribbon: StreamVisual = shot.node
 		var from: Vector3 = shot.head
 		var gravity: float = profile.gravity
 		shot.velocity += Vector3.DOWN * gravity * delta
@@ -523,12 +516,12 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 					shot.damage_scale = float(shot.get("damage_scale", 1.0)) * SNIPER_PIERCE_FALLOFF
 					shot.head = hit.position
 					shot.age = float(shot.age) + delta
-					_place_shot(shot, profile)
+					_draw_projectile(shot, gravity)
 					continue
 		elif shot.left > 0.0:
 			shot.head = to
 			shot.age = float(shot.age) + delta
-			_place_shot(shot, profile)
+			_draw_projectile(shot, gravity)
 			continue
-		_release_projectile(node)
+		_release_projectile(ribbon)
 		_projectiles.remove_at(i)

@@ -115,7 +115,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 19
+const PROTOCOL_VERSION := 22
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 const ENEMY_SNAPSHOT_NEAR_DISTANCE := 42.0
 const ENEMY_SNAPSHOT_FAR_PERIOD := 5
@@ -144,7 +144,7 @@ const MAX_CLIENTS := 3
 ## a different fight. The host tosses it and sends the answer; the level rides
 ## along rather than being derived, so nobody has to guess which band a bottle
 ## is in either.
-const STATE_STRIDE := 24
+const STATE_STRIDE := 26
 ## Where one occupant is standing in the truck: x, y, z and the yaw they are
 ## facing. The truck carries no bottle, no health and no aim pitch, so it needs
 ## none of the sixteen floats a stage body does -- four, four times a frame at
@@ -2380,7 +2380,8 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			shooter.bottle_shake_input, float(shooter.character_index),
 			float(shooter.player.server_input_sequence), velocity.y,
 			shooter.player.mustard_slow, shooter.player.cheese_snag_left,
-			1.0 if shooter.player.in_mustard else 0.0, shooter.player.charge_effect_state()]))
+			1.0 if shooter.player.in_mustard else 0.0, shooter.player.charge_effect_state(),
+			shooter.stream_recoil_pitch, shooter.stream_recoil_yaw]))
 	return data
 
 
@@ -2433,6 +2434,8 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		shooter.sauce = clampf(data[index + 13], 0.0, 1.0)
 		shooter.nozzle = clampi(int(round(data[index + 14])), 0, 3)
 		world.apply_bottle_state_code(shooter, clampf(data[index + 15], 0.0, 3.0))
+		shooter.stream_recoil_pitch = data[index + 24]
+		shooter.stream_recoil_yaw = data[index + 25]
 		# The local player's own aim is never taken back from the server: it is
 		# already ahead of this packet. Nor is their character: a `C` press
 		# rebuilds the visual at once, and the packet already in flight still
@@ -2447,8 +2450,8 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 			# How hard they are shaking the bottle: theirs to say, and the
 			# local player already knows their own.
 			shooter.bottle_shake_input = clampf(data[index + 16], 0.0, 1.0)
-			# The snapshot already includes the host's recoil for remote views.
-			shooter.aim_pitch = data[index + 7]
+			# The effective pitch already contains the lift applied by the host.
+			shooter.aim_pitch = data[index + 7] - shooter.stream_recoil_pitch
 			# The yaw has to land on the aim, not only on the body: _update_aim
 			# rewrites the body from the aim every frame, and the strand leaves
 			# along the aim too. Setting the body alone points a remote player's

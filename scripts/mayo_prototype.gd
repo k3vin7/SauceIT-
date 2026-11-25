@@ -321,6 +321,9 @@ class Shooter:
 	var next_collision_slot := 0
 	var aim_yaw := 0.0
 	var aim_pitch := 0.0
+	var stream_recoil_pitch := 0.0
+	var stream_recoil_yaw := 0.0
+	var stream_recoil_time := 0.0
 	var aim_recoil_pitch := 0.0
 	var aim_recoil_pending := 0.0
 	var aim_recoil_rise_speed := 0.0
@@ -1631,6 +1634,8 @@ func _physics_process(delta: float) -> void:
 	var tomatina := map_kind == MapKind.TOMATINA
 	var authoritative_recoil := tomatina and _is_authority()
 	for shooter in _shooters.values():
+		if authoritative_recoil:
+			_advance_stream_aim_recoil(shooter, delta)
 		if tomatina and (authoritative_recoil or shooter.is_local):
 			_advance_aim_recoil(shooter, delta)
 		_update_aim(shooter)
@@ -2139,23 +2144,32 @@ func show_part_volley(peer: int, part: int, sauce: int, origin: Vector3, forward
 		_play_combat_warning(origin, 235.0, 0.10)
 
 
-## Runs on the host and the player holding the bottle. Other peers render the
-## effective pitch from the host snapshot. Mouse input always stays in aim_pitch.
+## The host advances the recoil shared by the player's view and firing direction.
+func _advance_stream_aim_recoil(shooter: Shooter, delta: float) -> void:
+	var profile = SauceParts.STREAM_AIM_RECOIL.get(shooter.sauce_part) \
+		if shooter.was_firing and shooter.nozzle == Nozzle.STREAM else null
+	var pitch_target := 0.0
+	var yaw_target := 0.0
+	if profile == null:
+		shooter.stream_recoil_time = 0.0
+	else:
+		shooter.stream_recoil_time += delta
+		var time := shooter.stream_recoil_time
+		pitch_target = float(profile.lift) * smoothstep(0.06, 0.64, time)
+		var sway := sin(TAU * 1.25 * time) * smoothstep(0.06, 0.28, time)
+		yaw_target = float(profile.side_drift) * sway
+	# A new squirt can start before the previous kick has finished settling.
+	shooter.stream_recoil_pitch = maxf(pitch_target, shooter.stream_recoil_pitch - deg_to_rad(36.0) * delta)
+	shooter.stream_recoil_yaw = move_toward(shooter.stream_recoil_yaw, yaw_target, deg_to_rad(12.0) * delta)
+
+
+## The host and the player holding the bottle advance confirmed one-shot kicks.
 func _advance_aim_recoil(shooter: Shooter, delta: float) -> void:
 	if shooter.aim_recoil_pending > 0.0:
 		var lift := minf(shooter.aim_recoil_pending, shooter.aim_recoil_rise_speed * delta)
 		shooter.aim_recoil_pending -= lift
 		shooter.aim_recoil_pitch += lift
 		return
-	if shooter.was_firing and shooter.nozzle == Nozzle.STREAM:
-		var stream = SauceParts.STREAM_AIM_RECOIL.get(shooter.sauce_part)
-		if stream != null:
-			var limit := deg_to_rad(float(stream.limit))
-			if shooter.aim_recoil_pitch < limit:
-				shooter.aim_recoil_pitch = minf(shooter.aim_recoil_pitch + deg_to_rad(float(stream.rise)) * delta, limit)
-			shooter.aim_recoil_hold = 0.0
-			shooter.aim_recoil_return_speed = deg_to_rad(float(stream.return_speed))
-			return
 	if shooter.aim_recoil_hold > 0.0:
 		shooter.aim_recoil_hold = maxf(0.0, shooter.aim_recoil_hold - delta)
 	elif shooter.aim_recoil_pitch > 0.0:
@@ -2349,6 +2363,15 @@ func _apply_nozzle_sway(shooter: Shooter) -> void:
 		if shooter.bottle_pressure > 0.0:
 			var equipped: Dictionary = SauceParts.RECOIL[shooter.sauce_part]
 			displacement.z = float(equipped.get("pressure", 0.0)) * shooter.bottle_pressure
+			var stream = SauceParts.STREAM_AIM_RECOIL.get(shooter.sauce_part)
+			if stream != null:
+				var cycle := shooter.burst_elapsed * TAU * float(stream.frequency)
+				var yaw := 0.9 * sin(cycle) + 0.1 * sin(cycle * 1.77 + 0.8)
+				var pitch := 0.1 + 0.9 * cos(cycle * 1.29) + 0.1 * sin(cycle * 2.13)
+				var amplitude: Vector2 = stream.amplitude
+				var vibration := amplitude * Vector2(yaw, pitch) * shooter.bottle_pressure
+				displacement += Vector3(-vibration.x, vibration.y, 0.0) * 0.68
+				angles = Vector3(vibration.y * 1.5, vibration.x * 1.5, -vibration.x * 2.1)
 		if shooter.part_recoil >= 0:
 			var profile: Dictionary = SauceParts.RECOIL[shooter.part_recoil]
 			var elapsed := shooter.part_recoil_time
@@ -2359,8 +2382,8 @@ func _apply_nozzle_sway(shooter: Shooter) -> void:
 			else:
 				var amount := smoothstep(0.0, attack, elapsed) * (1.0 - smoothstep(attack, finish, elapsed))
 				displacement.z += float(profile.distance) * amount
-				angles.x = deg_to_rad(float(profile.pitch)) * amount * shooter.part_recoil_pitch_scale
-				angles.z = deg_to_rad(float(profile.get("roll", 0.0))) * amount
+				angles.x += deg_to_rad(float(profile.pitch)) * amount * shooter.part_recoil_pitch_scale
+				angles.z += deg_to_rad(float(profile.get("roll", 0.0))) * amount
 	else:
 		var kick := shooter.bottle_kick + shooter.bottle_pressure * 0.18
 		displacement.z = bottle_recoil_distance * shooter.bottle_kick + bottle_pressure_distance * shooter.bottle_pressure
@@ -2831,7 +2854,7 @@ func _place_viewmodel() -> void:
 	_local.player.rotation.y = _local.aim_yaw
 	if _local.aim_pivot != null:
 		_local.aim_pivot.global_position = _local.player.render_position() + Vector3.UP * eye_height
-		_local.aim_pivot.rotation.x = effective_aim_pitch(_local)
+		_local.aim_pivot.rotation = Vector3(effective_aim_pitch(_local), _local.stream_recoil_yaw, 0.0)
 
 
 ## Everything on a body that follows the sauce level rather than the physics
@@ -3010,7 +3033,7 @@ func apply_look(relative: Vector2) -> void:
 	if relative.y != 0.0:
 		var limit := deg_to_rad(pitch_limit_degrees)
 		var pitch := clampf(effective_aim_pitch(_local) - relative.y * radians_per_pixel, -limit, limit)
-		_local.aim_pitch = maxf(pitch - _local.aim_recoil_pitch, -limit)
+		_local.aim_pitch = clampf(pitch - aim_pitch_offset(_local), -limit, limit)
 
 
 ## Only the local player's own capsule is hidden in first person. Everyone
@@ -4782,8 +4805,7 @@ func warm_stage_materials() -> void:
 	light.shadow_enabled = ($KeyLight as DirectionalLight3D).shadow_enabled
 	warmup.add_child(light)
 	var materials: Array[Material] = [_floor.grid.tile_material(0), _mayo_material,
-		_landing_material, _pool_material, _sauce_parts._sauce_materials[0],
-		_sauce_parts._burst_materials[0]]
+		_landing_material, _pool_material, _sauce_parts._projectile_materials[0]]
 	if _blast_material != null:
 		materials.append(_blast_material)
 	var sample_mesh := SphereMesh.new()
@@ -7522,17 +7544,24 @@ func _update_mustard_field() -> void:
 			enemy.in_mustard = _floor.is_slowing_at(enemy.global_position)
 
 
-## Orientation of the aim, shared by the camera and the strand direction.
+## World-space aim for the nozzle and its shots.
 func _aim_basis(shooter: Shooter = null) -> Basis:
 	if shooter == null:
 		shooter = _local
-	return Basis.from_euler(Vector3(effective_aim_pitch(shooter), shooter.aim_yaw, 0.0))
+	return Basis.from_euler(Vector3(effective_aim_pitch(shooter), shooter.aim_yaw + shooter.stream_recoil_yaw, 0.0))
+
+
+func aim_pitch_offset(shooter: Shooter) -> float:
+	return shooter.aim_recoil_pitch + shooter.stream_recoil_pitch
 
 
 func effective_aim_pitch(shooter: Shooter) -> float:
-	if shooter.aim_recoil_pitch == 0.0:
-		return shooter.aim_pitch
-	return minf(shooter.aim_pitch + shooter.aim_recoil_pitch, deg_to_rad(pitch_limit_degrees))
+	return _clamp_aim_pitch(shooter.aim_pitch + aim_pitch_offset(shooter))
+
+
+func _clamp_aim_pitch(pitch: float) -> float:
+	var limit := deg_to_rad(pitch_limit_degrees)
+	return clampf(pitch, -limit, limit)
 
 
 func _update_camera() -> void:
@@ -7557,8 +7586,7 @@ func _update_camera() -> void:
 		var strength := smoothstep(0.0, 0.7, _player.confusion_left) * camera_motion_scale
 		aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(9.0) * sin(time * 8.0) * strength)
 		aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(3.5) * sin(time * 5.0) * strength)
-	# Tomatina recoil is already in aim_basis. The remaining offsets are
-	# cosmetic effects from the original squirt, hits, and the fire hose.
+	# Legacy squirt, hit, and fire hose effects keep their own camera offsets.
 	var shake := _shake_offset(_local) * camera_motion_scale
 	var kick := _local.recoil_pitch + _local.sway_pitch * camera_sway_fraction + shake.x \
 		+ _local.hose_kick_pitch + _hose_rumble(_local)
@@ -7576,17 +7604,12 @@ func _update_camera() -> void:
 			aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(fall_camera_roll_degrees) * tilt * fall_sign * camera_motion_scale)
 			aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(fall_camera_pitch_degrees) * tilt * fall_sign * camera_motion_scale)
 			eye.y = lerpf(eye.y, fall_camera_height, tilt)
-		_camera.global_transform = Transform3D(aim_basis, eye)
-		return
-	# The shoulder camera does not go down with the player: tilting it there
-	# would swing it to the floor and lose the capsule it exists to show.
-	# Over-the-shoulder: the camera keeps the aim orientation and is offset
-	# behind and to the side, so the strand leaves toward the screen centre
-	# rather than converging on a fixed point.
-	var offset := aim_basis.x * shoulder_offset_right \
-		+ aim_basis.y * shoulder_offset_up \
-		+ aim_basis.z * shoulder_distance
-	_camera.global_transform = Transform3D(aim_basis, eye + offset)
+	else:
+		# The shoulder camera keeps the capsule in frame from behind and to the side.
+		eye += aim_basis.x * shoulder_offset_right \
+			+ aim_basis.y * shoulder_offset_up \
+			+ aim_basis.z * shoulder_distance
+	_camera.global_transform = Transform3D(aim_basis, eye)
 
 
 func _update_aim(shooter: Shooter = null) -> void:
@@ -7594,14 +7617,14 @@ func _update_aim(shooter: Shooter = null) -> void:
 		shooter = _local
 	if shooter == null or not is_instance_valid(shooter.player):
 		return
-	# The body yaws, the weapon pivot pitches, and the strand always leaves
-	# along the camera forward axis.
+	# Recoil turns the aim pivot while movement keeps the body's mouse yaw.
 	shooter.player.rotation.y = shooter.aim_yaw
 	# Restore the authoritative muzzle origin before physics casts.
 	shooter.aim_pivot.position = Vector3.UP * eye_height
-	var pitch := effective_aim_pitch(shooter)
-	shooter.aim_pivot.rotation.x = pitch
-	shooter.attack_basis = Basis.from_euler(Vector3(pitch, shooter.aim_yaw, 0.0))
+	var aim := Vector3(effective_aim_pitch(shooter), shooter.stream_recoil_yaw, 0.0)
+	shooter.aim_pivot.rotation = aim
+	aim.y += shooter.aim_yaw
+	shooter.attack_basis = Basis.from_euler(aim)
 	shooter.attack_direction = -shooter.attack_basis.z
 
 
@@ -7609,8 +7632,8 @@ func _update_aim(shooter: Shooter = null) -> void:
 ## have no mouse to move.
 func debug_set_aim(yaw_degrees: float, pitch_degrees: float) -> void:
 	var limit := deg_to_rad(pitch_limit_degrees)
-	_local.aim_yaw = deg_to_rad(yaw_degrees)
-	_local.aim_pitch = clampf(deg_to_rad(pitch_degrees) - _local.aim_recoil_pitch, -limit, limit)
+	_local.aim_yaw = deg_to_rad(yaw_degrees) - _local.stream_recoil_yaw
+	_local.aim_pitch = clampf(deg_to_rad(pitch_degrees) - aim_pitch_offset(_local), -limit, limit)
 	_update_aim()
 	_update_camera()
 

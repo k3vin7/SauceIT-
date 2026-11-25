@@ -332,8 +332,8 @@ func _clear_shot(shooter, target: MayoEnemy) -> bool:
 
 func _aim(shooter, at: Vector3, slot: int) -> void:
 	var offset: Vector3 = at - (shooter.player.global_position + Vector3.UP * world.eye_height)
-	var yaw := atan2(-offset.x, -offset.z)
-	var pitch := atan2(offset.y, Vector2(offset.x, offset.z).length()) - float(shooter.aim_recoil_pitch)
+	var yaw := atan2(-offset.x, -offset.z) - float(shooter.stream_recoil_yaw)
+	var pitch := atan2(offset.y, Vector2(offset.x, offset.z).length()) - float(world.aim_pitch_offset(shooter))
 	# Reaction/turn limits and a small deterministic error, never instant auto-headshots.
 	shooter.aim_yaw = rotate_toward(shooter.aim_yaw, yaw, 0.48)
 	shooter.aim_pitch = move_toward(shooter.aim_pitch, pitch + sin(elapsed * 1.7 + slot) * 0.018, 0.32)
