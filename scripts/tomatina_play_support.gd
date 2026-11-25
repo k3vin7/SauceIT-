@@ -182,15 +182,11 @@ func report() -> Dictionary:
 
 func _update_aim_feedback() -> void:
 	var shooter = world._local
-	var camera: Camera3D = world._camera
-	if camera == null or not is_instance_valid(shooter.muzzle):
+	if not is_instance_valid(shooter.muzzle):
 		return
 	var origin: Vector3 = shooter.muzzle.global_position
 	var direction: Vector3 = shooter.attack_direction
-	var query := PhysicsRayQueryParameters3D.create(camera.global_position,
-		camera.global_position - camera.global_basis.z * 40.0, 1)
-	query.exclude = [shooter.player.get_rid()]
-	var hit := world.get_world_3d().direct_space_state.intersect_ray(query)
+	var eye: Vector3 = shooter.aim_pivot.global_position
 	var reach: float = world.stream_range * world.squeeze_pressure(shooter)
 	var part: int = shooter.sauce_part
 	if world.SauceParts.PROJECTILES.has(part):
@@ -198,6 +194,9 @@ func _update_aim_feedback() -> void:
 		reach = float(profile.reach)
 	elif part == world.SauceParts.Part.FOCUS:
 		reach *= 1.6
+	var query := PhysicsRayQueryParameters3D.create(eye, eye + direction * maxf(40.0, reach), 1)
+	query.exclude = [shooter.player.get_rid()]
+	var hit := world.get_world_3d().direct_space_state.intersect_ray(query)
 	var valid := false
 	if not hit.is_empty() and hit.collider is MayoEnemy:
 		var enemy := hit.collider as MayoEnemy
@@ -461,7 +460,7 @@ func _candidate(out: Array, shooter, kind: String, id: int, at: Vector3, text: S
 	var eye: Vector3 = shooter.player.global_position + Vector3.UP * world.eye_height
 	var offset := at - eye
 	var distance := offset.length()
-	var facing: Vector3 = -Basis.from_euler(Vector3(shooter.aim_pitch, shooter.aim_yaw, 0)).z
+	var facing: Vector3 = -world._aim_basis(shooter).z
 	var alignment := facing.dot(offset.normalized()) if distance > 0.01 else 1.0
 	if kind in ["pickup", "shop", "shower", "loot"]:
 		if alignment < -0.1:

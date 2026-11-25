@@ -26,12 +26,13 @@ static func is_unlocked(mask: int, part: int) -> bool:
 	return part >= 0 and part < UNLOCK_PRICES.size() and (mask & (1 << part)) != 0
 
 
-## 덩어리를 쏘는 파츠. 전부 중력 `GRAVITY`를 받고 무언가에 닿을 때까지 난다 -- `life`는
+## 덩어리를 쏘는 파츠. 각 파츠의 `gravity`를 받고 무언가에 닿을 때까지 난다 -- `life`는
 ## 허공으로 날아간 것을 치우는 상한일 뿐이다. `reach`는 조준점을 어디까지 찾는가(m).
 ## `blast`는 폭발 반경, `blast_damage`는 직접 맞지 않은 대상이 받는 피해(없으면 직격의 절반).
 const GRAVITY := 9.8
 const PROJECTILES := {
-	Part.SNIPER: {"speed": 100.0, "gravity": GRAVITY, "life": 4.0, "reach": 45.0, "size": 0.07,
+	# Keep the drop at 55 m close to the old drop at 45 m.
+	Part.SNIPER: {"speed": 100.0, "gravity": 6.5, "life": 4.0, "reach": 55.0, "size": 0.07,
 		"damage": 55.0, "blast": 0.0, "cost": 0.06, "cooldown": 1.2},
 	Part.BURST: {"speed": 32.0, "gravity": GRAVITY, "life": 6.0, "reach": 20.0,
 		"damage": 9.5, "blast": 0.0, "cost": 0.040, "cooldown": 0.48},
@@ -40,6 +41,32 @@ const PROJECTILES := {
 	Part.CANNON: {"speed": 28.0, "gravity": GRAVITY, "life": 6.0, "reach": 30.0, "size": 0.32,
 		"damage": 100.0, "blast": 1.8, "blast_damage": 42.0, "cost": 0.25, "cooldown": 2.5},
 }
+
+## First-person recoil peaks. Distances are in metres, angles in degrees, and times in seconds.
+const RECOIL := {
+	Part.STANDARD: {"distance": 0.031, "pitch": 1.5, "attack": 0.032, "recovery": 0.12, "pressure": 0.015},
+	Part.FAN: {"distance": 0.055, "pitch": 2.3, "roll": -3.6, "attack": 0.038, "recovery": 0.16, "pressure": 0.019},
+	Part.FOCUS: {"distance": 0.031, "pitch": 0.7, "attack": 0.022, "recovery": 0.075, "pressure": 0.004},
+	Part.BURST: {"distance": 0.034, "pitch": 1.9, "attack": 0.022, "recovery": 0.065},
+	Part.ARC: {"distance": 0.075, "pitch": 17.0, "attack": 0.055, "recovery": 0.38},
+	Part.CANNON: {"distance": 0.17, "pitch": 12.0, "attack": 0.048, "recovery": 0.44},
+	Part.SNIPER: {"distance": 0.061, "pitch": 3.4, "attack": 0.024, "recovery": 0.13},
+}
+
+## Actual aim climb and recovery, in degrees and seconds. A stream's rate is
+## per second of delivery. A projectile's lift begins just after it leaves.
+const STREAM_AIM_RECOIL := {
+	Part.STANDARD: {"rise": 10.0, "limit": 5.0, "return_speed": 10.0},
+	Part.FAN: {"rise": 14.0, "limit": 6.5, "return_speed": 11.0},
+	Part.FOCUS: {"rise": 7.0, "limit": 3.5, "return_speed": 12.0},
+}
+const SHOT_AIM_RECOIL := {
+	Part.BURST: {"lift": 1.35, "limit": 8.0, "rise_speed": 100.0, "hold": 0.13, "return_speed": 14.0},
+	Part.ARC: {"lift": 12.0, "limit": 22.0, "rise_speed": 180.0, "hold": 0.20, "return_speed": 8.0},
+	Part.CANNON: {"lift": 16.0, "limit": 22.0, "rise_speed": 220.0, "hold": 0.28, "return_speed": 6.5},
+	Part.SNIPER: {"lift": 3.0, "limit": 8.0, "rise_speed": 130.0, "hold": 0.13, "return_speed": 2.0},
+}
+
 ## 3갈래 노즐: 기본 줄기와 똑같은 줄기 세 가닥이 이 각도씩 벌어져 나간다. 가닥마다 굵기와
 ## 피해가 `THREE_WAY_SCALE`배이고, 소스는 기본의 `THREE_WAY_FLOW`배로 나간다.
 ## 저격 노즐: 휠 클릭을 누르는 동안 화면이 `SNIPER_ZOOM`배로 당겨지고, 좌클릭으로 한 발 쏜다.

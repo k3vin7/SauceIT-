@@ -2374,7 +2374,7 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 		data.append_array(PackedFloat32Array([
 			position.x, position.y, position.z, state[1],
 			velocity.x, velocity.z,
-			1.0 if shooter.firing else 0.0, shooter.aim_pitch,
+			1.0 if shooter.firing else 0.0, world.effective_aim_pitch(shooter),
 			float(state[3]), state[4], state[5], state[6], state[7],
 			shooter.sauce, float(shooter.nozzle), world.bottle_state_code(shooter),
 			shooter.bottle_shake_input, float(shooter.character_index),
@@ -2447,6 +2447,7 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 			# How hard they are shaking the bottle: theirs to say, and the
 			# local player already knows their own.
 			shooter.bottle_shake_input = clampf(data[index + 16], 0.0, 1.0)
+			# The snapshot already includes the host's recoil for remote views.
 			shooter.aim_pitch = data[index + 7]
 			# The yaw has to land on the aim, not only on the body: _update_aim
 			# rewrites the body from the aim every frame, and the strand leaves
