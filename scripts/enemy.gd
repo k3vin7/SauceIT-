@@ -1019,7 +1019,8 @@ func build_ketchup_spitter(cell_size: float, brush_radius: float) -> void:
 	radius = 0.9
 	height = 3.2
 	_rest_radius = radius
-	max_health = 120.0
+	# 원거리 엘리트는 체력이 절반이다(120 -> 60, 2026-11-26).
+	max_health = 60.0
 	solo_health = max_health
 	health = max_health
 	sauce_damage_per_hit = 0.4

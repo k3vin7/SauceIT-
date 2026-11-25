@@ -9,7 +9,7 @@ extends TruckLobby
 ##   * 사물함 -- 캐릭터를 다시 고른다.
 ##   * 슬롯머신 -- 팀 돈을 걸고 돌린다. 누구나 할 수 있고 방장이 굴린다. 배당과 잭팟은
 ##     `OfficeSlot`, 사무실에 놓인 기계의 움직임과 소리는 `OfficeSlotShow`.
-##   * 출발 구역 -- 전원이 올라서면 잠깐 센 뒤 떠난다. 지도에는 출발 버튼이 없다.
+##   * 출발 구역 -- 트럭 짐칸 안이다. 전원이 타면 잠깐 센 뒤 떠난다. 지도에는 출발 버튼이 없다.
 ##     사무실 앞벽의 문을 지나 중앙 홀을 곧장 가로지르면 나오는 트럭 탑승장에 있다.
 ##     홀의 왼쪽은 사격 연습장, 오른쪽은 샤워실이다.
 ##   * 사격 연습장의 사선 카운터 -- 팀 전원이 연습장(`PracticeRange`)으로 간다. 거기서는
@@ -32,7 +32,7 @@ const SHOWER_WATER := preload("res://assets/cartoon/shower_water.tres")
 const SCREEN_POSITION := Vector3(0.0, 2.35, -8.65)
 const LOCKER_POSITION := Vector3(-8.45, 1.5, 2.5)
 const OFFICE_WALK_SPEED := 5.2
-## 전원이 출발 구역에 올라선 뒤 떠나기까지. 한 명이라도 내려서면 처음부터 다시 센다.
+## 전원이 트럭에 탄 뒤 떠나기까지. 한 명이라도 내리면 처음부터 다시 센다.
 const DEPART_COUNTDOWN := 3.0
 ## 네 자리. 문 쪽에 나란히 서서 스크린을 본다.
 const SPAWNS := [
@@ -96,6 +96,7 @@ var depart_countdown := DEPART_COUNTDOWN
 var practice_bot_count := 0
 var _depart_area: Area3D
 var _depart_half := Vector2(3.0, 1.3)
+var _depart_height := 2.0
 var _depart_sign: Label3D
 var _depart_hud: Label
 var _depart_fired := false
@@ -910,13 +911,14 @@ func request_start() -> void:
 		start_requested.emit()
 
 
-## 출발 구역 한가운데(바닥). 방 씬에 구역이 없으면 원점.
+## 출발 구역 한가운데의 바닥(트럭 짐칸 바닥). 방 씬에 구역이 없으면 원점.
 func depart_zone_position() -> Vector3:
-	return _depart_area.global_position * Vector3(1.0, 0.0, 1.0) if _depart_area != null \
-		else Vector3.ZERO
+	if _depart_area == null:
+		return Vector3.ZERO
+	return _depart_area.global_position - Vector3.UP * _depart_height * 0.5
 
 
-## 출발 구역 위에 서 있는 사람 수. 높이는 보지 않는다(뛰어도 내려선 것이 아니다).
+## 트럭 짐칸(출발 구역)에 타 있는 사람 수. 높이는 보지 않는다(뛰어도 내린 것이 아니다).
 func occupants_in_depart_zone() -> int:
 	if _depart_area == null:
 		return 0
@@ -944,7 +946,7 @@ func _update_departure(delta: float) -> void:
 		depart_countdown = DEPART_COUNTDOWN
 		_depart_fired = false
 		if standing > 0 and standing < total:
-			message = "출발 구역 %d / %d — 모두 올라서면 출발합니다" % [standing, total]
+			message = "트럭 탑승 %d / %d — 모두 타면 출발합니다" % [standing, total]
 		elif standing > 0:
 			message = "아직 캐릭터를 고르는 팀원이 있습니다"
 	if _depart_hud != null:
@@ -1100,6 +1102,7 @@ func _build_truck() -> void:
 		if shape_node != null and shape_node.shape is BoxShape3D:
 			var size := (shape_node.shape as BoxShape3D).size
 			_depart_half = Vector2(size.x, size.z) * 0.5
+			_depart_height = size.y
 
 
 func _build_ui() -> void:
@@ -1179,7 +1182,7 @@ func refresh_control_labels() -> void:
 		var move := "/".join([
 			Controls.key_label("move_forward", "W"), Controls.key_label("move_left", "A"),
 			Controls.key_label("move_backward", "S"), Controls.key_label("move_right", "D")])
-		_hint_label.text = "%s 이동 · %s 점프 · %s 상호작용 · Esc 메뉴\n축제 지도에서 출격 준비\n모두 출발 구역에 올라서면 출발" \
+		_hint_label.text = "%s 이동 · %s 점프 · %s 상호작용 · Esc 메뉴\n축제 지도에서 출격 준비\n모두 트럭에 타면 출발" \
 			% [move, Controls.key_label("jump", "Space"), interact]
 	if _screen_label != null and session != null:
 		_screen_label.text = "축제 지도\n▶ %s\n[%s] 지도 열기" \
@@ -1391,7 +1394,7 @@ func _refresh_map() -> void:
 	elif not session.all_lobby_ready():
 		_map_reason.text = "입장 중인 팀원이 있습니다."
 	else:
-		_map_reason.text = "모두 출발 구역에 올라서면 떠납니다."
+		_map_reason.text = "모두 트럭에 타면 떠납니다."
 
 
 func _pad(amount: int) -> MarginContainer:

@@ -7944,8 +7944,9 @@ func _advance_player_respawns() -> void:
 		player.finish_respawn(spawn)
 		if map_kind == MapKind.TOMATINA:
 			_clear_respawn_visor(shooter)
-		if not tomatina:
-			shooter.sauce = 1.0
+		# 구조받지 못하고 다시 살아난 사람의 병은 가득 차 있다. 스테이지 2도 마찬가지다(2026-11-26).
+		# 팀원이 일으켜 세운 경우는 다르다 -- `_advance_tomatina_rescues`.
+		shooter.sauce = 1.0
 		shooter.player_animation_name = StringName()
 		if shooter.player_animation != null:
 			shooter.player_animation.stop()
@@ -10891,6 +10892,7 @@ func _advance_tomatina_rescues(delta: float) -> void:
 		if attempt.left <= 0.0:
 			target.player.finish_respawn(target.player.global_position)
 			target.player.health = target.player.max_health * 0.40
+			# 병은 그대로다: 팀원이 일으켜 세운 사람은 쓰러질 때 들고 있던 잔량으로 일어난다.
 			_clear_respawn_visor(target)
 			if is_instance_valid(play_support):
 				play_support.note_rescue(int(peer))
