@@ -775,9 +775,16 @@ func _run() -> void:
 	scene._advance_press_king_spawn(0.0)
 	_check(scene._press_king == null and scene._finale_remaining > 0,
 		"the Press King spawned while the plaza fight was still active")
-	for enemy: MayoEnemy in scene._enemies:
-		if enemy.has_meta("horde") or enemy.has_meta("finale_guard"):
-			enemy.health = 0.0
+	for _step in scene.TOMATINA_HORDE_BASE:
+		for enemy: MayoEnemy in scene._enemies:
+			if enemy.has_meta("horde") or enemy.has_meta("finale_guard"):
+				enemy.health = 0.0
+		if scene._horde_pending == 0:
+			break
+		scene._advance_horde_spawn(scene.FINALE_SPAWN_INTERVAL)
+	_check(scene._horde_pending == 0, "the finale never deployed all scheduled reinforcements")
+	_check(scene.tutorial_spawned().size() == scene.minion_spawn_count(86),
+		"the finale lost part of its 1.8x reinforcement budget under the cap")
 	# The earlier hose check called its optional wave without running the
 	# spawn tick. Clear that test fixture before checking the boss gate.
 	scene._hose_wave_pending = 0

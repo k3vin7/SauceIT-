@@ -1221,16 +1221,23 @@ var _refuge_status_label: Label
 const TOMATO_SPLATS_PER_M2 := 6.0
 const TOMATO_BURST_SPLAT_CAP := 240
 const TOMATO_BURST_TICK_CAP := 300
-## Solo reinforcement budget across the three finale approaches.
-const TOMATINA_HORDE_BASE := 48
+## Solo reinforcement budget across the three finale approaches (up from 48).
+const TOMATINA_HORDE_BASE := 86
 const FINALE_DURATION := 30.0
 const FINALE_WAVES := [0.0, 9.0, 19.0]
+const FINALE_SPAWN_INTERVAL := 0.55
 const PressKing := preload("res://scripts/tomatina_press_king.gd")
 const FINALE_COUNT_TAG := -999
 const PRESS_KING_LOB_CUE := 7
 const HOSE_COUNTERATTACK_CUE := 8
 const PRESS_KING_RISE_CUE := 9
 const PRESS_KING_RISE_WARNING := 6.2
+const PRESS_KING_CHARGE_CUE := 24
+const PRESS_KING_ROAR_CUE := 25
+const PRESS_KING_LOB_EXTRA_CUE := 26
+const PRESS_KING_ROAR_SOUND := preload("res://assets/audio/tomatina_intro/tomato_growl.wav")
+const PRESS_KING_ROAR_WAVE_COUNT := 6
+const PRESS_KING_ROAR_WAVE_WINDOW := 5.0
 const OVERRIPE_BURST_DELAY := 0.65
 const FINALE_SPECIALS := [MayoTutorial.KIND_KETCHUP_SPITTER, MayoTutorial.KIND_CAPRESE_CRAWLER, MayoTutorial.KIND_TOMATO_BRUTE]
 var _press_king_rise_left := 0.0
@@ -1240,7 +1247,7 @@ var _overripe_bursts: Dictionary = {}
 ## `_splash_enemies` and `chain_burst_delay`.
 const CHAIN_BURST_MIN_DELAY := 0.04
 var _splash_ripples: Array = []
-var _finale_special_pending := false
+var _finale_specials_pending: Array[int] = []
 const FINALE_CHECKPOINT_TAG := -998
 const HOSE_PENDING_TAG := -997
 const PRESS_KING_WASH_TAG := -996
@@ -1265,7 +1272,12 @@ const ESCAPE_SHOVE_ACTION := 6
 const ESCAPE_SHOVE_COOLDOWN_MS := 2000
 const TOMATINA_RESCUE_WINDOW := 20.0
 const TOMATINA_RESCUE_TIME := 1.0
-const TOMATINA_HOSES := [Vector2(28.5, 24.0), Vector2(31.5, 24.0)]
+# Two per plaza side, with the south approach left open.
+const TOMATINA_HOSES := [
+	Vector2(28.5, 24.0), Vector2(31.5, 24.0), # North
+	Vector2(22.0, 26.25), Vector2(22.0, 33.25), # West
+	Vector2(38.0, 26.25), Vector2(38.0, 33.25), # East
+]
 ## The fire hose, once the truck is in. A toggle rather than a trigger: one
 ## press opens it and it runs until the player closes it, steps off the stand
 ## or goes down. The jet reaches more than twice as far as the old squirt did
@@ -1344,6 +1356,10 @@ var _horde_spawned_count := 0
 var _finale_elapsed := 0.0
 var _finale_wave := -1
 var _horde_spawn_wait := 0.0
+var _press_king_wave_pending := 0
+var _press_king_wave_left := 0.0
+var _press_king_wave_wait := 0.0
+var _press_king_wave_side := 0
 var _siren_zone := Rect2()
 var _escape_shove_times := {}
 var _rescue_attempts := {}
@@ -1656,6 +1672,7 @@ func _physics_process(delta: float) -> void:
 		_advance_hose_wave(delta)
 		if map_kind == MapKind.TOMATINA:
 			_advance_press_king_spawn(delta)
+			_advance_press_king_wave(delta)
 		if debug_profile_enabled:
 			debug_timings_us.spawn_and_hose += Time.get_ticks_usec() - step_started
 			step_started = Time.get_ticks_usec()
@@ -5705,6 +5722,7 @@ func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
 			_press_king.slam_hit.connect(_damage_player)
 			_press_king.lob_warning.connect(_warn_press_king_lob)
 			_press_king.lob_release.connect(_launch_press_king_lob)
+			_press_king.roared.connect(_queue_press_king_wave)
 			enemy.burst_radius = 4.6
 			if is_instance_valid(_press_king_hideout):
 				_press_king_hideout.hide()
@@ -6061,10 +6079,11 @@ func _launch_spit(spitter: MayoEnemy, victim: MayoPlayer) -> void:
 		_net.broadcast_spit(origin, velocity, seconds)
 
 
-func _warn_press_king_lob(at: Vector3, duration: float) -> void:
-	show_combat_warning(at, Vector3.ZERO, duration, PRESS_KING_LOB_CUE)
+func _warn_press_king_lob(at: Vector3, duration: float, primary: bool) -> void:
+	var cue := PRESS_KING_LOB_CUE if primary else PRESS_KING_LOB_EXTRA_CUE
+	show_combat_warning(at, Vector3.ZERO, duration, cue)
 	if is_instance_valid(_net) and _net.is_online():
-		_net.broadcast_combat_warning(at, Vector3.ZERO, duration, PRESS_KING_LOB_CUE)
+		_net.broadcast_combat_warning(at, Vector3.ZERO, duration, cue)
 
 
 func _launch_press_king_lob(origin: Vector3, velocity: Vector3, seconds: float) -> void:
@@ -6077,7 +6096,7 @@ func _launch_press_king_lob(origin: Vector3, velocity: Vector3, seconds: float) 
 ## it meets something or runs out. It hurts nothing here; the stains and the
 ## damage are the authority's and arrive as they always did.
 func show_spit(origin: Vector3, velocity: Vector3, seconds: float, lob := false) -> void:
-	_add_spit(origin, velocity, seconds, null, lob)
+	_add_spit(origin, velocity, seconds, _press_king if lob else null, lob)
 
 
 func _add_spit(origin: Vector3, velocity: Vector3, seconds: float, spitter: MayoEnemy,
@@ -6095,7 +6114,7 @@ func _add_spit(origin: Vector3, velocity: Vector3, seconds: float, spitter: Mayo
 	var mesh := MeshInstance3D.new()
 	mesh.name = "Spit"
 	var sphere := SphereMesh.new()
-	sphere.radius = 0.55 if lob else spit_radius
+	sphere.radius = PressKing.LOB_PROJECTILE_RADIUS if lob else spit_radius
 	sphere.height = sphere.radius * 2.0
 	if lob:
 		sphere.radial_segments = 12
@@ -6136,7 +6155,7 @@ func _advance_spits(delta: float) -> void:
 			spit.mesh.global_position = spit.position
 		if landed:
 			# The splash everyone sees, off their own dice like a burst's pieces.
-			_tomato_fragments(spit.position, 1.4 if spit.lob else 0.6)
+			_tomato_fragments(spit.position, PressKing.LOB_SPLASH_RADIUS if spit.lob else 0.6)
 			if _is_authority() and spit.spitter != null and is_instance_valid(spit.spitter):
 				if spit.lob:
 					_press_king_lob_lands(hit["collider"] as MayoPlayer, spit.position)
@@ -6183,14 +6202,14 @@ func _coat_spit_victim(victim: MayoPlayer, at: Vector3) -> void:
 
 
 func _press_king_lob_lands(direct_hit: MayoPlayer, at: Vector3) -> void:
-	_spit_puddle(at, PressKing.LOB_RADIUS)
+	_spit_puddle(at, PressKing.LOB_SPLASH_RADIUS, 121)
 	for shooter: Shooter in _shooters.values():
 		var victim := shooter.player
 		if victim.state == MayoPlayer.State.DEAD:
 			continue
 		if victim != direct_hit:
 			var gap := victim.global_position - at
-			if Vector2(gap.x, gap.z).length_squared() > PressKing.LOB_RADIUS ** 2:
+			if Vector2(gap.x, gap.z).length_squared() > PressKing.LOB_DAMAGE_RADIUS ** 2:
 				continue
 			if absf(gap.y) > 2.8 or not _nav.line_is_walkable(at, victim.global_position):
 				continue
@@ -6198,10 +6217,10 @@ func _press_king_lob_lands(direct_hit: MayoPlayer, at: Vector3) -> void:
 		_damage_player(victim, PressKing.LOB_DIRECT_DAMAGE if victim == direct_hit else PressKing.LOB_SPLASH_DAMAGE)
 
 
-func _spit_puddle(centre: Vector3, radius := 2.2) -> void:
-	for index in 37:
+func _spit_puddle(centre: Vector3, radius := 2.2, samples := 37) -> void:
+	for index in samples:
 		var angle := float(index) * 2.399963
-		var reach := radius * sqrt(float(index) / 36.0)
+		var reach := radius * sqrt(float(index) / (samples - 1))
 		var at := centre + Vector3(cos(angle) * reach, 0.0, sin(angle) * reach)
 		var floor_cell := _floor.paint_mayo(at, -1, ContaminationGrid.KIND_KETCHUP)
 		if floor_cell.x >= 0:
@@ -6331,7 +6350,11 @@ func _reset_tomatina_finale() -> void:
 	_press_king_rise_left = 0.0
 	if is_instance_valid(_boss_entrance):
 		_boss_entrance.reset_intro()
-	_finale_special_pending = false
+	_finale_specials_pending.clear()
+	_press_king_wave_pending = 0
+	_press_king_wave_left = 0.0
+	_press_king_wave_wait = 0.0
+	_press_king_wave_side = 0
 	for thread: CheeseThread in _cheese_threads.values():
 		thread.queue_free()
 	_cheese_threads.clear()
@@ -6374,14 +6397,14 @@ func _start_finale(player: MayoPlayer) -> void:
 
 
 func _advance_horde_spawn(delta: float) -> void:
-	if not _horde_spawned or _finale_elapsed >= FINALE_DURATION:
+	if not _horde_spawned or is_instance_valid(_press_king):
 		return
 	_finale_elapsed = minf(_finale_elapsed + delta, FINALE_DURATION)
-	var next_wave := _finale_wave + 1
-	if next_wave < FINALE_WAVES.size() and _finale_elapsed >= FINALE_WAVES[next_wave]:
-		_finale_wave = next_wave
-		_finale_special_pending = true
-		_horde_pending = minion_spawn_count(TOMATINA_HORDE_BASE) / FINALE_WAVES.size()
+	while _finale_wave + 1 < FINALE_WAVES.size() and _finale_elapsed >= FINALE_WAVES[_finale_wave + 1]:
+		_finale_wave += 1
+		_finale_specials_pending.push_back(_finale_wave)
+		var share := float(minion_spawn_count(TOMATINA_HORDE_BASE)) / FINALE_WAVES.size()
+		_horde_pending += roundi(share * (_finale_wave + 1)) - roundi(share * _finale_wave)
 		_horde_spawn_wait = 0.0
 		var entry := TomatinaMap.at_cell(TomatinaMap.HORDE_EDGES[_finale_wave][0])
 		show_combat_warning(entry, Vector3.ZERO, 0.6, 1)
@@ -6390,31 +6413,46 @@ func _advance_horde_spawn(delta: float) -> void:
 	_horde_spawn_wait -= delta
 	if _horde_pending <= 0 or _horde_spawn_wait > 0.0:
 		return
-	_horde_spawn_wait = 0.22
+	_horde_spawn_wait = FINALE_SPAWN_INTERVAL
+	var slots := HORDE_SPAWN_PER_TICK
+	if not _finale_specials_pending.is_empty():
+		var wave: int = _finale_specials_pending.front()
+		if _spawn_plaza_reinforcement(FINALE_SPECIALS[wave], wave):
+			_finale_specials_pending.pop_front()
+			_horde_pending -= 1
+			slots -= 1
+	var grunts := mini(slots, _horde_pending - _finale_specials_pending.size())
+	_horde_pending -= _spawn_plaza_grunts(grunts, _finale_wave)
+
+
+func _spawn_plaza_grunts(count: int, side: int, try_other_sides := true) -> int:
+	if count <= 0:
+		return 0
 	var active := 0
 	for enemy in _enemies:
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() \
 				and (enemy.has_meta("horde") or TomatinaMap.in_rect(_plaza_rect, enemy.global_position)):
 			active += 1
-	var remaining := mini(HORDE_SPAWN_PER_TICK, mini(_horde_pending, active_grunt_limit() - active))
-	# The grunt cap counts grunts. The plaza guard alone can already fill it
-	# (36 against a solo cap of 32), and the wave's special is not a grunt, so it
-	# still gets its one place.
-	if _finale_special_pending:
-		remaining = maxi(remaining, 1)
-	var edges: Array = TomatinaMap.HORDE_EDGES[_finale_wave]
-	for attempt in edges.size():
-		if remaining <= 0:
+	var spawned := 0
+	for index in mini(count, maxi(0, active_grunt_limit() - active)):
+		if not _spawn_plaza_reinforcement(MayoTutorial.KIND_TOMATO_GRUNT, side, try_other_sides):
 			break
-		var at := TomatinaMap.at_cell(edges[_horde_spawned_count % edges.size()])
-		_horde_spawned_count += 1
-		if not _nav.is_walkable(StreetMap.cell_at(at)) or not _horde_spawn_clear(at):
-			continue
-		var kind := int(FINALE_SPECIALS[_finale_wave]) if _finale_special_pending else MayoTutorial.KIND_TOMATO_GRUNT
-		if tutorial_spawn_enemy(kind, at) >= 0:
-			_finale_special_pending = false
-			_horde_pending -= 1
-			remaining -= 1
+		spawned += 1
+	return spawned
+
+
+func _spawn_plaza_reinforcement(kind: int, side: int, try_other_sides := true) -> bool:
+	var side_count := TomatinaMap.HORDE_EDGES.size()
+	for offset in (side_count if try_other_sides else 1):
+		var edges: Array = TomatinaMap.HORDE_EDGES[(side + offset) % side_count]
+		for attempt in edges.size():
+			var at := TomatinaMap.at_cell(edges[_horde_spawned_count % edges.size()])
+			_horde_spawned_count += 1
+			if not _nav.is_walkable(StreetMap.cell_at(at)) or not _horde_spawn_clear(at):
+				continue
+			if tutorial_spawn_enemy(kind, at) >= 0:
+				return true
+	return false
 
 
 func _horde_spawn_clear(at: Vector3) -> bool:
@@ -6431,7 +6469,7 @@ func _horde_spawn_clear(at: Vector3) -> bool:
 func _advance_press_king_spawn(delta: float) -> void:
 	if not _horde_spawned or _finale_elapsed < FINALE_DURATION or is_instance_valid(_press_king):
 		return
-	_finale_remaining = _hose_wave_pending
+	_finale_remaining = _horde_pending + _hose_wave_pending
 	for enemy in _enemies:
 		if (enemy.is_alive() or _overripe_bursts.has(enemy)) and (enemy.has_meta("finale_guard") or enemy.has_meta("horde")):
 			_finale_remaining += 1
@@ -6678,7 +6716,7 @@ func _update_stage_objective(alive := -1) -> void:
 			if _local != null and TomatinaMap.in_rect(_plaza_rect, _local.player.global_position):
 				objective = "발전기를 켜세요"
 		elif _finale_elapsed < FINALE_DURATION:
-			objective = "발전기 가동 · 증원 종료까지 %d초" % ceili(FINALE_DURATION - _finale_elapsed)
+			objective = "발전기 가동 · 광장 방어 %d초" % ceili(FINALE_DURATION - _finale_elapsed)
 		elif not is_instance_valid(_press_king):
 			objective = "광장 방어 · 남은 적 %d" % _finale_remaining if _finale_remaining > 0 \
 				else "광장 방어 · 종소리가 들린다"
@@ -7424,6 +7462,11 @@ func _update_camera() -> void:
 	if wobble != 0.0:
 		aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(stumble_camera_roll_degrees) * wobble)
 		aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(stumble_camera_pitch_degrees) * wobble)
+	if _player.confusion_left > 0.0:
+		var time := PressKing.CHARGE_CONFUSION_SECONDS - _player.confusion_left
+		var strength := smoothstep(0.0, 0.7, _player.confusion_left) * camera_motion_scale
+		aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(9.0) * sin(time * 8.0) * strength)
+		aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(3.5) * sin(time * 5.0) * strength)
 	# The squirt's kick and the share of the bottle's wander the view picks up.
 	# Applied to the camera's basis and nowhere else: `aim_yaw`/`aim_pitch` are
 	# what the strand is fired along and what the network state carries, and
@@ -9907,23 +9950,36 @@ func _advance_hose_wave(delta: float) -> void:
 	if _hose_wave_wait > 0.0:
 		return
 	_hose_wave_wait = 0.22
-	var active := 0
-	for enemy in _enemies:
-		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() \
-				and (enemy.has_meta("horde") or TomatinaMap.in_rect(_plaza_rect, enemy.global_position)):
-			active += 1
-	var remaining := mini(HORDE_SPAWN_PER_TICK, mini(_hose_wave_pending, active_grunt_limit() - active))
-	var edges: Array = TomatinaMap.HORDE_EDGES[2]
-	for attempt in edges.size():
-		if remaining <= 0:
-			break
-		var at := TomatinaMap.at_cell(edges[_horde_spawned_count % edges.size()])
-		_horde_spawned_count += 1
-		if not _nav.is_walkable(StreetMap.cell_at(at)) or not _horde_spawn_clear(at):
-			continue
-		if tutorial_spawn_enemy(MayoTutorial.KIND_TOMATO_GRUNT, at) >= 0:
-			_hose_wave_pending -= 1
-			remaining -= 1
+	var count := mini(HORDE_SPAWN_PER_TICK, _hose_wave_pending)
+	_hose_wave_pending -= _spawn_plaza_grunts(count, 2, false)
+
+
+func _queue_press_king_wave() -> void:
+	if not _is_authority() or not _horde_spawned or not is_instance_valid(_press_king):
+		return
+	if not _press_king.is_alive():
+		return
+	_press_king_wave_pending = minion_spawn_count(PRESS_KING_ROAR_WAVE_COUNT)
+	_press_king_wave_left = PRESS_KING_ROAR_WAVE_WINDOW
+	_press_king_wave_wait = 0.35
+
+
+func _advance_press_king_wave(delta: float) -> void:
+	if _press_king_wave_pending <= 0:
+		return
+	_press_king_wave_left -= delta
+	if _press_king_wave_left <= 0.0 or not is_instance_valid(_press_king) or not _press_king.is_alive():
+		_press_king_wave_pending = 0
+		return
+	_press_king_wave_wait -= delta
+	if _press_king_wave_wait > 0.0:
+		return
+	_press_king_wave_wait = FINALE_SPAWN_INTERVAL
+	var count := mini(HORDE_SPAWN_PER_TICK, _press_king_wave_pending)
+	var spawned := _spawn_plaza_grunts(count, _press_king_wave_side)
+	_press_king_wave_pending -= spawned
+	if spawned > 0:
+		_press_king_wave_side = (_press_king_wave_side + 1) % TomatinaMap.HORDE_EDGES.size()
 
 
 ## The view's shudder while this player holds an open hose, as a pitch in
@@ -10313,8 +10369,13 @@ func apply_shove_clearance(peer: int, indices: PackedInt32Array) -> void:
 func _on_special_warning(enemy: MayoEnemy, direction: Vector3, duration: float) -> void:
 	if is_instance_valid(play_support):
 		play_support.prioritize_sound(duration + 0.3)
-	var cue := 7 if enemy.kind == MayoEnemy.EnemyKind.PRESS_KING and not direction.is_zero_approx() else 3
-	if enemy.kind == MayoEnemy.EnemyKind.BOWLING_TOMATO:
+	var cue := 3
+	if enemy is PressKing:
+		if enemy.act == PressKing.Act.ROAR:
+			cue = PRESS_KING_ROAR_CUE
+		elif not direction.is_zero_approx():
+			cue = PRESS_KING_CHARGE_CUE
+	elif enemy.kind == MayoEnemy.EnemyKind.BOWLING_TOMATO:
 		cue = 4
 	elif enemy.kind == MayoEnemy.EnemyKind.CAPRESE_CRAWLER:
 		cue = 5
@@ -10356,12 +10417,16 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 			if is_instance_valid(_boss_entrance):
 				_boss_entrance.start(at)
 		return
-	if cue == PRESS_KING_LOB_CUE:
-		_play_combat_warning(at, 275.0, duration)
+	if cue == PRESS_KING_ROAR_CUE:
+		_play_combat_warning(at, 175.0, duration, PRESS_KING_ROAR_SOUND)
+		return
+	if cue == PRESS_KING_LOB_CUE or cue == PRESS_KING_LOB_EXTRA_CUE:
+		if cue == PRESS_KING_LOB_CUE:
+			_play_combat_warning(at, 275.0, duration)
 		var warning := MeshInstance3D.new()
 		var ring := TorusMesh.new()
-		ring.inner_radius = PressKing.LOB_RADIUS - 0.18
-		ring.outer_radius = PressKing.LOB_RADIUS
+		ring.inner_radius = PressKing.LOB_DAMAGE_RADIUS - 0.18
+		ring.outer_radius = PressKing.LOB_DAMAGE_RADIUS
 		var tint := StandardMaterial3D.new()
 		tint.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		tint.albedo_color = Color("a9ffff")
@@ -10370,17 +10435,18 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 		warning.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		warning.scale.y = 0.22
 		add_child(warning)
-		warning.global_position = Vector3(at.x, 0.065, at.z)
+		warning.global_position = at + Vector3.UP * 0.035
 		get_tree().create_timer(duration).timeout.connect(warning.queue_free)
 		return
-	_play_combat_warning(at, [180.0, 230.0, 110.0, 150.0, 310.0, 420.0, 500.0, 170.0][cue], duration)
+	var charge := cue == PRESS_KING_CHARGE_CUE
+	_play_combat_warning(at, 170.0 if charge else [180.0, 230.0, 110.0, 150.0, 310.0, 420.0, 500.0][cue], duration)
 	if direction.is_zero_approx() or (cue == 3 and duration < 0.15):
 		return
-	var length: float = [0.0, 0.0, 0.0, 9.0, 12.0, 5.0, 10.0, 22.0][cue]
+	var length: float = 22.0 if charge else [0.0, 0.0, 0.0, 9.0, 12.0, 5.0, 10.0][cue]
 	if length <= 0.0:
 		return
 	var marker := MeshInstance3D.new()
-	var width := 3.64 if cue == 7 else 0.48
+	var width := 3.64 if charge else 0.48
 	if map_kind == MapKind.TOMATINA and _floor.terrain_height.is_valid():
 		marker.mesh = _tomatina_ground_warning(at, direction, length, width)
 	else:

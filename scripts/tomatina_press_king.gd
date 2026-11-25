@@ -1,8 +1,8 @@
 extends MayoEnemy
 
 const MODEL := "res://assets/enemies/Stage2_PressKing/Stage2_PressKing.glb"
-const CLIPS := [&"Rise", &"Idle", &"Walk", &"Slam", &"ArmorBreak", &"Collapse", &"Lob", &"Idle", &"Walk", &"Idle"]
-enum Act { RISE, IDLE, WALK, SLAM, STAGGER, DEATH, LOB, CHARGE_WINDUP, CHARGE, CHARGE_RECOVER }
+const CLIPS := [&"Rise", &"Idle", &"Walk", &"Slam", &"ArmorBreak", &"Collapse", &"Lob", &"Idle", &"Walk", &"Idle", &"Rise"]
+enum Act { RISE, IDLE, WALK, SLAM, STAGGER, DEATH, LOB, CHARGE_WINDUP, CHARGE, CHARGE_RECOVER, ROAR }
 
 const SLAM_IMPACT := 38.0 / 30.0
 const SLAM_LENGTH := 69.0 / 30.0
@@ -11,11 +11,21 @@ const LOB_RELEASE := 29.0 / 30.0
 const LOB_LENGTH := 57.0 / 30.0
 const LOB_FLIGHT := 1.18
 const LOB_GRAVITY := 18.0
-const LOB_RADIUS := 2.6
+const LOB_DAMAGE_RADIUS := 4.0
+const LOB_SPLASH_RADIUS := 5.0
+const LOB_PROJECTILE_RADIUS := 0.9
+const LOB_CLUSTER_RADIUS := 3.4
 const CHARGE_WINDUP_SECONDS := 0.8
 const CHARGE_SECONDS := 0.85
+const CHARGE_CHAIN_PAUSE := 0.45
 const CHARGE_RECOVERY := 1.1
 const CHARGE_COOLDOWN := 7.0
+const CHARGE_PUSH_SPEED := 20.5
+const CHARGE_LIFT_SPEED := 8.5
+const CHARGE_CONFUSION_SECONDS := 3.5
+const ROAR_LENGTH := 1.45
+const ROAR_INTERVAL := 20.0
+const ROAR_CLIP_START := 0.75
 const CHASE_SPEED_FRACTION := 1.65
 const CHARGE_BASE_SPEED_FRACTION := 0.75
 const SLAM_DAMAGE := 30.0
@@ -27,6 +37,9 @@ const LOB_SPLASH_DAMAGE := 18.0
 var charge_speed := 25.74
 var _boss_charge_direction := Vector3.FORWARD
 var _boss_charge_cooldown := 0.0
+var _next_charge_count := 2
+var _charges_left := 0
+var _roar_wait := 9.0
 const EXPOSED_DAMAGE_SCALE := 0.55
 const WEAK_SPOT_MULTIPLIER := 1.15
 const OPEN_SECONDS := 7.0
@@ -44,7 +57,7 @@ var _wash := 0.0
 var _cooldown := 1.7
 var _shown_act := -1
 var _wave_hits := {}
-var _lob_at := Vector3.ZERO
+var _lob_targets := PackedVector3Array()
 var _rig_player: AnimationPlayer
 var _armor: MeshInstance3D
 var _weak_spot: MeshInstance3D
@@ -169,6 +182,8 @@ func _build_splinters() -> void:
 func _set_act(next: Act) -> void:
 	if act == next:
 		return
+	if next == Act.STAGGER or next == Act.DEATH:
+		_charges_left = 0
 	act = next
 	act_time = 0.0
 
@@ -181,7 +196,8 @@ func _update_presentation() -> void:
 		var clip: StringName = CLIPS[act]
 		_rig_player.speed_scale = 2.2 if act == Act.CHARGE else 1.0
 		_rig_player.play(clip, 0.09)
-		_rig_player.seek(minf(act_time, _rig_player.get_animation(clip).length), true)
+		var clip_time := act_time + (ROAR_CLIP_START if act == Act.ROAR else 0.0)
+		_rig_player.seek(minf(clip_time, _rig_player.get_animation(clip).length), true)
 		if act == Act.DEATH:
 			_death_clock = act_time
 			_death_landed = act_time >= 0.95
@@ -204,6 +220,12 @@ func _update_presentation() -> void:
 		_wave.scale = Vector3(width, 0.7, width)
 		_wave_material.albedo_color = (Color(0.92, 0.85, 1.0, 0.85 - wave_t * 0.52)
 			if spreading else Color(0.71, 0.47, 1.0, 0.40 + 0.17 * sin(act_time * 18.0)))
+	elif act == Act.ROAR:
+		var pulse := clampf((act_time - 0.45) / (ROAR_LENGTH - 0.45), 0.0, 1.0)
+		var width := lerpf(1.8, 12.0, pulse)
+		_wave.visible = act_time >= 0.45
+		_wave.scale = Vector3(width, 0.7, width)
+		_wave_material.albedo_color = Color(1.0, 0.46, 0.18, (1.0 - pulse) * 0.7)
 
 
 func _process(delta: float) -> void:
@@ -302,8 +324,9 @@ func _slam(targets: Array, old_time: float) -> void:
 
 
 signal slam_hit(player: MayoPlayer, damage: float)
-signal lob_warning(at: Vector3, duration: float)
+signal lob_warning(at: Vector3, duration: float, primary: bool)
 signal lob_release(origin: Vector3, velocity: Vector3, seconds: float)
+signal roared
 
 
 func advance(delta: float, targets: Array, _target_load: Dictionary = {}) -> MayoPlayer:
@@ -315,6 +338,7 @@ func advance(delta: float, targets: Array, _target_load: Dictionary = {}) -> May
 	_wash = maxf(_wash - delta * 0.16, 0.0)
 	_cooldown = maxf(_cooldown - delta, 0.0)
 	_boss_charge_cooldown = maxf(_boss_charge_cooldown - delta, 0.0)
+	_roar_wait = maxf(_roar_wait - delta, 0.0)
 	match act:
 		Act.RISE:
 			if act_time >= 2.2:
@@ -329,8 +353,7 @@ func advance(delta: float, targets: Array, _target_load: Dictionary = {}) -> May
 		Act.CHARGE:
 			_advance_boss_charge(delta, targets)
 		Act.CHARGE_RECOVER:
-			if act_time >= CHARGE_RECOVERY:
-				_set_act(Act.IDLE)
+			_recover_charge(targets)
 		Act.SLAM:
 			_slam(targets, old_time)
 			if act_time >= SLAM_LENGTH:
@@ -338,17 +361,22 @@ func advance(delta: float, targets: Array, _target_load: Dictionary = {}) -> May
 		Act.LOB:
 			if old_time < LOB_RELEASE and act_time >= LOB_RELEASE:
 				var origin := global_position - basis.z * 2.3 + basis.x * 0.85 + Vector3.UP * 1.05
-				var velocity := (_lob_at - origin) / LOB_FLIGHT + Vector3.UP * LOB_GRAVITY * LOB_FLIGHT * 0.5
-				lob_release.emit(origin, velocity, LOB_FLIGHT + 0.15)
+				for landing in _lob_targets:
+					var velocity := (landing - origin) / LOB_FLIGHT + Vector3.UP * LOB_GRAVITY * LOB_FLIGHT * 0.5
+					lob_release.emit(origin, velocity, LOB_FLIGHT + 0.15)
 			if act_time >= LOB_LENGTH:
 				_set_act(Act.IDLE)
+		Act.ROAR:
+			if act_time >= ROAR_LENGTH:
+				_set_act(Act.IDLE)
+				roared.emit()
 		Act.IDLE, Act.WALK:
 			_chase(delta, targets)
 	_update_presentation()
 	return null
 
 
-func _chase(delta: float, targets: Array) -> void:
+func _nearest_target(targets: Array) -> MayoPlayer:
 	var target: MayoPlayer
 	var nearest := INF
 	for player: MayoPlayer in targets:
@@ -359,24 +387,82 @@ func _chase(delta: float, targets: Array) -> void:
 		if distance < nearest:
 			nearest = distance
 			target = player
+	return target
+
+
+func _flat_gap(at: Vector3) -> Vector3:
+	return Vector3(at.x - global_position.x, 0.0, at.z - global_position.z)
+
+
+func _start_charge(gap: Vector3) -> void:
+	_charges_left -= 1
+	_boss_charge_direction = gap.normalized()
+	facing_yaw = atan2(-gap.x, -gap.z)
+	rotation.y = facing_yaw
+	_wave_hits.clear()
+	_set_act(Act.CHARGE_WINDUP)
+	special_warning.emit(self, _boss_charge_direction, CHARGE_WINDUP_SECONDS)
+
+
+func _recover_charge(targets: Array) -> void:
+	if _charges_left > 0 and act_time >= CHARGE_CHAIN_PAUSE:
+		var target := _nearest_target(targets)
+		var gap := _flat_gap(target.global_position) if target != null else Vector3.ZERO
+		if gap.length_squared() > 0.01:
+			_start_charge(gap)
+			return
+		_charges_left = 0
+	if _charges_left == 0 and act_time >= CHARGE_RECOVERY:
+		_boss_charge_cooldown = CHARGE_COOLDOWN
+		_cooldown = maxf(_cooldown, 0.8)
+		_set_act(Act.IDLE)
+
+
+func _start_lob(aim: Vector2, gap: Vector3) -> void:
+	facing_yaw = atan2(-gap.x, -gap.z)
+	rotation.y = facing_yaw
+	var inset := arena.grow(-0.8)
+	var cluster_inset := inset.grow(-LOB_CLUSTER_RADIUS)
+	var centre := aim.clamp(cluster_inset.position, cluster_inset.end) if cluster_inset.has_area() else aim
+	_lob_targets.clear()
+	_cooldown = 3.8 if armor_broken else 4.8
+	_set_act(Act.LOB)
+	var projectile_count := randi_range(3, 5)
+	var start_angle := randf_range(0.0, TAU)
+	for index in projectile_count:
+		var point := centre
+		if index > 0:
+			var angle := start_angle + TAU * float(index - 1) / float(projectile_count - 1)
+			point += Vector2.from_angle(angle) * randf_range(2.4, LOB_CLUSTER_RADIUS)
+		point = point.clamp(inset.position, inset.end)
+		var landing := Vector3(point.x, 0.0, point.y)
+		landing.y = TomatinaMap.ground_height(landing) + 0.04
+		_lob_targets.push_back(landing)
+		lob_warning.emit(landing, LOB_RELEASE + LOB_FLIGHT, index == 0)
+
+
+func _chase(delta: float, targets: Array) -> void:
+	var target := _nearest_target(targets)
 	if target == null:
 		_set_act(Act.IDLE)
 		return
 	var aim := Vector2(target.global_position.x, target.global_position.z)
-	var gap := Vector3(aim.x - global_position.x, 0.0, aim.y - global_position.z)
+	var gap := _flat_gap(target.global_position)
 	if gap.length_squared() > 0.01:
 		facing_yaw = rotate_toward(facing_yaw, atan2(-gap.x, -gap.z), turn_speed * delta)
 		rotation.y = facing_yaw
 	var distance := gap.length()
+	if _roar_wait <= 0.0 and _cooldown <= 0.0:
+		_roar_wait = ROAR_INTERVAL
+		_cooldown = ROAR_LENGTH + 0.45
+		_set_act(Act.ROAR)
+		special_warning.emit(self, Vector3.ZERO, ROAR_LENGTH)
+		return
 	if distance >= 6.0 and distance <= 30.0 and _cooldown <= 0.0 and _boss_charge_cooldown <= 0.0:
-		_boss_charge_direction = gap.normalized()
-		facing_yaw = atan2(-gap.x, -gap.z)
-		rotation.y = facing_yaw
-		_wave_hits.clear()
+		_charges_left = _next_charge_count
+		_next_charge_count = 3 if _next_charge_count == 2 else 2
 		_boss_charge_cooldown = CHARGE_COOLDOWN
-		_cooldown = CHARGE_WINDUP_SECONDS + CHARGE_SECONDS + CHARGE_RECOVERY + 0.8
-		_set_act(Act.CHARGE_WINDUP)
-		special_warning.emit(self, _boss_charge_direction, CHARGE_WINDUP_SECONDS)
+		_start_charge(gap)
 		return
 	if distance <= _wave_range() - 1.1 and _cooldown <= 0.0:
 		_wave_hits.clear()
@@ -385,12 +471,7 @@ func _chase(delta: float, targets: Array) -> void:
 		special_warning.emit(self, Vector3.ZERO, SLAM_IMPACT)
 		return
 	if distance >= 12.0 and distance <= 34.0 and _cooldown <= 0.0:
-		facing_yaw = atan2(-gap.x, -gap.z)
-		rotation.y = facing_yaw
-		_lob_at = Vector3(aim.x, 0.04, aim.y)
-		_cooldown = 3.8 if armor_broken else 4.8
-		_set_act(Act.LOB)
-		lob_warning.emit(_lob_at, LOB_RELEASE + LOB_FLIGHT)
+		_start_lob(aim, gap)
 		return
 	if distance < 3.0:
 		_set_act(Act.IDLE)
@@ -409,7 +490,7 @@ func _chase(delta: float, targets: Array) -> void:
 ## The boss replaces the unused topple angle with its action, phase and timer
 ## within the existing enemy packet. Quantized hundredths survive float32.
 func network_state() -> Array:
-	var flags := int(act) + (10 if armor_broken else 0)
+	var flags := int(act) | (16 if armor_broken else 0)
 	var packed := (flags * 100000 + mini(999, roundi(act_time * 100.0)) * 100
 		+ clampi(ceili(exposed_left * 8.0), 0, 99))
 	return [global_position, facing_yaw, health, packed, max_health]
@@ -420,8 +501,8 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	super.apply_network_state(new_position, yaw, new_health, 0.0, new_max_health, interpolate)
 	var packed := int(packed_pose)
 	var flags := packed / 100000
-	act = (flags % 10) as Act
-	armor_broken = flags >= 10
+	act = (flags & 15) as Act
+	armor_broken = (flags & 16) != 0
 	act_time = float((packed % 100000) / 100) * 0.01
 	exposed_left = float(packed % 100) / 8.0
 	_update_presentation()
@@ -452,7 +533,8 @@ func _advance_boss_charge(delta: float, targets: Array) -> void:
 		if nav != null and not nav.line_is_walkable(global_position, target.global_position):
 			continue
 		_wave_hits[target.peer_id] = true
-		target.apply_charge_impact(_boss_charge_direction, MayoEnemy.BRUTE_CHARGE_PUSH_SPEED, MayoEnemy.BRUTE_CHARGE_LIFT_SPEED)
+		target.apply_charge_impact(_boss_charge_direction, CHARGE_PUSH_SPEED, CHARGE_LIFT_SPEED,
+			CHARGE_CONFUSION_SECONDS)
 		slam_hit.emit(target, ENRAGED_CHARGE_DAMAGE if armor_broken else CHARGE_DAMAGE)
 	var flat_move := Vector2(after.x - before.x, after.z - before.z).length()
 	if boundary or flat_move < charge_speed * delta * 0.35 or act_time >= CHARGE_SECONDS:

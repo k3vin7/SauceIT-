@@ -115,7 +115,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 18
+const PROTOCOL_VERSION := 19
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 const ENEMY_SNAPSHOT_NEAR_DISTANCE := 42.0
 const ENEMY_SNAPSHOT_FAR_PERIOD := 5
@@ -144,7 +144,7 @@ const MAX_CLIENTS := 3
 ## a different fight. The host tosses it and sends the answer; the level rides
 ## along rather than being derived, so nobody has to guess which band a bottle
 ## is in either.
-const STATE_STRIDE := 23
+const STATE_STRIDE := 24
 ## Where one occupant is standing in the truck: x, y, z and the yaw they are
 ## facing. The truck carries no bottle, no health and no aim pitch, so it needs
 ## none of the sixteen floats a stage body does -- four, four times a frame at
@@ -2380,7 +2380,7 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			shooter.bottle_shake_input, float(shooter.character_index),
 			float(shooter.player.server_input_sequence), velocity.y,
 			shooter.player.mustard_slow, shooter.player.cheese_snag_left,
-			1.0 if shooter.player.in_mustard else 0.0]))
+			1.0 if shooter.player.in_mustard else 0.0, shooter.player.charge_effect_state()]))
 	return data
 
 
@@ -2426,7 +2426,7 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 			Vector3(data[index + 4], data[index + 19], data[index + 5]),
 			int(data[index + 8]), data[index + 9], data[index + 10],
 			data[index + 11], data[index + 12], int(data[index + 18]),
-			data[index + 20], data[index + 21], data[index + 22] > 0.5)
+			data[index + 20], data[index + 21], data[index + 22] > 0.5, data[index + 23])
 		# The bottle and what its nozzle is doing are the host's, for everyone
 		# including the peer holding it: a client that decided its own would
 		# catch at different moments from the screen next to it.

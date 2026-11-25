@@ -141,6 +141,8 @@ var _network_previous_position := Vector3.ZERO
 ## rushers arriving on the same frame both count.
 var _pending_enemy_impact := Vector3.ZERO
 var _charge_knockdown := false
+var _charge_confusion_seconds := 0.0
+var confusion_left := 0.0
 ## The top speed the ground allowed on the last frame the feet were on it: the
 ## most a jump may carry through the air. See `_physics_process`.
 var _air_carry := 0.0
@@ -193,6 +195,8 @@ func begin_death() -> void:
 	velocity = Vector3.ZERO
 	_pending_enemy_impact = Vector3.ZERO
 	_charge_knockdown = false
+	_charge_confusion_seconds = 0.0
+	confusion_left = 0.0
 
 
 ## Back at the start, whole -- and, through `reset_state`, out of whatever they
@@ -233,6 +237,8 @@ func reset_state() -> void:
 	wipe_timer = 0.0
 	_pending_enemy_impact = Vector3.ZERO
 	_charge_knockdown = false
+	_charge_confusion_seconds = 0.0
+	confusion_left = 0.0
 	cheese_snag_left = 0.0
 	if recovery_protection:
 		slip_grace = 1.2
@@ -304,7 +310,8 @@ func apply_enemy_impact(flat_direction: Vector3, push_speed: float,
 		_pending_enemy_impact.y, max_enemy_lift)
 
 
-func apply_charge_impact(direction: Vector3, push_speed: float, lift_speed: float) -> void:
+func apply_charge_impact(direction: Vector3, push_speed: float, lift_speed: float,
+		confusion_seconds := 0.0) -> void:
 	if recovery_protection and (state != State.NORMAL or slip_grace > 0.0 or damage_grace > 0.0):
 		return
 	if state == State.DEAD or _charge_knockdown:
@@ -314,6 +321,7 @@ func apply_charge_impact(direction: Vector3, push_speed: float, lift_speed: floa
 	velocity = Vector3.ZERO
 	_pending_enemy_impact = direction * push_speed + Vector3.UP * lift_speed
 	_charge_knockdown = true
+	_charge_confusion_seconds = confusion_seconds
 	fall_direction = 1.0
 	state = State.FALLING
 	_state_timer = 0.0
@@ -365,6 +373,7 @@ func _physics_process(delta: float) -> void:
 
 
 func _simulate_movement(delta: float) -> void:
+	confusion_left = maxf(confusion_left - delta, 0.0)
 	if state != State.NORMAL:
 		_advance_fall(delta)
 	else:
@@ -407,6 +416,8 @@ func _simulate_movement(delta: float) -> void:
 			top = maxf(top, minf(Vector2(velocity.x, velocity.z).length(), _air_carry))
 		desired *= top
 		desired *= mustard_factor()
+		if confusion_left > 0.0:
+			desired *= 0.75
 		if cheese_snag_left > 0.0 and (not recovery_protection or slip_grace <= 0.0):
 			desired *= 0.40
 		if state == State.NORMAL:
@@ -418,7 +429,7 @@ func _simulate_movement(delta: float) -> void:
 	if state != State.NORMAL and not crawling:
 		rate = forward_slip_slide_friction if fall_direction < 0.0 else slip_slide_friction
 		if _charge_knockdown and not is_on_floor():
-			rate = slip_slide_friction * 0.5
+			rate = 0.0 if _charge_confusion_seconds > 0.0 else slip_slide_friction * 0.5
 	velocity.x = move_toward(velocity.x, desired.x, rate * delta)
 	velocity.z = move_toward(velocity.z, desired.z, rate * delta)
 
@@ -622,16 +633,19 @@ func _advance_wipe(delta: float) -> void:
 ## standing up line up frame for frame on both machines.
 func apply_network_state(new_position: Vector3, yaw: float, new_velocity: Vector3,
 		new_state: int, timer: float, direction: float, wipe: float,
-		new_health: float, acknowledged := -1, slow := 0.0, snag := 0.0, field_slow := false) -> void:
+		new_health: float, acknowledged := -1, slow := 0.0, snag := 0.0, field_slow := false,
+		charge_effect := 0.0) -> void:
 	# move_and_slide uses the engine's current step. Replaying inside an RPC
 	# callback would use a variable render delta instead of the fixed physics tick.
 	if predict_local and acknowledged >= 0 and not _reconciling:
 		_pending_reconciliation = [new_position, yaw, new_velocity, new_state, timer,
-			direction, wipe, new_health, acknowledged, slow, snag, field_slow]
+			direction, wipe, new_health, acknowledged, slow, snag, field_slow, charge_effect]
 		return
+	if predict_local and acknowledged >= 0 and acknowledged < _last_ack:
+		return
+	_charge_confusion_seconds = maxf(-charge_effect, 0.0)
+	confusion_left = maxf(charge_effect, 0.0)
 	if predict_local and acknowledged >= 0:
-		if acknowledged < _last_ack:
-			return
 		_last_ack = acknowledged
 		var rendered := global_position + _prediction_error
 		var predicted := global_position
@@ -695,6 +709,11 @@ func network_state() -> Array:
 		fall_direction, wipe_timer, health]
 
 
+## Negative during the launch, positive while the confusion is active.
+func charge_effect_state() -> float:
+	return -_charge_confusion_seconds if _charge_confusion_seconds > 0.0 else confusion_left
+
+
 func is_incapacitated() -> bool:
 	return state != State.NORMAL
 
@@ -746,8 +765,12 @@ func fall_tilt() -> float:
 		State.STUMBLE:
 			return 0.0
 		State.FALLING:
+			if _charge_confusion_seconds > 0.0:
+				return 0.3 * clampf(_state_timer / fall_duration, 0.0, 1.0)
 			return clampf(_state_timer / maxf(fall_duration, 0.0001), 0.0, 1.0)
 		State.DOWN:
+			if confusion_left > 0.0:
+				return lerpf(0.3, 1.0, clampf(_state_timer / 0.16, 0.0, 1.0))
 			return 1.0
 		State.STANDING_UP:
 			return 1.0 - clampf(_state_timer / maxf(stand_up_duration, 0.0001), 0.0, 1.0)
@@ -767,6 +790,9 @@ func _advance_fall(delta: float) -> void:
 	elif state == State.FALLING and _state_timer >= fall_duration \
 			and (not _charge_knockdown or (is_on_floor() and _pending_enemy_impact.is_zero_approx())):
 		_charge_knockdown = false
+		if _charge_confusion_seconds > 0.0:
+			confusion_left = _charge_confusion_seconds
+			_charge_confusion_seconds = 0.0
 		state = State.DOWN
 		_state_timer = 0.0
 	elif state == State.DOWN and _state_timer >= down_duration:
