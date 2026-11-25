@@ -65,61 +65,19 @@ vec2 chart_uv(vec3 about, float up, float height_of_body) {
 
 
 #include "res://scripts/sauce_toon.gdshaderinc"
+#include "res://scripts/body_sauce_mask.gdshaderinc"
+#include "res://scripts/ketchup_surface.gdshaderinc"
 
 varying vec3 body_position;
 varying vec3 body_normal;
+varying float ketchup_gloss;
 
 void vertex() {
 	body_position = (rest_to_body * vec4(VERTEX, 1.0)).xyz;
 	body_normal = (rest_to_body * vec4(NORMAL, 0.0)).xyz;
 }
 
-// What the mayo palette is multiplied by where the cell holds another sauce, and
-// how the sauce is found: the thickest of the nine texels around this fragment,
-// never the filtered sample.
-//
-// **The thickest neighbour rather than this fragment's own texel.** `painted`
-// here comes from a `filter_linear` sample, so the edge of a stain is drawn over
-// texels that are still clean -- and a clean byte is 0, which unpacks to sauce 0,
-// which is mayo. Read locally, every mustard and ketchup stain wore a
-// mayo-coloured fringe exactly where the eye goes first. The fringe is there
-// because a painted cell bled into this one, so the sauce to draw is the sauce of
-// whatever bled.
 uniform vec4 mustard_tint : source_color = vec4(1.00, 0.86, 0.26, 1.0);
-uniform vec4 ketchup_tint : source_color = vec4(0.34, 0.022, 0.016, 1.0);
-
-vec3 sauce_tint(vec2 at) {
-	ivec2 size = textureSize(mask_texture, 0);
-	ivec2 middle = clamp(ivec2(at * vec2(size)), ivec2(0), size - ivec2(1));
-	// Clamped rather than wrapped, which on a grid that wraps is wrong for the one
-	// column either side of the seam -- and wrong only about the tint of a fringe
-	// pixel there, which is a cheaper error than a branch per fragment.
-	ivec2 lo = clamp(middle - ivec2(1), ivec2(0), size - ivec2(1));
-	ivec2 hi = clamp(middle + ivec2(1), ivec2(0), size - ivec2(1));
-	// This cell's own sauce whenever it has one. Borrowing the thickest
-	// neighbour's unconditionally drew every thin cell beside a thick one in the
-	// thick one's sauce -- ketchup over a deep mayo slick restarts at one layer,
-	// so the slick won "thickest" and the trail wore a cream halo.
-	float own = floor(texelFetch(mask_texture, middle, 0).r * 255.0 + 0.5);
-	float kind = mod(own, 4.0);
-	if (floor(own / 4.0) <= 0.0) {
-		// Empty: this fragment is in the bleed past the last painted texel, so it
-		// takes the sauce of whatever bled into it.
-		float best = -1.0;
-		for (int y = lo.y; y <= hi.y; y++) {
-			for (int x = lo.x; x <= hi.x; x++) {
-				float byte = floor(texelFetch(mask_texture, ivec2(x, y), 0).r * 255.0 + 0.5);
-				float depth = floor(byte / 4.0);
-				if (depth > best) {
-					best = depth;
-					kind = mod(byte, 4.0);
-				}
-			}
-		}
-	}
-	vec3 tint = mix(vec3(1.0), mustard_tint.rgb, step(0.5, kind) * step(kind, 1.5));
-	return mix(tint, ketchup_tint.rgb, step(1.5, kind) * step(kind, 2.5));
-}
 
 void fragment() {
 	vec3 about = body_position - axis_offset;
@@ -128,13 +86,28 @@ void fragment() {
 	if (coverage < paint_threshold) {
 		discard;
 	}
-	ALBEDO = mayo_color.rgb * sauce_tint(uv);
-	if (dot(VERTEX, VERTEX) < 2304.0) {
-		ALBEDO = sauce_toon_finish(ALBEDO, coverage, paint_threshold,
-			uv * vec2(textureSize(mask_texture, 0)));
+	ivec2 size = textureSize(mask_texture, 0);
+	float kind = body_sauce_kind(mask_texture, uv, size);
+	ketchup_gloss = 0.0;
+	if (kind == 2.0) {
+		vec2 surface = ketchup_surface(mask_texture, uv, size, about, true);
+		float fill = surface.x;
+		if (fill < 0.5) {
+			discard;
+		}
+		ALBEDO = ketchup_albedo(about, surface, coverage);
+		EMISSION = ALBEDO * 0.18;
+		ROUGHNESS = mix(0.45, 0.32, fill);
+		ketchup_gloss = mix(0.08, 0.19, fill);
+	} else {
+		vec3 tint = kind == 1.0 ? mustard_tint.rgb : vec3(1.0);
+		ALBEDO = mayo_color.rgb * tint;
+		if (dot(VERTEX, VERTEX) < 2304.0) {
+			ALBEDO = sauce_toon_finish(ALBEDO, coverage, paint_threshold, uv * vec2(size));
+		}
+		EMISSION = ALBEDO * 0.28;
+		ROUGHNESS = 1.0;
 	}
-	EMISSION = ALBEDO * 0.28;
-	ROUGHNESS = 1.0;
 	METALLIC = 0.0;
 }
 
@@ -142,4 +115,10 @@ void fragment() {
 // in the shadow so a stain on the dark side still reads.
 void light() {
 	DIFFUSE_LIGHT += sauce_toon_light(NORMAL, LIGHT, ATTENUATION, LIGHT_COLOR, ALBEDO);
+	if (ketchup_gloss > 0.0) {
+		vec3 half_direction = normalize(LIGHT + VIEW);
+		float highlight = pow(max(dot(NORMAL, half_direction), 0.0), 36.0);
+		highlight *= max(dot(NORMAL, LIGHT), 0.0) * ketchup_gloss;
+		SPECULAR_LIGHT += LIGHT_COLOR * ATTENUATION * highlight / PI;
+	}
 }

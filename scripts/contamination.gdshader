@@ -73,6 +73,7 @@ varying vec2 pavement_position;
 #include "res://assets/props/Stage2_TomatinaVillage/tomatina_splatter.gdshaderinc"
 
 #include "res://scripts/sauce_toon.gdshaderinc"
+#include "res://scripts/ketchup_surface.gdshaderinc"
 
 void vertex() {
 	pavement_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xz;
@@ -104,9 +105,9 @@ void fragment() {
 	// case it was for: the filtered sample bleeds a cell past the last painted
 	// texel, so the edge of a stain is drawn over clean cells, and a clean byte is
 	// 0, which unpacks to sauce 0, which is mayo.
-	float own = floor(texelFetch(mask_texture, texel, 0).r * 255.0 + 0.5);
+	float own = floor(thickness * 255.0 + 0.5);
 	float kind = mod(own, 4.0);
-	if (floor(own / 4.0) <= 0.0) {
+	if (painted > 0.5 && floor(own / 4.0) <= 0.0) {
 		// Only a cell with nothing on it borrows: the fragment is in the bleed
 		// past the last painted texel, and the sauce to draw there is the sauce of
 		// whatever bled into it.
@@ -136,7 +137,6 @@ void fragment() {
 	float deep = painted * step(slip_threshold, thickness);
 
 	vec3 clean = clean_color.rgb;
-	float tomato_marks = 0.0;
 	if (paved) {
 		vec2 brick_size = vec2(1.22, 0.81);
 		vec2 brick = pavement_position / brick_size;
@@ -161,27 +161,22 @@ void fragment() {
 		float brick_cutoff = mix(0.96, 0.68, smoothstep(0.60, 0.93, patch));
 		vec3 paving = mix(grey, clay, step(brick_cutoff, grain));
 		vec3 stone = mix(clean, paving * (1.0 - 0.23 * max(seam.x, seam.y)), detail);
-		float large = tomato_splat(pavement_position, 2.7, 0.69);
-		float small = tomato_splat(pavement_position + vec2(3.7, 1.1), 1.12, 0.46);
-		tomato_marks = max(large, small * 0.81) * on_street * (festival_before_attack ? 0.35 : 1.0);
-		vec3 ketchup = mix(vec3(0.32, 0.16, 0.12), vec3(0.45, 0.23, 0.16), grain);
-		stone = mix(stone, ketchup, tomato_marks * 0.42);
+		float large = tomato_splat(pavement_position, 2.36, 0.93);
+		float medium = tomato_splat(pavement_position + vec2(-1.6, 2.8), 1.34, 0.74);
+		float small = tomato_splat(pavement_position + vec2(3.7, 1.1), 0.80, 0.76);
+		float tomato_marks = max(large, max(medium * 0.90, small * 0.81));
+		tomato_marks *= on_street * (festival_before_attack ? 0.35 : 1.0);
+		vec3 ketchup = mix(vec3(0.24, 0.072, 0.049), vec3(0.37, 0.126, 0.080), grain);
+		stone = mix(stone, ketchup, tomato_marks * 0.73);
 		clean = mix(vec3(0.18, 0.135, 0.102), stone, on_street);
 	}
 	vec3 stained = mix(clean, mayo_color.rgb * tint, painted);
 	stained = mix(stained, mayo_color_mid.rgb * tint, mid);
 	stained = mix(stained, mayo_color_thick.rgb * tint, thick);
 	vec3 base_albedo = mix(stained, deep_color.rgb * tint, deep);
-	if (paved && kind > 1.5 && kind < 2.5) {
-		// Solid juice over the pavers, a little thinner in the ripples.
-		float wave = sin(pavement_position.x * 1.48 + sin(pavement_position.y * 1.15))
-			* cos(pavement_position.y * 2.07) * 0.5 + 0.5;
-		vec3 juice = mix(vec3(0.30, 0.024, 0.014), vec3(0.46, 0.05, 0.03), wave);
-		juice = mix(juice, vec3(0.39, 0.023, 0.013), tomato_marks * 0.8);
-		base_albedo = mix(clean, juice, painted * mix(0.9, 1.0, wave));
-	}
 	ALBEDO = base_albedo;
-	if (painted > 0.5 && dot(VERTEX, VERTEX) < 2304.0) {
+	bool ketchup = paved && painted > 0.5 && kind == 2.0;
+	if (!ketchup && painted > 0.5 && dot(VERTEX, VERTEX) < 2304.0) {
 		ALBEDO = sauce_toon_finish(ALBEDO, coverage, paint_threshold, UV * vec2(mask_size));
 	}
 
@@ -189,11 +184,13 @@ void fragment() {
 	rough = mix(rough, mix(mayo_roughness, deep_roughness, 0.3), mid);
 	rough = mix(rough, mix(mayo_roughness, deep_roughness, 0.6), thick);
 	ROUGHNESS = mix(rough, deep_roughness, deep);
-	if (paved && kind > 1.5 && kind < 2.5) {
-		ROUGHNESS = mix(ROUGHNESS, 0.22, painted * 0.86);
-	}
-	if (paved && kind > 1.5 && kind < 2.5) {
-		ROUGHNESS = mix(ROUGHNESS, 0.28, painted);
+	if (ketchup) {
+		vec3 position = vec3(pavement_position.x, 0.0, pavement_position.y);
+		vec2 surface = ketchup_surface(mask_texture, UV, mask_size, position, false);
+		float fill = surface.x;
+		ALBEDO = mix(clean, ketchup_albedo(position, surface, coverage) * 0.50, fill * 0.96);
+		ROUGHNESS = mix(clean_roughness, mix(0.49, 0.35, fill), fill);
+		SPECULAR = mix(0.5, 0.29, fill);
 	}
 	if (paved && painted > 0.5 && kind < 1.5 && floor(own / 4.0) >= (kind > 0.5 ? 2.0 : 3.0)) {
 		float stripe = smoothstep(0.55, 0.72, sin((pavement_position.x + pavement_position.y) * 9.0));

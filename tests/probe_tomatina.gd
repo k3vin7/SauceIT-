@@ -744,9 +744,20 @@ func _run() -> void:
 		var eye: Vector3 = player.global_position + Vector3.UP * scene.eye_height
 		var to_swept: Vector3 = swept.global_position - eye
 		scene._local.aim_pitch = atan2(to_swept.y, Vector2(to_swept.x, to_swept.z).length())
+	# Put a detached ketchup drop between the sample centres of two spray columns.
+	var line: Dictionary = scene._hose_line(scene._local)
+	var spray_samples: PackedVector3Array = scene._hose_samples(line["eye"], line["end"])
+	var drop_position := spray_samples[mini(10, spray_samples.size() - 1)] \
+		+ Vector3.BACK * 0.22 + Vector3.RIGHT * 0.30
+	var grid := floor_body.grid
+	var drop_cell := grid.cell_of(floor_body._to_grid(drop_position))
+	var dry_neighbours := Vector2i.ONE * ceili(0.75 / grid.cell_size)
+	grid.fill_rect(drop_cell - dry_neighbours, drop_cell + dry_neighbours, 0, ContaminationGrid.KIND_MAYO)
+	grid.fill_rect(drop_cell, drop_cell, 1, ContaminationGrid.KIND_KETCHUP)
 	scene.tomato_action(peer, 0)
 	_check(scene._hose_slot_of(peer) == 0, "[E] at the hose stand did not open the hose")
 	scene._advance_fire_hoses(0.016)
+	_check(floor_body.thickness_at(drop_position) == 0, "the hose missed a detached ketchup drop between samples")
 	var wet_after_first := floor_body.thickness_at(wet)
 	var wet_kind := floor_body.sauce_kind_at(wet)
 	# The first tick kills whatever was standing in the jet, and a grunt bursts

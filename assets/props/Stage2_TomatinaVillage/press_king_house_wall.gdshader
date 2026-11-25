@@ -24,12 +24,8 @@ void fragment() {
 
 	if (weathered && abs(normal.y) < 0.36) {
 		vec2 at = vec2(across, wall_position.y * 0.82) + vec2(1.93, 0.49);
-		float blot = tomato_splat(at, 1.63, 0.66);
-		float dots = tomato_splat(at + vec2(3.31, 2.5), 0.63, 0.43);
-		float stain = max(blot, dots * 0.83) * (1.0 - smoothstep(1.8, 4.0, wall_position.y));
-		float stain_pick = tomato_hash(floor(at * 0.69));
-		vec3 ketchup = mix(vec3(0.32, 0.032, 0.016), vec3(0.57, 0.063, 0.029), stain_pick);
-		color = mix(color, mix(ketchup, vec3(0.31, 0.18, 0.13), 0.40), stain * 0.58);
+		float stain = tomato_wall_stain(at) * (1.0 - smoothstep(1.8, 4.0, wall_position.y));
+		color = mix(color, tomato_wall_stain_color(at), stain * 0.76);
 	}
 
 	if (masonry && abs(normal.y) < 0.36) {

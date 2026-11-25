@@ -83,6 +83,7 @@ func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 	radius = capsule_radius
 	height = capsule_height
 	grid.wrap_x = true
+	grid.scatter_ketchup = true
 	# A body is reconfigured when its player switches character, and the grid
 	# rebuild underneath wipes the mask. The sauce already on them has to come
 	# through: a keypress is not a wash. Snapshot first, put it back after.

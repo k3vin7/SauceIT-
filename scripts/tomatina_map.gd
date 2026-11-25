@@ -1232,10 +1232,14 @@ static func fire_truck_box() -> Dictionary:
 
 # --- the floor ----------------------------------------------------------------
 
-## Clip the starting juice to the curved streets. Ragged tile edges and an
-## oval plaza stain keep the old straight-sided blocks out of the artwork.
+## Seed overlapping spills along the streets and in the plaza.
 static func seed_floor(floor_body: FloorContamination) -> void:
 	_ensure_layout()
+	var grid := floor_body.grid
+	var floor_position := floor_body.global_position
+	var grid_origin := Vector2(StreetMap.ORIGIN_CELL) \
+		+ (Vector2(floor_position.x, floor_position.z) - grid.extent * 0.5) / StreetMap.CELL
+	var rng := RandomNumberGenerator.new()
 	for cell: Vector2i in _floor_legs:
 		if _floor_legs[cell] < 0:
 			continue
@@ -1247,17 +1251,40 @@ static func seed_floor(floor_body: FloorContamination) -> void:
 			if zone.has_point(cell) and (dirt > 2):
 				juicy = true
 				break
-		if juicy:
-			var shift := Vector2(float(dirt % 5 - 2), float(dirt % 3 - 1)) * 0.095
-			var spread := Vector2(0.54 + float(dirt % 4) * 0.043, 0.49 + float(dirt % 5) * 0.05)
-			for row in 14:
-				var top := float(row) / 14.0
-				var bottom := float(row + 1) / 14.0
-				var t := ((top + bottom) * 0.5 - 0.5 - shift.y) / spread.y
-				if absf(t) >= 1.0:
-					continue
-				var radius := spread.x * sqrt(1.0 - t * t)
-				var centre := 0.5 + shift.x + sin(t * 4.0 + float(dirt)) * 0.065
-				var low := at_cell(Vector2(cell) + Vector2(maxf(0.0, centre - radius), top))
-				var high := at_cell(Vector2(cell) + Vector2(minf(1.0, centre + radius), bottom))
-				floor_body.fill_rect(low, high, 1, ContaminationGrid.KIND_KETCHUP)
+		if not juicy:
+			continue
+		rng.seed = SEED ^ (cell.x * 73856093) ^ (cell.y * 19349663)
+		var centre := point + Vector2(rng.randf_range(-0.22, 0.22), rng.randf_range(-0.22, 0.22))
+		var spread := Vector2(rng.randf_range(0.44, 0.66), rng.randf_range(0.34, 0.56))
+		var direction := Vector2.from_angle(rng.randf_range(0.0, TAU))
+		var shear := rng.randf_range(-0.45, 0.45)
+		var phase := rng.randf_range(0.0, TAU)
+		_seed_ketchup_blot(grid, grid_origin, centre, spread, shear, phase)
+		var trail := direction * spread
+		_seed_ketchup_blot(grid, grid_origin, centre + trail * 0.88,
+			spread * Vector2(0.45, 0.37), -shear, phase + 1.5)
+		_seed_ketchup_blot(grid, grid_origin, centre + trail * 1.45 + direction.orthogonal() * 0.13,
+			spread * Vector2(0.17, 0.14), shear, phase)
+
+
+## Rasterise a rounded spill at contamination-cell resolution. It can cross a
+## layout-cell boundary anywhere the street continues.
+static func _seed_ketchup_blot(grid: ContaminationGrid, origin: Vector2, centre: Vector2,
+		spread: Vector2, shear: float, phase: float) -> void:
+	var spacing := grid.cell_size / StreetMap.CELL
+	var first_row := ceili((centre.y - spread.y - origin.y) / spacing - 0.5)
+	var last_row := floori((centre.y + spread.y - origin.y) / spacing - 0.5)
+	for row in range(first_row, last_row + 1):
+		var y := origin.y + (float(row) + 0.5) * spacing
+		var t := clampf((y - centre.y) / spread.y, -1.0, 1.0)
+		var radius := spread.x * sqrt(1.0 - t * t)
+		var middle := centre.x + spread.y * (shear * t + 0.12 * sin(t * 5.0 + phase))
+		var left := middle - radius * (0.98 + 0.16 * sin(t * 8.0 + phase))
+		var right := middle + radius * (0.98 + 0.13 * sin(t * 6.0 - phase))
+		var map_row := floori(y)
+		for column in range(floori(left), floori(right) + 1):
+			if int(_floor_legs.get(Vector2i(column, map_row), -1)) < 0:
+				continue
+			var start := ceili((maxf(left, float(column)) - origin.x) / spacing - 0.5)
+			var end := ceili((minf(right, float(column + 1)) - origin.x) / spacing - 0.5) - 1
+			grid.fill_rect(Vector2i(start, row), Vector2i(end, row), 1, ContaminationGrid.KIND_KETCHUP)

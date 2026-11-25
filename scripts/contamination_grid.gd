@@ -20,6 +20,7 @@ const ShaderFile := preload("res://scripts/contamination.gdshader")
 ## feature. Every other surface now gets the same thing in metres.
 const EDGE_WOBBLE_METRES := 0.042
 const EDGE_FEATURE_METRES := 0.1
+const KETCHUP_DROP_ANGLES := [-0.85, 0.12, 1.04, 2.68, -2.16]
 
 var cell_size := 0.1
 var extent := Vector2(1.0, 1.0)
@@ -27,6 +28,7 @@ var extent := Vector2(1.0, 1.0)
 ## unwrapped around its own axis needs: a splat near the seam has to carry on
 ## round the other side instead of being clipped off.
 var wrap_x := false
+var scatter_ketchup := false
 var width := 1
 var height := 1
 ## One byte per cell, holding **which sauce is on it and how thick that sauce
@@ -246,7 +248,7 @@ func is_painted(local: Vector2) -> bool:
 	return cells[cell.y * width + wrapped_x(cell.x)] >> KIND_BITS > 0
 
 
-## Marks a disc of `radius_meters` around a local position, and returns the
+## Marks the surface around a local position, and returns the
 ## centre cell it painted around, or (-1, -1) if the position was off the grid.
 ## The radius is given in metres and converted here, so changing cell_size does
 ## not change how big a splat is.
@@ -282,6 +284,11 @@ func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
 			_coats[coat] = {}
 		coated = _coats[coat]
 	centre.x = wrapped_x(centre.x)
+	if scatter_ketchup and kind == KIND_KETCHUP:
+		var radius_in_cells := maxf(1.0, radius_meters * 1.20 / cell_size)
+		_paint_ketchup_scatter(centre, radius_in_cells, deposit, coat >= 0, coated)
+		return centre
+
 	var radius := maxi(1, roundi(radius_meters / cell_size))
 	var scale := maxf(metres_per_cell, 0.0001)
 	# The wobble and its features, converted from metres into this grid's cells.
@@ -314,7 +321,6 @@ func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
 		for lx in lattice_w:
 			lattice[ly * lattice_w + lx] = _cell_noise(lattice_x0 + lx, lattice_y0 + ly)
 
-	var changed := false
 	# has_cell, wrapped_x and a Vector2 length are all inlined below: this loop
 	# runs once per cell in the brush's bounding box, which on a big brush is
 	# tens of thousands of times per splat, and a GDScript call is dear.
@@ -359,47 +365,81 @@ func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
 			var reach := float(radius) + edge_jitter
 			# Squared on both sides, to keep the square root out of the loop.
 			if reach > 0.0 and distance_squared <= reach * reach:
-				# Already part of this pass: the stream crossing the same cell
-				# again inside one trigger pull adds nothing.
-				if coat >= 0:
-					if coated.has(index):
-						continue
-					coated[index] = true
-				# Added, not set. What makes a patch dangerous is how many
-				# passes have gone over it, and each one adds its layer to
-				# whatever the last one left.
-				var packed := int(cells[index])
-				var was := packed >> KIND_BITS
-				# One sauce per cell, and the newest one owns it. Adding to
-				# whatever was there instead would let a stretch of mustard be
-				# finished off by a single pass of mayo: the cell would read as
-				# mayo at a mustard puddle's thickness, which is a slip the
-				# player was given no chance to see coming.
-				var stacked := was if (packed & KIND_MASK) == kind else 0
-				var now := mini(stacked + deposit, MAX_THICKNESS)
-				cells[index] = (now << KIND_BITS) | kind
-				if was == 0:
-					painted_count += 1
-				# Taking a cell over can make it *thinner*, so this counts both
-				# ways. One-way counting is how a running total quietly drifts
-				# from the scan it stands in for.
-				if was < deep_threshold and now >= deep_threshold:
-					deep_count += 1
-				elif was >= deep_threshold and now < deep_threshold:
-					deep_count -= 1
-				_touch_tile(column, row)
-				changed = true
-	if changed:
-		dirty = true
+				_deposit_cell(cell, index, here, deposit, kind, coat >= 0, coated)
 	return centre
+
+
+## A round, asymmetric blot with a short smear and scattered droplets.
+## Seed the silhouette from the impact cell so the host and every peer can
+## reconstruct it from the same splat packet.
+func _paint_ketchup_scatter(centre: Vector2i, radius: float, deposit: int,
+		track_coat: bool, coated: Dictionary) -> void:
+	var covered: Dictionary[Vector2i, bool] = {}
+	var origin := Vector2(centre)
+	var rotation := PI * _cell_noise(centre.x, centre.y)
+	var flow := Vector2.from_angle(rotation)
+	var bend := 0.48 * _cell_noise(centre.x + 13, centre.y - 5)
+	_stamp_ellipse(covered, origin - flow * radius * 0.14, flow, Vector2(1.10, 0.91) * radius)
+	var smear := flow.rotated(bend)
+	_stamp_ellipse(covered, origin + smear * radius * 0.84, smear, Vector2(0.86, 0.55) * radius)
+	for index in KETCHUP_DROP_ANGLES.size():
+		var skew := _cell_noise(centre.x + 17 * index, centre.y - 31)
+		var spread := _cell_noise(centre.x - 23, centre.y + 19 * index)
+		var axis := Vector2.from_angle(rotation + KETCHUP_DROP_ANGLES[index] + skew * 0.32)
+		var reach := maxf(3.0, radius * (2.70 + 0.49 * spread))
+		var drop := (origin + axis * reach).round()
+		var size := Vector2(0.37 + 0.18 * skew, 0.21 + 0.08 * skew) * radius
+		_stamp_ellipse(covered, drop, axis, size)
+
+	for cell: Vector2i in covered:
+		var index := cell.y * width + cell.x
+		var here := int(cells[index])
+		if here >> KIND_BITS < MAX_THICKNESS or (here & KIND_MASK) != KIND_KETCHUP:
+			_deposit_cell(cell, index, here, deposit, KIND_KETCHUP, track_coat, coated)
+
+
+func _stamp_ellipse(covered: Dictionary[Vector2i, bool], centre: Vector2,
+		axis: Vector2, radii: Vector2) -> void:
+	var side := axis.orthogonal()
+	var span := (axis * radii.x).abs() + (side * radii.y).abs()
+	var first := Vector2i((centre - span).ceil())
+	var last := Vector2i((centre + span).floor())
+	for row in range(maxi(first.y, 0), mini(last.y + 1, height)):
+		for column in range(first.x, last.x + 1):
+			if not wrap_x and (column < 0 or column >= width):
+				continue
+			var offset := Vector2(column, row) - centre
+			var local := Vector2(offset.dot(axis), offset.dot(side)) / radii
+			if local.length_squared() <= 1.0:
+				covered[Vector2i(wrapped_x(column), row)] = true
+
+
+func _deposit_cell(cell: Vector2i, index: int, packed: int, deposit: int, kind: int,
+		track_coat: bool, coated: Dictionary) -> void:
+	# Each pass adds one layer per cell. Switching sauces starts a fresh layer.
+	if track_coat:
+		if coated.has(index):
+			return
+		coated[index] = true
+	var was := packed >> KIND_BITS
+	var stacked := was if (packed & KIND_MASK) == kind else 0
+	var now := mini(stacked + deposit, MAX_THICKNESS)
+	cells[index] = (now << KIND_BITS) | kind
+	if was == 0:
+		painted_count += 1
+	if was < deep_threshold and now >= deep_threshold:
+		deep_count += 1
+	elif was >= deep_threshold and now < deep_threshold:
+		deep_count -= 1
+	_touch_tile(cell.x, cell.y)
+	dirty = true
 
 
 ## Wipes the grid. Both halves of the mask go together -- clearing one and not
 ## the other is how a wiped surface keeps showing its old stain.
 ## Sets every cell from `first` to `last` inclusive to `thickness` of `kind`,
-## clipped to the grid. No brush and no edge noise: for a floor that starts a
-## stage already under sauce, where the edge is the kerb, not a splat's rim.
-func fill_rect(first: Vector2i, last: Vector2i, thickness: int, kind: int) -> void:
+## clipped to the grid. Returns whether any cell changed.
+func fill_rect(first: Vector2i, last: Vector2i, thickness: int, kind: int) -> bool:
 	var level := clampi(thickness, 0, MAX_THICKNESS)
 	var packed := (level << KIND_BITS) | (kind & KIND_MASK)
 	var top := maxi(first.y, 0)
@@ -407,13 +447,18 @@ func fill_rect(first: Vector2i, last: Vector2i, thickness: int, kind: int) -> vo
 	var left := maxi(first.x, 0)
 	var right := mini(last.x, width - 1)
 	if top > bottom or left > right:
-		return
+		return false
+	var changed := false
 	for row in range(top, bottom + 1):
 		var row_base := row * width
 		for column in range(left, right + 1):
 			var index := row_base + column
-			var was := int(cells[index]) >> KIND_BITS
+			var previous := int(cells[index])
+			if previous == packed:
+				continue
+			var was := previous >> KIND_BITS
 			cells[index] = packed
+			changed = true
 			if was == 0 and level > 0:
 				painted_count += 1
 			elif was > 0 and level == 0:
@@ -422,12 +467,15 @@ func fill_rect(first: Vector2i, last: Vector2i, thickness: int, kind: int) -> vo
 				deep_count += 1
 			elif was >= deep_threshold and level < deep_threshold:
 				deep_count -= 1
+	if not changed:
+		return false
 	var first_tile_x := left - posmod(left, tile_cells)
 	var first_tile_y := top - posmod(top, tile_cells)
 	for row in range(first_tile_y, bottom + 1, tile_cells):
 		for column in range(first_tile_x, right + 1, tile_cells):
 			_touch_tile(column, row)
 	dirty = true
+	return true
 
 
 func clear() -> void:

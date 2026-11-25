@@ -9876,8 +9876,6 @@ func _hose_landed(line: Dictionary) -> bool:
 
 
 func _wash_floor_at(sample: Vector3) -> void:
-	if _floor.thickness_at(sample) <= 0:
-		return
 	var cell := _floor.wash_at(sample)
 	if cell.x >= 0:
 		_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR_CLEAR, -1, cell.x, cell.y]))

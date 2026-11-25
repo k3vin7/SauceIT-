@@ -137,7 +137,7 @@ func paint_mayo_cell(cell: Vector2i, coat := -1,
 	grid.paint_cell(cell, brush_radius, thickness_per_pass, coat, kind)
 
 
-## Cell-exact: true when there is any mayo at all under this position.
+## Returns the center of the wash patch when it cleared any sauce.
 func wash_at(world_position: Vector3) -> Vector2i:
 	var cell := grid.cell_of(_to_grid(world_position))
 	return cell if wash_cell(cell) else Vector2i(-1, -1)
@@ -148,8 +148,7 @@ func wash_cell(cell: Vector2i) -> bool:
 		return false
 	var reach := maxi(1, ceili(0.42 / grid.cell_size))
 	var offset := Vector2i.ONE * reach
-	grid.fill_rect(cell - offset, cell + offset, 0, ContaminationGrid.KIND_MAYO)
-	return true
+	return grid.fill_rect(cell - offset, cell + offset, 0, ContaminationGrid.KIND_MAYO)
 
 
 func is_mayo_at(world_position: Vector3) -> bool:
@@ -412,6 +411,7 @@ func _push_shader_values() -> void:
 
 func _rebuild_grid() -> void:
 	grid.configure(floor_size, cell_size, clean_color, mayo_color, tile_cells)
+	grid.scatter_ketchup = pavement_mask != null
 	# The grid keeps the count of cells past it, so it has to know where it is.
 	grid.deep_threshold = slip_thickness
 	_push_shader_values()

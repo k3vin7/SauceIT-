@@ -71,63 +71,32 @@ void vertex() {
 	surface_normal = NORMAL;
 }
 
-// What the mayo palette is multiplied by where the cell holds another sauce, and
-// how the sauce is found: the thickest of the nine texels around this fragment,
-// never the filtered sample.
-//
-// **The thickest neighbour rather than this fragment's own texel.** `painted`
-// here comes from a `filter_linear` sample, so the edge of a stain is drawn over
-// texels that are still clean -- and a clean byte is 0, which unpacks to sauce 0,
-// which is mayo. Read locally, every mustard and ketchup stain wore a
-// mayo-coloured fringe exactly where the eye goes first. The fringe is there
-// because a painted cell bled into this one, so the sauce to draw is the sauce of
-// whatever bled.
 uniform vec4 mustard_tint : source_color = vec4(1.00, 0.86, 0.26, 1.0);
-uniform vec4 ketchup_tint : source_color = vec4(0.34, 0.022, 0.016, 1.0);
-
-vec3 sauce_tint(vec2 at) {
-	ivec2 size = textureSize(mask_texture, 0);
-	ivec2 middle = clamp(ivec2(at * vec2(size)), ivec2(0), size - ivec2(1));
-	// Clamped rather than wrapped, which on a grid that wraps is wrong for the one
-	// column either side of the seam -- and wrong only about the tint of a fringe
-	// pixel there, which is a cheaper error than a branch per fragment.
-	ivec2 lo = clamp(middle - ivec2(1), ivec2(0), size - ivec2(1));
-	ivec2 hi = clamp(middle + ivec2(1), ivec2(0), size - ivec2(1));
-	// This cell's own sauce whenever it has one. Borrowing the thickest
-	// neighbour's unconditionally drew every thin cell beside a thick one in the
-	// thick one's sauce -- ketchup over a deep mayo slick restarts at one layer,
-	// so the slick won "thickest" and the trail wore a cream halo.
-	float own = floor(texelFetch(mask_texture, middle, 0).r * 255.0 + 0.5);
-	float kind = mod(own, 4.0);
-	if (floor(own / 4.0) <= 0.0) {
-		// Empty: this fragment is in the bleed past the last painted texel, so it
-		// takes the sauce of whatever bled into it.
-		float best = -1.0;
-		for (int y = lo.y; y <= hi.y; y++) {
-			for (int x = lo.x; x <= hi.x; x++) {
-				float byte = floor(texelFetch(mask_texture, ivec2(x, y), 0).r * 255.0 + 0.5);
-				float depth = floor(byte / 4.0);
-				if (depth > best) {
-					best = depth;
-					kind = mod(byte, 4.0);
-				}
-			}
-		}
-	}
-	vec3 tint = mix(vec3(1.0), mustard_tint.rgb, step(0.5, kind) * step(kind, 1.5));
-	return mix(tint, ketchup_tint.rgb, step(1.5, kind) * step(kind, 2.5));
-}
 
 #include "res://scripts/sauce_toon.gdshaderinc"
+#include "res://scripts/body_sauce_mask.gdshaderinc"
+#include "res://scripts/ketchup_surface.gdshaderinc"
 
 void fragment() {
 	vec3 about = surface_position - axis_offset;
 	vec2 uv = chart_uv(about, normalize(surface_normal).y, body_height);
 	float coverage = texture(mask_texture, uv).r;
 	float painted = step(paint_threshold, coverage);
-	vec3 stain = sauce_toon_finish(mayo_color.rgb * sauce_tint(uv), coverage, paint_threshold,
-		uv * vec2(textureSize(mask_texture, 0)));
-	ALBEDO = mix(clean_color.rgb, stain, painted);
-	ROUGHNESS = mix(clean_roughness, mayo_roughness, painted);
+	ALBEDO = clean_color.rgb;
+	ROUGHNESS = clean_roughness;
+	if (painted > 0.5) {
+		ivec2 size = textureSize(mask_texture, 0);
+		float kind = body_sauce_kind(mask_texture, uv, size);
+		if (kind == 2.0) {
+			vec2 surface = ketchup_surface(mask_texture, uv, size, about, true);
+			float fill = surface.x;
+			ALBEDO = mix(clean_color.rgb, ketchup_albedo(about, surface, coverage), fill);
+			ROUGHNESS = mix(clean_roughness, mix(0.45, 0.32, fill), fill);
+		} else {
+			vec3 tint = kind == 1.0 ? mustard_tint.rgb : vec3(1.0);
+			ALBEDO = sauce_toon_finish(mayo_color.rgb * tint, coverage, paint_threshold, uv * vec2(size));
+			ROUGHNESS = mayo_roughness;
+		}
+	}
 	METALLIC = 0.0;
 }
