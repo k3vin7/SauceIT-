@@ -2,8 +2,9 @@ extends AudioStreamPlayer
 ## Exactly one audible source. Fade out -> stop/swap -> fade in, never crossfade.
 var world
 const TRACK := "res://assets/audio/music/tomatina_trompeta.ogg"
-const BOSS_TRACK := "res://assets/audio/music/tomatina_boss.ogg"
+const BOSS_TRACK := "res://assets/audio/music/tomatina_boss_chase.ogg"
 const MIX_DB := -22.0
+const BOSS_MIX_DB := -19.0
 var tracks: Array[AudioStreamOggVorbis] = []
 var current_mode := 0
 var music_gain := 0.0
@@ -56,7 +57,7 @@ func _process(delta: float) -> void:
 			play()
 	else:
 		music_gain = move_toward(music_gain,1.0,delta/0.45)
-	var target := MIX_DB - float(current_mode)
+	var target := BOSS_MIX_DB if current_mode == 1 else MIX_DB
 	if priority_duck:
 		target -= 7.0
 	if cinematic:

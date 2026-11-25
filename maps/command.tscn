@@ -707,18 +707,18 @@ size = Vector3(8.12, 0.16, 0.16)
 material = SubResource("Mat_yellow")
 
 [node name="BezelBottom" type="CSGBox3D" parent="MapScreen"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.57, 1.19)
-size = Vector3(8.12, 0.16, 0.16)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.625, 1.19)
+size = Vector3(8.12, 0.05, 0.16)
 material = SubResource("Mat_yellow")
 
 [node name="BezelLeft" type="CSGBox3D" parent="MapScreen"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -3.98, 2.35, 1.19)
-size = Vector3(0.16, 3.72, 0.16)
+size = Vector3(0.16, 3.4, 0.16)
 material = SubResource("Mat_yellow")
 
 [node name="BezelRight" type="CSGBox3D" parent="MapScreen"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.98, 2.35, 1.19)
-size = Vector3(0.16, 3.72, 0.16)
+size = Vector3(0.16, 3.4, 0.16)
 material = SubResource("Mat_yellow")
 
 [node name="Land1" type="CSGBox3D" parent="MapScreen"]

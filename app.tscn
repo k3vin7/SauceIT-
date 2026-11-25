@@ -1,7 +1,8 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://scripts/app_root.gd" id="1_app"]
 [ext_resource type="Script" path="res://scripts/net_game.gd" id="2_net"]
+[ext_resource type="AudioStream" path="res://assets/audio/music/title_screen.ogg" id="3_title_music"]
 
 [node name="AppRoot" type="Node"]
 script = ExtResource("1_app")
@@ -10,6 +11,11 @@ script = ExtResource("1_app")
 script = ExtResource("2_net")
 
 [node name="SpaceRoot" type="Node" parent="."]
+
+[node name="TitleMusic" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("3_title_music")
+volume_db = -14.48
+bus = &"Music"
 
 [node name="FPSOverlay" type="CanvasLayer" parent="."]
 layer = 11

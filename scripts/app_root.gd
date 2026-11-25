@@ -27,6 +27,7 @@ const UI := preload("res://scripts/sauce_ui.gd")
 
 @onready var session: MayoNet = $Session
 @onready var space_root: Node = $SpaceRoot
+@onready var _title_music: AudioStreamPlayer = $TitleMusic
 @onready var _fps_badge: PanelContainer = $FPSOverlay/Badge
 @onready var _fps_value: Label = $FPSOverlay/Badge/Value
 
@@ -171,6 +172,8 @@ func _show_title(message := "") -> void:
 	_clear_all_ui()
 	# Solo rooms as well as hosted ones: `leave` puts either away.
 	session.leave()
+	if not _title_music.playing:
+		_title_music.play()
 	if not message.is_empty():
 		_notice = message
 	_set_mouse_visible(true)
@@ -1266,6 +1269,8 @@ func _clear_space() -> void:
 
 
 func _clear_all_ui() -> void:
+	if flow != Flow.TITLE:
+		_title_music.stop()
 	if _result_reveal_tween != null and _result_reveal_tween.is_valid():
 		_result_reveal_tween.kill()
 	_result_reveal_tween = null
