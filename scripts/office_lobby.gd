@@ -12,8 +12,10 @@ extends TruckLobby
 ##   * 출발 구역 -- 트럭 짐칸 안이다. 전원이 타면 잠깐 센 뒤 떠난다. 지도에는 출발 버튼이 없다.
 ##     사무실 앞벽의 문을 지나 중앙 홀을 곧장 가로지르면 나오는 트럭 탑승장에 있다.
 ##     홀의 왼쪽은 사격 연습장, 오른쪽은 샤워실이다.
-##   * 사격 연습장의 사선 카운터 -- 팀 전원이 연습장(`PracticeRange`)으로 간다. 거기서는
-##     소스 세 가지와 파츠 전부를 그냥 쓸 수 있고, 메뉴에서 사무실로 돌아온다.
+##   * 사격 연습장 -- 방 안에서 바로 쏜다. 사무실은 스테이지 2의 사격 코드를 그대로 돌리는
+##     월드를 그 방에 품고 있고(`PracticeRange`, `MayoPrototype.embedded`), 문을 지나
+##     들어서면 그 월드의 몸으로 바뀌어 걷다가 나오면 사무실의 몸으로 돌아온다. 연습은
+##     각자의 화면에서 돈다: 팀원에게는 방 안을 걷는 모습만 간다(`pin_occupant`).
 ## 출발 조건은 "전원이 캐릭터를 골랐고(`MayoNet.can_start_stage`) 전원이 구역 위에 있다"이다.
 ## 누가 구역에 있는지는 각자 자기 화면의 몸 위치로 세고(방장이 보내 준 자세), 실제 출발은
 ## 방장만 일으킨다.
@@ -42,7 +44,7 @@ const MAP_SIZE := Vector2(540.0, 330.0)
 ## 지도에서 사무실이 있는 곳(지도 크기에 대한 비율).
 const OFFICE_PIN := Vector2(0.12, 0.2)
 
-enum Target { NONE, MAP, LOCKER, SLOT, DOCTOR, WORKBENCH, CURTAIN, SHOWER, RANGE }
+enum Target { NONE, MAP, LOCKER, SLOT, DOCTOR, WORKBENCH, CURTAIN, SHOWER }
 
 const Parts := preload("res://scripts/tomatina_sauce_parts.gd")
 ## 사무실 소품의 상태 비트(`MayoNet.office_props`): 샤워 커튼이 닫혔다, 샤워기가 나온다.
@@ -109,7 +111,24 @@ var _curtain_tween: Tween
 var _curtain_position := Vector3.INF
 var _shower_position := Vector3.INF
 var _shower_anchor := Vector3.INF
-var _range_position := Vector3.INF
+## 사격 연습장의 월드(`MayoPrototype`, `embedded`). 사무실과 함께 만들어져 방 안에 서 있다.
+var _range_world: Node3D
+## 지금 이 화면의 플레이어가 연습장의 몸으로 걷고 있다.
+var _in_range := false
+## 방을 나선 직후 다시 들어서지 못하는 짧은 시간(문턱에서 오락가락하지 않게).
+var _range_cooldown := 0.0
+var _ui_layer: CanvasLayer
+## 옵션 화면이 스테이지에 넣는 값들(`GameOptions.apply_world`). 연습장의 월드로 넘긴다.
+var camera_motion_scale := 1.0:
+	set(value):
+		camera_motion_scale = value
+		if is_instance_valid(_range_world):
+			_range_world.camera_motion_scale = value
+var viewmodel_scale := 1.0:
+	set(value):
+		viewmodel_scale = value
+		if is_instance_valid(_range_world):
+			_range_world.viewmodel_scale = value
 ## 옆으로 긴 물건: Target -> [길이 방향(월드), 절반 길이(m)].
 var _spans: Dictionary = {}
 var _shower_water: CPUParticles3D
@@ -185,9 +204,10 @@ func stop_music() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	_update_range(delta)
 	super._physics_process(delta)
 	_update_departure(delta)
-	var target := _target() if not _busy() else Target.NONE
+	var target := _target() if not _busy() and not _in_range else Target.NONE
 	if _prompt != null:
 		# 스테이지와 같은 안내: 키 칸과 글자가 든 판이 그 물건 옆에 붙어 뜬다.
 		_prompt.visible = target != Target.NONE
@@ -210,10 +230,6 @@ func _physics_process(delta: float) -> void:
 			_prompt.text = "커튼 열기" if _prop_on(PROP_CURTAIN) else "커튼 닫기"
 		elif target == Target.SHOWER:
 			_prompt.text = "샤워기 끄기" if _prop_on(PROP_SHOWER) else "샤워기 켜기"
-		elif target == Target.RANGE:
-			_prompt.show_key = can_enter_range()
-			_prompt.text = "사격 연습 시작 (팀 전원 이동)" if can_enter_range() \
-				else "모두 캐릭터를 골라야 연습할 수 있습니다"
 	if target != Target.NONE and Input.is_action_just_pressed("interact"):
 		if target == Target.MAP:
 			open_map()
@@ -227,14 +243,13 @@ func _physics_process(delta: float) -> void:
 			toggle_prop(PROP_CURTAIN)
 		elif target == Target.SHOWER:
 			toggle_prop(PROP_SHOWER)
-		elif target == Target.RANGE:
-			enter_range()
 		else:
 			character_requested.emit()
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if input_locked:
+	# 연습장 안에서는 그 월드가 마우스와 키를 받는다.
+	if input_locked or _in_range:
 		return
 	if is_map_open() or is_slot_open() or is_bench_open():
 		if event.is_action_pressed("ui_cancel"):
@@ -253,6 +268,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func set_input_locked(locked: bool) -> void:
 	super.set_input_locked(locked)
+	if _in_range and is_instance_valid(_range_world):
+		_range_world.set_menu_input_enabled(not locked)
 	# 지도나 슬롯머신을 띄운 채로 메뉴를 열었다 닫으면 커서는 그 화면 것이다.
 	if is_map_open() or is_slot_open() or is_bench_open():
 		_cursor_free = true
@@ -869,16 +886,6 @@ func _pick_bot_count(count: int) -> void:
 		_refresh_panel(session.seat_assignments())
 
 
-## 사격 연습장으로 갈 수 있는가: 출발과 같은 조건이다(전원이 들어와 캐릭터를 골랐다).
-func can_enter_range() -> bool:
-	return session != null and session.all_characters_chosen() and session.all_lobby_ready()
-
-
-## 팀 전원이 사격 연습장으로 간다. 누구나 청할 수 있고 방장이 일으킨다.
-func enter_range() -> bool:
-	return can_enter_range() and session.request_range_start()
-
-
 ## 지금 바로 떠난다(방장만). 평소에는 출발 구역의 카운트다운이 끝날 때 불린다.
 func request_start() -> void:
 	if session != null and session.can_start_stage():
@@ -959,7 +966,6 @@ func _target_position(target: int) -> Vector3:
 		Target.WORKBENCH: return _workbench_position
 		Target.CURTAIN: return _curtain_position
 		Target.SHOWER: return _shower_position
-		Target.RANGE: return _range_position
 	return Vector3.INF
 
 
@@ -978,7 +984,7 @@ func _target() -> int:
 	var best := Target.NONE
 	var best_score := INF
 	for target in [Target.MAP, Target.LOCKER, Target.SLOT, Target.DOCTOR, Target.WORKBENCH,
-			Target.CURTAIN, Target.SHOWER, Target.RANGE]:
+			Target.CURTAIN, Target.SHOWER]:
 		var at := _target_position(target)
 		if at == Vector3.INF:
 			continue
@@ -1001,6 +1007,168 @@ func _target() -> int:
 			best_score = score
 			best = target
 	return best
+
+
+# -- 사격 연습장 ------------------------------------------------------------------
+# 방 안에 스테이지의 월드가 하나 서 있다(`MayoPrototype`, `embedded`). 평소에는 멈춰 있고,
+# 이 화면의 플레이어가 문을 지나 들어서면 그 월드의 몸으로 바뀌어 걷는다 -- 화면이 바뀌거나
+# 어디로 옮겨 가는 일은 없다. 사무실의 몸은 그동안 그 자리를 따라다니며 팀원에게 보일 뿐이다.
+
+const RANGE_SCENE_PATH := "res://office_range.tscn"
+## 눈높이(몸 가운데에서)와 시야각. 스테이지의 것과 같아야 문턱에서 화면이 튀지 않는다.
+const RANGE_EYE_ABOVE_CENTRE := 1.04
+
+
+func in_range() -> bool:
+	return _in_range
+
+
+func range_world() -> Node3D:
+	return _range_world
+
+
+func _build_range() -> void:
+	var scene := load(RANGE_SCENE_PATH) as PackedScene
+	if scene == null:
+		return
+	_range_world = scene.instantiate() as Node3D
+	_range_world.name = "RangeWorld"
+	_range_world.mouse_sensitivity = mouse_sensitivity
+	add_child(_range_world)
+
+
+## 옵션 화면이 부른다(`GameOptions.apply_world`): 시야각은 사무실의 눈과 연습장의 눈이 같이 쓴다.
+func apply_view(fov_degrees: float, aspect: float) -> void:
+	if is_instance_valid(_range_world):
+		_range_world.apply_view(fov_degrees, aspect)
+	_match_range_view()
+
+
+func set_fps_display_visible(shown: bool) -> void:
+	if is_instance_valid(_range_world):
+		_range_world.set_fps_display_visible(shown)
+
+
+## 사무실의 눈을 연습장의 눈과 같은 높이·시야각에 둔다.
+func _match_range_view() -> void:
+	var camera := _view_camera()
+	if camera == null:
+		return
+	_camera_pivot.position.y = RANGE_EYE_ABOVE_CENTRE
+	if is_instance_valid(_range_world):
+		# 멈춰 있는 월드의 카메라는 값을 아직 받지 않았을 수 있다: 월드가 정해 둔 값을 읽는다.
+		var fov = _range_world.get("_rendered_fov")
+		if fov != null and float(fov) > 1.0:
+			camera.fov = float(fov)
+
+
+func _adopt_local(body: CharacterBody3D, seat: int) -> void:
+	super._adopt_local(body, seat)
+	_match_range_view()
+
+
+func _local_move() -> Vector2:
+	return Vector2.ZERO if _in_range else super._local_move()
+
+
+func _local_jump() -> bool:
+	return false if _in_range else super._local_jump()
+
+
+func _sends_lobby_input() -> bool:
+	return not _in_range
+
+
+## 방장: 연습장 안의 참가자가 보낸 자리. 연습장 안의 자리일 때만 받는다.
+func accept_pin(peer_id: int, at: Vector3, yaw: float) -> void:
+	var room := PracticeRange.ROOM.grow(0.6)
+	if not room.has_point(Vector2(at.x, at.z)) or at.y < 0.0 or at.y > 6.0:
+		return
+	pin_occupant(peer_id, at, yaw)
+
+
+## 매 틱: 문턱을 넘었는지 보고 몸을 바꾼다. 안에 있는 동안에는 사무실의 몸을 따라오게 한다.
+func _update_range(delta: float) -> void:
+	if not is_instance_valid(_range_world) or not _range_world.load_complete:
+		return
+	_range_cooldown = maxf(_range_cooldown - delta, 0.0)
+	var body := _occupants.get(_local_id()) as CharacterBody3D
+	if body == null:
+		if _in_range:
+			_in_range = false
+			_range_world.set_embedded_active(false)
+			_show_office_view()
+		return
+	if not _in_range:
+		if _range_cooldown <= 0.0 and not _busy() and PracticeRange.is_inside(body.position):
+			_enter_range(body)
+		return
+	var pose: Array = _range_world.embedded_pose()
+	var feet: Vector3 = pose[0]
+	var centre := feet + Vector3.UP * OCCUPANT_HEIGHT * 0.5
+	_yaw = float(pose[1])
+	_pitch = clampf(float(pose[2]), deg_to_rad(-70.0), deg_to_rad(70.0))
+	if feet.x < PracticeRange.EXIT_X:
+		_leave_range(body, centre)
+		return
+	_follow_range(body, centre)
+
+
+func _enter_range(body: CharacterBody3D) -> void:
+	_in_range = true
+	# 사무실의 몸은 그림자만 남는다: 연습장의 몸과 겹쳐 서 있으므로 아무것도 막지 않아야 한다.
+	body.collision_layer = 0
+	body.collision_mask = 0
+	body.velocity = Vector3.ZERO
+	_range_world.mouse_sensitivity = mouse_sensitivity
+	var character := int(_worn.get(_local_id(), 0))
+	_range_world.set_character_variant(1, character)
+	_range_world.set_local_character(character)
+	# 연습장의 바닥(y = 0)은 사무실 바닥보다 5 cm 높다: 그 위에 세운다.
+	var feet := body.position - Vector3.UP * OCCUPANT_HEIGHT * 0.5
+	feet.y = maxf(feet.y, 0.0) + 0.02
+	_range_world.embedded_enter(feet, _yaw, _pitch)
+	if _ui_layer != null:
+		_ui_layer.visible = false
+	if _prompt != null:
+		_prompt.visible = false
+	if _depart_hud != null:
+		_depart_hud.visible = false
+	_follow_range(body, body.position)
+
+
+## 사무실의 몸을 연습장의 몸이 선 곳에 둔다. 몸을 걷게 하는 쪽(방장, 혼자일 때는 자기)에게
+## 그 자리를 알린다.
+func _follow_range(body: CharacterBody3D, centre: Vector3) -> void:
+	body.position = centre
+	body.rotation.y = _yaw
+	_yaws[_local_id()] = _yaw
+	if session != null and session.is_online() and not session.is_server():
+		session.send_lobby_pin(centre, _yaw)
+	else:
+		pin_occupant(_local_id(), centre, _yaw)
+
+
+func _leave_range(body: CharacterBody3D, centre: Vector3) -> void:
+	_in_range = false
+	_range_cooldown = 0.4
+	_range_world.set_embedded_active(false)
+	_follow_range(body, centre)
+	unpin_occupant(_local_id())
+	body.collision_layer = 1
+	body.collision_mask = 1
+	body.velocity = Vector3.ZERO
+	_show_office_view()
+
+
+func _show_office_view() -> void:
+	var camera := _view_camera()
+	if camera != null:
+		camera.make_current()
+	_apply_local_look()
+	if _ui_layer != null:
+		_ui_layer.visible = true
+	_apply_mouse_mode()
 
 
 # -- TruckLobby가 부르는 것 -------------------------------------------------------
@@ -1039,11 +1207,6 @@ func _build_truck() -> void:
 		_workbench_position = bench.global_position + Vector3.UP * 0.6
 		_spans[Target.WORKBENCH] = [bench.global_basis.x.normalized(), 1.6]
 	_build_shower()
-	# 사격 연습장의 사선 카운터: 그 길이의 어디에서든 연습을 시작할 수 있다.
-	var counter := _room.get_node_or_null("Annex/ShootingRange/Counter") as Node3D
-	if counter != null:
-		_range_position = counter.global_position + Vector3.UP * 0.75
-		_spans[Target.RANGE] = [counter.global_basis.z.normalized(), 4.6]
 	var doctor := _room.get_node_or_null("DoctorHologram") as Node3D
 	if doctor != null:
 		_doctor_position = doctor.global_position + Vector3.UP * 1.5
@@ -1059,10 +1222,12 @@ func _build_truck() -> void:
 			var size := (shape_node.shape as BoxShape3D).size
 			_depart_half = Vector2(size.x, size.z) * 0.5
 			_depart_height = size.y
+	_build_range()
 
 
 func _build_ui() -> void:
 	var layer := CanvasLayer.new()
+	_ui_layer = layer
 	add_child(layer)
 	var panel := PanelContainer.new()
 	panel.theme = UI.theme()

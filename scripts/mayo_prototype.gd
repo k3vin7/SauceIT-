@@ -533,6 +533,10 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## 사격 연습장으로 띄운다(`PracticeRange`). `map_kind`는 TOMATINA여야 한다: 사격·파츠·반동이
 ## 전부 스테이지 2의 것 그대로이고, 맵과 표적과 장비 고르는 법만 다르다.
 @export var practice_range := false
+## 다른 공간(사무실)이 이 월드를 품고 있다. 하늘·해·음악·마우스·카메라를 스스로 잡지 않고,
+## 품은 쪽이 `set_embedded_active`로 넘겨줄 때만 움직인다. Esc와 캐릭터 바꾸기도 품은
+## 쪽의 것이다.
+@export var embedded := false
 ## The shipped app owns networking outside the replaceable play world. Legacy
 ## development scenes may keep the in-world F2 panel by leaving this enabled.
 @export var network_ui_enabled := true
@@ -1594,16 +1598,19 @@ func _ready() -> void:
 	if is_instance_valid(_truck_arrival):
 		_truck_arrival.sync_navigation()
 	_apply_mute()
-	if map_kind == MapKind.TOMATINA:
+	if map_kind == MapKind.TOMATINA and not practice_range:
 		_stage_music = load("res://scripts/tomatina_music.gd").new()
 		_stage_music.world = self
 		add_child(_stage_music)
 	set_first_person(start_in_first_person)
-	_capture_mouse()
+	if not embedded:
+		_capture_mouse()
 	_floor.configure(grid_cell_size, contamination_brush_radius)
 	for wall in _walls:
 		wall.configure(grid_cell_size, contamination_brush_radius)
 	_update_camera()
+	if embedded:
+		set_embedded_active(false)
 	load_complete = true
 	if staged_loading:
 		set_process(true)
@@ -2660,8 +2667,6 @@ func _is_authority() -> bool:
 
 func _process(_delta: float) -> void:
 	var render_started := Time.get_ticks_usec() if debug_profile_enabled else 0
-	if is_range_panel_open():
-		_refresh_range_panel()
 	if is_instance_valid(_boss_entrance) and not _boss_entrance.played and is_instance_valid(_press_king):
 		_boss_entrance.restore_breached()
 	if map_kind == MapKind.TOMATINA:
@@ -2929,12 +2934,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_close_refuge_shop()
 		get_viewport().set_input_as_handled()
 		return
-	if is_range_panel_open():
-		if interact or event.is_action_pressed("ui_cancel") or _is_range_key(event):
-			close_range_panel()
-		get_viewport().set_input_as_handled()
-		return
 	if event.is_action_pressed("ui_cancel"):
+		# 품은 공간(사무실)이 메뉴를 연다: 여기서 삼키지 않는다.
+		if embedded:
+			return
 		menu_requested.emit()
 		get_viewport().set_input_as_handled()
 		return
@@ -2953,7 +2956,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("toggle_key_legend"):
 		show_key_legend = not show_key_legend
 		return
-	if event.is_action_pressed("switch_character"):
+	if event.is_action_pressed("switch_character") and not embedded:
 		_local.requested_character_index = posmod(
 			_local.requested_character_index + 1, PLAYER_CHARACTERS.size())
 		set_character_variant(_local.peer_id, _local.requested_character_index)
@@ -2964,10 +2967,6 @@ func _unhandled_input(event: InputEvent) -> void:
 			_net.choose_character(_local.requested_character_index)
 		return
 	if not _input_enabled:
-		return
-	if practice_range and _is_range_key(event):
-		open_range_panel()
-		get_viewport().set_input_as_handled()
 		return
 	if interact and map_kind == MapKind.TOMATINA and _local.player.state == MayoPlayer.State.DEAD:
 		_request_tomato_action(7)
@@ -3186,7 +3185,8 @@ func _build_world() -> void:
 	StreetMap.layout_override = TomatinaMap.new() if map_kind == MapKind.TOMATINA else null
 	if map_kind == MapKind.TOMATINA:
 		_tomato_rng.seed = TomatinaMap.SEED
-	_build_environment()
+	if not embedded:
+		_build_environment()
 
 	# One grid under the whole street. It has to be one: the slip test, the
 	# network snapshot and the determinism hash all read `_floor` and nothing
@@ -3195,6 +3195,8 @@ func _build_world() -> void:
 	# and offset onto it instead of sitting at the origin.
 	var plane: Dictionary = TutorialCourseScript.floor_plane() \
 		if map_kind == MapKind.TUTORIAL_RECTANGLE else StreetMap.floor_plane()
+	if practice_range:
+		plane = PracticeRange.floor_plane()
 	_floor = FloorScript.new()
 	_floor.name = "FloorContamination"
 	_floor.floor_size = plane["size"]
@@ -3238,7 +3240,7 @@ func _build_world() -> void:
 
 	_camera = Camera3D.new()
 	_camera.name = "ThirdPersonCamera"
-	_camera.current = true
+	_camera.current = not embedded
 	_camera.fov = camera_fov
 	_rendered_fov = camera_fov
 	_camera.near = 0.05
@@ -3702,8 +3704,6 @@ func _build_crosshair() -> void:
 		objective_content.add_child(_refuge_status_label)
 		if map_kind == MapKind.TOMATINA:
 			_build_refuge_shop_panel()
-		if practice_range:
-			_build_range_panel()
 
 
 ## Host / join panel, opened with F2 and closed again once a session is up.
@@ -3804,135 +3804,87 @@ func _close_refuge_shop() -> void:
 
 
 # -- 사격 연습장 (`practice_range`) ---------------------------------------------
-# 맵과 표적 자리는 `PracticeRange`가 정한다. 여기 있는 것은 장비를 고르는 화면과 표적을
-# 다시 세우는 일뿐이고, 쏘는 것은 전부 스테이지 2의 코드 그대로다.
+# 사무실 안의 방 하나다. 맵과 표적·진열대·선택대의 자리는 `PracticeRange`가 정하고, 사무실
+# (`OfficeLobby`)이 이 월드를 품고서 방에 들어선 사람에게 넘겨준다(`embedded`). 여기 있는
+# 것은 그 넘겨받기와 표적을 다시 세우는 일, 그리고 집을 것들을 보여 주는 일뿐이다 -- 쏘는
+# 것은 전부 스테이지 2의 코드 그대로다.
 
-var _range_panel: ColorRect
-var _range_sauce_buttons: Array[Button] = []
-var _range_part_buttons: Array[Button] = []
-var _range_status: Label
-## 표적 자리마다 하나: {enemy, kind, at, wait}. 방장만 채우고 방장만 센다.
+## 표적 자리마다 하나: {enemy, kind, at, wait}.
 var _range_posts: Array[Dictionary] = []
+var _embedded_active := false
 
 
-func is_range_panel_open() -> bool:
-	return _range_panel != null and _range_panel.visible
+## 품고 있는 공간이 지금 이 월드에 조작을 넘겨주었는가.
+func is_embedded_active() -> bool:
+	return _embedded_active
 
 
-func _is_range_key(event: InputEvent) -> bool:
-	var key := event as InputEventKey
-	return key != null and key.pressed and not key.echo \
-		and (key.physical_keycode if key.physical_keycode != 0 else key.keycode) == KEY_B
+## 품고 있는 공간이 조작을 넘겨주거나 거둔다. 거둔 동안에는 월드 전체가 멈춰 있다: 몸과
+## 벽과 표적의 충돌도 물리 공간에서 빠지므로(`PROCESS_MODE_DISABLED`), 사무실의 몸들은
+## 방 안의 것에 걸리지 않는다. 바닥과 벽에 묻은 소스는 그대로 보인다.
+func set_embedded_active(active: bool) -> void:
+	_embedded_active = active
+	process_mode = Node.PROCESS_MODE_INHERIT if active else Node.PROCESS_MODE_DISABLED
+	_input_enabled = active
+	if is_instance_valid(_hud_layer):
+		_hud_layer.visible = active
+	if _local != null:
+		_local.firing = false
+		_local.fire_hold = 0.0
+		_local.player.frozen = not active
+		_local.player.visible = active
+		_local.player.input_move = Vector2.ZERO
+		_local.player.input_run = false
+		_local.player.input_jump = false
+		if is_instance_valid(_local.weapon):
+			_local.weapon.visible = active and _first_person
+	if is_instance_valid(_camera):
+		_camera.current = active
 
 
-## 장비 화면: 소스 세 가지와 파츠 전부. 누르면 바로 바뀐다 -- 값도 해금도 없다.
-func _build_range_panel() -> void:
-	_range_panel = ColorRect.new()
-	_range_panel.name = "RangePanel"
-	_range_panel.theme = UI.theme()
-	_range_panel.color = UI.SHADE
-	_range_panel.hide()
-	_hud_layer.add_child(_range_panel)
-	_range_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var center := CenterContainer.new()
-	_range_panel.add_child(center)
-	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var panel := PanelContainer.new()
-	center.add_child(panel)
-	var margin := MarginContainer.new()
-	for side in ["left", "right", "top", "bottom"]:
-		margin.add_theme_constant_override("margin_" + side, 24)
-	panel.add_child(margin)
-	var content := VBoxContainer.new()
-	content.custom_minimum_size.x = 480.0
-	content.add_theme_constant_override("separation", 7)
-	margin.add_child(content)
-
-	content.add_child(UI.eyebrow("사격 연습장", UI.MINT))
-	var title := Label.new()
-	title.text = "소스와 파츠 고르기"
-	title.add_theme_font_size_override("font_size", 24)
-	content.add_child(title)
-	content.add_child(UI.eyebrow("소스 — 고르면 병이 가득 찹니다", UI.GOLD))
-	var sauces := HBoxContainer.new()
-	sauces.add_theme_constant_override("separation", 7)
-	content.add_child(sauces)
-	for sauce in STATION_SAUCES.size():
-		var choice := Button.new()
-		choice.text = SAUCE_NAMES[sauce]
-		choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		choice.focus_mode = Control.FOCUS_NONE
-		choice.pressed.connect(request_range_sauce.bind(sauce))
-		sauces.add_child(choice)
-		_range_sauce_buttons.append(choice)
-	content.add_child(UI.eyebrow("파츠", UI.GOLD))
-	for part in SauceParts.CATALOG.size():
-		var choice := Button.new()
-		choice.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		choice.focus_mode = Control.FOCUS_NONE
-		choice.pressed.connect(request_range_part.bind(part))
-		content.add_child(choice)
-		_range_part_buttons.append(choice)
-	_range_status = Label.new()
-	_range_status.add_theme_color_override("font_color", UI.MUTED)
-	content.add_child(_range_status)
-	var close := Button.new()
-	close.text = "닫기  [B / E / Esc]"
-	close.focus_mode = Control.FOCUS_NONE
-	close.pressed.connect(close_range_panel)
-	content.add_child(close)
-
-
-func open_range_panel() -> void:
-	if _range_panel == null or _local == null or _local.player.state != MayoPlayer.State.NORMAL:
+## 방에 들어섰다: 발이 `feet`에 있고 `yaw`/`pitch`를 보는 몸으로 이어받는다.
+func embedded_enter(feet: Vector3, yaw: float, pitch: float) -> void:
+	if _local == null:
 		return
-	_refresh_range_panel()
-	_range_panel.show()
-	_local.player.frozen = true
-	_local.firing = false
-	_local.fire_hold = 0.0
-	if DisplayServer.get_name() != "headless":
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-
-
-func close_range_panel() -> void:
-	if not is_range_panel_open():
-		return
-	_range_panel.hide()
-	_local.player.frozen = not _input_enabled
-	# 닫는 클릭이 그대로 한 발이 되지 않게 한다(상점을 닫을 때와 같다).
+	set_embedded_active(true)
+	_local.player.finish_respawn(feet + Vector3.UP * MayoPlayer.CAPSULE_HEIGHT * 0.5)
+	_local.aim_yaw = yaw
+	_local.aim_pitch = _clamp_aim_pitch(pitch)
 	_tomato_fire_block = Input.is_action_pressed("fire_mayo")
-	if _input_enabled and DisplayServer.get_name() != "headless":
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	_update_aim()
+	_update_camera()
 
 
-## 지금 든 것에 표시를 한다. 열려 있는 동안 매 프레임 불린다: 방장의 답이 온 뒤에 바뀐다.
-func _refresh_range_panel() -> void:
-	if _range_panel == null or _local == null:
-		return
-	for sauce in _range_sauce_buttons.size():
-		var held := _local.sauce_kind == STATION_SAUCES[sauce]
-		_range_sauce_buttons[sauce].text = "%s%s" % [SAUCE_NAMES[sauce], "  ·  사용 중" if held else ""]
-		_mark_range_choice(_range_sauce_buttons[sauce], held)
-	for part in _range_part_buttons.size():
-		var entry: Array = SauceParts.CATALOG[part]
-		var fitted := _local.sauce_part == part
-		_range_part_buttons[part].text = "%s  ·  %s\n%s" % [entry[0], "장착 중" if fitted else "장착", entry[1]]
-		_mark_range_choice(_range_part_buttons[part], fitted)
-	_range_status.text = "병 잔량 %d%%" % roundi(_local.sauce * 100.0)
+## 지금 몸이 선 곳과 보는 곳: [발 자리, yaw, pitch]. 방을 나설 때 사무실이 이어받는다.
+func embedded_pose() -> Array:
+	if _local == null:
+		return [PracticeRange.SPAWN, 0.0, 0.0]
+	return [_local.player.global_position - Vector3.UP * MayoPlayer.CAPSULE_HEIGHT * 0.5,
+		_local.aim_yaw, _local.aim_pitch]
 
 
-func _mark_range_choice(choice: Button, chosen: bool) -> void:
-	if chosen:
-		choice.add_theme_stylebox_override("normal", _refuge_shop_equipped)
-		choice.add_theme_stylebox_override("hover", _refuge_shop_equipped)
-		choice.add_theme_color_override("font_color", UI.MINT)
-		choice.add_theme_color_override("font_hover_color", UI.MINT)
-	else:
-		choice.remove_theme_stylebox_override("normal")
-		choice.remove_theme_stylebox_override("hover")
-		choice.remove_theme_color_override("font_color")
-		choice.remove_theme_color_override("font_hover_color")
+## 진열대의 병과 선택대의 파츠 가운데 손이 닿는 것들. `TomatinaPlaySupport`가 E 안내로
+## 올린다: [kind, id, 자리, 글자].
+func range_picks(shooter: Shooter) -> Array:
+	var out: Array = []
+	if not practice_range:
+		return out
+	var at := shooter.player.global_position
+	for sauce in PracticeRange.SAUCE_SPOTS.size():
+		var spot: Vector3 = PracticeRange.SAUCE_SPOTS[sauce]
+		if Vector2(spot.x - at.x, spot.z - at.z).length() > PracticeRange.PICK_REACH:
+			continue
+		var held := shooter.sauce_kind == STATION_SAUCES[sauce]
+		out.append(["range_sauce", sauce, spot,
+			"%s 다시 채우기" % SAUCE_NAMES[sauce] if held else "%s 받기" % SAUCE_NAMES[sauce]])
+	for part in SauceParts.CATALOG.size():
+		if shooter.sauce_part == part:
+			continue
+		var spot := PracticeRange.part_spot(part)
+		if Vector2(spot.x - at.x, spot.z - at.z).length() > PracticeRange.PICK_REACH:
+			continue
+		out.append(["range_part", part, spot, "%s 끼우기" % SauceParts.CATALOG[part][0]])
+	return out
 
 
 ## 병을 `sauce`(`STATION_SAUCES`의 번호)로 가득 채운다. 이미 든 소스를 고르면 다시 채우기다.
@@ -3967,6 +3919,8 @@ func _make_range_dummy(enemy: MayoEnemy) -> void:
 	enemy.horde_alert = false
 	enemy.attack_permission = _range_denied
 	enemy.contact_permission = _range_denied
+	# 쏘는 쪽(-x)을 보고 선다.
+	enemy.facing_yaw = PI * 0.5
 
 
 ## 처음 서 있는 표적들을 자리에 묶는다. 표적은 `PracticeRange.targets()` 순서대로 만들어졌다.
@@ -3977,12 +3931,12 @@ func _begin_range() -> void:
 		var entry: Array = targets[index]
 		_make_range_dummy(_enemies[index])
 		_range_posts.append({"enemy": _enemies[index], "kind": int(TOMATINA_KINDS[entry[0]]),
-			"at": TomatinaMap.at_cell(entry[1]), "wait": 0.0})
+			"at": entry[1], "wait": 0.0})
 	_update_stage_objective()
 
 
-## 쓰러진 표적을 같은 자리에 다시 세운다(방장). 몸은 끝에 덧붙는다 -- 적 목록은 덧붙이기만
-## 하고, 새 몸은 스테이지의 증원과 같은 길(`tutorial_spawn_enemy`)로 모두에게 간다.
+## 쓰러진 표적을 같은 자리에 다시 세운다. 몸은 끝에 덧붙는다 -- 적 목록은 덧붙이기만 하고,
+## 새 몸은 스테이지의 증원과 같은 길(`tutorial_spawn_enemy`)로 들어온다.
 func _advance_range(delta: float) -> void:
 	for post in _range_posts:
 		var enemy: MayoEnemy = post["enemy"]
@@ -3998,28 +3952,52 @@ func _advance_range(delta: float) -> void:
 			_make_range_dummy(_enemies[index])
 
 
-## 거리 표지: 사선에서 몇 미터인지 양쪽 벽에 적어 둔다.
+## 방 안에 세우는 것: 거리 표지(양쪽 벽), 선택대 위의 파츠 모형과 이름표, 진열대의 이름표.
+## 진열대와 선택대의 가구 자체는 사무실 씬에 있다.
 func _build_range_props() -> void:
-	var half := float(PracticeRange.AREA.size.x) * StreetMap.CELL * 0.5 - 0.35
+	var room := PracticeRange.ROOM
 	for metres: int in PracticeRange.DISTANCE_MARKS:
 		var at := PracticeRange.line_at(float(metres))
-		for side in [-1.0, 1.0]:
+		for side in 2:
 			var mark := Label3D.new()
 			mark.text = "%d m" % metres
-			mark.font_size = 64
-			mark.pixel_size = 0.007
-			mark.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			mark.font_size = 72
+			mark.pixel_size = 0.008
 			mark.modulate = Color("ffe9a8")
-			mark.position = at + Vector3(side * half, 2.4, 0.0)
+			mark.outline_size = 16
+			# 벽에 붙여 방 안쪽을 보게 한다.
+			var z := room.position.y + PracticeRange.LINER + 0.02 if side == 0 \
+				else room.end.y - PracticeRange.LINER - 0.02
+			mark.position = Vector3(at.x, 3.2, z)
+			mark.rotation.y = 0.0 if side == 0 else PI
 			add_child(mark)
-	var line := Label3D.new()
-	line.text = "사선"
-	line.font_size = 64
-	line.pixel_size = 0.007
-	line.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	line.modulate = Color("ffe9a8")
-	line.position = PracticeRange.line_at(0.0) + Vector3(-half, 2.4, 0.0)
-	add_child(line)
+	for sauce in PracticeRange.SAUCE_SPOTS.size():
+		var tag := Label3D.new()
+		tag.text = SAUCE_NAMES[sauce]
+		tag.font_size = 44
+		tag.pixel_size = 0.006
+		tag.outline_size = 12
+		tag.position = PracticeRange.SAUCE_SPOTS[sauce] + Vector3(0.0, 0.62, -0.3)
+		add_child(tag)
+	for part in SauceParts.CATALOG.size():
+		var spot := PracticeRange.part_spot(part)
+		var stand := Node3D.new()
+		stand.name = "RangePart%d" % part
+		stand.position = spot
+		# 노즐 끝이 방 안쪽(-z)을 보게 눕혀 놓는다.
+		stand.rotation.y = PI
+		add_child(stand)
+		var tip := SauceParts.build_tip(part, stand, Vector3.ZERO)
+		if tip != null:
+			tip.scale = Vector3.ONE * 2.2
+		var tag := Label3D.new()
+		tag.text = str(SauceParts.CATALOG[part][0])
+		tag.font_size = 40
+		tag.pixel_size = 0.005
+		tag.outline_size = 12
+		tag.position = spot + Vector3(0.0, 0.55, 0.3)
+		tag.rotation.y = PI
+		add_child(tag)
 
 
 ## 피난처 상점이 팔 수 있는 파츠(비트마다 하나). 사무실 작업대에서 해금한 것으로, 세션이
@@ -7066,7 +7044,7 @@ func _update_stage_objective(alive := -1) -> void:
 	if _stage_objective == null:
 		return
 	if practice_range:
-		_stage_objective.text = "사격 연습장\n[B] 소스·파츠 고르기\n[Esc] 메뉴 → 사무실로 돌아가기"
+		_stage_objective.text = "사격 연습장\n앞벽 진열대에서 소스, 뒷벽 선택대에서 파츠 [E]"
 		_refuge_status_label.hide()
 		return
 	if map_kind == MapKind.TOMATINA:
@@ -11177,6 +11155,10 @@ func perform_context_action(peer: int, kind: String, target_id: int) -> void:
 			_pending_splats.append_array(PackedInt32Array([SPLAT_BODY_WASH, peer, target_id, 0]))
 		"refill":
 			refill_for(peer, STATION_SAUCE_HERE)
+		"range_sauce":
+			refill_for(peer, target_id)
+		"range_part":
+			buy_or_equip_sauce_part(peer, target_id)
 		"loot":
 			if is_instance_valid(_victims):
 				_victims.loot(target_id)

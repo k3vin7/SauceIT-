@@ -448,6 +448,9 @@ func context_candidates(shooter) -> Array:
 			if is_instance_valid(node) and at.distance_squared_to(node.global_position) < 6.25:
 				_candidate(out, shooter, "pickup", int(id), node.global_position, "토마토 줍기", 0.0,
 					node.global_position + Vector3.UP * 0.35)
+	# 사격 연습장: 진열대의 병과 선택대의 파츠.
+	for pick: Array in world.range_picks(shooter):
+		_candidate(out, shooter, pick[0], pick[1], pick[2], pick[3], 0.0, pick[2] + Vector3.UP * 0.35)
 	if is_instance_valid(world._victims):
 		var body: int = world._victims.in_reach(at)
 		if body >= 0:

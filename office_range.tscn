@@ -2,11 +2,12 @@
 
 [ext_resource type="Script" path="res://scripts/mayo_prototype.gd" id="1_world"]
 
-[node name="StageRange" type="Node3D"]
+[node name="OfficeRange" type="Node3D"]
 script = ExtResource("1_world")
 map_kind = 2
 tutorial_enabled = false
 stage_mode = true
 practice_range = true
+embedded = true
 network_ui_enabled = false
 show_key_legend = false
