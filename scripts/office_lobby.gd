@@ -10,6 +10,10 @@ extends TruckLobby
 ##   * 슬롯머신 -- 팀 돈을 걸고 돌린다. 누구나 할 수 있고 방장이 굴린다. 배당과 잭팟은
 ##     `OfficeSlot`, 사무실에 놓인 기계의 움직임과 소리는 `OfficeSlotShow`.
 ##   * 출발 구역 -- 전원이 올라서면 잠깐 센 뒤 떠난다. 지도에는 출발 버튼이 없다.
+##     사무실 앞벽의 문을 지나 중앙 홀을 곧장 가로지르면 나오는 트럭 탑승장에 있다.
+##     홀의 왼쪽은 사격 연습장, 오른쪽은 샤워실이다.
+##   * 사격 연습장의 사선 카운터 -- 팀 전원이 연습장(`PracticeRange`)으로 간다. 거기서는
+##     소스 세 가지와 파츠 전부를 그냥 쓸 수 있고, 메뉴에서 사무실로 돌아온다.
 ## 출발 조건은 "전원이 캐릭터를 골랐고(`MayoNet.can_start_stage`) 전원이 구역 위에 있다"이다.
 ## 누가 구역에 있는지는 각자 자기 화면의 몸 위치로 세고(방장이 보내 준 자세), 실제 출발은
 ## 방장만 일으킨다.
@@ -38,7 +42,7 @@ const MAP_SIZE := Vector2(540.0, 330.0)
 ## 지도에서 사무실이 있는 곳(지도 크기에 대한 비율).
 const OFFICE_PIN := Vector2(0.12, 0.2)
 
-enum Target { NONE, MAP, LOCKER, SLOT, DOCTOR, WORKBENCH, CURTAIN, SHOWER }
+enum Target { NONE, MAP, LOCKER, SLOT, DOCTOR, WORKBENCH, CURTAIN, SHOWER, RANGE }
 
 const Parts := preload("res://scripts/tomatina_sauce_parts.gd")
 ## 사무실 소품의 상태 비트(`MayoNet.office_props`): 샤워 커튼이 닫혔다, 샤워기가 나온다.
@@ -104,6 +108,7 @@ var _curtain_tween: Tween
 var _curtain_position := Vector3.INF
 var _shower_position := Vector3.INF
 var _shower_anchor := Vector3.INF
+var _range_position := Vector3.INF
 ## 옆으로 긴 물건: Target -> [길이 방향(월드), 절반 길이(m)].
 var _spans: Dictionary = {}
 var _shower_water: CPUParticles3D
@@ -204,6 +209,10 @@ func _physics_process(delta: float) -> void:
 			_prompt.text = "커튼 열기" if _prop_on(PROP_CURTAIN) else "커튼 닫기"
 		elif target == Target.SHOWER:
 			_prompt.text = "샤워기 끄기" if _prop_on(PROP_SHOWER) else "샤워기 켜기"
+		elif target == Target.RANGE:
+			_prompt.show_key = can_enter_range()
+			_prompt.text = "사격 연습 시작 (팀 전원 이동)" if can_enter_range() \
+				else "모두 캐릭터를 골라야 연습할 수 있습니다"
 	if target != Target.NONE and Input.is_action_just_pressed("interact"):
 		if target == Target.MAP:
 			open_map()
@@ -217,6 +226,8 @@ func _physics_process(delta: float) -> void:
 			toggle_prop(PROP_CURTAIN)
 		elif target == Target.SHOWER:
 			toggle_prop(PROP_SHOWER)
+		elif target == Target.RANGE:
+			enter_range()
 		else:
 			character_requested.emit()
 
@@ -857,6 +868,16 @@ func _pick_bot_count(count: int) -> void:
 		_refresh_panel(session.seat_assignments())
 
 
+## 사격 연습장으로 갈 수 있는가: 출발과 같은 조건이다(전원이 들어와 캐릭터를 골랐다).
+func can_enter_range() -> bool:
+	return session != null and session.all_characters_chosen() and session.all_lobby_ready()
+
+
+## 팀 전원이 사격 연습장으로 간다. 누구나 청할 수 있고 방장이 일으킨다.
+func enter_range() -> bool:
+	return can_enter_range() and session.request_range_start()
+
+
 ## 지금 바로 떠난다(방장만). 평소에는 출발 구역의 카운트다운이 끝날 때 불린다.
 func request_start() -> void:
 	if session != null and session.can_start_stage():
@@ -936,6 +957,7 @@ func _target_position(target: int) -> Vector3:
 		Target.WORKBENCH: return _workbench_position
 		Target.CURTAIN: return _curtain_position
 		Target.SHOWER: return _shower_position
+		Target.RANGE: return _range_position
 	return Vector3.INF
 
 
@@ -954,7 +976,7 @@ func _target() -> int:
 	var best := Target.NONE
 	var best_score := INF
 	for target in [Target.MAP, Target.LOCKER, Target.SLOT, Target.DOCTOR, Target.WORKBENCH,
-			Target.CURTAIN, Target.SHOWER]:
+			Target.CURTAIN, Target.SHOWER, Target.RANGE]:
 		var at := _target_position(target)
 		if at == Vector3.INF:
 			continue
@@ -1015,6 +1037,11 @@ func _build_truck() -> void:
 		_workbench_position = bench.global_position + Vector3.UP * 0.6
 		_spans[Target.WORKBENCH] = [bench.global_basis.x.normalized(), 1.6]
 	_build_shower()
+	# 사격 연습장의 사선 카운터: 그 길이의 어디에서든 연습을 시작할 수 있다.
+	var counter := _room.get_node_or_null("Annex/ShootingRange/Counter") as Node3D
+	if counter != null:
+		_range_position = counter.global_position + Vector3.UP * 0.75
+		_spans[Target.RANGE] = [counter.global_basis.z.normalized(), 4.6]
 	var doctor := _room.get_node_or_null("DoctorHologram") as Node3D
 	if doctor != null:
 		_doctor_position = doctor.global_position + Vector3.UP * 1.5

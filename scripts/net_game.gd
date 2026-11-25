@@ -887,6 +887,91 @@ func request_stage_start() -> bool:
 	return true
 
 
+## 사격 연습장(`PracticeRange`)의 스테이지 이름. 축제 지도에는 없다: 사무실의 사격 연습장
+## 방에서만 들어가고, 결과 화면 없이 곧바로 사무실로 돌아온다.
+const RANGE_STAGE := "range"
+## 연습장에 가 있는 동안 치워 둔, 지도에서 골라 둔 축제.
+var _range_return_stage := ""
+
+
+## 팀 전원이 사격 연습장으로 간다. 누구나 청할 수 있고 방장이 일으킨다. 출발과 같은 조건이다
+## (전원이 사무실에 들어와 캐릭터를 골랐다).
+func request_range_start() -> bool:
+	if not lobby_flow:
+		return false
+	if not is_server():
+		_request_range_start.rpc_id(1)
+		return true
+	if session_phase != SessionPhase.TRUCK or not can_start_stage():
+		_set_status("waiting for every player before the range")
+		return false
+	var chosen := selected_stage
+	selected_stage = RANGE_STAGE
+	if not request_stage_start():
+		selected_stage = chosen
+		return false
+	_range_return_stage = chosen
+	return true
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_range_start() -> void:
+	if multiplayer.is_server() and _slots.has(multiplayer.get_remote_sender_id()):
+		request_range_start()
+
+
+func in_range_stage() -> bool:
+	return selected_stage == RANGE_STAGE \
+		and session_phase in [SessionPhase.LOADING, SessionPhase.STAGE]
+
+
+## 연습장에서 팀 전원이 사무실로 돌아온다. 누구나 청할 수 있다 -- 걸린 것이 없는 곳이다.
+func request_range_exit() -> bool:
+	if not lobby_flow:
+		return false
+	if not is_server():
+		_request_range_exit.rpc_id(1)
+		return true
+	if session_phase != SessionPhase.STAGE or selected_stage != RANGE_STAGE:
+		return false
+	selected_stage = _range_return_stage if StageRegistry.has_stage(_range_return_stage) \
+		and _range_return_stage != RANGE_STAGE else "stage_2"
+	session_phase = SessionPhase.TRUCK
+	_result_continue.clear()
+	_waiting_peers.clear()
+	_late_loading.clear()
+	_late_syncing.clear()
+	_lobby_ready = {1: true}
+	_loaded_peers.clear()
+	_transition_roster.clear()
+	if _online:
+		_leave_range.rpc(selected_stage)
+	truck_returned.emit()
+	_set_status("truck lobby")
+	return true
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_range_exit() -> void:
+	if multiplayer.is_server() and _slots.has(multiplayer.get_remote_sender_id()):
+		request_range_exit()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _leave_range(stage_id: String) -> void:
+	if multiplayer.is_server() or session_phase not in [SessionPhase.STAGE, SessionPhase.LOADING]:
+		return
+	selected_stage = stage_id
+	session_phase = SessionPhase.TRUCK
+	_result_continue.clear()
+	_lobby_ready.clear()
+	_loaded_peers.clear()
+	_transition_roster.clear()
+	_receiving_late_snapshot = false
+	truck_returned.emit()
+	_set_status("truck lobby")
+
+
 ## The host cuts the arrival shot short and everybody lands together. A guest
 ## asking is not answered: the shot is short, and one hand on it is enough.
 func request_intro_skip() -> bool:
@@ -2112,7 +2197,8 @@ func _request_refill(sauce: int) -> void:
 	_refill_budget[sender] = _refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND) - 1.0
 	# Which sauce is the station's to say, not the client's: every station
 	# hands out one, and the host knows which it is standing the body at.
-	world.refill_for(sender, world.STATION_SAUCE_HERE)
+	# 사격 연습장만 예외다: 보급소가 없고, 고른 소스를 그대로 받는다.
+	world.refill_for(sender, sauce if world.get("practice_range") else world.STATION_SAUCE_HERE)
 
 
 ## The host telling everyone a fresh bottle was selected. An event, not a value in the

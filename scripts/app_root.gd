@@ -542,6 +542,11 @@ func _on_play_authorized(transition: int) -> void:
 		return
 	_clear_ui(_loading_layer)
 	_loading_layer = null
+	# 사격 연습장은 옆방이다: 도착 연출 없이 바로 선다.
+	if session.selected_stage == MayoNet.RANGE_STAGE:
+		flow = Flow.STAGE
+		current_space.set_gameplay_input_enabled(true)
+		return
 	# A stage with a cold open of its own (Tomatina's truck ride in) plays that;
 	# it hands input over itself when it ends. Any other stage gets the short
 	# camera descent.
@@ -1205,6 +1210,10 @@ func _open_pause() -> void:
 		column.add_child(warning)
 	column.add_child(_button("계속", _close_pause, true))
 	column.add_child(_button("옵션", _open_options))
+	if flow == Flow.STAGE and session.in_range_stage():
+		column.add_child(_button("사무실로 돌아가기", func():
+			_close_pause()
+			session.request_range_exit()))
 	if session.is_online():
 		column.add_child(_button("방 나가기", _leave_session))
 	column.add_child(_button("타이틀로", func(): _show_title()))

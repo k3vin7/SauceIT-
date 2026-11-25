@@ -87,6 +87,9 @@ func sync_navigation() -> void:
 	for y in range(TomatinaMap.FIRE_BAY.position.y,TomatinaMap.FIRE_BAY.end.y):
 		for x in range(TomatinaMap.FIRE_BAY.position.x,TomatinaMap.FIRE_BAY.end.x):
 			var cell := Vector2i(x,y)
+			# A map without the fire bay (the practice range) has no such cells.
+			if not world._nav.grid.is_in_boundsv(cell):
+				continue
 			nav_backup[cell] = world._nav.is_walkable(cell)
 			world._nav.grid.set_point_solid(cell,true)
 

@@ -19,6 +19,16 @@ const STAGES := {
 		"blurb": "토마토 축제 한복판. 광장의 소방차까지 길을 뚫으세요.",
 		"map_pin": Vector2(0.68, 0.36),
 	},
+	# 사격 연습장. 축제가 아니라서 지도에는 없다(`available_ids`): 사무실의 사격 연습장
+	# 방에서 들어간다 -- `MayoNet.request_range_start`.
+	"range": {
+		"display_name": "사격 연습장",
+		"scene": "res://stage_range.tscn",
+		"clear_condition": "none",
+		"place": "사무실",
+		"blurb": "소스와 파츠를 마음껏 시험하는 곳.",
+		"map_pin": Vector2(0.12, 0.2),
+	},
 }
 
 

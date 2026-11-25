@@ -425,6 +425,7 @@ godot --headless --path . --script res://tests/smoke_test.gd
 godot --headless --path . --script res://tests/probe_game_flow.gd             # save/routing, maps, office screen, stage registry
 godot --headless --path . --script res://tests/probe_tomatina.gd              # stage 2: layout, roster, juice, bursts, horde, clear
 godot --headless --path . --script res://tests/probe_lobby_flow.gd            # real ENet: truck/loading/stage/result, 4-player cap, reconnect
+godot --headless --path . --script res://tests/probe_practice_range.gd       # office range counter -> practice range: 3 sauces, every part, targets respawn, back to office; solo + 2-player loopback
 godot --headless --path . --script res://tests/probe_truck_walk.gd            # real ENet: walking the truck, the hull, hostile lobby input
 godot --headless --path . --script res://tests/probe_tutorial.gd              # complete the rectangular tutorial in solo paths
 godot --headless --path . --script res://tests/probe_tutorial_actions.gd      # pickup/refill/fight gates
