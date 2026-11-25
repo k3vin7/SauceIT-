@@ -40,7 +40,8 @@ func _until(condition: Callable, frames := 1200) -> bool:
 func _stand_on_zone(office: OfficeLobby, peer_id: int) -> void:
 	var body := office._occupants[peer_id] as CharacterBody3D
 	var at := office.depart_zone_position() + Vector3(-1.0 if peer_id == 1 else 1.0, 0.0, 0.0)
-	body.position = Vector3(at.x, body.position.y, at.z)
+	# 구역은 트럭 짐칸 안이다: 그 바닥 위에 세운다.
+	body.position = Vector3(at.x, at.y + TruckLobby.OCCUPANT_HEIGHT * 0.5 + 0.02, at.z)
 	body.velocity = Vector3.ZERO
 
 

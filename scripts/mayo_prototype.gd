@@ -7533,8 +7533,9 @@ func _advance_player_respawns() -> void:
 		player.finish_respawn(spawn)
 		if map_kind == MapKind.TOMATINA:
 			_clear_respawn_visor(shooter)
-		if not tomatina:
-			shooter.sauce = 1.0
+		# 구조받지 못하고 다시 살아난 사람의 병은 가득 차 있다. 스테이지 2도 마찬가지다(2026-11-26).
+		# 팀원이 일으켜 세운 경우는 다르다 -- `_advance_tomatina_rescues`.
+		shooter.sauce = 1.0
 		shooter.player_animation_name = StringName()
 		if shooter.player_animation != null:
 			shooter.player_animation.stop()
@@ -7857,7 +7858,13 @@ func _update_camera() -> void:
 			var fall_sign := _player.fall_direction
 			aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(fall_camera_roll_degrees) * tilt * fall_sign * camera_motion_scale)
 			aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(fall_camera_pitch_degrees) * tilt * fall_sign * camera_motion_scale)
-			eye.y = lerpf(eye.y, fall_camera_height, tilt)
+			# `fall_camera_height` is measured from the ground the body is lying on,
+			# not from world zero: Tomatina's streets rise and fall by metres, and a
+			# camera sent to 0.56 m absolute there ends up under the paving, looking
+			# at the back of the floor (a white screen face down, a see-through
+			# street on your back).
+			var ground := _player.render_position().y - MayoPlayer.CAPSULE_HEIGHT * 0.5
+			eye.y = lerpf(eye.y, ground + fall_camera_height, tilt)
 	else:
 		# The shoulder camera keeps the capsule in frame from behind and to the side.
 		eye += aim_basis.x * shoulder_offset_right \
@@ -10047,6 +10054,7 @@ func _advance_tomatina_rescues(delta: float) -> void:
 		if attempt.left <= 0.0:
 			target.player.finish_respawn(target.player.global_position)
 			target.player.health = target.player.max_health * 0.40
+			# 병은 그대로다: 팀원이 일으켜 세운 사람은 쓰러질 때 들고 있던 잔량으로 일어난다.
 			_clear_respawn_visor(target)
 			if is_instance_valid(play_support):
 				play_support.note_rescue(int(peer))
