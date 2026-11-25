@@ -17,7 +17,8 @@ func _initialize() -> void:
 		var cell := Vector2i(at.floor())
 		assert(not occupied.has(cell), "overlapping enemy spawns")
 		var tag: Variant = entry[2] if entry.size() > 2 else null
-		assert(not blocked.has(cell) or tag in [&"terrace_spitter", &"truck_ambush"], "enemy inside prop")
+		assert(not blocked.has(cell) or tag == &"terrace_spitter" or TomatinaMap.is_truck_ambush(tag),
+			"enemy inside prop")
 		assert(TomatinaMap.safe_room_at(cell) < 0, "enemy in safe room")
 		assert(TomatinaMap.floor_cells().has(cell), "enemy outside floor")
 		occupied[cell] = true

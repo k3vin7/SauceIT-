@@ -5824,7 +5824,7 @@ func _build_enemies() -> void:
 				var approach := TomatinaMap.at_cell(TomatinaMap.BOWLER_TARGETS[tag])
 				enemy.bowling_lane = Vector3(approach.x - site.x, 0.0, approach.z - site.z).normalized()
 				enemy.set_meta("bowling_post", tag)
-			elif tag in [&"market_ambush", &"truck_ambush"] and TomatinaMap.street_profile_enabled():
+			elif (tag == &"market_ambush" or TomatinaMap.is_truck_ambush(tag)) and TomatinaMap.street_profile_enabled():
 				_build_street_breakout(enemy, tag, leg)
 			if entry.size() > 2:
 				if entry[2] is int:
@@ -7186,12 +7186,13 @@ var _sprung_alley_ambushes := {}
 
 func _build_street_breakout(enemy: MayoEnemy, tag: StringName, leg: int) -> void:
 	var breakout := TomatinaBreakout.new()
-	breakout.name = "TruckBreakout" if tag == &"truck_ambush" else "MarketBreakout"
+	var truck_ambush := TomatinaMap.is_truck_ambush(tag)
+	breakout.name = "TruckBreakout" + String(tag).trim_prefix("truck_ambush") if truck_ambush else "MarketBreakout"
 	breakout.tag = tag
 	breakout.leg = leg
 	var cab: ContaminableObject
-	if tag == &"truck_ambush":
-		var truck := TomatinaMap.breakout_truck_boxes()
+	if truck_ambush:
+		var truck := TomatinaMap.breakout_truck_boxes(tag)
 		_create_wall(truck[1].name, truck[1].position, truck[1].size, truck[1].color, true, true)
 		cab = _walls.back()
 		_create_wall(truck[0].name, truck[0].position, truck[0].size, truck[0].color, true, true)
@@ -10848,7 +10849,7 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 		for breakout in _street_breakouts:
 			if at.distance_squared_to(breakout.global_position) > 0.01:
 				continue
-			var truck := breakout.tag == &"truck_ambush"
+			var truck := TomatinaMap.is_truck_ambush(breakout.tag)
 			if cue == BREAKOUT_RATTLE_CUE and not breakout.opened:
 				breakout.rattle(duration)
 				_play_combat_warning(at, 170.0 if truck else 190.0, duration, BREAKOUT_LATCH)

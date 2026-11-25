@@ -233,11 +233,27 @@ const STREET_ELITES := [
 	["BOWLING_TOMATO", STREET_PROFILE.TERRACE_BOWLER, &"terrace_bowler"],
 	["BOWLING_TOMATO", STREET_PROFILE.RESCUE_CLIMB_BOWLER, &"rescue_climb_bowler"],
 ]
+const STREET_REINFORCEMENTS := [
+	["TOMATO_BRUTE", Vector2(32.5, 200.5), &"truck_ambush_terrace"],
+	["TOMATO_BRUTE", Vector2(26.5, 83.5), &"truck_ambush_rescue"],
+	["BOWLING_TOMATO", Vector2(18.42, 162.64), &"market_bowler_north"],
+	["BOWLING_TOMATO", Vector2(19.09, 163.95), &"market_bowler_south"],
+	["BOWLING_TOMATO", Vector2(27.35, 209.58), &"terrace_bowler_west"],
+	["BOWLING_TOMATO", Vector2(16.26, 91.86), &"rescue_climb_bowler_west"],
+	["BOWLING_TOMATO", Vector2(17.54, 92.47), &"rescue_climb_bowler_east"],
+	["BOWLING_TOMATO", Vector2(31.85, 42.2), &"cross_street_bowler_south"],
+]
 const BOWLER_TARGETS := {
 	&"market_bowler": STREET_PROFILE.MARKET_APPROACH,
+	&"market_bowler_north": Vector2(14.09, 164.2),
+	&"market_bowler_south": Vector2(14.41, 165.24),
 	&"cross_street_bowler": STREET_PROFILE.CROSS_STREET_BOWLER + Vector2.LEFT,
+	&"cross_street_bowler_south": Vector2(31.1, 42.04),
 	&"terrace_bowler": Vector2(26.4, 215.8),
+	&"terrace_bowler_west": Vector2(26.04, 215.24),
 	&"rescue_climb_bowler": Vector2(15.5, 97.25),
+	&"rescue_climb_bowler_west": Vector2(15.15, 96.69),
+	&"rescue_climb_bowler_east": Vector2(16.09, 96.95),
 }
 
 const ARCADES := [
@@ -286,21 +302,24 @@ static func balcony_deck_height(at: Vector3) -> float:
 	return INF
 
 
-static func breakout_truck_boxes() -> Array[Dictionary]:
+static func is_truck_ambush(tag: Variant) -> bool:
+	return (tag is StringName or tag is String) and String(tag).begins_with("truck_ambush")
+
+
+static func breakout_truck_boxes(tag := &"") -> Array[Dictionary]:
+	var boxes: Array[Dictionary] = []
 	if not street_profile_enabled():
-		return []
-	var cargo := STREET_PROFILE.TRUCK_AMBUSH
-	if authored != null:
-		var entry: Array = authored.roster.filter(func(actor: Array) -> bool:
-			return actor.size() > 2 and actor[2] == &"truck_ambush")
-		if entry.is_empty():
-			return []
-		cargo = entry[0][1]
-	return [
-		metre_box(cargo, Vector3(3.5, 3.25, 3.85), "AmbushTruckCargo", Color("375b57")),
-		metre_box(cargo + Vector2.DOWN * (2.75 / StreetMap.CELL),
-			Vector3(3.45, 2.95, 1.76), "AmbushTruckCab", Color("bdd2ad")),
-	]
+		return boxes
+	var actors: Array = authored.roster if authored != null else STREET_ELITES + STREET_REINFORCEMENTS
+	for actor: Array in actors:
+		if actor.size() < 3 or not is_truck_ambush(actor[2]) or (tag != &"" and actor[2] != tag):
+			continue
+		var cargo: Vector2 = actor[1]
+		var suffix := String(actor[2]).trim_prefix("truck_ambush")
+		boxes.append(metre_box(cargo, Vector3(3.5, 3.25, 3.85), "AmbushTruckCargo" + suffix, Color("375b57")))
+		boxes.append(metre_box(cargo + Vector2.DOWN * (2.75 / StreetMap.CELL),
+			Vector3(3.45, 2.95, 1.76), "AmbushTruckCab" + suffix, Color("bdd2ad")))
+	return boxes
 
 
 # Each group is centred on a distance along its leg.
@@ -388,6 +407,8 @@ static func roster(changes: Array = []) -> Array:
 		var at: Vector2 = entry[1]
 		taken[Vector2i(at.floor())] = true
 		out.push_back(entry.duplicate())
+	for entry in STREET_REINFORCEMENTS:
+		taken[Vector2i((entry[1] as Vector2).floor())] = true
 	for cell in _grunt_cells(taken):
 		out.push_back(["TOMATO_GRUNT", cell])
 	# Keep the plaza guard order, including the grunt burst tiers keyed by index.
@@ -398,6 +419,8 @@ static func roster(changes: Array = []) -> Array:
 			taken[cell] = true
 			out.push_back([entry[0], Vector2(cell) + Vector2.ONE * 0.5, group])
 	_add_alley_reinforcements(out, taken)
+	# Keep the existing enemy indices and grunt burst tiers stable.
+	out.append_array(STREET_REINFORCEMENTS)
 	return _align_roster_to_route(out, props, changes)
 
 
@@ -457,7 +480,7 @@ static func _align_roster_to_route(entries: Array, props: Array,
 		var entry: Array = entries[index]
 		# Balcony guards stand on a deck above the street. The truck brute owns
 		# the cargo cell while concealed, until its first charge opens it.
-		var fixed: bool = entry.size() > 2 and entry[2] in [&"terrace_spitter", &"truck_ambush"]
+		var fixed: bool = entry.size() > 2 and (entry[2] == &"terrace_spitter" or is_truck_ambush(entry[2]))
 		if (reachable.has(cell) or fixed) and not used.has(cell):
 			used[cell] = true
 			keep[index] = true

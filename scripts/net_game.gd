@@ -115,7 +115,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 24
+const PROTOCOL_VERSION := 25
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 const ENEMY_SNAPSHOT_NEAR_DISTANCE := 42.0
 const ENEMY_SNAPSHOT_FAR_PERIOD := 5

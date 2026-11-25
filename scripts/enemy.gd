@@ -929,7 +929,7 @@ func build_bowling_tomato(cell_size: float, brush_radius: float) -> void:
 	radius = 1.2 * TOMATO_SCALE
 	height = 3.0 * TOMATO_SCALE
 	_rest_radius = radius
-	max_health = 80.0
+	max_health = 32.0
 	solo_health = max_health
 	health = max_health
 	sauce_damage_per_hit = 0.4
@@ -1149,7 +1149,8 @@ func _advance_bowler(delta: float, target: MayoPlayer) -> Dictionary:
 	var ball := _free_ball()
 	if ball == null:
 		return hold
-	if attack_permission.is_valid() and not attack_permission.call(self, target):
+	# Authored lanes can fire together because each ball follows its own lane.
+	if bowling_lane.is_zero_approx() and attack_permission.is_valid() and not attack_permission.call(self, target):
 		return hold
 	_start_warning(gap.normalized() if bowling_lane.is_zero_approx() else bowling_lane)
 	return {"flat": _charge_direction, "pace": 0.0}

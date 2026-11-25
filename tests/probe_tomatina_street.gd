@@ -1,6 +1,7 @@
 extends SceneTree
 
 const Runtime := preload("res://scripts/mayo_prototype.gd")
+const TomatinaBreakout := preload("res://scripts/tomatina_breakout.gd")
 
 var failures: Array[String] = []
 var runtime: Runtime
@@ -113,6 +114,7 @@ func _run() -> void:
 		if tag == &"market_bowler":
 			continue
 		var body := _bowler_at(tag)
+		_check(is_equal_approx(body.solo_health, 32.0), "the %s does not have 32 base health" % tag)
 		var crossing := TomatinaMap.at_cell(TomatinaMap.BOWLER_TARGETS[tag]) + Vector3.UP * 1.28
 		player.finish_respawn(crossing)
 		_check(body._has_clear_shot(player, body.global_position + Vector3.UP * (body.height * 0.3)),
@@ -122,7 +124,7 @@ func _run() -> void:
 		var cross_ball: MayoEnemy = body.ball_pool[0]
 		_check(cross_ball.is_ball_live() and cross_ball._ball_velocity.normalized().dot(body.bowling_lane) > 0.99,
 			"the %s did not throw down its assigned lane" % tag)
-		if tag != &"cross_street_bowler" and cross_ball.is_ball_live():
+		if not String(tag).begins_with("cross_street_bowler") and cross_ball.is_ball_live():
 			player.finish_respawn(crossing + Vector3.UP * 12.0)
 			var released := cross_ball.global_position
 			for _step in 80:
@@ -134,6 +136,7 @@ func _run() -> void:
 				"the %s ball did not roll downhill" % tag)
 		cross_ball._retire_ball()
 		runtime.play_support.special_leases.clear()
+	_check_bowling_groups(player)
 
 	var shutter := runtime._street_breakouts[0]
 	var brute := shutter.enemy
@@ -197,7 +200,7 @@ func _run() -> void:
 	_check(hit == null and not brute.is_charging(), "the opening charge still hit after a sidestep")
 	runtime._advance_street_breakout(shutter, 0.0, [player])
 	_check(shutter.windup <= 0.0, "the broken shutter started a second ambush")
-	await _check_truck_breakout(player)
+	await _check_truck_breakouts(player)
 	for message in failures:
 		printerr(message)
 	if failures.is_empty():
@@ -237,14 +240,55 @@ func _check_balcony_guards(player: MayoPlayer) -> void:
 		runtime.play_support.special_leases.clear()
 
 
-func _check_truck_breakout(player: MayoPlayer) -> void:
-	_check(runtime._street_breakouts.size() == 2, "the street is missing a breakout")
-	if runtime._street_breakouts.size() < 2:
+func _check_bowling_groups(player: MayoPlayer) -> void:
+	var crossings := {
+		"market_bowler": Vector2(14.31, 164.91),
+		"terrace_bowler": Vector2(26.2, 215.32),
+		"rescue_climb_bowler": Vector2(15.71, 96.78),
+		"cross_street_bowler": Vector2(30.85, 41.72),
+	}
+	var expected := {"market_bowler": 3, "terrace_bowler": 2, "rescue_climb_bowler": 3, "cross_street_bowler": 2}
+	for group: String in crossings:
+		player.finish_respawn(TomatinaMap.at_cell(crossings[group]) + Vector3.UP * 1.28)
+		var launchers: Array[MayoEnemy] = []
+		for tag in TomatinaMap.BOWLER_TARGETS:
+			if String(tag).begins_with(group):
+				launchers.append(_bowler_at(tag))
+		_check(launchers.size() == expected[group], "%s is missing some bowlers" % group)
+		for body in launchers:
+			body._advance_bowler(MayoEnemy.BOWLING_INTERVAL + 0.01, player)
+		for body in launchers:
+			body._advance_bowler(MayoEnemy.SPECIAL_WINDUP + 0.01, player)
+			_check(body.ball_pool[0].is_ball_live(), "%s did not fire with its group" % body.get_meta("bowling_post"))
+		for body in launchers:
+			body.ball_pool[0]._retire_ball()
+
+
+func _check_truck_breakouts(player: MayoPlayer) -> void:
+	_check(runtime._street_breakouts.size() == 4, "the street should have a shutter and three truck ambushes")
+	if runtime._street_breakouts.size() < 4:
 		return
-	var truck := runtime._street_breakouts[1]
+	var targets := {
+		&"truck_ambush": Vector2(24.18, 56.95),
+		&"truck_ambush_terrace": Vector2(32.5, 198.85),
+		&"truck_ambush_rescue": Vector2(26.5, 81.85),
+	}
+	for truck in runtime._street_breakouts:
+		if targets.has(truck.tag):
+			await _check_one_truck(player, truck, targets[truck.tag])
+	var status := runtime.tomatina_status()
+	for breakout in runtime._street_breakouts:
+		breakout.reset()
+	runtime.apply_tomatina_status(status)
+	for breakout in runtime._street_breakouts:
+		_check(breakout.opened and not breakout.played_break, "the stage snapshot lost a broken cover")
+
+
+func _check_one_truck(player: MayoPlayer, truck: TomatinaBreakout, crossing: Vector2) -> void:
 	var brute := truck.enemy
-	var target := TomatinaMap.at_cell(Vector2(24.18, 56.95)) + Vector3.UP * 1.28
-	var cab := runtime.get_node("AmbushTruckCab") as ContaminableObject
+	var target := TomatinaMap.at_cell(crossing) + Vector3.UP * 1.28
+	var cab_name: String = TomatinaMap.breakout_truck_boxes(truck.tag)[1].name
+	var cab := runtime.get_node(cab_name) as ContaminableObject
 	player.finish_respawn(target)
 	await physics_frame
 	_check(not brute.visible and _ray(target, brute.global_position).get("collider") == truck.solid,
@@ -252,7 +296,7 @@ func _check_truck_breakout(player: MayoPlayer) -> void:
 	for cell in truck.parking_cells:
 		_check(not runtime._nav.is_walkable(cell), "navigation enters the intact cargo")
 	runtime._advance_street_breakout(truck, 0.0, [player])
-	_check(truck.windup > 0.0, "the truck does not trigger on the main street")
+	_check(truck.windup > 0.0, "%s does not trigger on the main street" % truck.tag)
 	runtime._advance_street_breakout(truck, runtime.BREAKOUT_RATTLE_SECONDS + 0.01, [player])
 	_check(truck.opened and truck.played_break and brute.is_charging() and cab.collision_layer != 0,
 		"the cargo did not break while the cab stayed in place")
@@ -264,13 +308,7 @@ func _check_truck_breakout(player: MayoPlayer) -> void:
 		if hit != null or not brute.is_charging():
 			break
 		await physics_frame
-	_check(hit == player, "the truck brute did not reach a player in the charge lane")
-	var status := runtime.tomatina_status()
-	for breakout in runtime._street_breakouts:
-		breakout.reset()
-	runtime.apply_tomatina_status(status)
-	for breakout in runtime._street_breakouts:
-		_check(breakout.opened and not breakout.played_break, "the stage snapshot lost a broken cover")
+	_check(hit == player, "%s brute did not reach a player in the charge lane" % truck.tag)
 
 
 func _check_side_streets(player: MayoPlayer, ignored: Array[RID]) -> void:
