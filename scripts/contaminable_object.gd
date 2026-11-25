@@ -199,7 +199,9 @@ func _rebuild() -> void:
 		var face_extent := Vector2(_extent_along(u_axis), _extent_along(v_axis))
 		var grid := ContaminationGrid.new()
 		grid.configure(face_extent, cell_size, body_color, mayo_color)
+		grid.scatter_ketchup = true
 		grid.material.set_shader_parameter("paint_only", paint_only)
+		grid.material.set_shader_parameter("wall_face", true)
 		grids.push_back(grid)
 
 		var face := MeshInstance3D.new()

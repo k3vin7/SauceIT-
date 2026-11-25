@@ -64,11 +64,12 @@ uniform vec4 ketchup_tint : source_color = vec4(0.34, 0.022, 0.016, 1.0);
 
 uniform bool paint_only = false;
 uniform bool paved = false;
+uniform bool wall_face = false;
 uniform bool festival_before_attack = false;
 uniform sampler2D pavement_mask : filter_nearest, repeat_disable, hint_default_black;
 uniform vec2 pavement_origin;
 uniform vec2 pavement_size = vec2(1.0);
-varying vec2 pavement_position;
+varying vec3 surface_position;
 
 #include "res://assets/props/Stage2_TomatinaVillage/tomatina_splatter.gdshaderinc"
 
@@ -76,10 +77,11 @@ varying vec2 pavement_position;
 #include "res://scripts/ketchup_surface.gdshaderinc"
 
 void vertex() {
-	pavement_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xz;
+	surface_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 void fragment() {
+	vec2 pavement_position = surface_position.xz;
 	float coverage = texture(mask_texture, UV).r;
 	float painted = festival_before_attack ? 0.0 : step(paint_threshold, coverage);
 	if (paint_only && painted < 0.5) {
@@ -175,7 +177,7 @@ void fragment() {
 	stained = mix(stained, mayo_color_thick.rgb * tint, thick);
 	vec3 base_albedo = mix(stained, deep_color.rgb * tint, deep);
 	ALBEDO = base_albedo;
-	bool ketchup = paved && painted > 0.5 && kind == 2.0;
+	bool ketchup = (paved || wall_face) && painted > 0.5 && kind == 2.0;
 	if (!ketchup && painted > 0.5 && dot(VERTEX, VERTEX) < 2304.0) {
 		ALBEDO = sauce_toon_finish(ALBEDO, coverage, paint_threshold, UV * vec2(mask_size));
 	}
@@ -185,12 +187,23 @@ void fragment() {
 	rough = mix(rough, mix(mayo_roughness, deep_roughness, 0.6), thick);
 	ROUGHNESS = mix(rough, deep_roughness, deep);
 	if (ketchup) {
-		vec3 position = vec3(pavement_position.x, 0.0, pavement_position.y);
+		vec3 position = paved ? vec3(pavement_position.x, 0.0, pavement_position.y) : surface_position;
 		vec2 surface = ketchup_surface(mask_texture, UV, mask_size, position, false);
 		float fill = surface.x;
-		ALBEDO = mix(clean, ketchup_albedo(position, surface, coverage) * 0.50, fill * 0.96);
-		ROUGHNESS = mix(clean_roughness, mix(0.49, 0.35, fill), fill);
-		SPECULAR = mix(0.5, 0.29, fill);
+		vec3 paste = ketchup_albedo(position, surface, coverage) * (paved ? 0.50 : KETCHUP_COATING_GAIN);
+		if (paint_only) {
+			if (fill < 0.5) {
+				discard;
+			}
+			ALBEDO = paste;
+		} else {
+			ALBEDO = mix(clean, paste, fill * 0.96);
+		}
+		if (wall_face) {
+			EMISSION = paste * (fill * KETCHUP_COATING_EMISSION);
+		}
+		ROUGHNESS = mix(clean_roughness, ketchup_roughness(fill), fill);
+		SPECULAR = mix(0.5, paved ? 0.29 : KETCHUP_COATING_SPECULAR, fill);
 	}
 	if (paved && painted > 0.5 && kind < 1.5 && floor(own / 4.0) >= (kind > 0.5 ? 2.0 : 3.0)) {
 		float stripe = smoothstep(0.55, 0.72, sin((pavement_position.x + pavement_position.y) * 9.0));

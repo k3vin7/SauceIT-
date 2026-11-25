@@ -198,6 +198,7 @@ func _build_lens() -> void:
 	# only the sauce on it is drawn. See visor_lens.gdshader for why.
 	material.shader = preload("res://scripts/visor_lens.gdshader")
 	material.set_shader_parameter("mask_texture", grid.texture)
+	material.set_shader_parameter("lens_size", LENS_SIZE)
 	material.set_shader_parameter("mayo_color", mayo_color)
 	_lens.material_override = material
 	_hinge.add_child(_lens)

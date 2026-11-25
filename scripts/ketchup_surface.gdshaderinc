@@ -3,6 +3,22 @@ uniform vec4 ketchup_color : source_color = vec4(0.69, 0.20, 0.13, 1.0);
 uniform vec4 ketchup_pooled_color : source_color = vec4(0.52, 0.105, 0.075, 1.0);
 uniform vec4 ketchup_sheen_color : source_color = vec4(0.94, 0.56, 0.41, 1.0);
 
+// Vertical and curved surfaces get less direct light than a paved floor.
+const float KETCHUP_COATING_GAIN = 0.64;
+const float KETCHUP_COATING_EMISSION = 0.26;
+const float KETCHUP_COATING_SPECULAR = 0.20;
+
+float ketchup_roughness(float fill) {
+	return mix(0.49, 0.35, fill);
+}
+
+vec2 ketchup_light(vec3 normal, vec3 light, vec3 view, float fill) {
+	float facing = max(dot(normal, light), 0.0);
+	vec3 half_direction = normalize(light + view);
+	float highlight = pow(max(dot(normal, half_direction), 0.0), 36.0);
+	return facing * vec2(1.0, highlight * fill * 0.10) / PI;
+}
+
 ivec2 ketchup_mask_cell(ivec2 cell, ivec2 size, bool wrap_x) {
 	int x = wrap_x ? int(mod(float(cell.x), float(size.x))) : clamp(cell.x, 0, size.x - 1);
 	return ivec2(x, clamp(cell.y, 0, size.y - 1));

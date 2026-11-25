@@ -1589,8 +1589,6 @@ func _ready() -> void:
 			enemy.contact_permission = play_support.request_contact
 		if practice_range:
 			_begin_range()
-		if is_instance_valid(_visor_overlay) and _visor_overlay.material is ShaderMaterial:
-			_visor_overlay.material.set_shader_parameter("protect_centre", true)
 	if is_instance_valid(_truck_arrival):
 		_truck_arrival.sync_navigation()
 	_apply_mute()
@@ -4146,8 +4144,6 @@ func _rebind_visor_overlay() -> void:
 	if _visor_overlay == null or _local == null or _local.player.visor == null:
 		return
 	_visor_overlay.bind(_local.player.visor)
-	if map_kind == MapKind.TOMATINA:
-		_visor_overlay.material.set_shader_parameter("protect_centre", true)
 
 
 func set_network_panel_open(open: bool) -> void:
@@ -6178,7 +6174,7 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 				_splat_code(SPLAT_BODY, ContaminationGrid.KIND_KETCHUP),
 				player.peer_id, cell.x, cell.y]))
 		_record_visor_splat(player, centre, ContaminationGrid.KIND_KETCHUP)
-	_tomato_fragments(centre, radius)
+	_blast_fragments(centre, radius)
 
 
 ## Juice landing on bodies: every tomato inside `radius` of `centre`, `source`
@@ -6187,9 +6183,9 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 ## time, so a body the splash kills flinches, turns and topples like one the
 ## stream killed, and then bursts in turn. A bowled tomato shrugs it off in
 ## there, as it shrugs off the stream. `shooter` is credited for the kills;
-## null for a splash nobody owns.
+## null for a splash nobody owns. A negative sauce uses the tomato effects.
 func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Shooter,
-		source: MayoEnemy = null, single_blast := false) -> void:
+		source: MayoEnemy = null, single_blast := false, sauce := -1) -> void:
 	for other in _blast_candidates(centre, radius):
 		if other == source or not is_instance_valid(other):
 			continue
@@ -6199,7 +6195,7 @@ func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Sho
 			continue
 		if single_blast and map_kind == MapKind.TOMATINA and not _tomato_blast_reaches(centre, other):
 			continue
-		_stain_body_with_ketchup(other, centre)
+		_stain_body_with_sauce(other, centre, sauce if sauce >= 0 else ContaminationGrid.KIND_KETCHUP)
 		if damage <= 0.0 or not other.is_alive():
 			continue
 		# **A burst's juice takes a moment to arrive**, longer the further out
@@ -6211,15 +6207,16 @@ func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Sho
 			var along := other.global_position.distance_to(centre) / maxf(radius, 0.01)
 			_splash_ripples.push_back({"enemy": other, "centre": centre, "damage": damage,
 				"peer": shooter.peer_id if shooter != null else -1,
+				"sauce": sauce,
 				"left": lerpf(CHAIN_BURST_MIN_DELAY, maxf(chain_burst_delay, CHAIN_BURST_MIN_DELAY), along)})
 			continue
-		_splash_enemy(other, centre, damage, shooter, single_blast)
+		_splash_enemy(other, centre, damage, shooter, single_blast, sauce)
 
 
 ## The splash landing on one body: the damage, the throw, the hit everyone sees,
 ## and the burst in turn if that was what killed it.
 func _splash_enemy(other: MayoEnemy, centre: Vector3, damage: float, shooter: Shooter,
-		single_blast: bool) -> void:
+		single_blast: bool, sauce: int) -> void:
 	var crossed_before := other._flinch_crossed
 	if shooter != null:
 		_credit_hit(other, shooter)
@@ -6235,14 +6232,14 @@ func _splash_enemy(other: MayoEnemy, centre: Vector3, damage: float, shooter: Sh
 			other.take_sauce_hit(centre)
 	# Whatever the blast hurt is thrown back from it and shows the hit.
 	other.take_blast(centre, blast_knockback_speed)
-	_broadcast_blast_hit(other)
+	_broadcast_blast_hit(other, sauce)
 	if not other.is_alive():
 		if is_instance_valid(play_support) and shooter != null:
 			play_support.note_chain(shooter.peer_id)
-		_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
+		_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2, sauce)
 		_finish_tomato_kill(other, shooter)
 	elif other._flinch_crossed > crossed_before:
-		_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
+		_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1, sauce)
 
 
 ## Runs the travelling juice down and lands what has arrived. Authority only.
@@ -6267,7 +6264,7 @@ func _advance_splash_ripples(delta: float) -> void:
 		processed += 1
 		var other: MayoEnemy = ripple.enemy
 		if is_instance_valid(other) and other.is_alive():
-			_splash_enemy(other, ripple.centre, ripple.damage, _shooters.get(ripple.peer), false)
+			_splash_enemy(other, ripple.centre, ripple.damage, _shooters.get(ripple.peer), false, ripple.sauce)
 
 
 ## A blast reaching the party. Every standing player inside `radius` of `at`
@@ -6344,7 +6341,7 @@ func _advance_overripe_bursts(delta: float) -> void:
 func show_overripe_burst(at: Vector3, radius: float, priming: bool) -> void:
 	if not priming:
 		_shake_from_blast(at, radius)
-		_tomato_fragments(at, radius)
+		_blast_fragments(at, radius)
 		_leave_debris(at, 0.91, TomatoVisuals.OVERRIPE)
 		return
 	_play_combat_warning(at, 490.0, OVERRIPE_BURST_DELAY)
@@ -6396,12 +6393,15 @@ func _leave_debris(centre: Vector3, radius: float, skin: Color) -> void:
 	_debris.push_back(debris)
 
 
-func _tomato_fragments(centre: Vector3, radius: float) -> void:
+func _blast_fragments(centre: Vector3, radius: float, sauce := -1) -> void:
 	if _speck_multimesh == null:
 		return
 	var now := Time.get_ticks_msec() * 0.001
 	var count := clampi(int(8.0 + radius * 4.0), 8, 40)
 	var speed := 3.0 + radius * 0.9
+	var fragment_sauce := ContaminationGrid.KIND_KETCHUP if sauce < 0 else sauce
+	# Part blasts already paint from the impact on the host.
+	var fragment_peer := 1 if sauce < 0 else 0
 	for _index in count:
 		var angle := _feel_rng.randf_range(0.0, TAU)
 		var lift := _feel_rng.randf_range(0.3, 1.0)
@@ -6410,7 +6410,7 @@ func _tomato_fragments(centre: Vector3, radius: float) -> void:
 		_take_speck(now, centre + thrown * 0.3,
 			thrown * speed * _feel_rng.randf_range(0.7, 1.3),
 			_feel_rng.randf_range(ketchup_fragment_radius_min, ketchup_fragment_radius_max),
-			1, ContaminationGrid.KIND_KETCHUP)
+			fragment_peer, fragment_sauce)
 	_speck_buffer_dirty = true
 
 
@@ -6511,7 +6511,7 @@ func _advance_spits(delta: float) -> void:
 			spit.mesh.global_position = spit.position
 		if landed:
 			# The splash everyone sees, off their own dice like a burst's pieces.
-			_tomato_fragments(spit.position, PressKing.LOB_SPLASH_RADIUS if spit.lob else 0.6)
+			_blast_fragments(spit.position, PressKing.LOB_SPLASH_RADIUS if spit.lob else 0.6)
 			if _is_authority() and spit.spitter != null and is_instance_valid(spit.spitter):
 				if spit.lob:
 					_press_king_lob_lands(hit["collider"] as MayoPlayer, spit.position)
@@ -7690,10 +7690,10 @@ func apply_enemy_state(data: PackedFloat32Array, interpolate := false, start := 
 		if enemy.burst_radius <= 0.0:
 			continue
 		if was_alive and not enemy.is_alive():
-			_tomato_fragments(enemy.global_position, enemy.burst_radius)
+			_blast_fragments(enemy.global_position, enemy.burst_radius)
 		elif enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL \
 				and was_at.y > -10.0 and enemy.global_position.y < -40.0:
-			_tomato_fragments(was_at, enemy.burst_radius)
+			_blast_fragments(was_at, enemy.burst_radius)
 
 
 func set_enemy_authority(authority: bool) -> void:
@@ -8249,10 +8249,10 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 			if was_alive:
 				_confirm_server_contact(shooter)
 				if not enemy.is_alive():
-					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
+					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2, stored_sauce)
 					_finish_tomato_kill(enemy, shooter)
 				elif enemy._flinch_crossed > crossed_before:
-					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds, 1)
+					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds, 1, stored_sauce)
 			# Ketchup piles up on the body rather than on the floor, and the stack
 			# that fills it sets it off. After the hit, so a body the stream has
 			# just killed goes off as the corpse it now is instead of soaking one
@@ -8285,7 +8285,7 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 		blast_damage = SauceParts.cannon_blast_damage(float(shot.get("shake", 0.0)))
 	var sauce: int = shot.sauce
 	_spawn_impact_spray(at, normal, shot.velocity, target is MayoEnemy, shooter,
-		1.0 if blast <= 0.0 else 3.0, blast > 0.0)
+		1.0 if blast <= 0.0 else 3.0, blast > 0.0, sauce)
 	if not authority or target == null:
 		return
 	# The mortar's blast replaces the direct hit.
@@ -8459,7 +8459,7 @@ func _burst_ketchup(enemy: MayoEnemy, shooter: Shooter) -> void:
 			_finish_tomato_kill(other, shooter)
 		elif other._flinch_crossed > crossed_before:
 			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
-		_stain_body_with_ketchup(other, centre)
+		_stain_body_with_sauce(other, centre, ContaminationGrid.KIND_KETCHUP)
 
 	# **Players get sauce and nothing else.** A blast the party set off itself, on
 	# a body the party was standing next to, that then took their health would be a
@@ -8522,18 +8522,17 @@ func _ketchup_fragments(centre: Vector3, shooter: Shooter) -> void:
 
 
 ## A body caught in a blast wears it.
-func _stain_body_with_ketchup(enemy: MayoEnemy, from: Vector3) -> void:
+func _stain_body_with_sauce(enemy: MayoEnemy, from: Vector3, sauce: int) -> void:
 	var index := _enemies.find(enemy)
 	if index < 0:
 		return
 	var toward := enemy.global_position.direction_to(from)
 	if toward.length_squared() < 0.000001:
 		toward = Vector3.UP
-	var cell := enemy.paint_mayo(enemy.global_position + toward * enemy.radius, toward,
-		ContaminationGrid.KIND_KETCHUP)
+	var cell := enemy.paint_mayo(enemy.global_position + toward * enemy.radius, toward, sauce)
 	if cell.x >= 0:
 		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_ENEMY, ContaminationGrid.KIND_KETCHUP), index,
+			_splat_code(SPLAT_ENEMY, sauce), index,
 			cell.x, cell.y]))
 
 
@@ -9139,7 +9138,8 @@ func _build_lump_mesh(material: Material) -> ArrayMesh:
 ## sauce arrive, pause, and only then spit. Nothing here paints, damages or is
 ## sent -- the pool, the dice and the sound are all local.
 func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
-		on_body := false, shooter: Shooter = null, accent := 1.0, force := false) -> void:
+		on_body := false, shooter: Shooter = null, accent := 1.0, force := false,
+		stored_sauce := -1) -> void:
 	if _speck_multimesh == null or (_impact_clock > 0.0 and not force):
 		return
 	_impact_clock = impact_min_interval
@@ -9150,6 +9150,9 @@ func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
 		bounce = normal
 	bounce = bounce.normalized()
 	var now := Time.get_ticks_msec() * 0.001
+	var sauce := stored_sauce
+	if sauce < 0:
+		sauce = shooter.sauce_kind if shooter != null else ContaminationGrid.KIND_MAYO
 	# Sauce hitting a body throws more of itself, and throws it wider, than
 	# sauce hitting a kerb. Without this a monster and a wall spit identically
 	# and the spray says nothing about what is being hit.
@@ -9180,8 +9183,7 @@ func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
 		thrown = thrown.normalized()
 		_take_speck(now, at + normal * 0.02, thrown * speed * _feel_rng.randf_range(0.7, 1.3),
 			radius * sqrt(accent) * _feel_rng.randf_range(0.75, 1.3),
-			shooter.peer_id if shooter != null else 1,
-			shooter.sauce_kind if shooter != null else ContaminationGrid.KIND_MAYO)
+			shooter.peer_id if shooter != null else 1, sauce)
 	_speck_buffer_dirty = true
 
 
@@ -9256,9 +9258,9 @@ func _land_speck(speck: MayoSpeck, space_state: PhysicsDirectSpaceState3D,
 		# The same coat as the burst that threw it, so a spatter landing on
 		# ground the stream has already covered does not stack a second layer on
 		# a cell the same trigger pull already raised.
-		_record_floor_splat(shooter, shooter.burst_index, hit.position)
+		_record_floor_splat(shooter, shooter.burst_index, hit.position, speck.sauce)
 	elif collider.is_in_group("mayo_contaminable"):
-		_record_splat(collider, hit.position, hit.normal, shooter, false)
+		_record_splat(collider, hit.position, hit.normal, shooter, false, speck.sauce)
 	return true
 
 
@@ -9607,7 +9609,8 @@ func _advance_hit_credit(delta: float) -> void:
 ## happens once has to be sent once, and arrive.
 ##
 ## Offline there is no net, so it is applied directly.
-func _broadcast_enemy_shake(enemy: MayoEnemy, degrees: float, seconds: float, accent := 0) -> void:
+func _broadcast_enemy_shake(enemy: MayoEnemy, degrees: float, seconds: float,
+		accent := 0, sauce := -1) -> void:
 	var index := _enemies.find(enemy)
 	if index < 0:
 		return
@@ -9618,39 +9621,39 @@ func _broadcast_enemy_shake(enemy: MayoEnemy, degrees: float, seconds: float, ac
 	for peer_id in book:
 		peers.append(peer_id)
 	if is_instance_valid(_net) and _net.is_online():
-		_net.send_enemy_shake(index, peers, degrees, seconds, accent)
-	apply_enemy_shake(index, peers, degrees, seconds, accent)
+		_net.send_enemy_shake(index, peers, degrees, seconds, accent, sauce)
+	apply_enemy_shake(index, peers, degrees, seconds, accent, sauce)
 
 
 ## A blast or a ketchup burst hurt this body, and every peer should see it land.
 ## Rides the shake message as accent 4, with nobody listed: it is not a shake.
-func _broadcast_blast_hit(enemy: MayoEnemy) -> void:
+func _broadcast_blast_hit(enemy: MayoEnemy, sauce := -1) -> void:
 	var index := _enemies.find(enemy)
 	if index < 0:
 		return
 	var nobody := PackedInt32Array()
 	if is_instance_valid(_net) and _net.is_online():
-		_net.send_enemy_shake(index, nobody, 0.0, 0.0, 4)
-	apply_enemy_shake(index, nobody, 0.0, 0.0, 4)
+		_net.send_enemy_shake(index, nobody, 0.0, 0.0, 4, sauce)
+	apply_enemy_shake(index, nobody, 0.0, 0.0, 4, sauce)
 
 
-## The hit itself: a white flash the size of the body, gone in a tenth of a
-## second, and ketchup thrown off it. Presentation only, on every peer.
+## The hit itself: a flash the size of the body, gone in a tenth of a second,
+## and fragments of the sauce that reached it.
 ##
 ## A shell round the body rather than a tint on it: the body's overlay slot is
 ## the stain's -- see `BodyContamination` -- and the hit must not wipe it.
-func _show_blast_hit(enemy: MayoEnemy) -> void:
+func _show_blast_hit(enemy: MayoEnemy, sauce: int) -> void:
 	if not is_instance_valid(enemy):
 		return
 	var at := enemy.global_position
-	_tomato_fragments(at, 0.0)
+	_blast_fragments(at, 0.0, sauce)
 	_prepare_tomatina_blast_effects()
 	var flash := _blast_hits.pop_back() as MeshInstance3D if not _blast_hits.is_empty() \
 		else _make_blast_hit()
 	var diameter := enemy.radius * 2.2
 	flash.scale = Vector3(diameter, maxf(enemy.height, enemy.radius * 2.0) * 1.05, diameter)
 	var tint := flash.material_override as StandardMaterial3D
-	tint.albedo_color = Color(1.0, 1.0, 1.0, 0.6)
+	tint.albedo_color = Color(SAUCE_TINTS[sauce] if sauce >= 0 else Color.WHITE, 0.6)
 	flash.global_position = at
 	flash.show()
 	var fade := create_tween()
@@ -9681,12 +9684,12 @@ func _shake_from_blast(at: Vector3, radius: float) -> void:
 ## each keeps only its own: the list is short and the alternative is a message
 ## per player.
 func apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
-		degrees: float, seconds: float, accent := 0) -> void:
+		degrees: float, seconds: float, accent := 0, sauce := -1) -> void:
 	if enemy_index < 0 or enemy_index >= _enemies.size():
 		return
 	# A blast landing on a body is for every screen, not just the credited ones.
 	if accent == 4:
-		_show_blast_hit(_enemies[enemy_index])
+		_show_blast_hit(_enemies[enemy_index], sauce)
 		return
 	if _local == null or not peers.has(_local.peer_id):
 		return
@@ -9701,7 +9704,7 @@ func apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
 		_play_contact_accent(defeat_sound if accent == 2 else first_contact_sound,
 			enemy.global_position, 0.85 if accent == 2 else 0.92, 4.0 if accent == 2 else 1.0)
 		_spawn_impact_spray(enemy.global_position, Vector3.UP, Vector3.DOWN,
-			true, _local, 2.0 if accent == 2 else 1.3, true)
+			true, _local, 2.0 if accent == 2 else 1.3, true, sauce)
 		if _crosshair is Crosshair:
 			(_crosshair as Crosshair).confirm_impact(accent == 2)
 	var toward := enemy.global_position - _local.player.global_position
@@ -11383,15 +11386,15 @@ func _explode_thrown_tomato(at: Vector3, owner: Shooter) -> void:
 
 ## 박격포의 착탄: 던진 토마토처럼 터진다 -- 같은 번쩍임과 흔들림, 아군도 가리지 않는다.
 ## 반경은 토마토의 `MORTAR_RADIUS_SHARE`배, 피해는 얼마나 채워 쐈는가(`charge`)에 따라
-## `SauceParts.mortar_damage`이고, 웅덩이는 케찹이 아니라 쏜 사람의 소스다. 방장만 부른다.
+## `SauceParts.mortar_damage`다. 폭발과 자국에는 발사할 때의 소스가 쓰인다. 방장만 부른다.
 func _explode_lob_cap(at: Vector3, owner: Shooter, sauce: int, charge := 1.0) -> void:
 	var radius := thrown_tomato_splash_radius * SauceParts.MORTAR_RADIUS_SHARE
 	var damage := SauceParts.mortar_damage(charge)
-	show_tomato_blast(at, radius)
+	show_tomato_blast(at, radius, sauce)
 	_cut_cheese_by_blast(at, radius)
 	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
-		_net.broadcast_tomato_blast(at, radius)
-	_splash_enemies(at, radius, damage, owner, null, true)
+		_net.broadcast_tomato_blast(at, radius, sauce)
+	_splash_enemies(at, radius, damage, owner, null, true, sauce)
 	_blast_players(at, radius, thrown_tomato_player_damage * damage / maxf(thrown_tomato_damage, 0.001))
 	for index in 12:
 		var angle := TAU * float(index) / 12.0
@@ -11523,10 +11526,11 @@ func _pulse_blast_radius(at: Vector3, radius: float, duration: float, color: Col
 			marker.queue_free())
 
 
-func show_tomato_blast(at: Vector3, radius: float) -> void:
+func show_tomato_blast(at: Vector3, radius: float, sauce := -1) -> void:
 	_shake_from_blast(at, radius)
-	_tomato_fragments(at, radius)
-	_leave_debris(at, 0.48, TomatoVisuals.TOMATO)
+	_blast_fragments(at, radius, sauce)
+	if sauce < 0:
+		_leave_debris(at, 0.48, TomatoVisuals.TOMATO)
 	_prepare_tomatina_blast_effects()
 	if not muted:
 		_play_contact_accent(_tomato_blast_sound, at, 0.72, 8.0)
@@ -11534,7 +11538,8 @@ func show_tomato_blast(at: Vector3, radius: float) -> void:
 	var flash := effect.get_child(0) as MeshInstance3D
 	var shock := effect.get_child(1) as MeshInstance3D
 	var tint := flash.material_override as StandardMaterial3D
-	tint.albedo_color.a = 0.82
+	var color := SAUCE_TINTS[sauce] if sauce >= 0 else _blast_material.albedo_color
+	tint.albedo_color = Color(color, 0.82)
 	flash.scale = Vector3.ONE
 	shock.scale = Vector3(0.3, 0.35, 0.3)
 	effect.global_position = at

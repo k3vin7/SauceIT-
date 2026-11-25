@@ -747,18 +747,32 @@ func mesh_for(key: String) -> Mesh:
 	return _meshes.get(key)
 
 
-## Runtime victims use one material for the whole model. Keep the copied
-## vertex colours and normals while submitting one surface per body and pass.
+## Bake the fallen guests' material palette into the vertex colors read by the
+## toon shader, so each body can still use one surface per pass.
 func victim_mesh_for(key: String) -> Mesh:
 	var source := mesh_for(key)
-	if source == null or source.get_surface_count() <= 1 or key not in VICTIM_MODELS:
+	if source == null or key not in VICTIM_MODELS:
 		return source
 	if not _merged_victim_meshes.has(key):
 		var surface := SurfaceTool.new()
 		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+		var colors := PackedColorArray()
 		for index in source.get_surface_count():
 			surface.append_from(source, index, Transform3D.IDENTITY)
-		_merged_victim_meshes[key] = surface.commit()
+			var arrays := source.surface_get_arrays(index)
+			var material := source.surface_get_material(index) as BaseMaterial3D
+			var surface_colors := PackedColorArray()
+			if material == null and arrays[Mesh.ARRAY_COLOR] != null:
+				surface_colors = arrays[Mesh.ARRAY_COLOR]
+			else:
+				surface_colors.resize(arrays[Mesh.ARRAY_VERTEX].size())
+				surface_colors.fill(material.albedo_color if material != null else Color.WHITE)
+			colors.append_array(surface_colors)
+		var arrays := surface.commit_to_arrays()
+		arrays[Mesh.ARRAY_COLOR] = colors
+		var merged := ArrayMesh.new()
+		merged.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		_merged_victim_meshes[key] = merged
 	return _merged_victim_meshes[key]
 
 

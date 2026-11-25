@@ -883,16 +883,26 @@ func _run() -> void:
 
 
 func _probe_victim_surfaces(art: TomatinaVillageArt) -> void:
+	const COLOR_TOLERANCE := 1.0 / 255.0 + 0.000001 # ArrayMesh stores 8-bit vertex colors.
 	for model in TomatinaVillageArt.VICTIM_MODELS:
 		var source := art.mesh_for(model)
 		var merged := art.victim_mesh_for(model)
 		_check(merged.get_surface_count() == 1, "%s needs one runtime render surface" % model)
 		_check(merged.get_faces() == source.get_faces(), "%s changed geometry during the merge" % model)
-		var source_colors := PackedColorArray()
+		var colors: PackedColorArray = merged.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+		var offset := 0
 		for index in source.get_surface_count():
-			source_colors.append_array(source.surface_get_arrays(index)[Mesh.ARRAY_COLOR])
-		_check(merged.surface_get_arrays(0)[Mesh.ARRAY_COLOR] == source_colors,
-			"%s changed vertex colors during the merge" % model)
+			var material := source.surface_get_material(index) as BaseMaterial3D
+			var count: int = source.surface_get_arrays(index)[Mesh.ARRAY_VERTEX].size()
+			var matches := true
+			for vertex in range(offset, offset + count):
+				var difference := colors[vertex] - material.albedo_color
+				if maxf(absf(difference.r), maxf(absf(difference.g), absf(difference.b))) > COLOR_TOLERANCE:
+					matches = false
+					break
+			_check(matches,
+				"%s lost the %s material color during the merge" % [model, material.resource_name])
+			offset += count
 
 
 func _probe_bottle_notice(scene) -> void:

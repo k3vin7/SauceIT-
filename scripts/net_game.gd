@@ -115,7 +115,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 22
+const PROTOCOL_VERSION := 23
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 const ENEMY_SNAPSHOT_NEAR_DISTANCE := 42.0
 const ENEMY_SNAPSHOT_FAR_PERIOD := 5
@@ -2568,27 +2568,27 @@ func _apply_tomatina_status(status: PackedFloat64Array, threads: PackedFloat32Ar
 ## next one, but a dropped event is simply never seen -- and a flinch is over in
 ## a fifth of a second, so there is no next one to correct it.
 func send_enemy_shake(enemy_index: int, peers: PackedInt32Array,
-		degrees: float, seconds: float, accent := 0) -> void:
+		degrees: float, seconds: float, accent := 0, sauce := -1) -> void:
 	if not _online or not multiplayer.is_server():
 		return
 	if multiplayer.get_peers().is_empty():
 		return
-	_apply_enemy_shake.rpc(enemy_index, peers, degrees, seconds, accent)
+	_apply_enemy_shake.rpc(enemy_index, peers, degrees, seconds, accent, sauce)
 
 
 @rpc("authority", "call_remote", "reliable")
 func _apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
-		degrees: float, seconds: float, accent := 0) -> void:
+		degrees: float, seconds: float, accent := 0, sauce := -1) -> void:
 	if not _world_ready():
 		return
 	# From the server, so the range checks are about surviving a corrupt packet
 	# rather than about a hostile client -- but they are free and the rule in
 	# this file is that nothing off the wire is trusted unchecked.
-	if not all_finite([degrees, seconds]):
+	if not all_finite([degrees, seconds]) or sauce < -1 or sauce > ContaminationGrid.KIND_KETCHUP:
 		rejected_packets += 1
 		return
 	world.apply_enemy_shake(enemy_index, peers,
-		clamp_range(degrees, 0.0, 90.0), clamp_range(seconds, 0.0, 5.0), clampi(accent, 0, 4))
+		clamp_range(degrees, 0.0, 90.0), clamp_range(seconds, 0.0, 5.0), clampi(accent, 0, 4), sauce)
 
 
 # ---------------------------------------------------------------------------
@@ -2676,15 +2676,16 @@ func _show_tomato_fuse(at: Vector3) -> void:
 		world._show_tomato_fuse(at)
 
 
-func broadcast_tomato_blast(at: Vector3, radius: float) -> void:
+func broadcast_tomato_blast(at: Vector3, radius: float, sauce := -1) -> void:
 	if _online and multiplayer.is_server() and not multiplayer.get_peers().is_empty():
-		_show_tomato_blast.rpc(at, radius)
+		_show_tomato_blast.rpc(at, radius, sauce)
 
 
 @rpc("authority", "call_remote", "reliable")
-func _show_tomato_blast(at: Vector3, radius: float) -> void:
-	if _world_ready() and all_finite([at.x, at.y, at.z, radius]) and radius >= 0.5 and radius <= 12.0:
-		world.show_tomato_blast(at, radius)
+func _show_tomato_blast(at: Vector3, radius: float, sauce := -1) -> void:
+	if _world_ready() and all_finite([at.x, at.y, at.z, radius]) and radius >= 0.5 and radius <= 12.0 \
+			and sauce >= -1 and sauce <= ContaminationGrid.KIND_KETCHUP:
+		world.show_tomato_blast(at, radius, sauce)
 
 
 ## One caption. The index of the line, not the line: both ends hold the same
