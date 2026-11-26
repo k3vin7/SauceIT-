@@ -66,12 +66,18 @@ func _press(parent: Node, caption: String) -> void:
 	failures.push_back("no available button: %s" % caption)
 
 
-## 사무실의 몸을 홀의 문 앞에 세우고 방 안으로 걸어 들어간다.
-func _walk_in(office: OfficeLobby) -> bool:
+## 사무실의 몸을 홀의 문 앞에 세우고 방 안으로 걸어 들어간다. 참가자의 몸은 방장이 걷게
+## 하므로(`TruckLobby.apply_occupant_pose`), 참가자일 때는 방장의 사무실(`authority`)에서도
+## 같은 자리에 세운다 -- 참가자 화면에서만 옮기면 방장의 다음 자세가 곧바로 덮어쓴다.
+func _walk_in(office: OfficeLobby, authority: OfficeLobby = null) -> bool:
 	var id := office._local_id()
 	var body := office._occupants[id] as CharacterBody3D
 	body.position = Vector3(3.5, body.position.y, 15.0)
 	body.velocity = Vector3.ZERO
+	if authority != null and authority != office:
+		var theirs := authority._occupants[id] as CharacterBody3D
+		theirs.position = Vector3(3.5, theirs.position.y, 15.0)
+		theirs.velocity = Vector3.ZERO
 	office._yaw = -PI * 0.5
 	office._apply_local_look()
 	office.debug_input_override = true
@@ -130,6 +136,11 @@ func _solo() -> void:
 	for sauce in PracticeRange.SAUCE_SPOTS.size():
 		var spot: Vector3 = PracticeRange.SAUCE_SPOTS[sauce]
 		await _stand(world, Vector3(spot.x, 0.0, spot.z + 1.4), spot)
+		# E 안내는 한번 잡은 대상을 0.3초 붙들고 있다(`TomatinaPlaySupport.context_target`).
+		# 병은 1 m 간격이라 옆 병의 안내가 아직 남아 있을 수 있다: 그 시간이 지나기를 기다린다.
+		var settled := Time.get_ticks_msec() + 400
+		while Time.get_ticks_msec() < settled:
+			await physics_frame
 		var target: Dictionary = world.play_support.context_target(world._local)
 		_check(not target.is_empty() and target.kind == "range_sauce" and int(target.id) == sauce,
 			"bottle %d on the rack is not something to take" % sauce)
@@ -205,7 +216,7 @@ func _party() -> void:
 	_check(await _until(func(): return guest_world.load_complete, 1200), "the guest has no range world")
 
 	# 참가자가 들어간다: 방장의 사무실에는 방 안을 걷는 모습이 간다. 방장은 그대로다.
-	_check(await _walk_in(guest_office), "the guest could not walk into the range")
+	_check(await _walk_in(guest_office, host_office), "the guest could not walk into the range")
 	_check(guest_world.is_embedded_active() and guest_world._is_authority(),
 		"the guest's range is not its own to run")
 	await _stand(guest_world, Vector3(14.0, 0.0, 17.0), Vector3(30.0, 1.0, 17.0))
