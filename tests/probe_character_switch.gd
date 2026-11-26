@@ -77,7 +77,7 @@ func _run() -> void:
 	var state: PackedFloat32Array = scene._net._collect_state(ids)
 	_check(state.size() == scene._net.STATE_STRIDE,
 		"network state does not contain exactly one complete player record")
-	_check(int(state[scene._net.STATE_STRIDE - 1]) == 1,
+	_check(int(state[scene._net.STATE_CHARACTER_INDEX]) == 1,
 		"Character_2 selection is missing from network state")
 
 	scene._unhandled_input(switch_event)
@@ -93,7 +93,7 @@ func _run() -> void:
 		MayoPlayer.CAPSULE_HEIGHT / scene.PLAYER_CHARACTER_SOURCE_HEIGHTS[2]),
 		"Character_3 was not scaled to the gameplay capsule")
 	state = scene._net._collect_state(ids)
-	_check(int(state[scene._net.STATE_STRIDE - 1]) == 2,
+	_check(int(state[scene._net.STATE_CHARACTER_INDEX]) == 2,
 		"Character_3 selection is missing from network state")
 	# A second machine hears about this player as a remote body, peer 2 to it.
 	var remote_ids := PackedInt32Array([2])
@@ -140,7 +140,7 @@ func _run() -> void:
 		-MayoPlayer.CAPSULE_HEIGHT * 0.5),
 		"Character_4 collider bottom moved away from the shared ground point")
 	state = scene._net._collect_state(ids)
-	_check(int(state[scene._net.STATE_STRIDE - 1]) == 3,
+	_check(int(state[scene._net.STATE_CHARACTER_INDEX]) == 3,
 		"Character_4 selection is missing from network state")
 	replica = load("res://main.tscn").instantiate()
 	root.add_child(replica)

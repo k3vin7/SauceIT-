@@ -48,6 +48,12 @@ const SEATS := [
 
 var session: MayoNet
 var mouse_sensitivity := 0.09
+var view_fov := 78.0:
+	set(value):
+		view_fov = value
+		for pivot in [_idle_camera, _camera_pivot]:
+			if is_instance_valid(pivot) and pivot.get_child_count() > 0:
+				(pivot.get_child(0) as Camera3D).fov = value
 ## How fast a body walks here. The office (`OfficeLobby`) is this same space
 ## with more floor, and sets its own.
 var walk_speed := WALK_SPEED
@@ -352,7 +358,7 @@ func _build_idle_camera() -> void:
 	add_child(_idle_camera)
 	var camera := Camera3D.new()
 	camera.current = true
-	camera.fov = 78.0
+	camera.fov = view_fov
 	camera.near = 0.05
 	_idle_camera.add_child(camera)
 
@@ -580,7 +586,7 @@ func _adopt_local(body: CharacterBody3D, seat: int) -> void:
 	body.add_child(_camera_pivot)
 	var camera := Camera3D.new()
 	camera.current = true
-	camera.fov = 78.0
+	camera.fov = view_fov
 	camera.near = 0.05
 	_camera_pivot.add_child(camera)
 	_apply_local_look()

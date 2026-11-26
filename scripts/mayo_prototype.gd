@@ -2961,15 +2961,15 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("toggle_key_legend"):
 		show_key_legend = not show_key_legend
 		return
-	if event.is_action_pressed("switch_character"):
-		_local.requested_character_index = posmod(
-			_local.requested_character_index + 1, PLAYER_CHARACTERS.size())
-		set_character_variant(_local.peer_id, _local.requested_character_index)
-		# In a truck session the pick belongs to the session, not to this stage:
-		# told about the change, it is still what they are wearing back in the
-		# truck and in the next stage.
+	if event.is_action_pressed("switch_character") and not event.is_echo():
 		if is_instance_valid(_net) and _net.lobby_flow:
-			_net.choose_character(_local.requested_character_index)
+			if _input_enabled:
+				for offset in range(1, PLAYER_CHARACTERS.size()):
+					var index := (_local.requested_character_index + offset) % PLAYER_CHARACTERS.size()
+					if _net.choose_character(index):
+						break
+		else:
+			set_local_character((_local.requested_character_index + 1) % PLAYER_CHARACTERS.size())
 		return
 	if not _input_enabled:
 		return
@@ -3371,6 +3371,8 @@ func remove_avatar(peer_id: int) -> void:
 	_free_shooter(_shooters[peer_id])
 	_shooters.erase(peer_id)
 	_loot_attempts.erase(peer_id)
+	if is_instance_valid(_tomatina_intro):
+		_tomatina_intro.remove_passenger(peer_id)
 	# And somebody left, which walks it back the same way.
 	rescale_enemies()
 	# Somebody who has gone is not waited for: a stage that needs everybody to
@@ -4562,7 +4564,7 @@ func _find_player_animation(player: AnimationPlayer, suffix: String,
 
 ## Replaces the presentation and applies that character's matching capsule.
 ## Health, sauce and world position remain on the same player node. The selected
-## index is carried in normal network state so every peer sees the same choice.
+## index comes from the lobby roster in a room and from normal state in standalone play.
 func set_character_variant(peer_id: int, requested_index: int) -> void:
 	var shooter: Shooter = _shooters.get(peer_id)
 	if shooter == null:
@@ -4593,10 +4595,7 @@ func set_character_variant(peer_id: int, requested_index: int) -> void:
 	set_first_person(_first_person)
 
 
-## The character the player at this keyboard arrives as -- the one they picked
-## before the truck. Sets what this peer *asks* for as well as what it wears:
-## a guest sends `requested_character_index` with every input packet, and one
-## left at zero would talk the host back into the default a tick later.
+## Keep the local selection index and its model in sync.
 func set_local_character(index: int) -> void:
 	if _local == null:
 		return

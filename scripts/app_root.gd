@@ -19,6 +19,8 @@ const STATUS_TEXT := {
 	"connection cancelled": "접속을 취소했습니다.",
 	"host closed the session": "방장이 방을 닫았습니다.",
 	"game version differs from the host": "방장과 게임 버전이 다릅니다.",
+	MayoNet.STAGE_LOAD_FAILED: "스테이지를 불러오지 못해 사무실로 돌아왔습니다.",
+	MayoNet.STAGE_LOAD_TIMEOUT: "로딩 시간이 초과되어 사무실로 돌아왔습니다.",
 }
 const CharacterSelectScript := preload("res://scripts/character_select.gd")
 const UI := preload("res://scripts/sauce_ui.gd")
@@ -386,6 +388,7 @@ func _show_office() -> void:
 	var office := OfficeScene.instantiate() as OfficeLobby
 	office.session = session
 	office.mouse_sensitivity = save_store.mouse_sensitivity
+	office.view_fov = float(save_store.game_options.settings.fov)
 	office.practice_bot_count = _practice_bot_count
 	office.start_requested.connect(session.request_stage_start)
 	office.character_requested.connect(_show_character_select)
@@ -464,7 +467,7 @@ func _close_character_select() -> void:
 
 func _on_transition_requested(stage_id: String, transition: int) -> void:
 	if not StageRegistry.has_stage(stage_id):
-		_on_transition_failed("unknown stage: %s" % stage_id)
+		session.report_world_load_failed(transition)
 		return
 	if current_space is OfficeLobby:
 		_practice_bot_count = (current_space as OfficeLobby).practice_bot_count
@@ -496,9 +499,12 @@ func _on_transition_requested(stage_id: String, transition: int) -> void:
 			elif ResourceLoader.has_cached(scene_path):
 				packed = ResourceLoader.load(scene_path) as PackedScene
 	if packed == null:
-		_on_transition_failed("stage scene could not be loaded")
+		session.report_world_load_failed(transition)
 		return
 	var world = packed.instantiate()
+	if world == null:
+		session.report_world_load_failed(transition)
+		return
 	if stage_id == "stage_2":
 		world.tomatina_shortcut_open = false
 		world.staged_loading = true
@@ -639,8 +645,8 @@ func _drop_arrival() -> void:
 
 
 func _on_transition_failed(reason: String) -> void:
-	_notice = reason
 	_show_office()
+	(current_space as OfficeLobby).show_notice(_status_text(reason), 5.0)
 
 
 func _on_stage_cleared() -> void:
@@ -1087,7 +1093,11 @@ func _save_options() -> void:
 	if current_space is RecruitmentMap:
 		(current_space as RecruitmentMap).mouse_sensitivity = save_store.mouse_sensitivity
 	elif current_space is TruckLobby:
-		(current_space as TruckLobby).mouse_sensitivity = save_store.mouse_sensitivity
+		var lobby := current_space as TruckLobby
+		lobby.mouse_sensitivity = save_store.mouse_sensitivity
+		lobby.view_fov = float(save_store.game_options.settings.fov)
+		if lobby is OfficeLobby:
+			(lobby as OfficeLobby).refresh_control_labels()
 	elif current_space != null and current_space.has_method("apply_look"):
 		current_space.set("mouse_sensitivity", save_store.mouse_sensitivity)
 	_close_options()
