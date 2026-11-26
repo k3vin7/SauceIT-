@@ -1,9 +1,8 @@
 class_name VisorOverlay
 extends ColorRect
 
-## What the local player sees through their own lenses. The physical lens and
-## screen are both 16:9, so this is a straight 1:1 sample of the same mask -- the
-## overlay owns no state of its own and cannot drift from what others see.
+## What the local player sees through their own lenses, sampled from the same
+## projected mask as the physical lens.
 
 func bind(visor: VisorContamination) -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -12,6 +11,7 @@ func bind(visor: VisorContamination) -> void:
 	var shader_material := ShaderMaterial.new()
 	shader_material.shader = preload("res://scripts/visor_overlay.gdshader")
 	shader_material.set_shader_parameter("mask_texture", visor.grid.texture)
+	shader_material.set_shader_parameter("lens_size", VisorContamination.LENS_SIZE)
 	shader_material.set_shader_parameter("mayo_color", visor.mayo_color)
 	material = shader_material
 

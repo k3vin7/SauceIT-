@@ -580,6 +580,7 @@ func _run() -> void:
 	scene._check_stage_clear()
 	_check(not scene.horde_spawned(), "entering the plaza armed the siren")
 	var before_horde: int = scene.enemy_count()
+	var finale_budget: int = scene.minion_spawn_count(scene.TOMATINA_HORDE_BASE)
 	var guard_grunts := 0
 	for enemy in scene._enemies:
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() 				and TomatinaMap.in_rect(plaza, enemy.global_position):
@@ -794,7 +795,7 @@ func _run() -> void:
 			break
 		scene._advance_horde_spawn(scene.FINALE_SPAWN_INTERVAL)
 	_check(scene._horde_pending == 0, "the finale never deployed all scheduled reinforcements")
-	_check(scene.tutorial_spawned().size() == scene.minion_spawn_count(86),
+	_check(scene.tutorial_spawned().size() == finale_budget,
 		"the finale lost part of its 1.8x reinforcement budget under the cap")
 	# The earlier hose check called its optional wave without running the
 	# spawn tick. Clear that test fixture before checking the boss gate.
@@ -883,16 +884,26 @@ func _run() -> void:
 
 
 func _probe_victim_surfaces(art: TomatinaVillageArt) -> void:
+	const COLOR_TOLERANCE := 1.0 / 255.0 + 0.000001 # ArrayMesh stores 8-bit vertex colors.
 	for model in TomatinaVillageArt.VICTIM_MODELS:
 		var source := art.mesh_for(model)
 		var merged := art.victim_mesh_for(model)
 		_check(merged.get_surface_count() == 1, "%s needs one runtime render surface" % model)
 		_check(merged.get_faces() == source.get_faces(), "%s changed geometry during the merge" % model)
-		var source_colors := PackedColorArray()
+		var colors: PackedColorArray = merged.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+		var offset := 0
 		for index in source.get_surface_count():
-			source_colors.append_array(source.surface_get_arrays(index)[Mesh.ARRAY_COLOR])
-		_check(merged.surface_get_arrays(0)[Mesh.ARRAY_COLOR] == source_colors,
-			"%s changed vertex colors during the merge" % model)
+			var material := source.surface_get_material(index) as BaseMaterial3D
+			var count: int = source.surface_get_arrays(index)[Mesh.ARRAY_VERTEX].size()
+			var matches := true
+			for vertex in range(offset, offset + count):
+				var difference := colors[vertex] - material.albedo_color
+				if maxf(absf(difference.r), maxf(absf(difference.g), absf(difference.b))) > COLOR_TOLERANCE:
+					matches = false
+					break
+			_check(matches,
+				"%s lost the %s material color during the merge" % [model, material.resource_name])
+			offset += count
 
 
 func _probe_bottle_notice(scene) -> void:

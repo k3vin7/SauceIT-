@@ -115,13 +115,19 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 22
+const PROTOCOL_VERSION := 29
+const STAGE_INPUT_TIMEOUT := 0.25
+const MOTION_REFRESH_SECONDS := 0.25
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 const ENEMY_SNAPSHOT_NEAR_DISTANCE := 42.0
 const ENEMY_SNAPSHOT_FAR_PERIOD := 5
 const ENEMY_SNAPSHOT_REFRESH_PERIOD := 20
 var _tomatina_snapshot_phase := 0
 var _tomatina_snapshot_number := 0
+var _inventory_sent := PackedInt32Array()
+var _inventory_peers := PackedInt32Array()
+var _motion_sent := PackedFloat64Array()
+var _motion_refresh_at := 0.0
 var _enemy_snapshots_by_peer := {}
 const AUTH_VERSION_PREFIX := "mayo-version:"
 ## How often one address is worth answering. A blocked address can reconnect as
@@ -145,11 +151,13 @@ const MAX_CLIENTS := 3
 ## along rather than being derived, so nobody has to guess which band a bottle
 ## is in either.
 const STATE_STRIDE := 26
+const STATE_CHARACTER_INDEX := 17
 ## Where one occupant is standing in the truck: x, y, z and the yaw they are
 ## facing. The truck carries no bottle, no health and no aim pitch, so it needs
 ## none of the sixteen floats a stage body does -- four, four times a frame at
 ## the four-player maximum, is 80 bytes of pose a frame against the stage's 272.
 const LOBBY_POSE_STRIDE := 4
+const LOBBY_INPUT_TIMEOUT := 0.25
 ## What that costs the host. One player is 16 floats plus a 4-byte id, so 68
 ## bytes; a four-player session is 272 bytes of state a frame, and the host sends
 ## it to each of the three guests at the physics rate:
@@ -186,13 +194,16 @@ signal late_join_waiting
 signal team_money_spent
 ## 누군가 슬롯머신을 돌린 결과. 사무실에 있는 전원에게 온다. `gain`은 팀 돈이 변한 양이고,
 ## 그중 `pot`은 터뜨려 받은 잭팟이다.
-signal slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array, pot: int)
+signal slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array, pot: int, request_id: int)
+signal slot_spin_rejected(request_id: int)
 ## The host cut the arrival shot short, for everybody.
 signal intro_skipped(transition_id: int)
 
 enum SessionPhase { OFFLINE, TRUCK, LOADING, STAGE, RESULT }
 const BUSY_PREFIX := "mayo1-busy:"
 const LOAD_TIMEOUT := 20.0
+const STAGE_LOAD_FAILED := "stage scene could not be loaded"
+const STAGE_LOAD_TIMEOUT := "stage loading timed out; returned to truck"
 
 ## The lobby code both ends must agree on. Checked during the handshake, before
 ## a peer is a peer at all: a guest that gets it wrong is disconnected without
@@ -207,6 +218,7 @@ var _status := "offline"
 ## peer id -> the last input packet from that client, applied every tick until
 ## the next one arrives so a dropped packet coasts instead of stuttering.
 var _client_input: Dictionary = {}
+var _stage_input_received_at: Dictionary = {}
 ## peer id -> inputs received and not yet played, oldest first.
 var _input_queue: Dictionary = {}
 ## peer id -> how many input packets it has sent this tick, and how much wipe
@@ -328,6 +340,8 @@ func bind(new_world: Node) -> void:
 		_enemy_snapshots_by_peer.clear()
 		_tomatina_snapshot_number = 0
 		_tomatina_snapshot_phase = 0
+		_clear_stage_input()
+		_reset_inventory_and_motion()
 	world = new_world
 
 
@@ -350,7 +364,7 @@ func unbind_lobby(space: Node) -> void:
 
 
 func _lobby_space_ready() -> bool:
-	return lobby_space != null and is_instance_valid(lobby_space) \
+	return is_instance_valid(lobby_space) and not lobby_space.is_queued_for_deletion() \
 		and (not lobby_flow or session_phase == SessionPhase.TRUCK)
 
 
@@ -450,20 +464,38 @@ func character_assignments() -> Dictionary:
 ## Until then a guest's own entry does not change -- a pick that lost the race
 ## is simply never applied. Returns false when it is known here to be taken.
 func choose_character(index: int) -> bool:
-	if not lobby_flow or index < 0 or index >= CHARACTER_COUNT:
-		return false
 	var mine := local_id()
+	if not _can_choose_character(mine, index):
+		return false
 	if int(_characters.get(mine, -1)) == index:
 		return true
-	if character_taken(index, mine):
-		return false
 	if is_server():
-		_characters[mine] = index
+		_commit_character(mine, index)
 		_broadcast_lobby()
-		return true
-	if _joined:
+	else:
 		_choose_character.rpc_id(1, index)
 	return true
+
+
+func _can_choose_character(peer_id: int, index: int) -> bool:
+	return lobby_flow and _joined and _slots.has(peer_id) \
+		and session_phase in [SessionPhase.TRUCK, SessionPhase.STAGE] \
+		and index >= 0 and index < CHARACTER_COUNT and not character_taken(index, peer_id)
+
+
+func _commit_character(peer_id: int, index: int) -> void:
+	_characters[peer_id] = index
+	_apply_world_character(peer_id)
+
+
+func _apply_world_character(peer_id: int) -> void:
+	if world == null or session_phase != SessionPhase.STAGE:
+		return
+	var index := character_of(peer_id)
+	if peer_id == local_id():
+		world.set_local_character(index)
+	else:
+		world.set_character_variant(peer_id, index)
 
 
 ## Whether somebody other than `except` is wearing character `index`.
@@ -471,6 +503,10 @@ func character_taken(index: int, except := 0) -> bool:
 	for id in _characters:
 		if int(id) != except and _slots.has(id) and int(_characters[id]) == index:
 			return true
+	if not _online and _world_ready() and world.has_meta("bot_practice"):
+		for id in world.shooter_ids():
+			if not _slots.has(id) and world.shooter_for(id).character_index == index:
+				return true
 	return false
 
 
@@ -576,39 +612,46 @@ func _sync_office_props(props: int) -> void:
 
 ## 슬롯머신 앞에 앉은 사람이 바뀌었다(`slot_user`).
 signal slot_user_changed
+signal slot_seat_answered(request_id: int, granted: bool)
 ## 지금 슬롯머신을 쓰고 있는 사람의 peer id. 아무도 없으면 0. 기계는 하나라 한 번에 한 명만
 ## 쓴다: 자리는 방장이 내주고, 화면을 닫거나 방을 나가면 비운다.
 var slot_user := 0
 
 
-## 슬롯머신 자리를 달라고 한다. 방장은 그 자리에서 답을 얻고(true면 앉았다), 팀원은 요청만
-## 보낸다 -- 답은 `slot_user_changed`로 온다. 누가 이미 쓰고 있으면 false.
-func request_slot_seat() -> bool:
+## 방장은 바로 앉고, 팀원은 `slot_seat_answered`로 요청의 결과를 받는다.
+func request_slot_seat(request_id := 0) -> bool:
 	if not lobby_flow or session_phase != SessionPhase.TRUCK \
 			or (slot_user != 0 and slot_user != local_id()):
 		return false
 	if is_server():
 		return _take_slot_seat(local_id())
-	_request_slot_seat.rpc_id(1)
+	_request_slot_seat.rpc_id(1, request_id)
 	return true
 
 
-## 앉아 있던 자리를 비운다. 앉아 있지 않았으면 아무 일도 없다.
+## 게스트가 승인 전에 닫아도 요청 뒤에 자리 반납이 도착한다. 방장은 현재 사용자만 비운다.
 func release_slot_seat() -> void:
+	if not lobby_flow:
+		return
 	if is_server():
 		_leave_slot_seat(local_id())
-	elif _online and slot_user == local_id():
+	elif _online:
 		_release_slot_seat.rpc_id(1)
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func _request_slot_seat() -> void:
+func _request_slot_seat(request_id: int) -> void:
 	if not multiplayer.is_server():
 		return
 	var sender := multiplayer.get_remote_sender_id()
-	# 자리가 찼어도 답은 보낸다: 요청한 화면이 누가 앉아 있는지 알아야 물러난다.
-	if not _take_slot_seat(sender) and _slots.has(sender) and _peer_can_receive(sender):
-		_sync_slot_user.rpc_id(sender, slot_user)
+	if _slots.has(sender) and _peer_can_receive(sender):
+		_slot_seat_answered.rpc_id(sender, request_id, _take_slot_seat(sender))
+
+
+@rpc("authority", "call_remote", "reliable")
+func _slot_seat_answered(request_id: int, granted: bool) -> void:
+	if not multiplayer.is_server():
+		slot_seat_answered.emit(request_id, granted)
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -650,23 +693,32 @@ func _sync_slot_user(peer_id: int) -> void:
 
 ## 팀 돈 `bet`을 걸고 슬롯머신을 돌린다. 자리에 앉은 사람만 할 수 있고(`request_slot_seat`),
 ## 굴리는 것은 방장이다.
-func request_slot_spin(bet: int) -> bool:
+func request_slot_spin(bet: int, request_id := 0) -> bool:
 	if not lobby_flow or session_phase != SessionPhase.TRUCK or bet < 1 or bet > team_money \
 			or slot_user != local_id():
 		return false
 	if is_server():
-		return _resolve_slot_spin(local_id(), bet)
-	_request_slot_spin.rpc_id(1, bet)
+		return _resolve_slot_spin(local_id(), bet, request_id)
+	_request_slot_spin.rpc_id(1, bet, request_id)
 	return true
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func _request_slot_spin(bet: int) -> void:
-	if multiplayer.is_server():
-		_resolve_slot_spin(multiplayer.get_remote_sender_id(), bet)
+func _request_slot_spin(bet: int, request_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if not _resolve_slot_spin(sender, bet, request_id) and _peer_can_receive(sender):
+		_slot_spin_rejected.rpc_id(sender, request_id)
 
 
-func _resolve_slot_spin(peer_id: int, bet: int) -> bool:
+@rpc("authority", "call_remote", "reliable")
+func _slot_spin_rejected(request_id: int) -> void:
+	if not multiplayer.is_server():
+		slot_spin_rejected.emit(request_id)
+
+
+func _resolve_slot_spin(peer_id: int, bet: int, request_id: int) -> bool:
 	if not is_server() or session_phase != SessionPhase.TRUCK or not _slots.has(peer_id) \
 			or bet < 1 or bet > team_money or slot_user != peer_id:
 		return false
@@ -684,15 +736,16 @@ func _resolve_slot_spin(peer_id: int, bet: int) -> bool:
 	_broadcast_lobby()
 	for id in _slots.keys():
 		if int(id) != 1 and _peer_can_receive(int(id)):
-			_slot_result.rpc_id(int(id), peer_id, bet, gain, outcome.reels, pot)
-	slot_result.emit(peer_id, bet, gain, outcome.reels, pot)
+			_slot_result.rpc_id(int(id), peer_id, bet, gain, outcome.reels, pot, request_id)
+	slot_result.emit(peer_id, bet, gain, outcome.reels, pot, request_id)
 	return true
 
 
 @rpc("authority", "call_remote", "reliable")
-func _slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array, pot: int) -> void:
+func _slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array, pot: int,
+		request_id: int) -> void:
 	if not multiplayer.is_server() and reels.size() == 3:
-		slot_result.emit(peer_id, bet, gain, reels, pot)
+		slot_result.emit(peer_id, bet, gain, reels, pot, request_id)
 
 
 # -- DEBUG -------------------------------------------------------------------
@@ -862,6 +915,15 @@ func report_world_loaded(transition: int) -> void:
 		_mark_loaded(local_id(), transition)
 	else:
 		_report_world_loaded.rpc_id(1, transition)
+
+
+func report_world_load_failed(transition: int) -> void:
+	if session_phase != SessionPhase.LOADING or transition != _transition_id:
+		return
+	if is_server():
+		_fail_loading(STAGE_LOAD_FAILED)
+	else:
+		_report_world_load_failed.rpc_id(1, transition)
 
 
 func request_stage_start() -> bool:
@@ -1159,8 +1221,6 @@ func local_id() -> int:
 func host(port := DEFAULT_PORT, open_to_anyone := false) -> bool:
 	if _online:
 		return false
-	if lobby_code.is_empty() and not open_to_anyone:
-		lobby_code = generate_code()
 	# Somebody else's door, and no longer the one in front of this player.
 	_blocked_until_local = 0.0
 	var peer := ENetMultiplayerPeer.new()
@@ -1170,6 +1230,10 @@ func host(port := DEFAULT_PORT, open_to_anyone := false) -> bool:
 	if error != OK:
 		_set_status("could not open port %d (error %d)" % [port, error])
 		return false
+	if open_to_anyone:
+		lobby_code = ""
+	elif lobby_code.is_empty():
+		lobby_code = generate_code()
 	_peer = peer
 	hosted_port = port
 	multiplayer.multiplayer_peer = peer
@@ -1200,6 +1264,8 @@ func join(address: String, port := DEFAULT_PORT) -> bool:
 
 
 func leave() -> void:
+	slot_user = 0
+	office_props = 0
 	if not _online:
 		# A solo room has no peer to close, only the room itself to put away.
 		if lobby_flow:
@@ -1226,9 +1292,8 @@ func leave() -> void:
 	_late_loading.clear()
 	_peer = null
 	multiplayer.multiplayer_peer = null
-	_client_input.clear()
-	_input_queue.clear()
-	_input_this_tick.clear()
+	_clear_stage_input()
+	_reset_inventory_and_motion()
 	_wipe_budget.clear()
 	_refill_budget.clear()
 	_view_budget.clear()
@@ -1379,13 +1444,14 @@ func _check_code(id: int, data: PackedByteArray) -> void:
 	if _pending_drops.has(id):
 		return
 	var address := _address_of(id)
-	if data == _auth_payload():
+	var message := data.get_string_from_utf8()
+	if data == _auth_payload() or (lobby_code.is_empty() and message.begins_with("mayo%d:" % PROTOCOL_VERSION)):
 		# Getting it right clears the slate: a player who mistyped it twice and
 		# then got in is not working towards a block.
 		_code_failures.erase(address)
 		scene_multiplayer.complete_auth(id)
 		return
-	if _other_version(data.get_string_from_utf8()):
+	if _other_version(message):
 		# Told which build this is and dropped, like a full room: it is not a
 		# guess at the code, so it does not count towards a block.
 		version_refusals += 1
@@ -1574,6 +1640,7 @@ func _on_peer_disconnected(id: int) -> void:
 	_late_loading.erase(id)
 	_client_input.erase(id)
 	_input_queue.erase(id)
+	_stage_input_received_at.erase(id)
 	_lobby_input.erase(id)
 	_input_this_tick.erase(id)
 	_wipe_budget.erase(id)
@@ -1588,7 +1655,8 @@ func _on_peer_disconnected(id: int) -> void:
 	_result_continue.erase(id)
 	if multiplayer.is_server() and world != null:
 		world.remove_avatar(id)
-		_despawn_avatar.rpc(id)
+		if not lobby_flow:
+			_despawn_avatar.rpc(id)
 	if lobby_flow:
 		roster_changed.emit()
 		# ENet reports the disconnect before the channel is fully retired. Sending
@@ -1597,9 +1665,7 @@ func _on_peer_disconnected(id: int) -> void:
 		# ENet has retired every disconnect from this burst.
 		if multiplayer.is_server():
 			_lobby_broadcast_at = _now() + 0.1
-		if session_phase == SessionPhase.LOADING:
-			_try_authorize_play()
-		elif multiplayer.is_server() and session_phase == SessionPhase.RESULT:
+		if multiplayer.is_server() and session_phase == SessionPhase.RESULT:
 			var result_packet := PackedInt32Array(_result_continue.keys())
 			result_packet.sort()
 			_sync_result_continue.rpc(result_packet)
@@ -1769,6 +1835,12 @@ func _sync_lobby(packet: PackedInt32Array, ready: PackedInt32Array,
 	selected_stage = stage_id
 	if remote_phase >= SessionPhase.OFFLINE and remote_phase <= SessionPhase.RESULT:
 		session_phase = remote_phase
+	if world != null and session_phase in [SessionPhase.LOADING, SessionPhase.STAGE, SessionPhase.RESULT]:
+		for id in world.shooter_ids():
+			if not _slots.has(id):
+				world.remove_avatar(id)
+		for id in _characters:
+			_apply_world_character(int(id))
 	_lobby_ready.clear()
 	for id in ready:
 		if _slots.has(id):
@@ -1796,10 +1868,9 @@ func _choose_character(index: int) -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if not _slots.has(sender):
 		return
-	# Taken, or not a character at all: nothing changes, and the roster goes
-	# back out anyway so the asker's cards show who has it.
-	if index >= 0 and index < CHARACTER_COUNT and not character_taken(index, sender):
-		_characters[sender] = index
+	# Send the roster even if another player took the character first.
+	if _can_choose_character(sender, index):
+		_commit_character(sender, index)
 	_broadcast_lobby()
 
 
@@ -1847,7 +1918,8 @@ func _mark_loaded(peer_id: int, transition: int) -> void:
 
 
 func _try_authorize_play() -> void:
-	if not is_server() or session_phase != SessionPhase.LOADING:
+	# Send the updated roster before authorizing a load with a departing peer.
+	if not is_server() or session_phase != SessionPhase.LOADING or _lobby_broadcast_at > 0.0:
 		return
 	for id in _transition_roster:
 		if _slots.has(id) and not _loaded_peers.has(id):
@@ -1869,22 +1941,38 @@ func _authorize_play(transition: int) -> void:
 	_set_status("stage started")
 
 
+@rpc("any_peer", "call_remote", "reliable")
+func _report_world_load_failed(transition: int) -> void:
+	if not is_server() or transition != _transition_id:
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if _transition_roster.has(sender) and _slots.has(sender) and not _loaded_peers.has(sender):
+		_fail_loading(STAGE_LOAD_FAILED)
+
+
 func _fail_loading(reason: String) -> void:
 	if not is_server() or session_phase != SessionPhase.LOADING:
 		return
-	session_phase = SessionPhase.TRUCK
-	_lobby_ready = {1: true}
 	if _online:
-		_loading_failed.rpc(reason)
-	transition_failed.emit(reason)
-	_set_status(reason)
+		_loading_failed.rpc(_transition_id, selected_stage, reason)
+	_return_after_failed_load(selected_stage, reason)
 
 
 @rpc("authority", "call_remote", "reliable")
-func _loading_failed(reason: String) -> void:
-	if multiplayer.is_server() or session_phase != SessionPhase.LOADING:
+func _loading_failed(transition: int, stage_id: String, reason: String) -> void:
+	if is_server() or session_phase != SessionPhase.LOADING or transition != _transition_id:
 		return
+	_return_after_failed_load(stage_id, reason)
+
+
+func _return_after_failed_load(stage_id: String, reason: String) -> void:
+	selected_stage = stage_id
 	session_phase = SessionPhase.TRUCK
+	_lobby_ready = {1: true} if is_server() else {}
+	_loaded_peers.clear()
+	_transition_roster.clear()
+	_load_clock = 0.0
+	_receiving_late_snapshot = false
 	transition_failed.emit(reason)
 	_set_status(reason)
 
@@ -1983,6 +2071,7 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 		_apply_splats.rpc(splats)
 		splat_bytes_sent += splats.size() * 4 * guests
 	if guests == 0:
+		_reset_inventory_and_motion()
 		return
 	var ids := PackedInt32Array()
 	var state := _collect_state(ids)
@@ -1993,17 +2082,32 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 	# dropped frame is corrected by the next one.
 	var healing: PackedFloat64Array = world.healing_tomato_state()
 	_apply_healing_tomato_state.rpc(healing)
-	_apply_inventory_state.rpc(world.inventory_state())
-	_apply_player_motion_state.rpc(world.player_motion_state())
 	state_bytes_sent += healing.size() * 8 * guests
+	var peers_changed := _inventory_peers != peer_ids
+	var inventory: PackedInt32Array = world.inventory_state()
+	if peers_changed or _inventory_sent != inventory:
+		if rpc(&"_apply_inventory_state", inventory) == OK:
+			state_bytes_sent += inventory.size() * 4 * guests
+			_inventory_sent = inventory
+			_inventory_peers = peer_ids
 	var stage_two: bool = world.map_kind == world.MapKind.TOMATINA
 	if stage_two:
 		if world._sauce_parts.dirty:
 			world._sauce_parts.dirty = false
-			_apply_sauce_shop_state.rpc(world.sauce_shop_state(), world._sauce_parts.coin_state())
+			var shop: PackedInt32Array = world.sauce_shop_state()
+			var coins: PackedFloat32Array = world._sauce_parts.coin_state()
+			_apply_sauce_shop_state.rpc(shop, coins)
+			state_bytes_sent += (shop.size() + coins.size()) * 4 * guests
 		_tomatina_snapshot_phase = (_tomatina_snapshot_phase + 1) % 3
 		if _tomatina_snapshot_phase != 0:
 			return
+	var motion: PackedFloat64Array = world.player_motion_state()
+	var now := _now()
+	if not stage_two or peers_changed or motion != _motion_sent or now >= _motion_refresh_at:
+		_apply_player_motion_state.rpc(motion)
+		state_bytes_sent += motion.size() * 8 * guests
+		_motion_sent = motion
+		_motion_refresh_at = now + MOTION_REFRESH_SECONDS
 	# Keep each unreliable datagram under the ENet MTU even during a horde.
 	if stage_two and world.is_inside_tree():
 		_send_tomatina_enemy_snapshots(peer_ids)
@@ -2017,6 +2121,13 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 		var threads: PackedFloat32Array = world.cheese_thread_state()
 		_apply_tomatina_status.rpc(status, threads)
 		state_bytes_sent += (status.size() * 8 + threads.size() * 4) * guests
+
+
+func _reset_inventory_and_motion() -> void:
+	_inventory_sent.clear()
+	_inventory_peers.clear()
+	_motion_sent.clear()
+	_motion_refresh_at = 0.0
 
 
 func _send_tomatina_enemy_snapshots(peer_ids: PackedInt32Array) -> void:
@@ -2237,6 +2348,10 @@ func run_lobby(delta: float) -> void:
 	# and is never heard from again -- it stands still on the host's screen
 	# while walking on its own.
 	_input_this_tick.clear()
+	var now := _now()
+	for id in _lobby_input.keys():
+		if now - float(_lobby_input[id][3]) >= LOBBY_INPUT_TIMEOUT:
+			_lobby_input.erase(id)
 	lobby_space.step_occupants(_lobby_input, delta)
 	if multiplayer.get_peers().is_empty():
 		return
@@ -2251,8 +2366,7 @@ func run_lobby(delta: float) -> void:
 
 
 ## A guest's keys on their way to the host. Unreliable like the stage's: the
-## host applies the last packet it heard until a newer one lands, so a dropped
-## one coasts rather than stutters.
+## host reuses recent input through short gaps, then lets the occupant stop.
 func send_lobby_input(move: Vector2, yaw: float, jump := false) -> void:
 	if not _online or multiplayer.is_server() or not _lobby_space_ready():
 		return
@@ -2276,7 +2390,7 @@ func _submit_lobby_input(move: Vector2, yaw: float, jump := false) -> void:
 		rejected_packets += 1
 		return
 	# The jump is a bool, and there is no wrong value for a key being down.
-	_lobby_input[sender] = [clamp_direction(move), wrap_angle(yaw), jump]
+	_lobby_input[sender] = [clamp_direction(move), wrap_angle(yaw), jump, _now()]
 
 
 ## A guest standing in the office's firing range. There its body is walked by
@@ -2331,8 +2445,14 @@ func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
 	_submit_input.rpc_id(1, move, run, jump, firing, yaw, pitch, character_index, shake, sequence)
 
 
-## The server applies the last input it heard from each client before running
-## the bodies, so a client that misses a tick keeps walking rather than stopping.
+func _clear_stage_input() -> void:
+	_client_input.clear()
+	_input_queue.clear()
+	_stage_input_received_at.clear()
+	_input_this_tick.clear()
+
+
+## Apply connected guests' input before the bodies take their physics step.
 func apply_client_input() -> void:
 	if not _online or not multiplayer.is_server() or not _world_ready():
 		return
@@ -2368,8 +2488,23 @@ func apply_client_input() -> void:
 		_view_budget[id] = minf(_view_budget[id] + VIEW_REPORTS_PER_SECOND * elapsed,
 			VIEW_REPORTS_PER_SECOND)
 	_sweep_blocks()
-	# One input per client per tick, oldest first. With nothing new queued the
-	# last one is played again, so a late packet coasts instead of stopping.
+	# Coast across brief packet loss, then release every held control.
+	for id in _stage_input_received_at.keys():
+		if now - float(_stage_input_received_at[id]) < STAGE_INPUT_TIMEOUT:
+			continue
+		_stage_input_received_at.erase(id)
+		_client_input.erase(id)
+		_input_queue.erase(id)
+		var shooter = world.shooter_for(id)
+		if shooter == null:
+			continue
+		shooter.player.input_move = Vector2.ZERO
+		shooter.player.input_run = false
+		shooter.player.input_jump = false
+		shooter.firing = false
+		shooter.bottle_shake_input = 0.0
+		world.tomato_action(id, world.CANCEL_TOMATO_CHARGE_ACTION)
+	# Drain one packet per client each tick, oldest first.
 	for id in _input_queue:
 		var queue: Array = _input_queue[id]
 		if not queue.is_empty():
@@ -2387,7 +2522,8 @@ func apply_client_input() -> void:
 			and not shooter.player.is_wiping()
 		shooter.aim_yaw = packet[3]
 		shooter.aim_pitch = packet[4]
-		world.set_character_variant(id, packet[6])
+		if not lobby_flow:
+			world.set_character_variant(id, packet[6])
 		shooter.bottle_shake_input = packet[7] if not shooter.player.is_incapacitated() else 0.0
 
 
@@ -2435,6 +2571,7 @@ func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
 	while queue.size() > INPUT_QUEUE_LIMIT:
 		queue.pop_front()
 	_input_queue[sender] = queue
+	_stage_input_received_at[sender] = _now()
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
@@ -2464,16 +2601,12 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		world.apply_bottle_state_code(shooter, clampf(data[index + 15], 0.0, 3.0))
 		shooter.stream_recoil_pitch = data[index + 24]
 		shooter.stream_recoil_yaw = data[index + 25]
-		# The local player's own aim is never taken back from the server: it is
-		# already ahead of this packet. Nor is their character: a `C` press
-		# rebuilds the visual at once, and the packet already in flight still
-		# carries the old index -- applying it would tear the new model down,
-		# and the echo a round trip later would build it a third time. The
-		# server clamps the index exactly as the client did, so there is
-		# nothing it could correct.
+		# Lobby characters arrive through the reliable roster.
 		if not shooter.is_local:
-			world.set_character_variant(ids[slot],
-				clampi(int(round(data[index + 17])), 0, world.PLAYER_CHARACTERS.size() - 1))
+			if not lobby_flow:
+				world.set_character_variant(ids[slot],
+					clampi(int(round(data[index + STATE_CHARACTER_INDEX])), 0,
+						world.PLAYER_CHARACTERS.size() - 1))
 			shooter.firing = data[index + 6] > 0.5
 			# How hard they are shaking the bottle: theirs to say, and the
 			# local player already knows their own.
@@ -2510,27 +2643,27 @@ func _apply_tomatina_status(status: PackedFloat64Array, threads: PackedFloat32Ar
 ## next one, but a dropped event is simply never seen -- and a flinch is over in
 ## a fifth of a second, so there is no next one to correct it.
 func send_enemy_shake(enemy_index: int, peers: PackedInt32Array,
-		degrees: float, seconds: float, accent := 0) -> void:
+		degrees: float, seconds: float, accent := 0, sauce := -1) -> void:
 	if not _online or not multiplayer.is_server():
 		return
 	if multiplayer.get_peers().is_empty():
 		return
-	_apply_enemy_shake.rpc(enemy_index, peers, degrees, seconds, accent)
+	_apply_enemy_shake.rpc(enemy_index, peers, degrees, seconds, accent, sauce)
 
 
 @rpc("authority", "call_remote", "reliable")
 func _apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
-		degrees: float, seconds: float, accent := 0) -> void:
+		degrees: float, seconds: float, accent := 0, sauce := -1) -> void:
 	if not _world_ready():
 		return
 	# From the server, so the range checks are about surviving a corrupt packet
 	# rather than about a hostile client -- but they are free and the rule in
 	# this file is that nothing off the wire is trusted unchecked.
-	if not all_finite([degrees, seconds]):
+	if not all_finite([degrees, seconds]) or sauce < -1 or sauce > ContaminationGrid.KIND_KETCHUP:
 		rejected_packets += 1
 		return
 	world.apply_enemy_shake(enemy_index, peers,
-		clamp_range(degrees, 0.0, 90.0), clamp_range(seconds, 0.0, 5.0), clampi(accent, 0, 4))
+		clamp_range(degrees, 0.0, 90.0), clamp_range(seconds, 0.0, 5.0), clampi(accent, 0, 4), sauce)
 
 
 # ---------------------------------------------------------------------------
@@ -2618,15 +2751,16 @@ func _show_tomato_fuse(at: Vector3) -> void:
 		world._show_tomato_fuse(at)
 
 
-func broadcast_tomato_blast(at: Vector3, radius: float) -> void:
+func broadcast_tomato_blast(at: Vector3, radius: float, sauce := -1) -> void:
 	if _online and multiplayer.is_server() and not multiplayer.get_peers().is_empty():
-		_show_tomato_blast.rpc(at, radius)
+		_show_tomato_blast.rpc(at, radius, sauce)
 
 
 @rpc("authority", "call_remote", "reliable")
-func _show_tomato_blast(at: Vector3, radius: float) -> void:
-	if _world_ready() and all_finite([at.x, at.y, at.z, radius]) and radius >= 0.5 and radius <= 12.0:
-		world.show_tomato_blast(at, radius)
+func _show_tomato_blast(at: Vector3, radius: float, sauce := -1) -> void:
+	if _world_ready() and all_finite([at.x, at.y, at.z, radius]) and radius >= 0.5 and radius <= 12.0 \
+			and sauce >= -1 and sauce <= ContaminationGrid.KIND_KETCHUP:
+		world.show_tomato_blast(at, radius, sauce)
 
 
 ## One caption. The index of the line, not the line: both ends hold the same
@@ -2752,12 +2886,13 @@ func _physics_process(delta: float) -> void:
 	if _lobby_broadcast_at > 0.0 and _now() >= _lobby_broadcast_at:
 		_lobby_broadcast_at = 0.0
 		_broadcast_lobby()
+		_try_authorize_play()
 	apply_client_input()
 	run_lobby(delta)
 	if lobby_flow and is_server() and session_phase == SessionPhase.LOADING:
 		_load_clock += delta
 		if _load_clock >= LOAD_TIMEOUT:
-			_fail_loading("stage loading timed out; returned to truck")
+			_fail_loading(STAGE_LOAD_TIMEOUT)
 
 
 ## Peers that were answered last frame. Whatever was said to them has had a frame
@@ -2834,6 +2969,10 @@ func _context_action(kind: String, target: int) -> void:
 	if not is_server() or not _world_ready() or kind.length() > 16:
 		return
 	var sender := multiplayer.get_remote_sender_id()
+	# A release or completed hold belongs to the already rate-limited start.
+	if kind == "loot_cancel" or kind == "loot_finish":
+		world.perform_context_action(sender, kind, target)
+		return
 	if float(_refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND)) < 1.0:
 		return
 	_refill_budget[sender] = float(_refill_budget.get(sender, REFILL_REQUESTS_PER_SECOND)) - 1.0
@@ -2851,7 +2990,7 @@ func _request_tomato_action(action: int) -> void:
 		world.tomato_action(multiplayer.get_remote_sender_id(), action)
 
 
-@rpc("authority", "call_remote", "unreliable_ordered")
+@rpc("authority", "call_remote", "reliable")
 func _apply_inventory_state(data: PackedInt32Array) -> void:
 	if _world_ready():
 		world.apply_inventory_state(data)

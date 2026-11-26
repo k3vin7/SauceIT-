@@ -780,6 +780,7 @@ func _build_passengers() -> void:
 	for peer_id in world.shooter_ids():
 		var shooter = world.shooter_for(peer_id)
 		var rider := world.PLAYER_CHARACTERS[shooter.character_index].instantiate() as Node3D
+		rider.name = "Passenger_%d" % peer_id
 		passengers.add_child(rider)
 		rider.position = seats[shooter.spawn_slot % seats.size()]
 		rider.scale = shooter.player_visual.scale * .46 if is_instance_valid(shooter.player_visual) else Vector3.ONE * .4
@@ -789,6 +790,14 @@ func _build_passengers() -> void:
 			animation.play(shooter.walk_animation)
 			animation.seek(.12 + .085 * shooter.spawn_slot, true)
 			animation.pause()
+
+
+func remove_passenger(peer_id: int) -> void:
+	if is_instance_valid(passengers):
+		var rider := passengers.get_node_or_null("Passenger_%d" % peer_id)
+		if rider != null:
+			passengers.remove_child(rider)
+			rider.queue_free()
 
 
 func _build_tomato_meshes() -> void:

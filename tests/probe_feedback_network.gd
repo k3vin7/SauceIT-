@@ -57,6 +57,22 @@ func _run() -> void:
 	server_world._net.send_enemy_shake(0, PackedInt32Array([1]), 0.0, 0.3, 2)
 	await _wait(8)
 	_check(client_probe.defeats == 1, "client received another player's kill confirmation")
+
+	client_world._prepare_tomatina_blast_effects()
+	var blast := client_world._blast_effects.back() as Node3D
+	var flash := blast.get_child(0) as MeshInstance3D
+	var hit := client_world._blast_hits.back() as MeshInstance3D
+	var blast_tint := flash.material_override as StandardMaterial3D
+	var hit_tint := hit.material_override as StandardMaterial3D
+	var mustard := ContaminationGrid.KIND_MUSTARD
+	var mayo := ContaminationGrid.KIND_MAYO
+	server_world._net.broadcast_tomato_blast(Vector3(0.0, 3.0, -10.0), 2.0, mustard)
+	server_world._net.send_enemy_shake(0, PackedInt32Array(), 0.0, 0.0, 4, mayo)
+	_check(await _until(func():
+		return Color(blast_tint.albedo_color, 1.0) == client_world.SAUCE_TINTS[mustard] \
+			and Color(hit_tint.albedo_color, 1.0) == client_world.SAUCE_TINTS[mayo], 180),
+		"the client did not receive the blast and splash hit colors")
+
 	if failures.is_empty():
 		print("MAYO_FEEDBACK_NETWORK_OK")
 	_finish()

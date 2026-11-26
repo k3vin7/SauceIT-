@@ -19,7 +19,7 @@ var kind := "TOMATO_GRUNT":
 	set(value):
 		kind = value
 		_refresh()
-## 비워 두면 일반 적. "alley_reinforcement" 또는 숫자(골목 매복 그룹)를 넣을 수 있다.
+## 비워 두면 일반 적. 골목 매복 그룹이나 거리 특수 적 역할을 지정할 수 있다.
 @export var tag := ""
 
 static var _meshes := {}
@@ -40,7 +40,7 @@ func to_entry(xf: Transform3D) -> Array:
 	elif tag.is_valid_int():
 		entry.append(tag.to_int())
 	else:
-		for role in TomatinaMap.STREET_ELITES:
+		for role in TomatinaMap.STREET_ELITES + TomatinaMap.STREET_REINFORCEMENTS:
 			if tag == String(role[2]):
 				entry.append(role[2])
 				break

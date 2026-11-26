@@ -13,6 +13,7 @@ const ARC_FADE_LENGTH := 4.5
 const ARC_DASH := 0.35
 const ARC_MARKER_RADIUS := 0.32
 const ARC_MARKER_POINTS := 20
+const TOMATO_PATH_REFRESH_MS := 100
 
 var world: Node3D
 var elapsed := 0.0
@@ -33,6 +34,11 @@ var _aim_left := 0.0
 var hitches: Array[Dictionary] = []
 var diagnostics_frames := 0
 var diagnostics_frame_ms := 0.0
+var _tomato_path: Array[Vector3] = []
+var _tomato_landing: Dictionary = {}
+var _tomato_origin := Vector3.INF
+var _tomato_velocity := Vector3.INF
+var _tomato_path_until_ms := 0
 var _mortar_static_path: Array[Vector3] = []
 var _mortar_origin := Vector3.INF
 var _mortar_velocity := Vector3.INF
@@ -48,6 +54,7 @@ func _ready() -> void:
 func _on_node_added(node: Node) -> void:
 	if node is StaticBody3D and world.is_ancestor_of(node):
 		_mortar_static_path.clear()
+		_tomato_path.clear()
 	elif node is PhysicsBody3D and world.is_ancestor_of(node) and node.collision_layer != 0:
 		node.set_collision_layer_value(world.SauceParts.MORTAR_PREVIEW_ACTOR_LAYER, true)
 
@@ -55,6 +62,7 @@ func _on_node_added(node: Node) -> void:
 func _on_node_removed(node: Node) -> void:
 	if node is StaticBody3D:
 		_mortar_static_path.clear()
+		_tomato_path.clear()
 
 
 func _process(delta: float) -> void:
@@ -81,7 +89,7 @@ func _process(delta: float) -> void:
 func advance(delta: float) -> void:
 	if world._local == null:
 		return
-	if world._input_enabled and not world.is_cinematic_active():
+	if world._stage_input_enabled and not world.is_cinematic_active():
 		elapsed += delta
 	for shooter in world._shooters.values():
 		shooter.player.recovery_protection = true
@@ -182,10 +190,27 @@ func report() -> Dictionary:
 
 func _update_aim_feedback() -> void:
 	var shooter = world._local
+	var reticle := world._crosshair as Crosshair
 	if not is_instance_valid(shooter.muzzle):
+		if reticle != null:
+			reticle.effective_range = false
 		return
 	var origin: Vector3 = shooter.muzzle.global_position
 	var direction: Vector3 = shooter.attack_direction
+	if reticle != null:
+		reticle.effective_range = world._input_enabled and not world.is_cinematic_active() \
+			and not shooter.player.is_incapacitated() and not shooter.player.is_wiping() \
+			and world._refuge_shop_room < 0 and shooter.sauce > 0.0 \
+			and world.selected_item_slot(shooter.peer_id) == 0 and world._hose_slot_of(shooter.peer_id) < 0 \
+			and _aim_within_range(shooter, origin, direction)
+	_update_arc(origin, direction)
+	if shooter.nozzle == world.Nozzle.CAUGHT and _hint_left <= 0.0 and shooter.sauce > 0.0:
+		world._health_hud.notify_action("박사: 우클릭을 누른 채 마우스를 흔들어서 풀어요!")
+		_hint_left = 9.0
+		prioritize_sound(0.5)
+
+
+func _aim_within_range(shooter, origin: Vector3, direction: Vector3) -> bool:
 	var eye: Vector3 = shooter.aim_pivot.global_position
 	var reach: float = world.stream_range * world.squeeze_pressure(shooter)
 	var part: int = shooter.sauce_part
@@ -196,23 +221,42 @@ func _update_aim_feedback() -> void:
 		reach *= 1.6
 	var query := PhysicsRayQueryParameters3D.create(eye, eye + direction * maxf(40.0, reach), 1)
 	query.exclude = [shooter.player.get_rid()]
-	var hit := world.get_world_3d().direct_space_state.intersect_ray(query)
-	var valid := false
-	if not hit.is_empty() and hit.collider is MayoEnemy:
-		var enemy := hit.collider as MayoEnemy
-		valid = enemy.is_alive() and origin.distance_to(hit.position) <= reach and shooter.sauce > 0.0
-		if valid:
-			var obstruction := PhysicsRayQueryParameters3D.create(origin, hit.position, 1)
-			obstruction.exclude = [shooter.player.get_rid()]
-			var first := world.get_world_3d().direct_space_state.intersect_ray(obstruction)
-			valid = first.is_empty() or first.collider == enemy
-	if world._crosshair is Crosshair:
-		world._crosshair.effective_range = valid and world._input_enabled and not shooter.player.is_incapacitated()
-	_update_arc(origin, direction)
-	if shooter.nozzle == world.Nozzle.CAUGHT and _hint_left <= 0.0 and shooter.sauce > 0.0:
-		world._health_hud.notify_action("박사: 우클릭을 누른 채 마우스를 흔들어서 풀어요!")
-		_hint_left = 9.0
-		prioritize_sound(0.5)
+	var space := world.get_world_3d().direct_space_state
+	var hit := space.intersect_ray(query)
+	if hit.is_empty() or not hit.collider is MayoEnemy:
+		return false
+	var enemy := hit.collider as MayoEnemy
+	if not enemy.is_alive() or origin.distance_to(hit.position) > reach:
+		return false
+	query.from = origin
+	query.to = hit.position
+	var first := space.intersect_ray(query)
+	return first.is_empty() or first.collider == enemy
+
+func _trace_tomato_path(origin: Vector3, velocity: Vector3, gravity: float, step_seconds: float,
+		space: PhysicsDirectSpaceState3D) -> void:
+	var now := Time.get_ticks_msec()
+	if not _tomato_path.is_empty() and now < _tomato_path_until_ms \
+			and origin.is_equal_approx(_tomato_origin) and velocity.is_equal_approx(_tomato_velocity):
+		return
+	_tomato_origin = origin
+	_tomato_velocity = velocity
+	_tomato_path_until_ms = now + TOMATO_PATH_REFRESH_MS
+	_tomato_path = [origin]
+	_tomato_landing = {}
+	var query := PhysicsRayQueryParameters3D.new()
+	query.collision_mask = 1
+	query.exclude = [world._local.player.get_rid()]
+	for step in ARC_STEPS:
+		var time := step_seconds * float(step + 1)
+		query.from = _tomato_path[-1]
+		query.to = world.SauceParts.ballistic_position(origin, velocity, gravity, time)
+		_tomato_landing = space.intersect_ray(query)
+		if not _tomato_landing.is_empty():
+			_tomato_path.push_back(_tomato_landing.position)
+			return
+		_tomato_path.push_back(query.to)
+
 
 func _update_arc(origin: Vector3, direction: Vector3) -> void:
 	var reticle := world._crosshair as Crosshair
@@ -223,8 +267,10 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 	reticle.landing_marker.clear()
 	reticle.landing_leaf.clear()
 	reticle.queue_redraw()
-	if not world._input_enabled or world._local.player.is_incapacitated() or world.is_cinematic_active():
+	if not world._input_enabled or world._local.player.is_incapacitated() or world.is_cinematic_active() \
+			or world._refuge_shop_room >= 0:
 		_mortar_static_path.clear()
+		_tomato_path.clear()
 		return
 	var velocity := Vector3.ZERO
 	var gravity := 9.8
@@ -252,23 +298,13 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 	else:
 		return
 	# The flight, cut at the first surface it meets.
-	var points: Array[Vector3] = [origin]
+	var points: Array[Vector3]
 	var landing := {}
 	var space := world.get_world_3d().direct_space_state
 	if shows_landing:
-		var query := PhysicsRayQueryParameters3D.new()
-		query.collision_mask = 1
-		query.exclude = [world._local.player.get_rid()]
-		for step in ARC_STEPS:
-			var time := step_seconds * float(step + 1)
-			var next: Vector3 = world.SauceParts.ballistic_position(origin, velocity, gravity, time)
-			query.from = points[-1]
-			query.to = next
-			landing = space.intersect_ray(query)
-			if not landing.is_empty():
-				points.push_back(landing.position)
-				break
-			points.push_back(next)
+		_trace_tomato_path(origin, velocity, gravity, step_seconds, space)
+		points = _tomato_path
+		landing = _tomato_landing
 	else:
 		points = _mortar_path(origin, velocity, sweep_from, gravity, life, step_seconds, space)
 	# Near: the whole arc, solid, and a tomato where it lands. Far: solid out to
@@ -454,9 +490,22 @@ func context_candidates(shooter) -> Array:
 	if is_instance_valid(world._victims):
 		var body: int = world._victims.in_reach(at)
 		if body >= 0:
-			var lying: Vector3 = world._victims.positions[body] + Vector3.UP * 0.35
-			_candidate(out, shooter, "loot", body, lying, "시체 뒤지기", 0.2, lying + Vector3.UP * 0.3)
+			_add_loot_candidate(out, shooter, body)
 	return out
+
+
+func can_search_body(shooter, body: int) -> bool:
+	if not is_instance_valid(world._victims) or not world._victims.can_loot(body, shooter.player.global_position):
+		return false
+	var candidates: Array = []
+	_add_loot_candidate(candidates, shooter, body)
+	return not candidates.is_empty()
+
+
+func _add_loot_candidate(out: Array, shooter, body: int) -> void:
+	var lying: Vector3 = world._victims.positions[body] + Vector3.UP * 0.35
+	_candidate(out, shooter, "loot", body, lying, "시체 수색 · %d초간 누르기" % TomatinaVictims.LOOT_TIME,
+		0.2, lying + Vector3.UP * 0.3)
 
 func _candidate(out: Array, shooter, kind: String, id: int, at: Vector3, text: String, priority: float,
 		anchor := Vector3.INF) -> void:

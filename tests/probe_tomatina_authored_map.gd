@@ -57,7 +57,7 @@ func _initialize() -> void:
 	for index in mini(roster_a.size(), roster_b.size()):
 		same_roster = same_roster and roster_a[index][0] == roster_b[index][0] \
 			and (roster_a[index][1] as Vector2).distance_to(roster_b[index][1]) < 0.001 \
-			and roster_a[index].size() == roster_b[index].size()
+			and roster_a[index].slice(2) == roster_b[index].slice(2)
 	_check(same_roster, "roster")
 	TomatinaMap.use_authored(null)
 	StreetMap.layout_override = null

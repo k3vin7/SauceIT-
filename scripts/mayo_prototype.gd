@@ -1136,6 +1136,8 @@ var external_net: MayoNet
 var _net_panel: Control
 var _festival_prop_materials: Dictionary[BaseMaterial3D, ShaderMaterial] = {}
 var _input_enabled := true
+var _stage_input_enabled := true
+var _menu_input_enabled := true
 ## Splat centre cells found this frame, flushed to the peers at the end of it.
 ## Four ints each: kind, target, cell x, cell y. See MayoNet.apply_splats.
 ## How long one layer of sauce takes to lay down, in seconds of the stream
@@ -1189,6 +1191,7 @@ var _enemies: Array[MayoEnemy] = []
 var _bowled_tomatoes: Array[MayoEnemy] = []
 var _blast_grid_in_tick := false
 var _blast_grid_built := false
+var _largest_enemy_radius := 0.0
 var _blast_cells: Dictionary[int, Vector2i] = {}
 var _blast_buckets := {}
 var _roofs: Array[StallRoof] = []
@@ -1288,6 +1291,7 @@ var _truck_escape_finished := false
 var _press_king_hideout: Node3D
 var _finale_remaining := 0
 const ESCAPE_SHOVE_ACTION := 6
+const CANCEL_TOMATO_CHARGE_ACTION := 8
 const ESCAPE_SHOVE_COOLDOWN_MS := 2000
 const TOMATINA_RESCUE_WINDOW := 20.0
 const TOMATINA_RESCUE_TIME := 1.0
@@ -1382,6 +1386,8 @@ var _press_king_wave_side := 0
 var _siren_zone := Rect2()
 var _escape_shove_times := {}
 var _rescue_attempts := {}
+var _loot_attempts := {}
+var _local_loot_hold := {}
 ## Hose stand index -> peer id of whoever has it open. Authority state,
 ## carried to clients in the Tomatina status packet for the jet to draw.
 var _hose_users := {}
@@ -1577,6 +1583,7 @@ func _ready() -> void:
 	_feel_rng.randomize()
 	_ensure_input_actions()
 	if staged_loading:
+		_stage_input_enabled = false
 		_input_enabled = false
 		set_process(false)
 		set_physics_process(false)
@@ -1593,8 +1600,6 @@ func _ready() -> void:
 			enemy.contact_permission = play_support.request_contact
 		if practice_range:
 			_begin_range()
-		if is_instance_valid(_visor_overlay) and _visor_overlay.material is ShaderMaterial:
-			_visor_overlay.material.set_shader_parameter("protect_centre", true)
 	if is_instance_valid(_truck_arrival):
 		_truck_arrival.sync_navigation()
 	_apply_mute()
@@ -1640,6 +1645,7 @@ func _physics_process(delta: float) -> void:
 	var frame_started := Time.get_ticks_usec() if debug_profile_enabled else 0
 	var step_started := frame_started
 	_read_local_input()
+	_advance_local_loot_hold(delta)
 	# Every peer simulates every strand off the aim it has for that shooter, so
 	# nothing about the strand itself goes over the wire. Only the server's copy
 	# is allowed to paint, and it broadcasts the cells it painted.
@@ -1677,6 +1683,7 @@ func _physics_process(delta: float) -> void:
 		_burst_ground_budget = TOMATO_BURST_TICK_CAP
 		if map_kind == MapKind.TOMATINA:
 			_advance_tomatina_rescues(delta)
+			_advance_tomatina_loot(delta)
 			_advance_overripe_bursts(delta)
 			_advance_cheese_threads(delta)
 		_advance_splash_ripples(delta)
@@ -2570,6 +2577,10 @@ func _burst_spent(shooter: Shooter) -> bool:
 func _read_local_input() -> void:
 	if _local == null:
 		return
+	# If a UI control consumed the mouse-up, discard the charge.
+	if _tomato_charge_started.has(_local.peer_id) and DisplayServer.get_name() != "headless" \
+			and not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		_cancel_local_tomato_charge()
 	if _refuge_shop_room >= 0 and (_local.player.state != MayoPlayer.State.NORMAL \
 			or _refuge_shop_in_reach(_local.player.global_position) != _refuge_shop_room):
 		_close_refuge_shop()
@@ -2920,6 +2931,12 @@ func _update_fallen_body(shooter: Shooter) -> void:
 			-shooter.body_mesh.rotation.x, PI, -shooter.body_mesh.rotation.z)
 
 
+func _input(event: InputEvent) -> void:
+	if not _local_loot_hold.is_empty() and event.is_action_released("interact") \
+			and not Input.is_action_pressed("interact"):
+		_end_local_loot_hold("loot_cancel")
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if tomatina_intro_active():
 		if event.is_action_pressed("mute_sound"):
@@ -2956,15 +2973,15 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("toggle_key_legend"):
 		show_key_legend = not show_key_legend
 		return
-	if event.is_action_pressed("switch_character") and not embedded:
-		_local.requested_character_index = posmod(
-			_local.requested_character_index + 1, PLAYER_CHARACTERS.size())
-		set_character_variant(_local.peer_id, _local.requested_character_index)
-		# In a truck session the pick belongs to the session, not to this stage:
-		# told about the change, it is still what they are wearing back in the
-		# truck and in the next stage.
+	if event.is_action_pressed("switch_character") and not event.is_echo() and not embedded:
 		if is_instance_valid(_net) and _net.lobby_flow:
-			_net.choose_character(_local.requested_character_index)
+			if _input_enabled:
+				for offset in range(1, PLAYER_CHARACTERS.size()):
+					var index := (_local.requested_character_index + offset) % PLAYER_CHARACTERS.size()
+					if _net.choose_character(index):
+						break
+		else:
+			set_local_character((_local.requested_character_index + 1) % PLAYER_CHARACTERS.size())
 		return
 	if not _input_enabled:
 		return
@@ -2976,6 +2993,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		if not target.is_empty():
 			if target.kind == "shop":
 				_try_open_refuge_shop()
+			elif target.kind == "loot":
+				_start_local_loot_hold(int(target.id))
 			elif _is_authority():
 				perform_context_action(_local.peer_id, target.kind, target.id)
 			else:
@@ -3205,7 +3224,7 @@ func _build_world() -> void:
 	_floor.brush_radius = contamination_brush_radius
 	if map_kind == MapKind.TOMATINA:
 		_floor.clean_color = Color("5c5c5c")
-		_floor.upload_tiles_per_frame = 3
+		_floor.upload_tiles_per_frame = 2
 		if TomatinaMap.street_profile_enabled():
 			_floor.terrain_height = TomatinaMap.STREET_PROFILE.height_at
 			_floor.terrain_regions = TomatinaMap.STREET_PROFILE.relief_bounds()
@@ -3362,6 +3381,9 @@ func remove_avatar(peer_id: int) -> void:
 		return
 	_free_shooter(_shooters[peer_id])
 	_shooters.erase(peer_id)
+	_loot_attempts.erase(peer_id)
+	if is_instance_valid(_tomatina_intro):
+		_tomatina_intro.remove_passenger(peer_id)
 	# And somebody left, which walks it back the same way.
 	rescale_enemies()
 	# Somebody who has gone is not waited for: a stage that needs everybody to
@@ -3381,6 +3403,8 @@ func reset_for_join() -> void:
 	_local = null
 	_escape_shove_times.clear()
 	_rescue_attempts.clear()
+	_loot_attempts.clear()
+	_local_loot_hold.clear()
 	_hose_users.clear()
 	if map_kind == MapKind.TOMATINA:
 		_reset_tomatina_finale()
@@ -3394,6 +3418,9 @@ func reset_for_join() -> void:
 			enemy.free()
 		_enemies.clear()
 		_bowled_tomatoes.clear()
+		_pending_healing_deaths.clear()
+		_healing_deaths.clear()
+		_largest_enemy_radius = 0.0
 		_tutorial_spawned.clear()
 		_tutorial.reset_session()
 	_refresh_enemy_authority()
@@ -3782,6 +3809,7 @@ func _try_open_refuge_shop() -> bool:
 	for teammate: Shooter in _shooters.values():
 		if _can_rescue_teammate(_local.player, teammate.player):
 			return false
+	_cancel_local_tomato_charge()
 	_refuge_shop_room = room
 	_refuge_shop_title.text = "%s 상점" % TomatinaMap.safe_room_names()[room]
 	_refresh_refuge_shop()
@@ -4124,45 +4152,56 @@ func _rebind_visor_overlay() -> void:
 	if _visor_overlay == null or _local == null or _local.player.visor == null:
 		return
 	_visor_overlay.bind(_local.player.visor)
-	if map_kind == MapKind.TOMATINA:
-		_visor_overlay.material.set_shader_parameter("protect_centre", true)
 
 
 func set_network_panel_open(open: bool) -> void:
 	if not is_instance_valid(_net_panel):
 		return
 	_net_panel.visible = open
-	_input_enabled = not open
+	_input_enabled = not open and _stage_input_enabled and _menu_input_enabled
+	if open:
+		_cancel_local_tomato_charge()
 	if DisplayServer.get_name() == "headless":
 		return
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if open else Input.MOUSE_MODE_CAPTURED
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if _input_enabled else Input.MOUSE_MODE_VISIBLE
 
 
 func set_menu_input_enabled(enabled: bool) -> void:
-	_input_enabled = enabled
+	_menu_input_enabled = enabled
+	_input_enabled = enabled and _stage_input_enabled
+	if not enabled and not _local_loot_hold.is_empty():
+		_end_local_loot_hold("loot_cancel")
 	if _local != null:
-		_local.player.frozen = not enabled
-		if not enabled:
+		_local.player.frozen = not _input_enabled
+		if not _input_enabled:
+			_cancel_local_tomato_charge()
 			_local.firing = false
 			_local.fire_hold = 0.0
 			_local.player.input_move = Vector2.ZERO
 			_local.player.input_run = false
 			_local.player.input_jump = false
+			_local.bottle_shake_input = 0.0
 	if DisplayServer.get_name() != "headless":
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if enabled else Input.MOUSE_MODE_VISIBLE
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if _input_enabled else Input.MOUSE_MODE_VISIBLE
 
 
 func set_gameplay_input_enabled(enabled: bool) -> void:
 	if not enabled and _refuge_shop_room >= 0:
 		_close_refuge_shop()
-	_input_enabled = enabled
+	if not enabled:
+		if not _local_loot_hold.is_empty():
+			_end_local_loot_hold("loot_cancel")
+		_loot_attempts.clear()
+		_tomato_charge_started.clear()
+	_stage_input_enabled = enabled
+	_input_enabled = enabled and _menu_input_enabled
 	set_physics_process(enabled)
 	if _local != null:
-		_local.player.frozen = not enabled
-		if not enabled:
+		_local.player.frozen = not _input_enabled
+		if not _input_enabled:
 			_local.firing = false
 	if DisplayServer.get_name() != "headless":
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if enabled else Input.MOUSE_MODE_VISIBLE
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if _input_enabled else Input.MOUSE_MODE_VISIBLE
 
 
 func gameplay_input_enabled() -> bool:
@@ -4523,7 +4562,7 @@ func _find_player_animation(player: AnimationPlayer, suffix: String,
 
 ## Replaces the presentation and applies that character's matching capsule.
 ## Health, sauce and world position remain on the same player node. The selected
-## index is carried in normal network state so every peer sees the same choice.
+## index comes from the lobby roster in a room and from normal state in standalone play.
 func set_character_variant(peer_id: int, requested_index: int) -> void:
 	var shooter: Shooter = _shooters.get(peer_id)
 	if shooter == null:
@@ -4554,10 +4593,7 @@ func set_character_variant(peer_id: int, requested_index: int) -> void:
 	set_first_person(_first_person)
 
 
-## The character the player at this keyboard arrives as -- the one they picked
-## before the truck. Sets what this peer *asks* for as well as what it wears:
-## a guest sends `requested_character_index` with every input packet, and one
-## left at zero would talk the host back into the default a tick later.
+## Keep the local selection index and its model in sync.
 func set_local_character(index: int) -> void:
 	if _local == null:
 		return
@@ -5785,7 +5821,7 @@ func _build_enemies() -> void:
 				var approach := TomatinaMap.at_cell(TomatinaMap.BOWLER_TARGETS[tag])
 				enemy.bowling_lane = Vector3(approach.x - site.x, 0.0, approach.z - site.z).normalized()
 				enemy.set_meta("bowling_post", tag)
-			elif tag in [&"market_ambush", &"truck_ambush"] and TomatinaMap.street_profile_enabled():
+			elif (tag == &"market_ambush" or TomatinaMap.is_truck_ambush(tag)) and TomatinaMap.street_profile_enabled():
 				_build_street_breakout(enemy, tag, leg)
 			if entry.size() > 2:
 				if entry[2] is int:
@@ -6008,9 +6044,13 @@ func _register_enemy(enemy: MayoEnemy) -> void:
 		other.add_collision_exception_with(enemy)
 	if is_ball:
 		_bowled_tomatoes.append(enemy)
+	var index := _enemies.size()
 	_enemies.push_back(enemy)
+	_largest_enemy_radius = maxf(_largest_enemy_radius, enemy.radius)
+	if map_kind == MapKind.TOMATINA and not is_ball:
+		enemy.defeated.connect(_queue_healing_drop.bind(index))
 	if _blast_grid_built and _blast_grid_in_tick:
-		_update_blast_cell(_enemies.size() - 1, enemy.global_position)
+		_update_blast_cell(index, enemy.global_position)
 
 
 func _add_tomatina_enemy(kind: int, at: Vector3) -> int:
@@ -6147,7 +6187,7 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 		var player: MayoPlayer = other_shooter.player
 		if not is_instance_valid(player):
 			continue
-		if player.global_position.distance_to(centre) > radius:
+		if player.global_position.distance_to(centre) > radius or not _tomato_blast_reaches(centre, player):
 			continue
 		var cell := player.paint_mayo(player.global_position, Vector3.UP,
 			ContaminationGrid.KIND_KETCHUP)
@@ -6156,7 +6196,7 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 				_splat_code(SPLAT_BODY, ContaminationGrid.KIND_KETCHUP),
 				player.peer_id, cell.x, cell.y]))
 		_record_visor_splat(player, centre, ContaminationGrid.KIND_KETCHUP)
-	_tomato_fragments(centre, radius)
+	_blast_fragments(centre, radius)
 
 
 ## Juice landing on bodies: every tomato inside `radius` of `centre`, `source`
@@ -6165,9 +6205,9 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 ## time, so a body the splash kills flinches, turns and topples like one the
 ## stream killed, and then bursts in turn. A bowled tomato shrugs it off in
 ## there, as it shrugs off the stream. `shooter` is credited for the kills;
-## null for a splash nobody owns.
+## null for a splash nobody owns. A negative sauce uses the tomato effects.
 func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Shooter,
-		source: MayoEnemy = null, single_blast := false) -> void:
+		source: MayoEnemy = null, single_blast := false, sauce := -1) -> void:
 	for other in _blast_candidates(centre, radius):
 		if other == source or not is_instance_valid(other):
 			continue
@@ -6177,7 +6217,7 @@ func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Sho
 			continue
 		if single_blast and map_kind == MapKind.TOMATINA and not _tomato_blast_reaches(centre, other):
 			continue
-		_stain_body_with_ketchup(other, centre)
+		_stain_body_with_sauce(other, centre, sauce if sauce >= 0 else ContaminationGrid.KIND_KETCHUP)
 		if damage <= 0.0 or not other.is_alive():
 			continue
 		# **A burst's juice takes a moment to arrive**, longer the further out
@@ -6189,15 +6229,16 @@ func _splash_enemies(centre: Vector3, radius: float, damage: float, shooter: Sho
 			var along := other.global_position.distance_to(centre) / maxf(radius, 0.01)
 			_splash_ripples.push_back({"enemy": other, "centre": centre, "damage": damage,
 				"peer": shooter.peer_id if shooter != null else -1,
+				"sauce": sauce,
 				"left": lerpf(CHAIN_BURST_MIN_DELAY, maxf(chain_burst_delay, CHAIN_BURST_MIN_DELAY), along)})
 			continue
-		_splash_enemy(other, centre, damage, shooter, single_blast)
+		_splash_enemy(other, centre, damage, shooter, single_blast, sauce)
 
 
 ## The splash landing on one body: the damage, the throw, the hit everyone sees,
 ## and the burst in turn if that was what killed it.
 func _splash_enemy(other: MayoEnemy, centre: Vector3, damage: float, shooter: Shooter,
-		single_blast: bool) -> void:
+		single_blast: bool, sauce: int) -> void:
 	var crossed_before := other._flinch_crossed
 	if shooter != null:
 		_credit_hit(other, shooter)
@@ -6213,14 +6254,14 @@ func _splash_enemy(other: MayoEnemy, centre: Vector3, damage: float, shooter: Sh
 			other.take_sauce_hit(centre)
 	# Whatever the blast hurt is thrown back from it and shows the hit.
 	other.take_blast(centre, blast_knockback_speed)
-	_broadcast_blast_hit(other)
+	_broadcast_blast_hit(other, sauce)
 	if not other.is_alive():
 		if is_instance_valid(play_support) and shooter != null:
 			play_support.note_chain(shooter.peer_id)
-		_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2)
+		_broadcast_enemy_shake(other, kill_shake_degrees, kill_shake_seconds, 2, sauce)
 		_finish_tomato_kill(other, shooter)
 	elif other._flinch_crossed > crossed_before:
-		_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
+		_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1, sauce)
 
 
 ## Runs the travelling juice down and lands what has arrived. Authority only.
@@ -6245,7 +6286,7 @@ func _advance_splash_ripples(delta: float) -> void:
 		processed += 1
 		var other: MayoEnemy = ripple.enemy
 		if is_instance_valid(other) and other.is_alive():
-			_splash_enemy(other, ripple.centre, ripple.damage, _shooters.get(ripple.peer), false)
+			_splash_enemy(other, ripple.centre, ripple.damage, _shooters.get(ripple.peer), false, ripple.sauce)
 
 
 ## A blast reaching the party. Every standing player inside `radius` of `at`
@@ -6322,7 +6363,7 @@ func _advance_overripe_bursts(delta: float) -> void:
 func show_overripe_burst(at: Vector3, radius: float, priming: bool) -> void:
 	if not priming:
 		_shake_from_blast(at, radius)
-		_tomato_fragments(at, radius)
+		_blast_fragments(at, radius)
 		_leave_debris(at, 0.91, TomatoVisuals.OVERRIPE)
 		return
 	_play_combat_warning(at, 490.0, OVERRIPE_BURST_DELAY)
@@ -6374,12 +6415,15 @@ func _leave_debris(centre: Vector3, radius: float, skin: Color) -> void:
 	_debris.push_back(debris)
 
 
-func _tomato_fragments(centre: Vector3, radius: float) -> void:
+func _blast_fragments(centre: Vector3, radius: float, sauce := -1) -> void:
 	if _speck_multimesh == null:
 		return
 	var now := Time.get_ticks_msec() * 0.001
 	var count := clampi(int(8.0 + radius * 4.0), 8, 40)
 	var speed := 3.0 + radius * 0.9
+	var fragment_sauce := ContaminationGrid.KIND_KETCHUP if sauce < 0 else sauce
+	# Part blasts already paint from the impact on the host.
+	var fragment_peer := 1 if sauce < 0 else 0
 	for _index in count:
 		var angle := _feel_rng.randf_range(0.0, TAU)
 		var lift := _feel_rng.randf_range(0.3, 1.0)
@@ -6388,7 +6432,7 @@ func _tomato_fragments(centre: Vector3, radius: float) -> void:
 		_take_speck(now, centre + thrown * 0.3,
 			thrown * speed * _feel_rng.randf_range(0.7, 1.3),
 			_feel_rng.randf_range(ketchup_fragment_radius_min, ketchup_fragment_radius_max),
-			1, ContaminationGrid.KIND_KETCHUP)
+			fragment_peer, fragment_sauce)
 	_speck_buffer_dirty = true
 
 
@@ -6489,7 +6533,7 @@ func _advance_spits(delta: float) -> void:
 			spit.mesh.global_position = spit.position
 		if landed:
 			# The splash everyone sees, off their own dice like a burst's pieces.
-			_tomato_fragments(spit.position, PressKing.LOB_SPLASH_RADIUS if spit.lob else 0.6)
+			_blast_fragments(spit.position, PressKing.LOB_SPLASH_RADIUS if spit.lob else 0.6)
 			if _is_authority() and spit.spitter != null and is_instance_valid(spit.spitter):
 				if spit.lob:
 					_press_king_lob_lands(hit["collider"] as MayoPlayer, spit.position)
@@ -6720,7 +6764,7 @@ func _reset_tomatina_finale() -> void:
 
 
 func _start_finale(player: MayoPlayer) -> void:
-	if not _input_enabled or map_kind != MapKind.TOMATINA or _horde_spawned or practice_range \
+	if not _stage_input_enabled or map_kind != MapKind.TOMATINA or _horde_spawned or practice_range \
 			or not TomatinaMap.in_rect(_siren_zone, player.global_position):
 		return
 	_horde_spawned = true
@@ -7016,6 +7060,8 @@ func _tomatina_refuge_status() -> String:
 
 
 func _tomatina_action_hint() -> String:
+	if not _local_loot_hold.is_empty():
+		return ""
 	if is_instance_valid(play_support) and _local != null:
 		return play_support.interaction_hint()
 	if _local == null or _local.player.state != MayoPlayer.State.NORMAL:
@@ -7059,7 +7105,7 @@ func _update_stage_objective(alive := -1) -> void:
 			objective = "광장 방어 · 남은 적 %d" % _finale_remaining if _finale_remaining > 0 \
 				else "광장 방어 · 종소리가 들린다"
 			if _hose_wave_pending > 0:
-				objective += " · 북쪽 반격 %d마리 접근 중" % _hose_wave_pending
+				objective += " · 반격 %d마리 접근 중" % _hose_wave_pending
 		elif _press_king.is_alive():
 			var armor := "갑옷 · 호스를 맞혀 세척"
 			if _press_king.armor_broken:
@@ -7141,12 +7187,13 @@ var _sprung_alley_ambushes := {}
 
 func _build_street_breakout(enemy: MayoEnemy, tag: StringName, leg: int) -> void:
 	var breakout := TomatinaBreakout.new()
-	breakout.name = "TruckBreakout" if tag == &"truck_ambush" else "MarketBreakout"
+	var truck_ambush := TomatinaMap.is_truck_ambush(tag)
+	breakout.name = "TruckBreakout" + String(tag).trim_prefix("truck_ambush") if truck_ambush else "MarketBreakout"
 	breakout.tag = tag
 	breakout.leg = leg
 	var cab: ContaminableObject
-	if tag == &"truck_ambush":
-		var truck := TomatinaMap.breakout_truck_boxes()
+	if truck_ambush:
+		var truck := TomatinaMap.breakout_truck_boxes(tag)
 		_create_wall(truck[1].name, truck[1].position, truck[1].size, truck[1].color, true, true)
 		cab = _walls.back()
 		_create_wall(truck[0].name, truck[0].position, truck[0].size, truck[0].color, true, true)
@@ -7611,6 +7658,9 @@ func debug_clear_enemies() -> void:
 		enemy.queue_free()
 	_enemies.clear()
 	_bowled_tomatoes.clear()
+	_pending_healing_deaths.clear()
+	_healing_deaths.clear()
+	_largest_enemy_radius = 0.0
 
 
 func enemy_count() -> int:
@@ -7669,10 +7719,10 @@ func apply_enemy_state(data: PackedFloat32Array, interpolate := false, start := 
 		if enemy.burst_radius <= 0.0:
 			continue
 		if was_alive and not enemy.is_alive():
-			_tomato_fragments(enemy.global_position, enemy.burst_radius)
+			_blast_fragments(enemy.global_position, enemy.burst_radius)
 		elif enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL \
 				and was_at.y > -10.0 and enemy.global_position.y < -40.0:
-			_tomato_fragments(was_at, enemy.burst_radius)
+			_blast_fragments(was_at, enemy.burst_radius)
 
 
 func set_enemy_authority(authority: bool) -> void:
@@ -7773,7 +7823,9 @@ func _update_mustard_field() -> void:
 		if is_instance_valid(player):
 			player.in_mustard = _floor.is_slowing_at(player.global_position)
 	for enemy in _enemies:
-		if is_instance_valid(enemy):
+		if not is_instance_valid(enemy) or not enemy.is_alive() or enemy.vanished or enemy.hidden_in_breakout:
+			continue
+		if enemy.kind != MayoEnemy.EnemyKind.TOMATO_BALL or enemy.is_ball_live():
 			enemy.in_mustard = _floor.is_slowing_at(enemy.global_position)
 
 
@@ -8234,10 +8286,10 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 			if was_alive:
 				_confirm_server_contact(shooter)
 				if not enemy.is_alive():
-					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
+					_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2, stored_sauce)
 					_finish_tomato_kill(enemy, shooter)
 				elif enemy._flinch_crossed > crossed_before:
-					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds, 1)
+					_broadcast_enemy_shake(enemy, flinch_shake_degrees, flinch_shake_seconds, 1, stored_sauce)
 			# Ketchup piles up on the body rather than on the floor, and the stack
 			# that fills it sets it off. After the hit, so a body the stream has
 			# just killed goes off as the corpse it now is instead of soaking one
@@ -8270,7 +8322,7 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 		blast_damage = SauceParts.cannon_blast_damage(float(shot.get("shake", 0.0)))
 	var sauce: int = shot.sauce
 	_spawn_impact_spray(at, normal, shot.velocity, target is MayoEnemy, shooter,
-		1.0 if blast <= 0.0 else 3.0, blast > 0.0)
+		1.0 if blast <= 0.0 else 3.0, blast > 0.0, sauce)
 	if not authority or target == null:
 		return
 	# The mortar's blast replaces the direct hit.
@@ -8444,7 +8496,7 @@ func _burst_ketchup(enemy: MayoEnemy, shooter: Shooter) -> void:
 			_finish_tomato_kill(other, shooter)
 		elif other._flinch_crossed > crossed_before:
 			_broadcast_enemy_shake(other, flinch_shake_degrees, flinch_shake_seconds, 1)
-		_stain_body_with_ketchup(other, centre)
+		_stain_body_with_sauce(other, centre, ContaminationGrid.KIND_KETCHUP)
 
 	# **Players get sauce and nothing else.** A blast the party set off itself, on
 	# a body the party was standing next to, that then took their health would be a
@@ -8507,18 +8559,17 @@ func _ketchup_fragments(centre: Vector3, shooter: Shooter) -> void:
 
 
 ## A body caught in a blast wears it.
-func _stain_body_with_ketchup(enemy: MayoEnemy, from: Vector3) -> void:
+func _stain_body_with_sauce(enemy: MayoEnemy, from: Vector3, sauce: int) -> void:
 	var index := _enemies.find(enemy)
 	if index < 0:
 		return
 	var toward := enemy.global_position.direction_to(from)
 	if toward.length_squared() < 0.000001:
 		toward = Vector3.UP
-	var cell := enemy.paint_mayo(enemy.global_position + toward * enemy.radius, toward,
-		ContaminationGrid.KIND_KETCHUP)
+	var cell := enemy.paint_mayo(enemy.global_position + toward * enemy.radius, toward, sauce)
 	if cell.x >= 0:
 		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_ENEMY, ContaminationGrid.KIND_KETCHUP), index,
+			_splat_code(SPLAT_ENEMY, sauce), index,
 			cell.x, cell.y]))
 
 
@@ -9124,7 +9175,8 @@ func _build_lump_mesh(material: Material) -> ArrayMesh:
 ## sauce arrive, pause, and only then spit. Nothing here paints, damages or is
 ## sent -- the pool, the dice and the sound are all local.
 func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
-		on_body := false, shooter: Shooter = null, accent := 1.0, force := false) -> void:
+		on_body := false, shooter: Shooter = null, accent := 1.0, force := false,
+		stored_sauce := -1) -> void:
 	if _speck_multimesh == null or (_impact_clock > 0.0 and not force):
 		return
 	_impact_clock = impact_min_interval
@@ -9135,6 +9187,9 @@ func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
 		bounce = normal
 	bounce = bounce.normalized()
 	var now := Time.get_ticks_msec() * 0.001
+	var sauce := stored_sauce
+	if sauce < 0:
+		sauce = shooter.sauce_kind if shooter != null else ContaminationGrid.KIND_MAYO
 	# Sauce hitting a body throws more of itself, and throws it wider, than
 	# sauce hitting a kerb. Without this a monster and a wall spit identically
 	# and the spray says nothing about what is being hit.
@@ -9165,8 +9220,7 @@ func _spawn_impact_spray(at: Vector3, normal: Vector3, direction: Vector3,
 		thrown = thrown.normalized()
 		_take_speck(now, at + normal * 0.02, thrown * speed * _feel_rng.randf_range(0.7, 1.3),
 			radius * sqrt(accent) * _feel_rng.randf_range(0.75, 1.3),
-			shooter.peer_id if shooter != null else 1,
-			shooter.sauce_kind if shooter != null else ContaminationGrid.KIND_MAYO)
+			shooter.peer_id if shooter != null else 1, sauce)
 	_speck_buffer_dirty = true
 
 
@@ -9241,9 +9295,9 @@ func _land_speck(speck: MayoSpeck, space_state: PhysicsDirectSpaceState3D,
 		# The same coat as the burst that threw it, so a spatter landing on
 		# ground the stream has already covered does not stack a second layer on
 		# a cell the same trigger pull already raised.
-		_record_floor_splat(shooter, shooter.burst_index, hit.position)
+		_record_floor_splat(shooter, shooter.burst_index, hit.position, speck.sauce)
 	elif collider.is_in_group("mayo_contaminable"):
-		_record_splat(collider, hit.position, hit.normal, shooter, false)
+		_record_splat(collider, hit.position, hit.normal, shooter, false, speck.sauce)
 	return true
 
 
@@ -9592,7 +9646,8 @@ func _advance_hit_credit(delta: float) -> void:
 ## happens once has to be sent once, and arrive.
 ##
 ## Offline there is no net, so it is applied directly.
-func _broadcast_enemy_shake(enemy: MayoEnemy, degrees: float, seconds: float, accent := 0) -> void:
+func _broadcast_enemy_shake(enemy: MayoEnemy, degrees: float, seconds: float,
+		accent := 0, sauce := -1) -> void:
 	var index := _enemies.find(enemy)
 	if index < 0:
 		return
@@ -9603,39 +9658,39 @@ func _broadcast_enemy_shake(enemy: MayoEnemy, degrees: float, seconds: float, ac
 	for peer_id in book:
 		peers.append(peer_id)
 	if is_instance_valid(_net) and _net.is_online():
-		_net.send_enemy_shake(index, peers, degrees, seconds, accent)
-	apply_enemy_shake(index, peers, degrees, seconds, accent)
+		_net.send_enemy_shake(index, peers, degrees, seconds, accent, sauce)
+	apply_enemy_shake(index, peers, degrees, seconds, accent, sauce)
 
 
 ## A blast or a ketchup burst hurt this body, and every peer should see it land.
 ## Rides the shake message as accent 4, with nobody listed: it is not a shake.
-func _broadcast_blast_hit(enemy: MayoEnemy) -> void:
+func _broadcast_blast_hit(enemy: MayoEnemy, sauce := -1) -> void:
 	var index := _enemies.find(enemy)
 	if index < 0:
 		return
 	var nobody := PackedInt32Array()
 	if is_instance_valid(_net) and _net.is_online():
-		_net.send_enemy_shake(index, nobody, 0.0, 0.0, 4)
-	apply_enemy_shake(index, nobody, 0.0, 0.0, 4)
+		_net.send_enemy_shake(index, nobody, 0.0, 0.0, 4, sauce)
+	apply_enemy_shake(index, nobody, 0.0, 0.0, 4, sauce)
 
 
-## The hit itself: a white flash the size of the body, gone in a tenth of a
-## second, and ketchup thrown off it. Presentation only, on every peer.
+## The hit itself: a flash the size of the body, gone in a tenth of a second,
+## and fragments of the sauce that reached it.
 ##
 ## A shell round the body rather than a tint on it: the body's overlay slot is
 ## the stain's -- see `BodyContamination` -- and the hit must not wipe it.
-func _show_blast_hit(enemy: MayoEnemy) -> void:
+func _show_blast_hit(enemy: MayoEnemy, sauce: int) -> void:
 	if not is_instance_valid(enemy):
 		return
 	var at := enemy.global_position
-	_tomato_fragments(at, 0.0)
+	_blast_fragments(at, 0.0, sauce)
 	_prepare_tomatina_blast_effects()
 	var flash := _blast_hits.pop_back() as MeshInstance3D if not _blast_hits.is_empty() \
 		else _make_blast_hit()
 	var diameter := enemy.radius * 2.2
 	flash.scale = Vector3(diameter, maxf(enemy.height, enemy.radius * 2.0) * 1.05, diameter)
 	var tint := flash.material_override as StandardMaterial3D
-	tint.albedo_color = Color(1.0, 1.0, 1.0, 0.6)
+	tint.albedo_color = Color(SAUCE_TINTS[sauce] if sauce >= 0 else Color.WHITE, 0.6)
 	flash.global_position = at
 	flash.show()
 	var fade := create_tween()
@@ -9666,12 +9721,12 @@ func _shake_from_blast(at: Vector3, radius: float) -> void:
 ## each keeps only its own: the list is short and the alternative is a message
 ## per player.
 func apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
-		degrees: float, seconds: float, accent := 0) -> void:
+		degrees: float, seconds: float, accent := 0, sauce := -1) -> void:
 	if enemy_index < 0 or enemy_index >= _enemies.size():
 		return
 	# A blast landing on a body is for every screen, not just the credited ones.
 	if accent == 4:
-		_show_blast_hit(_enemies[enemy_index])
+		_show_blast_hit(_enemies[enemy_index], sauce)
 		return
 	if _local == null or not peers.has(_local.peer_id):
 		return
@@ -9686,7 +9741,7 @@ func apply_enemy_shake(enemy_index: int, peers: PackedInt32Array,
 		_play_contact_accent(defeat_sound if accent == 2 else first_contact_sound,
 			enemy.global_position, 0.85 if accent == 2 else 0.92, 4.0 if accent == 2 else 1.0)
 		_spawn_impact_spray(enemy.global_position, Vector3.UP, Vector3.DOWN,
-			true, _local, 2.0 if accent == 2 else 1.3, true)
+			true, _local, 2.0 if accent == 2 else 1.3, true, sauce)
 		if _crosshair is Crosshair:
 			(_crosshair as Crosshair).confirm_impact(accent == 2)
 	var toward := enemy.global_position - _local.player.global_position
@@ -9811,6 +9866,7 @@ func thrown_tomato_origin(shooter: Shooter) -> Vector3:
 	return shooter.player.global_position + Basis(Vector3.UP, shooter.aim_yaw) * TOMATO_THROW_HAND
 var _tomato_blast_sound: AudioStreamWAV
 var _healing_deaths: Dictionary = {}
+var _pending_healing_deaths: Dictionary = {}
 var _healing_tomatoes: Dictionary = {}
 var _healing_rng := RandomNumberGenerator.new()
 
@@ -9852,10 +9908,25 @@ func _make_healing_tomato(at: Vector3) -> MeshInstance3D:
 	return item
 
 
+func _queue_healing_drop(index: int) -> void:
+	if _is_authority() and not _healing_deaths.has(index):
+		_pending_healing_deaths[index] = true
+
+
 func _advance_healing_tomatoes(delta: float) -> void:
-	for index in _enemies.size():
-		var enemy = _enemies[index]
-		if enemy.is_alive() or _healing_deaths.has(index) or _overripe_bursts.has(enemy) or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+	var deaths: Array
+	if map_kind == MapKind.TOMATINA:
+		deaths = _pending_healing_deaths.keys()
+		deaths.sort()
+	else:
+		deaths = range(_enemies.size())
+	for index in deaths:
+		var enemy := _enemies[index]
+		if _overripe_bursts.has(enemy):
+			continue
+		_pending_healing_deaths.erase(index)
+		if not is_instance_valid(enemy) or enemy.is_alive() or _healing_deaths.has(index) \
+				or enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
 			continue
 		_healing_deaths[index] = true
 		if _healing_rng.randf() >= healing_tomato_chance:
@@ -9940,7 +10011,7 @@ func _has_standing_teammate(player: MayoPlayer) -> bool:
 
 
 func _start_tomatina_rescue(shooter: Shooter) -> bool:
-	if not _input_enabled:
+	if not _stage_input_enabled:
 		return false
 	for teammate: Shooter in _shooters.values():
 		if _can_rescue_teammate(shooter.player, teammate.player):
@@ -9999,6 +10070,8 @@ func rescue_hud_state() -> Dictionary:
 	state["downed_teammates"] = downed
 	state["in_reach"] = any_in_reach
 	state["rescue_progress"] = -1.0
+	state["loot_progress"] = -1.0 if _local_loot_hold.is_empty() else \
+		1.0 - clampf(float(_local_loot_hold.left) / TomatinaVictims.LOOT_TIME, 0.0, 1.0)
 	if _rescue_attempts.has(_local.peer_id):
 		var attempt: Dictionary = _rescue_attempts[_local.peer_id]
 		state["rescue_progress"] = 1.0 - clampf(float(attempt.left) / TOMATINA_RESCUE_TIME, 0.0, 1.0)
@@ -10040,6 +10113,64 @@ func _advance_tomatina_rescues(delta: float) -> void:
 			_rescue_attempts.erase(peer)
 
 
+func _new_loot_hold(shooter: Shooter, body: int) -> Dictionary:
+	return {"body": body, "left": TomatinaVictims.LOOT_TIME, "finished": false,
+		"health": shooter.player.health, "position": shooter.player.global_position}
+
+
+func _start_local_loot_hold(body: int) -> void:
+	if not _local_loot_hold.is_empty() or _rescue_attempts.has(_local.peer_id) or _local.firing:
+		return
+	_local_loot_hold = _new_loot_hold(_local, body)
+	_send_loot_action("loot", body)
+
+
+func _send_loot_action(kind: String, body: int) -> void:
+	if _is_authority():
+		perform_context_action(_local.peer_id, kind, body)
+	elif is_instance_valid(_net):
+		_net.request_context_action(kind, body)
+
+
+func _end_local_loot_hold(kind: String) -> void:
+	var body := int(_local_loot_hold.body)
+	_local_loot_hold.clear()
+	if _local != null:
+		_send_loot_action(kind, body)
+
+
+func _loot_hold_valid(shooter: Shooter, attempt: Dictionary) -> bool:
+	return shooter != null and shooter.player.state == MayoPlayer.State.NORMAL and not shooter.firing \
+		and shooter.player.health >= float(attempt.health) \
+		and shooter.player.global_position.distance_to(attempt.position) <= 0.45 \
+		and is_instance_valid(play_support) and play_support.can_search_body(shooter, int(attempt.body))
+
+
+func _advance_local_loot_hold(delta: float) -> void:
+	if _local_loot_hold.is_empty():
+		return
+	if not _input_enabled or not Input.is_action_pressed("interact") \
+			or not _loot_hold_valid(_local, _local_loot_hold):
+		_end_local_loot_hold("loot_cancel")
+		return
+	_local_loot_hold.left -= delta
+	if _local_loot_hold.left <= 0.0:
+		_end_local_loot_hold("loot_finish")
+
+
+func _advance_tomatina_loot(delta: float) -> void:
+	for peer in _loot_attempts.keys():
+		var attempt: Dictionary = _loot_attempts[peer]
+		if not _loot_hold_valid(_shooters.get(peer), attempt):
+			_loot_attempts.erase(peer)
+			continue
+		attempt.left = maxf(0.0, float(attempt.left) - delta)
+		# A late or lost release must not turn a tap into a completed search.
+		if attempt.left == 0.0 and attempt.finished:
+			_loot_attempts.erase(peer)
+			_victims.loot(int(attempt.body))
+
+
 func _hose_slot(at: Vector3) -> int:
 	for index in TOMATINA_HOSES.size():
 		if TomatinaMap.at_cell(TOMATINA_HOSES[index]).distance_squared_to(at) <= 8.0:
@@ -10063,7 +10194,7 @@ func _hose_slot_of(peer: int) -> int:
 ## they fire on every peer off the open/close edge in `_update_hose_visuals`,
 ## since this runs on the authority alone.
 func _toggle_fire_hose(shooter: Shooter) -> void:
-	if not _input_enabled or map_kind != MapKind.TOMATINA or not _horde_spawned:
+	if not _stage_input_enabled or map_kind != MapKind.TOMATINA or not _horde_spawned:
 		return
 	var held := _hose_slot_of(shooter.peer_id)
 	if held >= 0:
@@ -10158,7 +10289,7 @@ func _advance_fire_hoses(delta: float) -> void:
 	for slot in _hose_users.keys():
 		var shooter: Shooter = _shooters.get(int(_hose_users[slot]))
 		var reel := TomatinaMap.at_cell(TOMATINA_HOSES[slot])
-		if shooter == null or shooter.player.is_incapacitated() or not _input_enabled \
+		if shooter == null or shooter.player.is_incapacitated() or not _stage_input_enabled \
 				or reel.distance_squared_to(shooter.player.global_position) > HOSE_TETHER * HOSE_TETHER:
 			_hose_users.erase(slot)
 			_update_stage_objective()
@@ -10192,11 +10323,19 @@ func _advance_fire_hoses(delta: float) -> void:
 		var span := end - from
 		var reach := span.length()
 		var axis := span / maxf(reach, 0.001)
-		for enemy in _enemies:
-			if not enemy.is_alive():
+		var midpoint := from + span * 0.5
+		var extent := reach * 0.5 + HOSE_SPRAY_RADIUS + _largest_enemy_radius
+		# A single hose can reject distant bodies without building a new index.
+		var candidates := _enemies
+		if _blast_grid_built or _hose_users.size() > 1:
+			candidates = _blast_candidates(midpoint, extent)
+		for enemy in candidates:
+			if not is_instance_valid(enemy) or not enemy.is_alive():
 				continue
-			var measure := _hose_measure(from, axis, reach, enemy.global_position,
-				enemy.radius, enemy.height)
+			var at := enemy.global_position
+			if absf(at.x - midpoint.x) > extent or absf(at.z - midpoint.z) > extent:
+				continue
+			var measure := _hose_measure(from, axis, reach, at, enemy.radius, enemy.height)
 			if measure.is_empty():
 				continue
 			var edge: float = measure[0]
@@ -10297,9 +10436,8 @@ func _queue_hose_wave() -> void:
 		_net.broadcast_combat_warning(entry, Vector3.ZERO, 1.2, HOSE_COUNTERATTACK_CUE)
 
 
-## Authority, once a tick: the tomatoes a hose called in, built a couple at a
-## time round every plaza edge in turn, under the same active cap and the same
-## clearances as the finale's horde.
+## The hose counterattack prefers the northern edge and tries the others when
+## it is blocked, using the finale's active cap and clearances.
 func _advance_hose_wave(delta: float) -> void:
 	if map_kind != MapKind.TOMATINA:
 		return
@@ -10310,7 +10448,7 @@ func _advance_hose_wave(delta: float) -> void:
 		return
 	_hose_wave_wait = 0.22
 	var count := mini(HORDE_SPAWN_PER_TICK, _hose_wave_pending)
-	_hose_wave_pending -= _spawn_plaza_grunts(count, 2, false)
+	_hose_wave_pending -= _spawn_plaza_grunts(count, 2)
 
 
 func _queue_press_king_wave() -> void:
@@ -10678,7 +10816,7 @@ func _update_hose_visuals() -> void:
 
 
 func _escape_shove(shooter: Shooter) -> void:
-	if not _input_enabled or not stage_mode or map_kind != MapKind.TOMATINA:
+	if not _stage_input_enabled or not stage_mode or map_kind != MapKind.TOMATINA:
 		return
 	var now := Time.get_ticks_msec()
 	if now < int(_escape_shove_times.get(shooter.peer_id, 0)):
@@ -10748,7 +10886,7 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 		for breakout in _street_breakouts:
 			if at.distance_squared_to(breakout.global_position) > 0.01:
 				continue
-			var truck := breakout.tag == &"truck_ambush"
+			var truck := TomatinaMap.is_truck_ambush(breakout.tag)
 			if cue == BREAKOUT_RATTLE_CUE and not breakout.opened:
 				breakout.rattle(duration)
 				_play_combat_warning(at, 170.0 if truck else 190.0, duration, BREAKOUT_LATCH)
@@ -11129,7 +11267,17 @@ func apply_tomatina_status(data: PackedFloat64Array) -> void:
 
 
 func perform_context_action(peer: int, kind: String, target_id: int) -> void:
-	if not _is_authority() or not is_instance_valid(play_support) or not _shooters.has(peer) or is_cinematic_active():
+	if not _is_authority() or not is_instance_valid(play_support) or not _shooters.has(peer):
+		return
+	if kind == "loot_cancel" or kind == "loot_finish":
+		var attempt: Dictionary = _loot_attempts.get(peer, {})
+		if not attempt.is_empty() and int(attempt.body) == target_id:
+			if kind == "loot_cancel":
+				_loot_attempts.erase(peer)
+			else:
+				attempt.finished = true
+		return
+	if not _stage_input_enabled or is_cinematic_active():
 		return
 	var shooter: Shooter = _shooters[peer]
 	var valid := false
@@ -11160,8 +11308,8 @@ func perform_context_action(peer: int, kind: String, target_id: int) -> void:
 		"range_part":
 			buy_or_equip_sauce_part(peer, target_id)
 		"loot":
-			if is_instance_valid(_victims):
-				_victims.loot(target_id)
+			if not _loot_attempts.has(peer) and not _rescue_attempts.has(peer) and not shooter.firing:
+				_loot_attempts[peer] = _new_loot_hold(shooter, target_id)
 		"pickup":
 			if not _healing_tomatoes.has(target_id):
 				return
@@ -11182,12 +11330,17 @@ func perform_context_action(peer: int, kind: String, target_id: int) -> void:
 			shooter.fire_hold = 0.0
 
 
+func _cancel_local_tomato_charge() -> void:
+	if _local != null and _tomato_charge_started.has(_local.peer_id):
+		_request_tomato_action(CANCEL_TOMATO_CHARGE_ACTION)
+
+
 func _request_tomato_action(action: int) -> void:
 	if not _is_authority() and _local != null:
 		if action == 3:
 			if not _tomato_charge_started.has(_local.peer_id):
 				_tomato_charge_started[_local.peer_id] = Time.get_ticks_msec()
-		elif action == 1 or action == 2 or action == 4 or action == 5 or action >= 10:
+		elif action == 1 or action == 2 or action == 4 or action == 5 or action == CANCEL_TOMATO_CHARGE_ACTION or action >= 10:
 			_tomato_charge_started.erase(_local.peer_id)
 	if _is_authority():
 		tomato_action(_local.peer_id, action)
@@ -11196,9 +11349,12 @@ func _request_tomato_action(action: int) -> void:
 
 
 func tomato_action(peer: int, action: int) -> void:
-	if is_cinematic_active():
-		return
 	if not _is_authority() or not _shooters.has(peer):
+		return
+	if action == CANCEL_TOMATO_CHARGE_ACTION:
+		_tomato_charge_started.erase(peer)
+		return
+	if not _stage_input_enabled or is_cinematic_active():
 		return
 	var shooter: Shooter = _shooters[peer]
 	var player := shooter.player
@@ -11288,7 +11444,7 @@ func tomato_action(peer: int, action: int) -> void:
 			shooter.procedural_motion.eat_left = 0.48
 		player.health = minf(player.max_health, player.health + healing_tomato_amount)
 		slots[selected_item_slot(peer)] = 0
-	elif action == 1:
+	elif action == 1 and _tomato_charge_started.has(peer):
 		var charge := tomato_charge_fraction(peer)
 		_tomato_charge_started.erase(peer)
 		var direction := -_aim_basis(shooter).z
@@ -11373,15 +11529,15 @@ func _explode_thrown_tomato(at: Vector3, owner: Shooter) -> void:
 
 ## 박격포의 착탄: 던진 토마토처럼 터진다 -- 같은 번쩍임과 흔들림, 아군도 가리지 않는다.
 ## 반경은 토마토의 `MORTAR_RADIUS_SHARE`배, 피해는 얼마나 채워 쐈는가(`charge`)에 따라
-## `SauceParts.mortar_damage`이고, 웅덩이는 케찹이 아니라 쏜 사람의 소스다. 방장만 부른다.
+## `SauceParts.mortar_damage`다. 폭발과 자국에는 발사할 때의 소스가 쓰인다. 방장만 부른다.
 func _explode_lob_cap(at: Vector3, owner: Shooter, sauce: int, charge := 1.0) -> void:
 	var radius := thrown_tomato_splash_radius * SauceParts.MORTAR_RADIUS_SHARE
 	var damage := SauceParts.mortar_damage(charge)
-	show_tomato_blast(at, radius)
+	show_tomato_blast(at, radius, sauce)
 	_cut_cheese_by_blast(at, radius)
 	if is_instance_valid(_net) and _net.is_online() and _net.is_server():
-		_net.broadcast_tomato_blast(at, radius)
-	_splash_enemies(at, radius, damage, owner, null, true)
+		_net.broadcast_tomato_blast(at, radius, sauce)
+	_splash_enemies(at, radius, damage, owner, null, true, sauce)
 	_blast_players(at, radius, thrown_tomato_player_damage * damage / maxf(thrown_tomato_damage, 0.001))
 	for index in 12:
 		var angle := TAU * float(index) / 12.0
@@ -11513,10 +11669,11 @@ func _pulse_blast_radius(at: Vector3, radius: float, duration: float, color: Col
 			marker.queue_free())
 
 
-func show_tomato_blast(at: Vector3, radius: float) -> void:
+func show_tomato_blast(at: Vector3, radius: float, sauce := -1) -> void:
 	_shake_from_blast(at, radius)
-	_tomato_fragments(at, radius)
-	_leave_debris(at, 0.48, TomatoVisuals.TOMATO)
+	_blast_fragments(at, radius, sauce)
+	if sauce < 0:
+		_leave_debris(at, 0.48, TomatoVisuals.TOMATO)
 	_prepare_tomatina_blast_effects()
 	if not muted:
 		_play_contact_accent(_tomato_blast_sound, at, 0.72, 8.0)
@@ -11524,7 +11681,8 @@ func show_tomato_blast(at: Vector3, radius: float) -> void:
 	var flash := effect.get_child(0) as MeshInstance3D
 	var shock := effect.get_child(1) as MeshInstance3D
 	var tint := flash.material_override as StandardMaterial3D
-	tint.albedo_color.a = 0.82
+	var color := SAUCE_TINTS[sauce] if sauce >= 0 else _blast_material.albedo_color
+	tint.albedo_color = Color(color, 0.82)
 	flash.scale = Vector3.ONE
 	shock.scale = Vector3(0.3, 0.35, 0.3)
 	effect.global_position = at
@@ -11699,7 +11857,7 @@ func player_motion_state() -> PackedFloat64Array:
 	for peer in _shooters:
 		var event: Dictionary = _motion_events.get(peer, {})
 		var at: Vector3 = event.get("at", Vector3.ZERO)
-		var age := (Time.get_ticks_msec() - int(event.get("time", 0))) / 1000.0
+		var age := minf(0.48, (Time.get_ticks_msec() - int(event.get("time", 0))) / 1000.0)
 		out.append_array(PackedFloat64Array([peer, event.get("serial", 0), event.get("kind", 0), at.x, at.y, at.z, age, tomato_charge_fraction(peer)]))
 	return out
 
@@ -11778,7 +11936,7 @@ func _try_truck_exit(shooter: Shooter) -> bool:
 	if not TomatinaMap.in_rect(_fire_truck_zone,shooter.player.global_position):
 		return false
 	# Consume E in the exit zone even when waiting; do not also take a hose/item.
-	if not _is_authority() or not _input_enabled or _press_king.act_time < 1.9:
+	if not _is_authority() or not _stage_input_enabled or _press_king.act_time < 1.9:
 		return true
 	if shooter.player.state != MayoPlayer.State.NORMAL or not _party_at_fire_truck():
 		return true

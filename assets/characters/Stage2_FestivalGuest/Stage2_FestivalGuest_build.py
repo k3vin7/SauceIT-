@@ -2,6 +2,7 @@
 import math
 from pathlib import Path
 
+import bmesh
 import bpy
 from mathutils import Euler, Quaternion, Vector
 
@@ -270,8 +271,11 @@ def mouth():
 
 
 mouth()
-oval("Upper tooth row", (0,-.491,1.892), (.154,.026,.031), "Eyes", "Mouth")
-oval("Tongue seated in lower jaw", (0,-.486,1.775), (.125,.029,.027), "Tongue", "Mouth")
+teeth = oval("Upper tooth row", (0,-.491,1.892), (.154,.026,.031), "Eyes", "Mouth")
+tongue = oval("Tongue seated in lower jaw", (0,-.486,1.775), (.125,.029,.027), "Tongue", "Mouth")
+for interior in (teeth, tongue):
+    group = interior.vertex_groups.new(name="FallenMouthInterior")
+    group.add(list(range(len(interior.data.vertices))), 1.0, "REPLACE")
 
 # Equipment stays separate so the same guest rig can work in both shots.
 cup_start = len(parts)
@@ -321,6 +325,7 @@ EXPRESSIONS = {
     "gasp": (.76, 1.11, 1.15, .047, 19, .77),
     "fear": (.80, 1.42, 1.25, .065, 23, .65),
     "closed": (.77, .45, .065, -.014, 6, .93),
+    "fallen": (.66, .075, .048, -.025, 0, 1),
 }
 
 
@@ -477,7 +482,7 @@ fallen = []
 for i in range(3):
     fallen.append(action(("FallenBack", "FallenFront", "FallenSide")[i], 1))
     for frame in (0, 1):
-        pose(frame, expression="closed", Body=(12-13*i,0,-12+11*i), Head=(11-9*i,0,17-13*i),
+        pose(frame, expression="fallen", Body=(12-13*i,0,-12+11*i), Head=(11-9*i,0,17-13*i),
              **{"Upper.L":(-52+26*i,-48+12*i,13), "Upper.R":(-25-31*i,50-9*i,-8),
                 "Fore.L":(-44-11*i,12,0), "Fore.R":(-16-19*i,-8,0),
                 "Thigh.L":(-19+6*i,0,-8), "Thigh.R":(11-12*i,0,12),
@@ -503,11 +508,46 @@ for equipment in (mug, helmet):
 bpy.ops.export_scene.gltf(filepath=str(OUT / (NAME + ".glb")), export_animation_mode="ACTIONS",
                           export_vertex_color="NONE")
 
+def close_fallen_face(mesh):
+    # Keep the lip and lid shapes, without visible teeth, tongue or pupils in
+    # the static poses. The living guest still has all of its face geometry.
+    lid = bpy.data.materials.get("ClosedLid") or material("ClosedLid", "865441")
+    lid_index = len(mesh.materials)
+    mesh.materials.append(lid)
+    shapes = bmesh.new()
+    shapes.from_mesh(mesh)
+    weights = shapes.verts.layers.deform.active
+    hidden = {body.vertex_groups[name].index for name in ("FallenMouthInterior", "Pupil.L", "Pupil.R")}
+    eyelids = {body.vertex_groups[name].index for name in ("Eye.L", "Eye.R")}
+    jaw = rig.pose.bones["Mouth"]
+    jaw_pose = jaw.matrix @ jaw.bone.matrix_local.inverted()
+    jaw_rest = jaw_pose.inverted()
+    mouth_group = body.vertex_groups["Mouth"].index
+    bmesh.ops.delete(shapes, geom=[vert for vert in shapes.verts if hidden.intersection(vert[weights].keys())],
+                     context="VERTS")
+    # Lower the mouth corners in the posed head's up axis.
+    up = (jaw_pose.to_3x3() @ Vector((0, 0, 1))).normalized()
+    for vert in shapes.verts:
+        if mouth_group in vert[weights]:
+            across = abs((jaw_rest @ vert.co).x) / .285
+            vert.co -= up * (.024 * across ** 2)
+    cheeks = list(mesh.materials).index(palette["Cheeks"])
+    skin_index = list(mesh.materials).index(palette["Skin"])
+    for face in shapes.faces:
+        if all(eyelids.intersection(vert[weights].keys()) for vert in face.verts):
+            face.material_index = lid_index
+        elif face.material_index == cheeks:
+            face.material_index = skin_index
+    shapes.to_mesh(mesh)
+    shapes.free()
+
+
 def bake_fallen(index, pose_action):
     rig.animation_data.action = pose_action
     scene.frame_set(0)
     graph = bpy.context.evaluated_depsgraph_get()
     mesh = bpy.data.meshes.new_from_object(body.evaluated_get(graph), depsgraph=graph, preserve_all_data_layers=True)
+    close_fallen_face(mesh)
     tilt = [Euler((-1.51,0,.04)), Euler((1.53,0,-.07)), Euler((1.43,-.17,.73))][index].to_matrix()
     for vert in mesh.vertices:
         vert.co = tilt @ vert.co

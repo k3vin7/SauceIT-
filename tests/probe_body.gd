@@ -26,7 +26,10 @@ func _initialize() -> void:
 	# the map. Switched off here, before the world is built -- the world builds
 	# itself in `_ready()`, so there is no later chance to ask for this.
 	MayoTutorial.disabled = true
-	call_deferred("_run")
+	if OS.get_cmdline_user_args().has("--render-visor"):
+		call_deferred("_probe_visor_render")
+	else:
+		call_deferred("_run")
 
 
 func _check(condition: bool, message: String) -> void:
@@ -182,7 +185,7 @@ func _run() -> void:
 	# the mask then comes out mirrored: sauce on the wearer's right drawn on
 	# their left, and upside down with it. Nothing about the wearer's own view
 	# would change, so only this catches it.
-	var lens: MeshInstance3D = visor.get_node("LensHinge/Lenses")
+	var lens: MeshInstance3D = visor.get_node("LensMount/LensHinge/Lenses")
 	var lens_arrays: Array = lens.mesh.surface_get_arrays(0)
 	var lens_verts: PackedVector3Array = lens_arrays[Mesh.ARRAY_VERTEX]
 	var lens_uvs: PackedVector2Array = lens_arrays[Mesh.ARRAY_TEX_UV]
@@ -193,17 +196,19 @@ func _run() -> void:
 			far_u = i
 		if lens_uvs[i].y > lens_uvs[far_v].y:
 			far_v = i
-	var pivot := visor.get_parent() as Node3D
 	# The mask's own axes: a hit from the upper right fills its far x and far y,
-	# so u=1 has to sit on the wearer's right and v=1 above them.
-	var u_end: Vector3 = pivot.to_local(lens.to_global(lens_verts[far_u]))
-	var v_end: Vector3 = pivot.to_local(lens.to_global(lens_verts[far_v]))
+	# so u=1 has to sit on the wearer's right and v=1 above them. Measure from
+	# the lens centre in the fitted mount's axes.
+	var mount := visor.get_node("LensMount") as Node3D
+	var to_mount := mount.global_basis.inverse() * lens.global_basis
+	var u_end := to_mount * lens_verts[far_u]
+	var v_end := to_mount * lens_verts[far_v]
 	print("lenses: u=1 at %.2v, v=1 at %.2v (wearer's +x is their right, +y up)" % [u_end, v_end])
 	_check(u_end.x > 0.0,
 		"the lenses are mirrored left to right: u=1 sits at x=%.2f" % u_end.x)
 	_check(v_end.y > 0.0,
 		"the lenses are upside down: v=1 sits at y=%.2f" % v_end.y)
-	_check(u_end.z < 0.0, "the lenses are not facing out of the front of the head")
+	_check(to_mount.z.z < 0.0, "the lenses are not facing out of the front of the head")
 
 	# --- and a wipe takes it off, with the firing lock that pays for it ---
 	var wiper = target_player
@@ -346,8 +351,73 @@ func _run() -> void:
 	_check(blind.is_empty(),
 		"a single splat is invisible on %s" % str(blind))
 
+	_finish("MAYO_BODY_OK")
+
+
+# Run with a rendering driver and `-- --render-visor` to check the pixels.
+func _probe_visor_render() -> void:
+	if DisplayServer.get_name() == "headless":
+		_check(false, "the visor render probe needs a rendering driver")
+		_finish("VISOR_RENDER_OK")
+		return
+	var viewport := SubViewport.new()
+	viewport.own_world_3d = true
+	viewport.transparent_bg = true
+	viewport.size = Vector2i(1000, 600)
+	root.add_child(viewport)
+	var visor := VisorContamination.new()
+	viewport.add_child(visor)
+	var overlay := VisorOverlay.new()
+	viewport.add_child(overlay)
+	overlay.bind(visor)
+	overlay.set_frame(Rect2(Vector2.ZERO, Vector2(viewport.size)))
+
+	for sauce in 3:
+		for column in 9:
+			var cell := Vector2i(column, sauce * 2)
+			visor.grid.fill_rect(cell, cell + Vector2i.DOWN, 1 + int(float(column) / 3.0), sauce)
+	var image := await _render_visor(viewport, visor)
+	for sauce in 3:
+		var y := 500 - sauce * 200
+		_check(absf(image.get_pixel(150, y).a - 0.5) < 0.02 \
+			and absf(image.get_pixel(450, y).a - 0.8) < 0.02 and image.get_pixel(750, y).a > 0.98,
+			"the visor lost the one-, two-, or three-coat opacity for sauce %d" % sauce)
+		var largest_jump := 0.0
+		for x in range(150, 750):
+			largest_jump = maxf(largest_jump, absf(image.get_pixel(x + 1, y).a - image.get_pixel(x, y).a))
+		_check(largest_jump < 0.025, "the visor opacity jumped on a cell edge for sauce %d" % sauce)
+	for y in [200, 400]:
+		_check(image.get_pixel(450, y).a > 0.77, "neighbouring sauces left a clear seam")
+	visor.clear()
+	image = await _render_visor(viewport, visor)
+	_check(image.get_pixel(450, 100).a < 0.01, "wiped lenses still draw on the screen")
+
+	overlay.hide()
+	var camera := Camera3D.new()
+	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+	camera.size = VisorContamination.LENS_SIZE.y
+	camera.position.z = -2.0
+	camera.rotation.y = PI
+	viewport.add_child(camera)
+	camera.make_current()
+	visor.grid.fill_rect(Vector2i(3, 2), Vector2i(6, 3), 2, ContaminationGrid.KIND_KETCHUP)
+	image = await _render_visor(viewport, visor)
+	_check(image.get_pixel(500, 300).a > 0.98 and image.get_pixel(20, 20).a < 0.01,
+		"the physical lens did not draw the ketchup patch over clean glass")
+	viewport.queue_free()
+	_finish("VISOR_RENDER_OK")
+
+
+func _render_visor(viewport: SubViewport, visor: VisorContamination) -> Image:
+	visor.grid.upload_if_dirty()
+	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	await RenderingServer.frame_post_draw
+	return viewport.get_texture().get_image()
+
+
+func _finish(success: String) -> void:
 	if failures.is_empty():
-		print("MAYO_BODY_OK")
+		print(success)
 		quit(0)
 		return
 	for failure in failures:

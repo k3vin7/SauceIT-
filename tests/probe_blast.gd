@@ -31,6 +31,8 @@ func _grunt(scene, at: Vector3) -> MayoEnemy:
 
 func _stand(player: MayoPlayer, at: Vector3, height: float) -> void:
 	player.reset_state()
+	# These checks put an already-standing player in the blast.
+	player.damage_grace = 0.0
 	player.state = MayoPlayer.State.NORMAL
 	player.health = player.max_health
 	player.global_position = Vector3(at.x, height, at.z)
@@ -147,6 +149,18 @@ func _run() -> void:
 	_check(is_equal_approx(me.health, me.max_health), "the blast hurt a player through a wall")
 	_check(mate.health < mate.max_health, "the blast spared a player with nothing in the way")
 
+	me.contamination.clear()
+	me.visor.clear()
+	mate.contamination.clear()
+	var splash := _grunt(scene, centre)
+	splash.burst_radius = 4.0
+	scene._burst_tomato(splash, landing)
+	_check(me.contamination.grid.painted_count == 0 and me.visor.painted_cell_count() == 0,
+		"a bursting tomato painted a player through a wall")
+	_check(mate.contamination.grid.painted_count > 0, "cover blocked ketchup on the open side, too")
+
+	await _probe_part_sauce(scene, landing + Vector3(0.0, 0.0, -1.0))
+
 	if failures.is_empty():
 		print("BLAST_OK")
 		quit(0)
@@ -154,3 +168,54 @@ func _run() -> void:
 		for failure in failures:
 			push_error(failure)
 		quit(1)
+
+
+func _probe_part_sauce(scene, landing: Vector3) -> void:
+	var parts := preload("res://scripts/tomatina_sauce_parts.gd")
+	for enemy in scene._enemies:
+		enemy.global_position = Vector3(4000.0, -300.0, 4000.0)
+	var target := _grunt(scene, landing + Vector3(-1.0, 0.5, 0.0))
+	target.max_health = 200.0
+	var shooter = scene._local
+	for part in [parts.Part.ARC, parts.Part.CANNON]:
+		for sauce in [ContaminationGrid.KIND_MAYO, ContaminationGrid.KIND_MUSTARD,
+				ContaminationGrid.KIND_KETCHUP]:
+			await create_timer(0.26).timeout
+			target.health = target.max_health
+			target.contamination.clear()
+			var effect := scene._blast_effects.back() as Node3D
+			var hit_flash := scene._blast_hits.back() as MeshInstance3D
+			shooter.sauce_kind = sauce
+			scene._sauce_parts.show_volley(shooter.peer_id, part, sauce, landing + Vector3.UP, Vector3.DOWN)
+			var shot: Dictionary = scene._sauce_parts._projectiles.pop_back()
+			scene._sauce_parts._release_projectile(shot.node)
+			shooter.sauce_kind = (sauce + 1) % 3
+			var first_speck: int = scene._speck_cursor
+			scene._pending_splats.clear()
+			scene._part_projectile_impact({"position": landing, "normal": Vector3.UP, "collider": scene._floor},
+				shot, parts.PROJECTILES[part], shooter, true)
+			var label := "part %d, sauce %d" % [part, sauce]
+			_check(target.health < target.max_health, "%s did not deal splash damage" % label)
+			var enemy_code: int = scene._splat_code(scene.SPLAT_ENEMY, sauce)
+			var floor_code: int = scene._splat_code(scene.SPLAT_FLOOR, sauce)
+			var splat_codes := PackedInt32Array()
+			for index in range(0, scene._pending_splats.size(), 4):
+				splat_codes.append(scene._pending_splats[index])
+			_check(splat_codes.has(enemy_code) and splat_codes.has(floor_code),
+				"%s repainted the splash in a different sauce" % label)
+			var speck_count := posmod(scene._speck_cursor - first_speck, scene._specks.size())
+			var expected_specks := 0
+			for offset in speck_count:
+				var speck = scene._specks[(first_speck + offset) % scene._specks.size()]
+				if speck.sauce == sauce:
+					expected_specks += 1
+			_check(speck_count > 0 and expected_specks == speck_count,
+				"%s drew impact spray in a different sauce" % label)
+			if part == parts.Part.ARC:
+				var flash := effect.get_child(0) as MeshInstance3D
+				var tint := flash.material_override as StandardMaterial3D
+				var hit_tint := hit_flash.material_override as StandardMaterial3D
+				_check(effect.visible and tint.albedo_color == Color(scene.SAUCE_TINTS[sauce], 0.82),
+					"%s drew the blast flash in a different sauce" % label)
+				_check(hit_flash.visible and hit_tint.albedo_color == Color(scene.SAUCE_TINTS[sauce], 0.6),
+					"%s drew the splash hit flash in a different sauce" % label)

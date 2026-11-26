@@ -87,7 +87,7 @@ void fragment() {
 		discard;
 	}
 	ivec2 size = textureSize(mask_texture, 0);
-	float kind = body_sauce_kind(mask_texture, uv, size);
+	float kind = mod(sauce_mask_sample(mask_texture, uv, size, true), 4.0);
 	ketchup_gloss = 0.0;
 	if (kind == 2.0) {
 		vec2 surface = ketchup_surface(mask_texture, uv, size, about, true);
@@ -95,10 +95,11 @@ void fragment() {
 		if (fill < 0.5) {
 			discard;
 		}
-		ALBEDO = ketchup_albedo(about, surface, coverage);
-		EMISSION = ALBEDO * 0.18;
-		ROUGHNESS = mix(0.45, 0.32, fill);
-		ketchup_gloss = mix(0.08, 0.19, fill);
+		ALBEDO = ketchup_albedo(about, surface, coverage) * KETCHUP_COATING_GAIN;
+		EMISSION = ALBEDO * KETCHUP_COATING_EMISSION;
+		ROUGHNESS = ketchup_roughness(fill);
+		SPECULAR = KETCHUP_COATING_SPECULAR;
+		ketchup_gloss = fill;
 	} else {
 		vec3 tint = kind == 1.0 ? mustard_tint.rgb : vec3(1.0);
 		ALBEDO = mayo_color.rgb * tint;
@@ -114,11 +115,11 @@ void fragment() {
 // Toon bands, as the village kit is lit, and a little of the sauce's own colour
 // in the shadow so a stain on the dark side still reads.
 void light() {
-	DIFFUSE_LIGHT += sauce_toon_light(NORMAL, LIGHT, ATTENUATION, LIGHT_COLOR, ALBEDO);
 	if (ketchup_gloss > 0.0) {
-		vec3 half_direction = normalize(LIGHT + VIEW);
-		float highlight = pow(max(dot(NORMAL, half_direction), 0.0), 36.0);
-		highlight *= max(dot(NORMAL, LIGHT), 0.0) * ketchup_gloss;
-		SPECULAR_LIGHT += LIGHT_COLOR * ATTENUATION * highlight / PI;
+		vec2 response = ketchup_light(NORMAL, LIGHT, VIEW, ketchup_gloss);
+		DIFFUSE_LIGHT += ALBEDO * LIGHT_COLOR * ATTENUATION * response.x;
+		SPECULAR_LIGHT += LIGHT_COLOR * ATTENUATION * response.y;
+	} else {
+		DIFFUSE_LIGHT += sauce_toon_light(NORMAL, LIGHT, ATTENUATION, LIGHT_COLOR, ALBEDO);
 	}
 }

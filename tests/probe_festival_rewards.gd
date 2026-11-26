@@ -162,6 +162,8 @@ func _party() -> void:
 	_pick(host, 3)
 	_check(guest.session.begin_join_room("127.0.0.1", PORT, ""), "guest could not begin joining")
 	_check(await _until(func(): return guest.flow == SauceApp.Flow.OFFICE), "the guest did not reach the office")
+	_pick(guest, 1)
+	_check(await _until(func(): return guest._character_layer == null), "the guest's character pick was not confirmed")
 	_check(await _until(func(): return guest.session.team_money == 90 \
 		and guest.session.team_trophies.has("tomato_ketchup")), "the guest was not told the team's money and trophy")
 	await process_frame

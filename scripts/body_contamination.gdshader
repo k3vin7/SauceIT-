@@ -86,12 +86,15 @@ void fragment() {
 	ROUGHNESS = clean_roughness;
 	if (painted > 0.5) {
 		ivec2 size = textureSize(mask_texture, 0);
-		float kind = body_sauce_kind(mask_texture, uv, size);
+		float kind = mod(sauce_mask_sample(mask_texture, uv, size, true), 4.0);
 		if (kind == 2.0) {
 			vec2 surface = ketchup_surface(mask_texture, uv, size, about, true);
 			float fill = surface.x;
-			ALBEDO = mix(clean_color.rgb, ketchup_albedo(about, surface, coverage), fill);
-			ROUGHNESS = mix(clean_roughness, mix(0.45, 0.32, fill), fill);
+			vec3 paste = ketchup_albedo(about, surface, coverage) * KETCHUP_COATING_GAIN;
+			ALBEDO = mix(clean_color.rgb, paste, fill);
+			EMISSION = paste * (fill * KETCHUP_COATING_EMISSION);
+			ROUGHNESS = mix(clean_roughness, ketchup_roughness(fill), fill);
+			SPECULAR = mix(0.5, KETCHUP_COATING_SPECULAR, fill);
 		} else {
 			vec3 tint = kind == 1.0 ? mustard_tint.rgb : vec3(1.0);
 			ALBEDO = sauce_toon_finish(mayo_color.rgb * tint, coverage, paint_threshold, uv * vec2(size));

@@ -84,6 +84,19 @@ func run() -> void:
 	scene._item_selected[player.peer_id] = 1
 	scene.play_support._update_arc(player.global_position + Vector3.UP, Vector3.FORWARD)
 	check(not scene._crosshair.trajectory_segments.is_empty(), "throw trajectory missing")
+	scene._crosshair.effective_range = true
+	scene.play_support._update_aim_feedback()
+	check(not scene._crosshair.effective_range, "tomato slot displayed bottle range feedback")
+	scene._item_selected[player.peer_id] = 2
+	scene._crosshair.effective_range = true
+	scene.play_support._update_aim_feedback()
+	check(not scene._crosshair.effective_range, "empty slot displayed bottle range feedback")
+	scene._item_selected[player.peer_id] = 0
+	scene._hose_users[0] = player.peer_id
+	scene._crosshair.effective_range = true
+	scene.play_support._update_aim_feedback()
+	check(not scene._crosshair.effective_range, "hose displayed bottle range feedback")
+	scene._hose_users.clear()
 	var legacy = load("res://scripts/key_legend.gd").new()
 	legacy.world = scene
 	root.add_child(legacy)

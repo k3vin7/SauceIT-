@@ -30,8 +30,11 @@ func run() -> void:
 	app._bgm_slider.value = 0.44
 	app._sfx_slider.value = 0
 	app._close_options()
-	assert(AudioServer.is_bus_mute(music) and not AudioServer.is_bus_mute(sfx))
-	assert(is_equal_approx(app.save_store.sfx_volume, 0.63))
+	assert(not AudioServer.is_bus_mute(music) and AudioServer.is_bus_mute(sfx))
+	var closed := SauceSaveStore.new(path)
+	closed.load_data()
+	assert(is_equal_approx(closed.bgm_volume, 0.44))
+	assert(is_zero_approx(closed.sfx_volume))
 	var stage = load("res://stage_2_tomatina.tscn").instantiate()
 	MayoTutorial.disabled = true
 	root.add_child(stage)

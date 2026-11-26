@@ -265,7 +265,14 @@ var _ketchup_at := -1000.0
 ## supplied Crawl action owns its hand plants, so no modifier is attached.
 @export var procedural_gait := false
 
-var health := 240.0
+signal defeated
+
+var health := 240.0:
+	set(value):
+		var was_alive := health > 0.0
+		health = value
+		if was_alive and health <= 0.0:
+			defeated.emit()
 var attack_permission := Callable()
 var contact_permission := Callable()
 ## Clients simulate no enemies at all, exactly as they simulate no bodies.
@@ -929,8 +936,7 @@ func build_bowling_tomato(cell_size: float, brush_radius: float) -> void:
 	radius = 1.2 * TOMATO_SCALE
 	height = 3.0 * TOMATO_SCALE
 	_rest_radius = radius
-	# 원거리 엘리트는 체력이 절반이다(80 -> 40, 2026-11-26).
-	max_health = 40.0
+	max_health = 32.0
 	solo_health = max_health
 	health = max_health
 	sauce_damage_per_hit = 0.4
@@ -1151,7 +1157,8 @@ func _advance_bowler(delta: float, target: MayoPlayer) -> Dictionary:
 	var ball := _free_ball()
 	if ball == null:
 		return hold
-	if attack_permission.is_valid() and not attack_permission.call(self, target):
+	# Authored lanes can fire together because each ball follows its own lane.
+	if bowling_lane.is_zero_approx() and attack_permission.is_valid() and not attack_permission.call(self, target):
 		return hold
 	_start_warning(gap.normalized() if bowling_lane.is_zero_approx() else bowling_lane)
 	return {"flat": _charge_direction, "pace": 0.0}

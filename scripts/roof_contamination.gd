@@ -42,6 +42,7 @@ func configure(body: Node3D, mesh: MeshInstance3D, cone_radius: float,
 	var extent := _slant() * 2.0
 	grid.wrap_x = false
 	grid.configure(Vector2(extent, extent), cell_size, clean_color, mayo_color)
+	grid.scatter_ketchup = true
 
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://scripts/roof_contamination.gdshader")

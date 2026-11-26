@@ -47,6 +47,7 @@ const OFFICE_PIN := Vector2(0.12, 0.2)
 enum Target { NONE, MAP, LOCKER, SLOT, DOCTOR, WORKBENCH, CURTAIN, SHOWER }
 
 const Parts := preload("res://scripts/tomatina_sauce_parts.gd")
+const Controls := preload("res://scripts/game_options.gd")
 ## 사무실 소품의 상태 비트(`MayoNet.office_props`): 샤워 커튼이 닫혔다, 샤워기가 나온다.
 const PROP_CURTAIN := 1
 const PROP_SHOWER := 2
@@ -146,6 +147,8 @@ var _slot_bet := 10
 var _slot_waiting := false
 ## 자리를 달라고 해 놓고 방장의 답을 기다리는 중(팀원만).
 var _slot_seat_wanted := false
+var _slot_seat_request_id := 0
+var _slot_spin_request_id := 0
 var _slot_show: OfficeSlotShow
 var _slot_jackpot: Label
 var _slot_flash: ColorRect
@@ -182,6 +185,8 @@ func _ready() -> void:
 	if session != null and not session.slot_result.is_connected(_on_slot_result):
 		session.slot_result.connect(_on_slot_result)
 		session.slot_user_changed.connect(_on_slot_user_changed)
+		session.slot_seat_answered.connect(_on_slot_seat_answered)
+		session.slot_spin_rejected.connect(_on_slot_spin_rejected)
 		session.team_parts_changed.connect(_refresh_bench)
 		session.office_props_changed.connect(_on_props_changed)
 	_apply_props(false)
@@ -191,10 +196,12 @@ func _exit_tree() -> void:
 	if session != null and session.slot_result.is_connected(_on_slot_result):
 		session.slot_result.disconnect(_on_slot_result)
 		session.slot_user_changed.disconnect(_on_slot_user_changed)
+		session.slot_seat_answered.disconnect(_on_slot_seat_answered)
+		session.slot_spin_rejected.disconnect(_on_slot_spin_rejected)
 		session.team_parts_changed.disconnect(_refresh_bench)
 		session.office_props_changed.disconnect(_on_props_changed)
 		# 기계 앞에 앉은 채로 방이 바뀌면 자리를 비우고 간다.
-		if is_slot_open() or _slot_seat_wanted:
+		if session.lobby_space == self and (is_slot_open() or _slot_seat_wanted):
 			session.release_slot_seat()
 	super._exit_tree()
 
@@ -267,6 +274,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func set_input_locked(locked: bool) -> void:
+	if locked:
+		_cancel_slot_seat_request()
 	super.set_input_locked(locked)
 	if _in_range and is_instance_valid(_range_world):
 		_range_world.set_menu_input_enabled(not locked)
@@ -285,6 +294,7 @@ func is_map_open() -> bool:
 func open_map() -> void:
 	if is_map_open() or session == null:
 		return
+	_cancel_slot_seat_request()
 	_build_map_panel()
 	_cursor_free = true
 	_apply_mouse_mode()
@@ -388,6 +398,7 @@ func is_bench_open() -> bool:
 func open_bench() -> void:
 	if is_bench_open() or is_map_open() or is_slot_open() or session == null:
 		return
+	_cancel_slot_seat_request()
 	_bench_layer = CanvasLayer.new()
 	_bench_layer.name = "WorkbenchUI"
 	_bench_layer.layer = 4
@@ -509,34 +520,45 @@ func _slot_taken() -> bool:
 	return session != null and session.slot_user != 0 and session.slot_user != _local_id()
 
 
-## 기계 앞에 앉는다. 한 번에 한 명만 쓸 수 있다: 자리는 방장이 내주므로 팀원의 화면은 답이
-## 온 뒤에 열린다(`_on_slot_user_changed`).
+## 팀원의 패널은 방장이 이 요청에 자리를 내주면 열린다.
 func open_slot() -> void:
-	if is_slot_open() or is_map_open() or session == null or _slot_seat_wanted:
+	if _busy() or session == null or _slot_seat_wanted:
 		return
-	if _slot_taken() or not session.request_slot_seat():
-		_announce("P%d 님이 슬롯머신을 쓰고 있습니다" % session.slot_user if _slot_taken() \
-			else "지금은 슬롯머신을 쓸 수 없습니다", 2.0)
+	_slot_seat_request_id += 1
+	if not session.request_slot_seat(_slot_seat_request_id):
+		_show_slot_unavailable()
 		return
-	if session.slot_user == _local_id():
+	if session.is_server():
 		_show_slot_panel()
 	else:
 		_slot_seat_wanted = true
 
 
-func _on_slot_user_changed() -> void:
-	if _slot_seat_wanted and session.slot_user != 0:
+func _show_slot_unavailable() -> void:
+	show_notice("P%d 님이 슬롯머신을 쓰고 있습니다" % session.slot_user if _slot_taken() \
+		else "지금은 슬롯머신을 쓸 수 없습니다", 2.0)
+
+
+func _cancel_slot_seat_request() -> void:
+	if _slot_seat_wanted:
 		_slot_seat_wanted = false
-		if session.slot_user == _local_id():
-			if is_map_open():
-				# 답을 기다리는 사이에 다른 화면이 떴다: 앉지 않는다.
-				session.release_slot_seat()
-			else:
-				_show_slot_panel()
-		else:
-			_announce("P%d 님이 슬롯머신을 쓰고 있습니다" % session.slot_user, 2.0)
-	elif is_slot_open() and session.slot_user != _local_id():
-		# 자리를 잃었다(방장이 비웠다): 화면도 닫는다.
+		session.release_slot_seat()
+
+
+func _on_slot_seat_answered(request_id: int, granted: bool) -> void:
+	if not _slot_seat_wanted or request_id != _slot_seat_request_id:
+		return
+	_slot_seat_wanted = false
+	if not granted:
+		_show_slot_unavailable()
+	elif _busy():
+		session.release_slot_seat()
+	else:
+		_show_slot_panel()
+
+
+func _on_slot_user_changed() -> void:
+	if is_slot_open() and session.slot_user != _local_id():
 		close_slot()
 
 
@@ -548,7 +570,7 @@ func _show_slot_panel() -> void:
 
 
 func close_slot() -> void:
-	_slot_seat_wanted = false
+	_cancel_slot_seat_request()
 	if not is_slot_open():
 		return
 	if _slot_count_tween != null:
@@ -582,8 +604,9 @@ func spin_slot() -> bool:
 	_slot_shown_money = session.team_money
 	_slot_shown_jackpot = session.team_jackpot
 	_slot_waiting = true
-	if not session.request_slot_spin(_slot_bet):
-		_slot_waiting = false
+	_slot_spin_request_id += 1
+	if not session.request_slot_spin(_slot_bet, _slot_spin_request_id):
+		_on_slot_spin_rejected(_slot_spin_request_id)
 		return false
 	_slot_message.text = ""
 	if _slot_show != null:
@@ -592,8 +615,19 @@ func spin_slot() -> bool:
 	return true
 
 
-func _on_slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array, pot: int) -> void:
-	var mine := peer_id == _local_id() and is_slot_open()
+func _on_slot_spin_rejected(request_id: int) -> void:
+	if not is_slot_open() or not _slot_waiting or request_id != _slot_spin_request_id:
+		return
+	_slot_waiting = false
+	_slot_message.text = "지금은 이 판돈으로 돌릴 수 없습니다. 판돈을 확인해 주세요."
+	_slot_message.add_theme_color_override("font_color", UI.MUTED)
+	_refresh_slot()
+
+
+func _on_slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array, pot: int,
+		request_id: int) -> void:
+	var mine := peer_id == _local_id() and is_slot_open() and _slot_waiting \
+		and request_id == _slot_spin_request_id
 	var who := "나" if peer_id == _local_id() else "P%d" % peer_id
 	var tier := OfficeSlot.tier_of(reels)
 	var outcome := "당첨! +%d" % gain if gain > 0 else ("본전" if gain == 0 else "꽝  %d" % gain)
@@ -610,7 +644,7 @@ func _on_slot_result(peer_id: int, bet: int, gain: int, reels: PackedInt32Array,
 		if tier == 4:
 			var shout := create_tween()
 			shout.tween_interval(OfficeSlot.stop_times(reels)[2])
-			shout.tween_callback(_announce.bind("%s 잭팟!  +%d" % [who, gain], 5.0))
+			shout.tween_callback(show_notice.bind("%s 잭팟!  +%d" % [who, gain], 5.0))
 		_refresh_slot()
 		return
 	_slot_spinning = {"reels": reels, "text": text, "tier": tier, "gain": gain, "pot": pot,
@@ -689,6 +723,9 @@ func _count_slot_money(seconds: float) -> void:
 	_slot_count_tween.tween_method(func(value: float):
 		_slot_shown_jackpot = roundi(value)
 		_write_slot_money(), float(_slot_shown_jackpot), float(session.team_jackpot), seconds)
+	_slot_count_tween.finished.connect(func():
+		_slot_count_tween = null
+		_refresh_slot())
 
 
 func _write_slot_money() -> void:
@@ -723,8 +760,8 @@ func _celebrate_slot(tier: int, pot: int) -> void:
 	pop.tween_callback(func(): banner.visible = false)
 
 
-## 사무실 화면 위쪽에 잠깐 뜨는 알림(누군가 황금 셋을 터뜨렸을 때).
-func _announce(message: String, seconds: float) -> void:
+## 사무실 화면 위쪽에 잠시 표시하는 알림.
+func show_notice(message: String, seconds: float) -> void:
 	if _slot_announce == null:
 		return
 	_slot_announce.text = message
@@ -1247,12 +1284,12 @@ func _build_ui() -> void:
 	_info_label = Label.new()
 	_info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_info_label)
-	var hint := Label.new()
-	hint.text = "WASD 이동 · Space 점프 · E 상호작용 · Esc 메뉴\n축제 지도에서 출격 준비\n모두 트럭에 타면 출발"
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_color_override("font_color", UI.MUTED)
-	hint.add_theme_font_size_override("font_size", 14)
-	column.add_child(hint)
+	_hint_label = Label.new()
+	_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_hint_label.add_theme_color_override("font_color", UI.MUTED)
+	_hint_label.add_theme_font_size_override("font_size", 14)
+	column.add_child(_hint_label)
+	refresh_control_labels()
 	_prompt = PromptChip.new()
 	_prompt.visible = false
 	layer.add_child(_prompt)
@@ -1297,6 +1334,23 @@ func _build_ui() -> void:
 	layer.add_child(cross)
 
 
+func refresh_control_labels() -> void:
+	var interact := Controls.key_label("interact", "E")
+	if _hint_label != null:
+		var move := "/".join([
+			Controls.key_label("move_forward", "W"), Controls.key_label("move_left", "A"),
+			Controls.key_label("move_backward", "S"), Controls.key_label("move_right", "D")])
+		_hint_label.text = "%s 이동 · %s 점프 · %s 상호작용 · Esc 메뉴\n축제 지도에서 출격 준비\n모두 출발 구역에 올라서면 출발" \
+			% [move, Controls.key_label("jump", "Space"), interact]
+	if _screen_label != null and session != null:
+		_screen_label.text = "축제 지도\n▶ %s\n[%s] 지도 열기" \
+			% [StageRegistry.display_name(session.selected_stage), interact]
+
+
+func _refresh_hint() -> void:
+	refresh_control_labels()
+
+
 func _refresh_panel(assignments: Dictionary) -> void:
 	if session == null:
 		return
@@ -1307,8 +1361,7 @@ func _refresh_panel(assignments: Dictionary) -> void:
 		if visual != null:
 			visual.visible = int(peer_id) != _local_id() and session.has_character(int(peer_id))
 	var stage_name := StageRegistry.display_name(session.selected_stage)
-	if _screen_label != null:
-		_screen_label.text = "축제 지도\n▶ %s\n[E] 지도 열기" % stage_name
+	refresh_control_labels()
 	if _info_label != null:
 		var lines: Array[String] = []
 		if not session.is_online():
