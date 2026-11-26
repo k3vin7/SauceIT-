@@ -149,6 +149,16 @@ func _run() -> void:
 	_check(is_equal_approx(me.health, me.max_health), "the blast hurt a player through a wall")
 	_check(mate.health < mate.max_health, "the blast spared a player with nothing in the way")
 
+	me.contamination.clear()
+	me.visor.clear()
+	mate.contamination.clear()
+	var splash := _grunt(scene, centre)
+	splash.burst_radius = 4.0
+	scene._burst_tomato(splash, landing)
+	_check(me.contamination.grid.painted_count == 0 and me.visor.painted_cell_count() == 0,
+		"a bursting tomato painted a player through a wall")
+	_check(mate.contamination.grid.painted_count > 0, "cover blocked ketchup on the open side, too")
+
 	await _probe_part_sauce(scene, landing + Vector3(0.0, 0.0, -1.0))
 
 	if failures.is_empty():

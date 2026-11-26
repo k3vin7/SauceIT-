@@ -115,13 +115,19 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 27
+const PROTOCOL_VERSION := 28
+const STAGE_INPUT_TIMEOUT := 0.25
+const MOTION_REFRESH_SECONDS := 0.25
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
 const ENEMY_SNAPSHOT_NEAR_DISTANCE := 42.0
 const ENEMY_SNAPSHOT_FAR_PERIOD := 5
 const ENEMY_SNAPSHOT_REFRESH_PERIOD := 20
 var _tomatina_snapshot_phase := 0
 var _tomatina_snapshot_number := 0
+var _inventory_sent := PackedInt32Array()
+var _inventory_peers := PackedInt32Array()
+var _motion_sent := PackedFloat64Array()
+var _motion_refresh_at := 0.0
 var _enemy_snapshots_by_peer := {}
 const AUTH_VERSION_PREFIX := "mayo-version:"
 ## How often one address is worth answering. A blocked address can reconnect as
@@ -212,6 +218,7 @@ var _status := "offline"
 ## peer id -> the last input packet from that client, applied every tick until
 ## the next one arrives so a dropped packet coasts instead of stuttering.
 var _client_input: Dictionary = {}
+var _stage_input_received_at: Dictionary = {}
 ## peer id -> inputs received and not yet played, oldest first.
 var _input_queue: Dictionary = {}
 ## peer id -> how many input packets it has sent this tick, and how much wipe
@@ -333,6 +340,8 @@ func bind(new_world: Node) -> void:
 		_enemy_snapshots_by_peer.clear()
 		_tomatina_snapshot_number = 0
 		_tomatina_snapshot_phase = 0
+		_clear_stage_input()
+		_reset_inventory_and_motion()
 	world = new_world
 
 
@@ -1372,9 +1381,8 @@ func leave() -> void:
 	_late_loading.clear()
 	_peer = null
 	multiplayer.multiplayer_peer = null
-	_client_input.clear()
-	_input_queue.clear()
-	_input_this_tick.clear()
+	_clear_stage_input()
+	_reset_inventory_and_motion()
 	_wipe_budget.clear()
 	_refill_budget.clear()
 	_view_budget.clear()
@@ -1721,6 +1729,7 @@ func _on_peer_disconnected(id: int) -> void:
 	_late_loading.erase(id)
 	_client_input.erase(id)
 	_input_queue.erase(id)
+	_stage_input_received_at.erase(id)
 	_lobby_input.erase(id)
 	_input_this_tick.erase(id)
 	_wipe_budget.erase(id)
@@ -2153,6 +2162,7 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 		_apply_splats.rpc(splats)
 		splat_bytes_sent += splats.size() * 4 * guests
 	if guests == 0:
+		_reset_inventory_and_motion()
 		return
 	var ids := PackedInt32Array()
 	var state := _collect_state(ids)
@@ -2163,17 +2173,32 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 	# dropped frame is corrected by the next one.
 	var healing: PackedFloat64Array = world.healing_tomato_state()
 	_apply_healing_tomato_state.rpc(healing)
-	_apply_inventory_state.rpc(world.inventory_state())
-	_apply_player_motion_state.rpc(world.player_motion_state())
 	state_bytes_sent += healing.size() * 8 * guests
+	var peers_changed := _inventory_peers != peer_ids
+	var inventory: PackedInt32Array = world.inventory_state()
+	if peers_changed or _inventory_sent != inventory:
+		if rpc(&"_apply_inventory_state", inventory) == OK:
+			state_bytes_sent += inventory.size() * 4 * guests
+			_inventory_sent = inventory
+			_inventory_peers = peer_ids
 	var stage_two: bool = world.map_kind == world.MapKind.TOMATINA
 	if stage_two:
 		if world._sauce_parts.dirty:
 			world._sauce_parts.dirty = false
-			_apply_sauce_shop_state.rpc(world.sauce_shop_state(), world._sauce_parts.coin_state())
+			var shop: PackedInt32Array = world.sauce_shop_state()
+			var coins: PackedFloat32Array = world._sauce_parts.coin_state()
+			_apply_sauce_shop_state.rpc(shop, coins)
+			state_bytes_sent += (shop.size() + coins.size()) * 4 * guests
 		_tomatina_snapshot_phase = (_tomatina_snapshot_phase + 1) % 3
 		if _tomatina_snapshot_phase != 0:
 			return
+	var motion: PackedFloat64Array = world.player_motion_state()
+	var now := _now()
+	if not stage_two or peers_changed or motion != _motion_sent or now >= _motion_refresh_at:
+		_apply_player_motion_state.rpc(motion)
+		state_bytes_sent += motion.size() * 8 * guests
+		_motion_sent = motion
+		_motion_refresh_at = now + MOTION_REFRESH_SECONDS
 	# Keep each unreliable datagram under the ENet MTU even during a horde.
 	if stage_two and world.is_inside_tree():
 		_send_tomatina_enemy_snapshots(peer_ids)
@@ -2187,6 +2212,13 @@ func end_of_frame(splats: PackedInt32Array) -> void:
 		var threads: PackedFloat32Array = world.cheese_thread_state()
 		_apply_tomatina_status.rpc(status, threads)
 		state_bytes_sent += (status.size() * 8 + threads.size() * 4) * guests
+
+
+func _reset_inventory_and_motion() -> void:
+	_inventory_sent.clear()
+	_inventory_peers.clear()
+	_motion_sent.clear()
+	_motion_refresh_at = 0.0
 
 
 func _send_tomatina_enemy_snapshots(peer_ids: PackedInt32Array) -> void:
@@ -2477,8 +2509,14 @@ func send_input(move: Vector2, run: bool, jump: bool, firing: bool,
 	_submit_input.rpc_id(1, move, run, jump, firing, yaw, pitch, character_index, shake, sequence)
 
 
-## The server applies the last input it heard from each client before running
-## the bodies, so a client that misses a tick keeps walking rather than stopping.
+func _clear_stage_input() -> void:
+	_client_input.clear()
+	_input_queue.clear()
+	_stage_input_received_at.clear()
+	_input_this_tick.clear()
+
+
+## Apply connected guests' input before the bodies take their physics step.
 func apply_client_input() -> void:
 	if not _online or not multiplayer.is_server() or not _world_ready():
 		return
@@ -2514,8 +2552,23 @@ func apply_client_input() -> void:
 		_view_budget[id] = minf(_view_budget[id] + VIEW_REPORTS_PER_SECOND * elapsed,
 			VIEW_REPORTS_PER_SECOND)
 	_sweep_blocks()
-	# One input per client per tick, oldest first. With nothing new queued the
-	# last one is played again, so a late packet coasts instead of stopping.
+	# Coast across brief packet loss, then release every held control.
+	for id in _stage_input_received_at.keys():
+		if now - float(_stage_input_received_at[id]) < STAGE_INPUT_TIMEOUT:
+			continue
+		_stage_input_received_at.erase(id)
+		_client_input.erase(id)
+		_input_queue.erase(id)
+		var shooter = world.shooter_for(id)
+		if shooter == null:
+			continue
+		shooter.player.input_move = Vector2.ZERO
+		shooter.player.input_run = false
+		shooter.player.input_jump = false
+		shooter.firing = false
+		shooter.bottle_shake_input = 0.0
+		world.tomato_action(id, world.CANCEL_TOMATO_CHARGE_ACTION)
+	# Drain one packet per client each tick, oldest first.
 	for id in _input_queue:
 		var queue: Array = _input_queue[id]
 		if not queue.is_empty():
@@ -2582,6 +2635,7 @@ func _submit_input(move: Vector2, run: bool, jump: bool, firing: bool,
 	while queue.size() > INPUT_QUEUE_LIMIT:
 		queue.pop_front()
 	_input_queue[sender] = queue
+	_stage_input_received_at[sender] = _now()
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
@@ -3000,7 +3054,7 @@ func _request_tomato_action(action: int) -> void:
 		world.tomato_action(multiplayer.get_remote_sender_id(), action)
 
 
-@rpc("authority", "call_remote", "unreliable_ordered")
+@rpc("authority", "call_remote", "reliable")
 func _apply_inventory_state(data: PackedInt32Array) -> void:
 	if _world_ready():
 		world.apply_inventory_state(data)

@@ -580,6 +580,7 @@ func _run() -> void:
 	scene._check_stage_clear()
 	_check(not scene.horde_spawned(), "entering the plaza armed the siren")
 	var before_horde: int = scene.enemy_count()
+	var finale_budget: int = scene.minion_spawn_count(scene.TOMATINA_HORDE_BASE)
 	var guard_grunts := 0
 	for enemy in scene._enemies:
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and enemy.is_alive() 				and TomatinaMap.in_rect(plaza, enemy.global_position):
@@ -794,7 +795,7 @@ func _run() -> void:
 			break
 		scene._advance_horde_spawn(scene.FINALE_SPAWN_INTERVAL)
 	_check(scene._horde_pending == 0, "the finale never deployed all scheduled reinforcements")
-	_check(scene.tutorial_spawned().size() == scene.minion_spawn_count(86),
+	_check(scene.tutorial_spawned().size() == finale_budget,
 		"the finale lost part of its 1.8x reinforcement budget under the cap")
 	# The earlier hose check called its optional wave without running the
 	# spawn tick. Clear that test fixture before checking the boss gate.

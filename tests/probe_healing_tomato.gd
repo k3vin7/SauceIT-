@@ -73,7 +73,9 @@ func run():
 	# Where it lands is a splash: a grunt beside the landing is hurt by it.
 	var target = null
 	for candidate in scene._enemies:
-		if candidate.is_alive() and candidate.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT:
+		# An overripe victim would start a separate chain-burst warning.
+		if candidate.is_alive() and candidate.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT \
+				and candidate.burst_tier == 0:
 			target = candidate
 			break
 	var flying = scene._thrown_tomatoes.values()[0]

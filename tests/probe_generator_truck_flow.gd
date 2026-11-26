@@ -78,6 +78,20 @@ func run() -> void:
 	scene.tomato_action(player.peer_id,0)
 	check(scene._hose_slot_of(player.peer_id) == 0,"water hose not usable immediately after generator")
 	scene._hose_users.clear()
+	# Isolate the entry choice from the active grunt cap and the player clearance.
+	scene.debug_clear_enemies()
+	player.global_position = scene.spawn_position_for(0)
+	var blocked_north: Array[Vector2i] = []
+	for edge in TomatinaMap.HORDE_EDGES[2]:
+		var cell := StreetMap.cell_at(TomatinaMap.at_cell(edge))
+		if scene._nav.is_walkable(cell):
+			blocked_north.append(cell)
+			scene._nav.grid.set_point_solid(cell, true)
+	var pending: int = scene._hose_wave_pending
+	scene._advance_hose_wave(1.3)
+	check(scene._hose_wave_pending < pending, "the counterattack stalled with only north blocked")
+	for cell in blocked_north:
+		scene._nav.grid.set_point_solid(cell, false)
 	var index: int = scene.tutorial_spawn_enemy(MayoTutorial.KIND_PRESS_KING,TomatinaMap.at_cell(Vector2(23.5,29.5)))
 	var boss = scene._enemies[index]
 	boss.health = 0.0

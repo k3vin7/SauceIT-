@@ -265,7 +265,14 @@ var _ketchup_at := -1000.0
 ## supplied Crawl action owns its hand plants, so no modifier is attached.
 @export var procedural_gait := false
 
-var health := 240.0
+signal defeated
+
+var health := 240.0:
+	set(value):
+		var was_alive := health > 0.0
+		health = value
+		if was_alive and health <= 0.0:
+			defeated.emit()
 var attack_permission := Callable()
 var contact_permission := Callable()
 ## Clients simulate no enemies at all, exactly as they simulate no bodies.

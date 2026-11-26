@@ -20,6 +20,68 @@ func _mount(session: MayoNet, stage_id: String, transition: int) -> void:
 		late_world = world
 	session.report_world_loaded(transition)
 
+func _probe_stage_input(peer: int) -> void:
+	var shooter = host_world.shooter_for(peer)
+	if shooter == null:
+		_check(false, "guest avatar missing for controls check")
+		return
+	var player: MayoPlayer = shooter.player
+	var was_at := player.global_position
+	var started: float = host_world.play_support.elapsed
+	host_world.set_menu_input_enabled(false)
+	_check(not host_world._input_enabled, "host menu left local controls enabled")
+	player.global_position = TomatinaMap.at_cell(TomatinaMap.SIREN_CELL) + Vector3.UP * 1.28
+	guest.request_context_action("generator", 0)
+	_check(await _until(func(): return host_world._horde_spawned, 120),
+		"host menu blocked the guest generator")
+	player.global_position = TomatinaMap.at_cell(host_world.TOMATINA_HOSES[0]) + Vector3.UP * 1.28
+	guest.request_context_action("hose", 0)
+	_check(await _until(func(): return host_world._hose_slot_of(peer) == 0, 120),
+		"host menu blocked the guest hose")
+	for index in 3:
+		await physics_frame
+	_check(host_world._hose_slot_of(peer) == 0, "host menu detached the guest hose")
+	_check(host_world.play_support.elapsed > started, "host menu froze the mission timer")
+	host_world._toggle_fire_hose(shooter)
+	host_world.set_menu_input_enabled(true)
+	player.global_position = was_at
+
+	host_world._held_tomatoes[peer] = host_world._make_healing_tomato(was_at)
+	host_world.item_slots(peer)[1] = 1
+	host_world.tomato_action(peer, 11)
+	_check(await _until(func(): return late_world.local_holds_tomato(), 120), "inventory update did not arrive")
+	late_world._request_tomato_action(3)
+	_check(await _until(func(): return host_world._tomato_charge_started.has(peer), 120),
+		"guest never started charging")
+	late_world.set_menu_input_enabled(false)
+	_check(await _until(func(): return not host_world._tomato_charge_started.has(peer), 120),
+		"guest menu did not cancel charge on host")
+	late_world.set_menu_input_enabled(true)
+	late_world._request_tomato_action(1)
+	for index in 4:
+		await physics_frame
+	_check(host_world.item_slots(peer)[1] == 1 and host_world._thrown_tomatoes.is_empty(),
+		"stale release threw a canceled tomato")
+	host_world.tomato_action(peer, 10)
+
+	late_world.debug_set_input(Vector2.RIGHT, true, true, true)
+	late_world.debug_input_shake = 1.0
+	_check(await _until(func(): return player.input_move == Vector2.RIGHT and player.input_run \
+		and player.input_jump and shooter.firing and shooter.bottle_shake_input > 0.0, 120),
+		"remote held controls never reached host")
+	late_world.set_physics_process(false)
+	var deadline := Time.get_ticks_msec() + 1000
+	while host._stage_input_received_at.has(peer) and Time.get_ticks_msec() < deadline:
+		await physics_frame
+	_check(not host._stage_input_received_at.has(peer), "stale input did not expire")
+	_check(guest.is_online(), "stale-input test disconnected guest")
+	_check(player.input_move == Vector2.ZERO and not player.input_run and not player.input_jump \
+		and not shooter.firing and shooter.bottle_shake_input == 0.0, "stale remote controls kept running")
+	late_world.debug_set_input(Vector2.ZERO, false, false)
+	late_world.debug_input_shake = 0.0
+	late_world.set_physics_process(true)
+
+
 func _run() -> void:
 	create_timer(45.0).timeout.connect(func(): push_error("SESSION_REVISION_TIMEOUT"); quit(2))
 	MayoTutorial.disabled = true
@@ -66,6 +128,7 @@ func _run() -> void:
 		" seq=", local.prediction_sequence, " ack=", local._last_ack, " history=", local._prediction_history.size())
 	_check(local.global_position.distance_to(host_world.shooter_for(guest.local_id()).player.global_position) < 1.5, "movement reconciliation diverged")
 	late_world.debug_set_input(Vector2.ZERO, false, false)
+	await _probe_stage_input(guest.local_id())
 	late_world._confirmed_contact_until = 0
 	host.send_contact_confirmation(guest.local_id())
 	for index in 4:

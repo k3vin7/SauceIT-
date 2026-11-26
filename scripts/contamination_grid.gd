@@ -546,11 +546,19 @@ func upload_if_dirty(tile_budget := 0, focus := Vector2.INF) -> void:
 		# million GDScript iterations per tile and would cost far more than the
 		# upload it is feeding.
 		var data := PackedByteArray()
-		for row in size.y:
-			var start := (origin.y + row) * width + origin.x
-			data.append_array(cells.slice(start, start + size.x))
+		if tile_total == 1:
+			data = cells
+		elif size.x == width:
+			var start := origin.y * width
+			data = cells.slice(start, start + size.y * width)
+		else:
+			for row in size.y:
+				var start := (origin.y + row) * width + origin.x
+				data.append_array(cells.slice(start, start + size.x))
 		var tile_image := Image.create_from_data(size.x, size.y, false, Image.FORMAT_R8, data)
 		_tile_textures[index].update(tile_image)
+		if tile_total == 1:
+			image = tile_image
 		bytes_uploaded += data.size()
 		texture_uploads += 1
 		uploaded += 1
@@ -562,10 +570,6 @@ func upload_if_dirty(tile_budget := 0, focus := Vector2.INF) -> void:
 	dirty = _tile_dirty.has(1)
 	if measure_uploads:
 		upload_time_us += Time.get_ticks_usec() - started
-	# Kept in step for anything reading the whole-surface image, which is the
-	# checks: headless has no GPU to read a texture back from.
-	if _tile_textures.size() == 1:
-		image = Image.create_from_data(width, height, false, Image.FORMAT_R8, cells)
 
 
 func reset_debug_counters() -> void:
