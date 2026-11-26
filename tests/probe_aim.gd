@@ -233,10 +233,12 @@ func _run() -> void:
 			scene._points.clear()
 			for _i in 60:
 				scene._emit_point()
-			var crosshair_point: Vector3 = pivot + axis * scene.aim_convergence_distance
+			var crosshair_point: Vector3 = scene._stream_aim_target(scene._local)
 			var worst := 0.0
 			for point in scene._points:
 				var to_target: Vector3 = crosshair_point - point.position
+				if to_target.dot(axis) <= 0.05:
+					to_target = scene._world_nozzle_forward(scene._local) * scene.aim_convergence_distance
 				var along: float = to_target.dot(point.launch_direction)
 				var miss: float = (to_target - point.launch_direction * along).length()
 				worst = maxf(worst, miss)

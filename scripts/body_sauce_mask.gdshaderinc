@@ -1,27 +1,36 @@
-// Use the cell's own sauce. A fragment on empty space can borrow a neighbour
-// because the filtered silhouette extends past the last painted cell centre.
-float sauce_mask_sample(sampler2D mask, vec2 uv, ivec2 size, bool wrap_x) {
-	ivec2 cell = clamp(ivec2(uv * vec2(size)), ivec2(0), size - ivec2(1));
-	float own = floor(texelFetch(mask, cell, 0).r * 255.0 + 0.5);
-	if (own >= 4.0) {
-		return own;
-	}
+ivec2 sauce_mask_cell(ivec2 cell, ivec2 size, bool wrap_x) {
+	int x = wrap_x ? (cell.x + size.x) % size.x : clamp(cell.x, 0, size.x - 1);
+	return ivec2(x, clamp(cell.y, 0, size.y - 1));
+}
 
-	float best = 0.0;
-	float borrowed = 0.0;
-	int top = max(cell.y - 1, 0);
-	int bottom = min(cell.y + 1, size.y - 1);
-	for (int y = top; y <= bottom; y++) {
-		for (int dx = -1; dx <= 1; dx++) {
-			int column = cell.x + dx;
-			int x = wrap_x ? int(mod(float(column), float(size.x))) : clamp(column, 0, size.x - 1);
-			float packed = floor(texelFetch(mask, ivec2(x, y), 0).r * 255.0 + 0.5);
-			float depth = floor(packed / 4.0);
-			if (depth > best) {
-				best = depth;
-				borrowed = packed;
-			}
-		}
+float sauce_mask_byte(sampler2D mask, ivec2 cell) {
+	return floor(texelFetch(mask, cell, 0).r * 255.0 + 0.5);
+}
+
+// An empty cell can borrow only from the three other taps of the filtered mask.
+float sauce_mask_kind(sampler2D mask, vec2 at, ivec2 size, bool wrap_x, float own) {
+	if (own >= 4.0) {
+		return mod(own, 4.0);
 	}
-	return borrowed;
+	ivec2 base = ivec2(floor(at - 0.5));
+	ivec2 cell = ivec2(floor(at));
+	ivec2 offset = ivec2(1) - 2 * (cell - base);
+	float horizontal = sauce_mask_byte(mask, sauce_mask_cell(cell + ivec2(offset.x, 0), size, wrap_x));
+	float vertical = sauce_mask_byte(mask, sauce_mask_cell(cell + ivec2(0, offset.y), size, wrap_x));
+	float diagonal = sauce_mask_byte(mask, sauce_mask_cell(cell + offset, size, wrap_x));
+	vec2 fraction = abs(fract(at) - 0.5);
+	float horizontal_weight = horizontal * fraction.x * (1.0 - fraction.y);
+	float vertical_weight = vertical * fraction.y * (1.0 - fraction.x);
+	float diagonal_weight = diagonal * fraction.x * fraction.y;
+	float best = horizontal_weight >= vertical_weight ? horizontal : vertical;
+	if (diagonal_weight > max(horizontal_weight, vertical_weight)) {
+		best = diagonal;
+	}
+	return mod(best, 4.0);
+}
+
+float sauce_mask_sample(sampler2D mask, vec2 uv, ivec2 size, bool wrap_x) {
+	vec2 at = uv * vec2(size);
+	float own = sauce_mask_byte(mask, sauce_mask_cell(ivec2(floor(at)), size, wrap_x));
+	return sauce_mask_kind(mask, at, size, wrap_x, own);
 }

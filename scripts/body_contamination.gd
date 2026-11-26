@@ -87,7 +87,7 @@ func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 	# A body is reconfigured when its player switches character, and the grid
 	# rebuild underneath wipes the mask. The sauce already on them has to come
 	# through: a keypress is not a wash. Snapshot first, put it back after.
-	var kept := grid.cells.duplicate()
+	var kept := grid.snapshot()
 	var kept_width := grid.width
 	var kept_height := grid.height
 	grid.configure(Vector2(TAU * radius, height + cap_depth * 2.0), cell_size,
@@ -96,6 +96,9 @@ func configure(body: Node3D, mesh: MeshInstance3D, capsule_radius: float,
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://scripts/body_contamination.gdshader")
 	material.set_shader_parameter("mask_texture", grid.texture)
+	material.set_shader_parameter("fine_contours", grid.contour_texture != null)
+	if grid.contour_texture != null:
+		material.set_shader_parameter("contour_texture", grid.contour_texture)
 	material.set_shader_parameter("clean_color", clean_color)
 	material.set_shader_parameter("mayo_color", mayo_color)
 	material.set_shader_parameter("body_height", height)
@@ -124,18 +127,25 @@ func _process(_delta: float) -> void:
 ## stays where it was on the body. Both peers run this on the same bytes, so the
 ## grids still agree. The first configure finds no mask and leaves the grid clean.
 func _carry_over(kept: PackedByteArray, kept_width: int, kept_height: int) -> void:
-	if kept.is_empty() or kept.size() != kept_width * kept_height:
+	var old_area := kept_width * kept_height
+	if old_area == 0 or (kept.size() != old_area and kept.size() != old_area * 2):
 		return
+	var keep_contour := kept.size() == old_area * 2 and grid.contour_texture != null
 	if kept_width == grid.width and kept_height == grid.height:
-		grid.restore_cells(kept)
+		grid.restore_cells(kept if keep_contour else kept.slice(0, old_area))
 		return
 	var resampled := PackedByteArray()
-	resampled.resize(grid.width * grid.height)
+	var area := grid.width * grid.height
+	resampled.resize(area * (2 if keep_contour else 1))
 	for y in grid.height:
-		var source_y := mini(y * kept_height / grid.height, kept_height - 1)
+		var source_y := y * kept_height / grid.height
 		for x in grid.width:
-			var source_x := mini(x * kept_width / grid.width, kept_width - 1)
-			resampled[y * grid.width + x] = kept[source_y * kept_width + source_x]
+			var source_x := x * kept_width / grid.width
+			var target := y * grid.width + x
+			var source := source_y * kept_width + source_x
+			resampled[target] = kept[source]
+			if keep_contour:
+				resampled[area + target] = kept[old_area + source]
 	grid.restore_cells(resampled)
 
 
@@ -158,6 +168,9 @@ func add_visual_overlay(visual_root: Node, only_when_painted := false) -> void:
 	_visual_overlay = ShaderMaterial.new()
 	_visual_overlay.shader = preload("res://scripts/enemy_contamination_overlay.gdshader")
 	_visual_overlay.set_shader_parameter("mask_texture", grid.texture)
+	_visual_overlay.set_shader_parameter("fine_contours", grid.contour_texture != null)
+	if grid.contour_texture != null:
+		_visual_overlay.set_shader_parameter("contour_texture", grid.contour_texture)
 	_visual_overlay.set_shader_parameter("mayo_color", mayo_color)
 	_visual_overlay.set_shader_parameter("body_height", height)
 	_visual_overlay.set_shader_parameter("axis_offset", axis_offset)
@@ -182,15 +195,29 @@ func add_visual_overlay(visual_root: Node, only_when_painted := false) -> void:
 ## landed on a wall of the body or on its top. With no caps there is only one
 ## chart and it is ignored, which is what it was for a long time.
 func paint_mayo(world_position: Vector3, world_normal: Vector3,
-		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
-	var cell := grid.paint(_to_grid(world_position, world_normal), brush_radius, 1, -1, kind)
+		kind := ContaminationGrid.KIND_MAYO, brush := ContaminationGrid.BRUSH_POOL) -> Vector2i:
+	var cell := grid.paint(_to_grid(world_position, world_normal), brush_radius, 1, -1, kind, brush)
 	_queue_overlay_upload()
 	return cell
 
 
-func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
-	grid.paint_cell(cell, brush_radius, 1, -1, kind)
+func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO,
+		brush := ContaminationGrid.BRUSH_POOL) -> void:
+	grid.paint_cell(cell, brush_radius, 1, -1, kind, brush)
 	_queue_overlay_upload()
+
+
+func wash_at(world_position: Vector3, world_normal: Vector3, radius_meters: float) -> Vector2i:
+	var cell := grid.cell_of(_to_grid(world_position, world_normal))
+	cell.x = grid.wrapped_x(cell.x)
+	return cell if wash_cell(cell, radius_meters) else Vector2i(-1, -1)
+
+
+func wash_cell(cell: Vector2i, radius_meters: float) -> bool:
+	if not grid.erase_disc(cell, radius_meters):
+		return false
+	_queue_overlay_upload()
+	return true
 
 
 ## Clean again, for a body that is being handed to a different player.
@@ -201,13 +228,37 @@ func clear() -> void:
 
 func wash_sauce(kind: int) -> void:
 	var cells := snapshot_cells()
-	var changed := false
-	for index in cells.size():
-		if cells[index] != 0 and (cells[index] & ContaminationGrid.KIND_MASK) == kind:
-			cells[index] = 0
-			changed = true
-	if changed:
-		restore_cells(cells)
+	var removed := 0
+	var count := grid.cells.size()
+	var has_contour := cells.size() > count
+	for index in count:
+		if cells[index] == 0 or (cells[index] & ContaminationGrid.KIND_MASK) != kind:
+			continue
+		cells[index] = 0
+		if has_contour:
+			cells[index + count] = 0
+		removed += 1
+	if removed == 0:
+		return
+	if removed == grid.painted_cell_count():
+		clear()
+		return
+	if has_contour:
+		for index in count:
+			if cells[index] == 0 and cells[count + index] > 0 and not _has_nearby_sauce(cells, index):
+				cells[count + index] = 0
+	restore_cells(cells)
+
+
+# Keep the subcell fringe only where it can still belong to a remaining stain.
+func _has_nearby_sauce(cells: PackedByteArray, index: int) -> bool:
+	var row := index / grid.width
+	var column := index % grid.width
+	for y in range(maxi(0, row - 2), mini(grid.height, row + 3)):
+		for x in range(column - 2, column + 3):
+			if cells[y * grid.width + posmod(x, grid.width)] != 0:
+				return true
+	return false
 
 
 func painted_cell_count() -> int:
@@ -223,7 +274,7 @@ func cells_md5() -> String:
 
 
 func snapshot_cells() -> PackedByteArray:
-	return grid.cells.duplicate()
+	return grid.snapshot()
 
 
 func restore_cells(cells: PackedByteArray) -> bool:
@@ -252,11 +303,11 @@ func _to_grid(world_position: Vector3, world_normal := Vector3.ZERO) -> Vector2:
 	var about := local - axis_offset
 	var across := atan2(about.x, about.z) / TAU * (TAU * radius)
 	if cap_depth <= 0.0:
-		return Vector2(across, local.y)
+		return Vector2(across, about.y)
 	# Which way the surface faces, in the body's own space.
 	var facing := _body.global_transform.basis.inverse() * world_normal
 	if absf(facing.y) < cap_normal_cut:
-		return Vector2(across, local.y)
+		return Vector2(across, about.y)
 	# A cap: the radius out from the axis takes the place of the height, so
 	# what the side chart throws away is exactly what this one keeps.
 	var rim := minf(Vector2(about.x, about.z).length(), cap_depth)

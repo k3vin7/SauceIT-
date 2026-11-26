@@ -5,6 +5,8 @@
 [node name="Stage2Tomatina" type="Node3D"]
 script = ExtResource("1_world")
 map_kind = 2
+grid_cell_size = 0.05
+body_cell_size = 0.025
 tutorial_enabled = false
 stage_mode = true
 network_ui_enabled = false

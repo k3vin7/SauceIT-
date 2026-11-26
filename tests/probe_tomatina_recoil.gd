@@ -129,6 +129,9 @@ func _probe_offline() -> void:
 	_check(_reticle_direction(world).is_equal_approx(shooter.attack_direction), "shoulder reticle missed the nozzle direction")
 	world.set_first_person(true)
 
+	# Keep the authored launch pose still while comparing two shots at one target.
+	shooter.procedural_motion.active = false
+	await process_frame
 	_fire_burst(world, shooter, false)
 	var shots: Array[Dictionary] = world._sauce_parts._projectiles
 	_check(shots.size() == 3, "expected three projectiles for the recoil target test")
@@ -156,6 +159,7 @@ func _probe_offline() -> void:
 		for i in 25:
 			world._sauce_parts.advance_projectiles(STEP, true)
 		_check(shots.is_empty(), "pulling the mouse down did not land all three shots")
+	shooter.procedural_motion.active = true
 
 	var expected_lift := {Parts.Part.ARC: 14.0, Parts.Part.CANNON: 19.0, Parts.Part.SNIPER: 6.0}
 	for part in expected_lift:
@@ -221,8 +225,10 @@ func _probe_projectile_ribbons(world, shooter) -> void:
 		_check(ribbon != null and ribbon.visible, "part %s did not draw a sauce ribbon" % part)
 		if ribbon != null:
 			_check(pooled_ribbon == null or pooled_ribbon == ribbon, "part %s did not reuse a ribbon" % part)
-			var material := ribbon.ribbon_material as StandardMaterial3D
-			_check(material.albedo_color == world.SAUCE_TINTS[sauce], "part %s drew the wrong sauce colour" % part)
+			_check(ribbon.ribbon_material == world.SAUCE_STREAM_MATERIALS[sauce],
+				"part %s drew the wrong sauce material" % part)
+			_check(ribbon.mesh.surface_get_format(0) & Mesh.ARRAY_FORMAT_TEX_UV != 0,
+				"part %s drew a ribbon without sauce coordinates" % part)
 			_check(ribbon.custom_aabb.has_point(shot.head), "part %s ribbon missed its own projectile tip" % part)
 			var size := ribbon.custom_aabb.size
 			widths[part] = maxf(size.x, size.y)

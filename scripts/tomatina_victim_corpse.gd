@@ -32,8 +32,12 @@ func attach_view(view: MeshInstance3D) -> void:
 
 
 func paint_mayo(world_position: Vector3, _world_normal: Vector3,
-		kind := ContaminationGrid.KIND_MAYO) -> Vector3i:
-	return super.paint_mayo(world_position, global_transform.basis.y, kind)
+		kind := ContaminationGrid.KIND_MAYO, brush := ContaminationGrid.BRUSH_POOL) -> Vector3i:
+	return super.paint_mayo(world_position, global_transform.basis.y, kind, brush)
+
+
+func position_brush(world_position: Vector3, _world_normal: Vector3, brush: int) -> int:
+	return super.position_brush(world_position, global_transform.basis.y, brush)
 
 
 func wash_at(world_position: Vector3, _world_normal: Vector3, radius_meters: float) -> Vector3i:
@@ -57,5 +61,8 @@ func _refresh_overlay() -> void:
 	if _overlay == null or grids.size() <= TOP_FACE:
 		return
 	_overlay.set_shader_parameter("mask_texture", grids[TOP_FACE].texture)
+	_overlay.set_shader_parameter("fine_contours", grids[TOP_FACE].contour_texture != null)
+	if grids[TOP_FACE].contour_texture != null:
+		_overlay.set_shader_parameter("contour_texture", grids[TOP_FACE].contour_texture)
 	if is_inside_tree():
 		_overlay.set_shader_parameter("world_to_box", global_transform.affine_inverse())

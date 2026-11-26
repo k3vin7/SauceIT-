@@ -311,7 +311,7 @@ func _visible_enemy(shooter, brain: Dictionary) -> MayoEnemy:
 		var distance := offset.length()
 		if distance > 25.0 or (distance > 5.0 and forward.dot(offset.normalized()) < 0.05):
 			continue
-		var query := PhysicsRayQueryParameters3D.create(shooter.player.global_position + Vector3.UP * world.eye_height, enemy.global_position, 1)
+		var query := PhysicsRayQueryParameters3D.create(world.player_eye_position(shooter), enemy.global_position, 1)
 		query.exclude = [shooter.player.get_rid()]
 		var hit := world.get_world_3d().direct_space_state.intersect_ray(query)
 		if not hit.is_empty() and hit.collider != enemy:
@@ -331,7 +331,7 @@ func _clear_shot(shooter, target: MayoEnemy) -> bool:
 	return hit.is_empty() or hit.collider == target
 
 func _aim(shooter, at: Vector3, slot: int) -> void:
-	var offset: Vector3 = at - (shooter.player.global_position + Vector3.UP * world.eye_height)
+	var offset: Vector3 = at - (world.player_eye_position(shooter) as Vector3)
 	var yaw := atan2(-offset.x, -offset.z) - float(shooter.stream_recoil_yaw)
 	var pitch := atan2(offset.y, Vector2(offset.x, offset.z).length()) - float(world.aim_pitch_offset(shooter))
 	# Reaction/turn limits and a small deterministic error, never instant auto-headshots.
@@ -379,7 +379,7 @@ func _steer(shooter, brain: Dictionary, goal: Vector3, stop: float, allow_run :=
 			return
 		aim = path[brain.path_index]
 	if brain.target == null:
-		_aim(shooter, aim + Vector3.UP * world.eye_height, brain.slot)
+		_aim(shooter, aim + Vector3.UP * world.player_eye_offset(shooter), brain.slot)
 	_move_direction(shooter, brain, aim - at, allow_run and _flat_distance(at, goal) > 9.0)
 	if brain.stuck > 1.2:
 		brain.jump = true

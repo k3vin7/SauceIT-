@@ -30,6 +30,9 @@ render_mode cull_disabled;
 // while running -- which a smooth ramp cannot do, and which is also why each
 // step is a hard edge on a cell boundary rather than a blend.
 uniform sampler2D mask_texture : filter_linear, repeat_disable, hint_default_black;
+uniform vec2 mask_uv_offset = vec2(0.0);
+uniform vec2 mask_uv_scale = vec2(1.0);
+uniform vec2 mask_cell_origin = vec2(0.0);
 uniform vec4 clean_color : source_color;
 uniform vec4 mayo_color : source_color;
 uniform vec4 mayo_color_mid : source_color = vec4(0.96, 0.88, 0.58, 1.0);
@@ -56,13 +59,9 @@ uniform float paint_threshold = 0.00784;
 uniform float mid_threshold = 0.04706;
 uniform float thick_threshold = 0.04706;
 uniform float slip_threshold = 0.04706;
-// What the mayo ramp is multiplied by where the cell holds another sauce. At
-// vec3(1.0) a sauce is drawn exactly as mayo is, which is what the fourth,
-// unused kind gets.
-uniform vec4 mustard_tint : source_color = vec4(1.00, 0.86, 0.26, 1.0);
-uniform vec4 ketchup_tint : source_color = vec4(0.34, 0.022, 0.016, 1.0);
-
 uniform bool paint_only = false;
+uniform bool fine_contours = false;
+uniform sampler2D contour_texture : filter_linear, repeat_disable, hint_default_black;
 uniform bool paved = false;
 uniform bool wall_face = false;
 uniform bool festival_before_attack = false;
@@ -73,7 +72,9 @@ varying vec3 surface_position;
 
 #include "res://assets/props/Stage2_TomatinaVillage/tomatina_splatter.gdshaderinc"
 
+#include "res://scripts/sauce_finish.gdshaderinc"
 #include "res://scripts/sauce_toon.gdshaderinc"
+#include "res://scripts/body_sauce_mask.gdshaderinc"
 #include "res://scripts/ketchup_surface.gdshaderinc"
 
 void vertex() {
@@ -82,71 +83,38 @@ void vertex() {
 
 void fragment() {
 	vec2 pavement_position = surface_position.xz;
-	float coverage = texture(mask_texture, UV).r;
-	float painted = festival_before_attack ? 0.0 : step(paint_threshold, coverage);
-	if (paint_only && painted < 0.5) {
+	vec2 brick_size = vec2(1.22, 0.81);
+	vec2 aa = fwidth(pavement_position / brick_size);
+	vec2 grains = sauce_grain_position(surface_position);
+	vec2 grain_footprint = fwidth(grains);
+	vec2 mask_uv = UV * mask_uv_scale + mask_uv_offset;
+	float coverage = festival_before_attack ? 0.0 : texture(mask_texture, mask_uv).r;
+	float fill = fine_contours && !festival_before_attack ? stain_contour(contour_texture, mask_uv) : step(paint_threshold, coverage);
+	bool painted = fill > 0.0;
+	if (paint_only && fill < 0.50) {
 		discard;
 	}
 
-	ivec2 mask_size = textureSize(mask_texture, 0);
-	ivec2 texel = clamp(ivec2(UV * vec2(mask_size)), ivec2(0), mask_size - ivec2(1));
-	float thickness = texelFetch(mask_texture, texel, 0).r;
-
-	ivec2 lo = clamp(texel - ivec2(1), ivec2(0), mask_size - ivec2(1));
-	ivec2 hi = clamp(texel + ivec2(1), ivec2(0), mask_size - ivec2(1));
-	// WHICH SAUCE. **This cell's own, whenever this cell has any.**
-	//
-	// Taking the thickest neighbour's sauce unconditionally -- which is what this
-	// did -- is right for the one case it was written for and wrong everywhere
-	// else. A cell taken over by a new sauce restarts at one layer, so ketchup
-	// laid over a deep mayo slick is a thin red cell beside a twenty-layer cream
-	// one: the cream wins "thickest", and every ketchup cell touching the slick was
-	// drawn as mayo. The trail came out with a cream halo a cell wide.
-	//
-	// The borrowing is only for a fragment whose own texel is empty, which is the
-	// case it was for: the filtered sample bleeds a cell past the last painted
-	// texel, so the edge of a stain is drawn over clean cells, and a clean byte is
-	// 0, which unpacks to sauce 0, which is mayo.
-	float own = floor(thickness * 255.0 + 0.5);
-	float kind = mod(own, 4.0);
-	if (painted > 0.5 && floor(own / 4.0) <= 0.0) {
-		// Only a cell with nothing on it borrows: the fragment is in the bleed
-		// past the last painted texel, and the sauce to draw there is the sauce of
-		// whatever bled into it.
-		float best = -1.0;
-		for (int y = lo.y; y <= hi.y; y++) {
-			for (int x = lo.x; x <= hi.x; x++) {
-				float byte = floor(texelFetch(mask_texture, ivec2(x, y), 0).r * 255.0 + 0.5);
-				float depth = floor(byte / 4.0);
-				if (depth > best) {
-					best = depth;
-					kind = mod(byte, 4.0);
-				}
-			}
-		}
+	vec2 mask_position = vec2(0.0);
+	ivec2 mask_size = ivec2(1);
+	float own = 0.0;
+	int kind = 0;
+	if (painted) {
+		mask_size = textureSize(mask_texture, 0);
+		mask_position = mask_uv * vec2(mask_size);
+		ivec2 cell = sauce_mask_cell(ivec2(floor(mask_position)), mask_size, false);
+		own = sauce_mask_byte(mask_texture, cell);
+		kind = int(sauce_mask_kind(mask_texture, mask_position, mask_size, false, own));
 	}
-	// A tint the mayo ramp is multiplied by, rather than a palette per sauce.
-	// The bands are what says how deep a patch is, and they are the same four
-	// steps whatever is in it; the hue only says which sauce. Three full
-	// palettes would let the two drift apart, and there is no reading of this
-	// floor where mustard should band differently from mayo.
-	vec3 tint = mix(vec3(1.0), mustard_tint.rgb, step(0.5, kind) * step(kind, 1.5));
-	tint = mix(tint, ketchup_tint.rgb, step(1.5, kind) * step(kind, 2.5));
-	// Only where there is mayo at all: a clean cell is not deep, whatever
-	// rounding does at the very bottom of the byte.
-	float mid = painted * step(mid_threshold, thickness);
-	float thick = painted * step(thick_threshold, thickness);
-	float deep = painted * step(slip_threshold, thickness);
+	bool ketchup = kind == 2;
 
 	vec3 clean = clean_color.rgb;
-	if (paved) {
-		vec2 brick_size = vec2(1.22, 0.81);
+	if (paved && (fill < 1.0 || ketchup)) {
 		vec2 brick = pavement_position / brick_size;
 		float stagger = mod(floor(brick.y), 2.0) * 0.5;
 		brick.x += stagger;
 		vec2 cell = floor(brick);
 		vec2 edge = min(fract(brick), 1.0 - fract(brick));
-		vec2 aa = fwidth(brick);
 		vec2 seam = 1.0 - smoothstep(vec2(0.012), vec2(0.032) + aa, edge);
 		float detail = 1.0 - smoothstep(0.08, 0.42, max(aa.x, aa.y));
 		float grain = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
@@ -163,52 +131,72 @@ void fragment() {
 		float brick_cutoff = mix(0.96, 0.68, smoothstep(0.60, 0.93, patch));
 		vec3 paving = mix(grey, clay, step(brick_cutoff, grain));
 		vec3 stone = mix(clean, paving * (1.0 - 0.23 * max(seam.x, seam.y)), detail);
-		float large = tomato_splat(pavement_position, 2.36, 0.93);
-		float medium = tomato_splat(pavement_position + vec2(-1.6, 2.8), 1.34, 0.74);
-		float small = tomato_splat(pavement_position + vec2(3.7, 1.1), 0.80, 0.76);
-		float tomato_marks = max(large, max(medium * 0.90, small * 0.81));
-		tomato_marks *= on_street * (festival_before_attack ? 0.35 : 1.0);
-		vec3 ketchup = mix(vec3(0.24, 0.072, 0.049), vec3(0.37, 0.126, 0.080), grain);
-		stone = mix(stone, ketchup, tomato_marks * 0.73);
+		if (festival_before_attack && on_street > 0.0) {
+			float large = tomato_splat(pavement_position, 2.36, 0.93);
+			float medium = tomato_splat(pavement_position + vec2(-1.6, 2.8), 1.34, 0.74);
+			float small = tomato_splat(pavement_position + vec2(3.7, 1.1), 0.80, 0.76);
+			float tomato_marks = max(large, max(medium * 0.90, small * 0.81));
+			tomato_marks *= on_street * 0.35;
+			vec3 dried_tomato = mix(vec3(0.24, 0.072, 0.049), vec3(0.37, 0.126, 0.080), grain);
+			stone = mix(stone, dried_tomato, tomato_marks * 0.73);
+		}
 		clean = mix(vec3(0.18, 0.135, 0.102), stone, on_street);
 	}
-	vec3 stained = mix(clean, mayo_color.rgb * tint, painted);
-	stained = mix(stained, mayo_color_mid.rgb * tint, mid);
-	stained = mix(stained, mayo_color_thick.rgb * tint, thick);
-	vec3 base_albedo = mix(stained, deep_color.rgb * tint, deep);
-	ALBEDO = base_albedo;
-	bool ketchup = (paved || wall_face) && painted > 0.5 && kind == 2.0;
-	if (!ketchup && painted > 0.5 && dot(VERTEX, VERTEX) < 2304.0) {
-		ALBEDO = sauce_toon_finish(ALBEDO, coverage, paint_threshold, UV * vec2(mask_size));
+	ALBEDO = clean;
+	ROUGHNESS = clean_roughness;
+	if (painted && !ketchup) {
+		float thickness = fine_contours ? coverage : own / 255.0;
+		float mid = fine_contours ? smoothstep(mid_threshold - 0.008, mid_threshold + 0.008, thickness) : step(mid_threshold, thickness);
+		float thick = fine_contours ? smoothstep(thick_threshold - 0.008, thick_threshold + 0.008, thickness) : step(thick_threshold, thickness);
+		float deep = fine_contours ? smoothstep(slip_threshold - 0.008, slip_threshold + 0.008, thickness) : step(slip_threshold, thickness);
+		if (kind == 1) {
+			ALBEDO = sauce_pigment(kind) * (1.0 - 0.05 * mid - 0.09 * thick - 0.11 * deep);
+		} else {
+			vec3 pigment = sauce_coating_pigment(kind, mayo_color.rgb);
+			pigment = mix(pigment, mayo_color_mid.rgb, mid);
+			pigment = mix(pigment, mayo_color_thick.rgb, thick);
+			ALBEDO = mix(pigment, deep_color.rgb, deep);
+		}
+		if (dot(VERTEX, VERTEX) < 2304.0) {
+			ALBEDO = sauce_coating_detail(ALBEDO, kind, grains, grain_footprint);
+			if (!fine_contours) {
+				ALBEDO = sauce_toon_finish(ALBEDO, coverage, paint_threshold, mask_position + mask_cell_origin);
+			}
+		}
+		float base_roughness = sauce_coating_roughness(kind, mayo_roughness);
+		float rough = mix(base_roughness, deep_roughness, 0.3 * mid);
+		rough = mix(rough, mix(base_roughness, deep_roughness, 0.6), thick);
+		float visible_fill = paint_only ? 1.0 : fill;
+		ALBEDO = mix(clean, ALBEDO, visible_fill);
+		ROUGHNESS = mix(clean_roughness, mix(rough, deep_roughness, deep), visible_fill);
 	}
-
-	float rough = mix(clean_roughness, mayo_roughness, painted);
-	rough = mix(rough, mix(mayo_roughness, deep_roughness, 0.3), mid);
-	rough = mix(rough, mix(mayo_roughness, deep_roughness, 0.6), thick);
-	ROUGHNESS = mix(rough, deep_roughness, deep);
 	if (ketchup) {
 		vec3 position = paved ? vec3(pavement_position.x, 0.0, pavement_position.y) : surface_position;
-		vec2 surface = ketchup_surface(mask_texture, UV, mask_size, position, false);
-		float fill = surface.x;
-		vec3 paste = ketchup_albedo(position, surface, coverage) * (paved ? 0.50 : KETCHUP_COATING_GAIN);
+		vec2 surface = fine_contours ? vec2(fill, 0.0) : ketchup_surface(mask_texture, mask_uv, mask_size, position, false);
+		float ketchup_fill = surface.x;
+		vec3 paste = ketchup_albedo(position, surface, coverage) * (paved ? 0.57 : KETCHUP_COATING_GAIN);
 		if (paint_only) {
-			if (fill < 0.5) {
+			if (ketchup_fill < 0.5) {
 				discard;
 			}
 			ALBEDO = paste;
 		} else {
-			ALBEDO = mix(clean, paste, fill * 0.96);
+			ALBEDO = mix(clean, paste, ketchup_fill * 0.96);
 		}
 		if (wall_face) {
-			EMISSION = paste * (fill * KETCHUP_COATING_EMISSION);
+			EMISSION = paste * (ketchup_fill * KETCHUP_COATING_EMISSION);
 		}
-		ROUGHNESS = mix(clean_roughness, ketchup_roughness(fill), fill);
-		SPECULAR = mix(0.5, paved ? 0.29 : KETCHUP_COATING_SPECULAR, fill);
+		ROUGHNESS = mix(clean_roughness, ketchup_roughness(ketchup_fill), ketchup_fill);
+		SPECULAR = mix(0.5, paved ? 0.29 : KETCHUP_COATING_SPECULAR, ketchup_fill);
 	}
-	if (paved && painted > 0.5 && kind < 1.5 && floor(own / 4.0) >= (kind > 0.5 ? 2.0 : 3.0)) {
-		float stripe = smoothstep(0.55, 0.72, sin((pavement_position.x + pavement_position.y) * 9.0));
-		ALBEDO = mix(ALBEDO, vec3(0.95, 0.72, 0.15), stripe * 0.16);
-		ROUGHNESS = min(ROUGHNESS, 0.12);
+	if (paved && painted && kind < 2) {
+		float threshold = kind == 1 ? 2.0 : 3.0;
+		float wetness = fine_contours ? smoothstep(threshold - 0.5, threshold + 0.5, coverage * 63.75) : step(threshold, floor(own / 4.0));
+		if (wetness > 0.0) {
+			float stripe = smoothstep(0.55, 0.72, sin((pavement_position.x + pavement_position.y) * 9.0));
+			ALBEDO = mix(ALBEDO, vec3(0.95, 0.72, 0.15), stripe * wetness * 0.16);
+			ROUGHNESS = mix(ROUGHNESS, min(ROUGHNESS, 0.12), wetness);
+		}
 	}
 	METALLIC = 0.0;
 }

@@ -58,6 +58,7 @@ func _run() -> void:
 	var stain = shooter.player.contamination
 	stain.paint_mayo_cell(Vector2i(3, 3))
 	var stained_cells: int = stain.painted_cell_count()
+	var full_eye: float = scene.player_eye_offset(shooter)
 	_check(stained_cells > 0, "the test stain did not land on the player")
 	scene._unhandled_input(switch_event)
 	await process_frame
@@ -122,6 +123,9 @@ func _run() -> void:
 	_check(shooter.player_visual.name == "Character_4Visual",
 		"Character_4 visual was not built")
 	_check_sauce_tube(shooter, "Character_4")
+	_check(scene.player_eye_offset(shooter) < full_eye - 0.6, "Character_4 did not lower the eye height")
+	_check(is_equal_approx(shooter.aim_pivot.position.y, scene.player_eye_offset(shooter)),
+		"Character_4's aim pivot did not move with its eye height")
 	_check(shooter.player_animation != null, "Character_4 has no AnimationPlayer")
 	for required in [shooter.walk_animation, shooter.run_animation, shooter.death_animation]:
 		_check(not required.is_empty(), "Character_4 is missing a gameplay animation")
@@ -197,6 +201,8 @@ func _run() -> void:
 	scene._emit_point(remote_here)
 	_check(remote_here.points.size() == point_count + 1,
 		"remote character could not emit after switching character")
+	_check(remote_here.points.back().position.distance_to(remote_here.character_muzzle.global_position)
+		<= scene.lateral_position_jitter + 0.001, "remote character did not emit at the visible mouth")
 
 	if failures.is_empty():
 		print("CHARACTER_SWITCH_OK")

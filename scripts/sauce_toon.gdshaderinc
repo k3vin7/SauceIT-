@@ -15,7 +15,7 @@ float sauce_hash(vec2 p) {
 
 // 1 at the very edge of a stain, 0 a little way in.
 float sauce_ink(float coverage, float threshold) {
-	return 1.0 - smoothstep(threshold, threshold * 3.5, coverage);
+	return 1.0 - smoothstep(threshold, threshold * 1.85, coverage);
 }
 
 // A small oval fleck in about one cell in five, only where the sauce is thick.
@@ -34,7 +34,7 @@ float sauce_shine(vec2 cells, float coverage, float thick_from) {
 
 vec3 sauce_toon_finish(vec3 albedo, float coverage, float threshold, vec2 cells) {
 	float ink = sauce_ink(coverage, threshold);
-	vec3 inked = mix(albedo, albedo * 0.3, ink);
+	vec3 inked = mix(albedo, albedo * 0.48, ink);
 	float shine = sauce_shine(cells, coverage, threshold * 5.0) * (1.0 - ink);
 	return mix(inked, vec3(1.0, 0.82, 0.76), shine * 0.75);
 }

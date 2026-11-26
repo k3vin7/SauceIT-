@@ -372,8 +372,9 @@ func _run() -> void:
 	server_world.impact_paints = false
 	client_world.impact_paints = false
 	await _wait(10)
-	# At eye height, so it lands on the face and not only on the chest.
-	server_world.debug_aim_at(b_on_host.global_position + Vector3.UP * server_world.eye_height)
+	# Aim at the lens that the host draws on this model's head.
+	var b_lens_host: Node3D = b_on_host.visor.get_node("LensMount/LensHinge/Lenses")
+	server_world.debug_aim_at(b_lens_host.global_position)
 	server_world.debug_set_input(Vector2.ZERO, false, true)
 	await _wait(90)
 	server_world.debug_set_input(Vector2.ZERO, false, false)
@@ -426,7 +427,7 @@ func _run() -> void:
 	server_world.impact_paints = true
 	client_world.impact_paints = true
 	var a_body_before: int = server_world.shooter_for(1).player.contamination.painted_cell_count()
-	server_world.debug_aim_at(b_on_host.global_position + Vector3.UP * server_world.eye_height)
+	server_world.debug_aim_at(b_lens_host.global_position)
 	server_world.debug_set_input(Vector2.ZERO, false, true)
 	await _wait(90)
 	server_world.debug_set_input(Vector2.ZERO, false, false)
@@ -526,6 +527,8 @@ func _run() -> void:
 	b_host.player.global_position = Vector3(0.0, stand, 0.0)
 	# Parked in the unreliable band, where the nozzle catches.
 	var unreliable: float = (server_world.steady_level + server_world.spluttering_level) * 0.5
+	var normal_catch_chance: float = server_world.catch_chance
+	server_world.catch_chance = 1.0 # Exercise replication even on a run of good rolls.
 	client_world.debug_set_aim(0.0, -12.0)
 	var nozzle_frames := 0
 	var nozzle_agreed := 0
@@ -554,6 +557,7 @@ func _run() -> void:
 		level_worst = maxf(level_worst, absf(b_host.sauce - b_client.sauce))
 	client_world.debug_set_input(Vector2.ZERO, false, false)
 	await _wait(10)
+	server_world.catch_chance = normal_catch_chance
 	print("unreliable bottle over %d frames: B's nozzle was one the host had just been in on %d, caught on %d, level differed by at most %.4f" % [
 		nozzle_frames, nozzle_agreed, caught_frames, level_worst])
 	print("  host nozzle modes: %s, B firing flag on host=%s" % [

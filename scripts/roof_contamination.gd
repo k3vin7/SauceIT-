@@ -47,6 +47,9 @@ func configure(body: Node3D, mesh: MeshInstance3D, cone_radius: float,
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://scripts/roof_contamination.gdshader")
 	material.set_shader_parameter("mask_texture", grid.texture)
+	material.set_shader_parameter("fine_contours", grid.contour_texture != null)
+	if grid.contour_texture != null:
+		material.set_shader_parameter("contour_texture", grid.contour_texture)
 	material.set_shader_parameter("clean_color", clean_color)
 	material.set_shader_parameter("mayo_color", mayo_color)
 	material.set_shader_parameter("cone_radius", radius)
@@ -60,12 +63,22 @@ func _process(_delta: float) -> void:
 
 
 func paint_mayo(world_position: Vector3, _world_normal: Vector3,
-		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
-	return grid.paint(_to_grid(world_position), brush_radius, 1, -1, kind)
+		kind := ContaminationGrid.KIND_MAYO, brush := ContaminationGrid.BRUSH_POOL) -> Vector2i:
+	return grid.paint(_to_grid(world_position), brush_radius, 1, -1, kind, brush)
 
 
-func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
-	grid.paint_cell(cell, brush_radius, 1, -1, kind)
+func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO,
+		brush := ContaminationGrid.BRUSH_POOL) -> void:
+	grid.paint_cell(cell, brush_radius, 1, -1, kind, brush)
+
+
+func wash_at(world_position: Vector3, radius_meters: float) -> Vector2i:
+	var cell := grid.cell_of(_to_grid(world_position))
+	return cell if wash_cell(cell, radius_meters) else Vector2i(-1, -1)
+
+
+func wash_cell(cell: Vector2i, radius_meters: float) -> bool:
+	return grid.erase_disc(cell, radius_meters)
 
 
 func painted_cell_count() -> int:
@@ -77,7 +90,7 @@ func cells_md5() -> String:
 
 
 func snapshot_cells() -> PackedByteArray:
-	return grid.cells.duplicate()
+	return grid.snapshot()
 
 
 func restore_cells(cells: PackedByteArray) -> bool:

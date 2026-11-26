@@ -174,7 +174,6 @@ var _coins := {}
 var _coin_serial := 0
 var _projectiles: Array[Dictionary] = []
 var _coin_mesh: CylinderMesh
-var _projectile_materials: Array[StandardMaterial3D] = []
 var _free_projectile_ribbons: Array[StreamVisual] = []
 var _projectile_segments: Array = [[]]
 
@@ -272,12 +271,7 @@ func _ready() -> void:
 	gold.emission = Color("b7761e")
 	gold.emission_energy_multiplier = 0.38
 	_coin_mesh.material = gold
-	for color: Color in world.SAUCE_TINTS:
-		var material := StandardMaterial3D.new()
-		material.albedo_color = color
-		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		material.cull_mode = BaseMaterial3D.CULL_DISABLED
-		_projectile_materials.append(material)
+
 	for i in PROJECTILE_RIBBON_POINTS:
 		_projectile_segments[0].append({"position": Vector3.ZERO, "width_scale": 0.0})
 
@@ -420,14 +414,15 @@ func show_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vec
 		draw_from := Vector3.INF, sweep_from := Vector3.INF) -> void:
 	var profile: Dictionary = PROJECTILES[part]
 	var draw_offset := draw_from - origin if draw_from.is_finite() else Vector3.ZERO
+	var material: ShaderMaterial = world.SAUCE_STREAM_MATERIALS[sauce]
 	var ribbon: StreamVisual
 	if _free_projectile_ribbons.is_empty():
 		ribbon = StreamVisual.new()
-		ribbon.setup(_projectile_materials[sauce], PROJECTILE_RIBBON_POINTS)
+		ribbon.setup(material, PROJECTILE_RIBBON_POINTS)
 		add_child(ribbon)
 	else:
 		ribbon = _free_projectile_ribbons.pop_back()
-		ribbon.set_ribbon_material(_projectile_materials[sauce])
+		ribbon.set_ribbon_material(material)
 	# `head` is the simulated tip. The ribbon follows behind it for display.
 	# The mortar carries real speed in the direction vector. Cannon and sniper
 	# carry a small shake marker instead, so their launch speeds stay constant.
@@ -498,9 +493,15 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 		var shooter = world.shooter_for(shot.peer)
 		var skipped: Array = (shot.get("passed", []) as Array).duplicate()
 		if shooter != null:
-			skipped.push_back(shooter.player.get_rid())
+			skipped.append_array(world.sauce_self_exclusions(shooter))
 		query.exclude = skipped
-		var hit := get_world_3d().direct_space_state.intersect_ray(query)
+		query.hit_from_inside = float(shot.age) == 0.0
+		query.collide_with_areas = true
+		var hit: Dictionary = world.cast_sauce_ray(get_world_3d().direct_space_state, query)
+		if not hit.is_empty():
+			shot.impact_direction = to - sweep
+			if (hit.normal as Vector3).is_zero_approx():
+				hit.normal = (sweep - to).normalized()
 		shot.left -= delta
 		if authority:
 			world._cut_cheese_by_stream(from, to if hit.is_empty() else hit.position)

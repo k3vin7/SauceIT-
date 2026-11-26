@@ -9,6 +9,7 @@ const CAP_STEPS := 10
 var ribbon_material: Material
 var _dynamic_mesh: ArrayMesh
 var _vertex_cache := PackedVector3Array()
+var _uv_cache := PackedVector2Array()
 var _side_cache: Array[Vector3] = []
 var _max_vertices := 0
 var _used_vertices := 0
@@ -32,6 +33,9 @@ func setup(material: Material, maximum_points: int = 192) -> void:
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = _vertex_cache
+	if material is ShaderMaterial:
+		_uv_cache.resize(_max_vertices)
+		arrays[Mesh.ARRAY_TEX_UV] = _uv_cache
 	_dynamic_mesh = ArrayMesh.new()
 	_dynamic_mesh.add_surface_from_arrays(
 		Mesh.PRIMITIVE_TRIANGLES,
@@ -87,6 +91,8 @@ func update_ribbon(
 	# measurable even though only the prefix was sent to RenderingServer.
 	var vertex_bytes := _vertex_cache.slice(0, upload_vertices).to_byte_array()
 	_dynamic_mesh.surface_update_vertex_region(0, 0, vertex_bytes)
+	if not _uv_cache.is_empty():
+		_dynamic_mesh.surface_update_attribute_region(0, 0, _uv_cache.slice(0, _used_vertices).to_byte_array())
 	_previous_used_vertices = _used_vertices
 	# Vertices are written in world space and this node carries no transform of
 	# its own, so its local space is the world's and the bounds go straight in.
@@ -98,8 +104,12 @@ func update_ribbon(
 
 
 func _append_strip(points: Array, camera_position: Vector3, camera_forward: Vector3, base_width: float, y_offset: float) -> void:
+	# Keep a spatial phase per disconnected piece, then measure along the strip.
+	var first_position: Vector3 = points[0].position
+	var first_distance := first_position.dot(Vector3(0.57, 0.29, 0.71))
 	if points.size() == 1:
-		_append_round_cap(points[0], Vector3.RIGHT, camera_position, camera_forward, base_width, y_offset)
+		_append_round_cap(points[0], Vector3.RIGHT, camera_position, camera_forward, base_width, y_offset,
+			first_distance)
 		return
 
 	var sides := _side_cache
@@ -124,6 +134,7 @@ func _append_strip(points: Array, camera_position: Vector3, camera_forward: Vect
 		if joined.length_squared() > 0.000001:
 			sides[i] = joined.normalized()
 
+	var distance_a := first_distance
 	for i in points.size() - 1:
 		var point_a = points[i]
 		var point_b = points[i + 1]
@@ -135,14 +146,25 @@ func _append_strip(points: Array, camera_position: Vector3, camera_forward: Vect
 		var right_a := center_a + sides[i] * half_a
 		var left_b := center_b - sides[i + 1] * half_b
 		var right_b := center_b + sides[i + 1] * half_b
-		_append_triangle(left_a, left_b, right_a)
-		_append_triangle(right_a, left_b, right_b)
+		var distance_b := distance_a
+		if not _uv_cache.is_empty():
+			distance_b += center_a.distance_to(center_b)
+		var uv_left_a := Vector2(0.0, distance_a)
+		var uv_right_a := Vector2(1.0, distance_a)
+		var uv_left_b := Vector2(0.0, distance_b)
+		var uv_right_b := Vector2(1.0, distance_b)
+		_append_triangle(left_a, left_b, right_a, uv_left_a, uv_left_b, uv_right_a)
+		_append_triangle(right_a, left_b, right_b, uv_right_a, uv_left_b, uv_right_b)
+		distance_a = distance_b
 
-	_append_round_cap(points[0], sides[0], camera_position, camera_forward, base_width, y_offset)
-	_append_round_cap(points[-1], sides[-1], camera_position, camera_forward, base_width, y_offset)
+	_append_round_cap(points[0], sides[0], camera_position, camera_forward, base_width, y_offset,
+		first_distance)
+	_append_round_cap(points[-1], sides[-1], camera_position, camera_forward, base_width, y_offset,
+		distance_a)
 
 
-func _append_round_cap(point, side_hint: Vector3, camera_position: Vector3, camera_forward: Vector3, base_width: float, y_offset: float) -> void:
+func _append_round_cap(point, side_hint: Vector3, camera_position: Vector3, camera_forward: Vector3,
+		base_width: float, y_offset: float, distance: float) -> void:
 	var center: Vector3 = point.position + Vector3.UP * y_offset
 	var face := _view_vector(center, camera_position, camera_forward)
 	if face.length_squared() < 0.000001:
@@ -157,9 +179,13 @@ func _append_round_cap(point, side_hint: Vector3, camera_position: Vector3, came
 	for i in CAP_STEPS:
 		var angle_a := TAU * float(i) / float(CAP_STEPS)
 		var angle_b := TAU * float(i + 1) / float(CAP_STEPS)
-		var edge_a := center + (side * cos(angle_a) + up * sin(angle_a)) * radius
-		var edge_b := center + (side * cos(angle_b) + up * sin(angle_b)) * radius
-		_append_triangle(center, edge_a, edge_b)
+		var ring_a := Vector2(cos(angle_a), sin(angle_a))
+		var ring_b := Vector2(cos(angle_b), sin(angle_b))
+		var edge_a := center + (side * ring_a.x + up * ring_a.y) * radius
+		var edge_b := center + (side * ring_b.x + up * ring_b.y) * radius
+		_append_triangle(center, edge_a, edge_b, Vector2(0.5, distance),
+			Vector2(0.5 + 0.5 * ring_a.x, distance + ring_a.y * radius),
+			Vector2(0.5 + 0.5 * ring_b.x, distance + ring_b.y * radius))
 
 
 ## Direction from `position` toward the viewer, stabilised near the camera.
@@ -170,12 +196,17 @@ func _view_vector(position: Vector3, camera_position: Vector3, camera_forward: V
 	return offset.normalized()
 
 
-func _append_triangle(a: Vector3, b: Vector3, c: Vector3) -> void:
+func _append_triangle(a: Vector3, b: Vector3, c: Vector3,
+		uv_a: Vector2, uv_b: Vector2, uv_c: Vector2) -> void:
 	if _used_vertices + 3 > _max_vertices:
 		return
 	_vertex_cache[_used_vertices] = a
 	_vertex_cache[_used_vertices + 1] = b
 	_vertex_cache[_used_vertices + 2] = c
+	if not _uv_cache.is_empty():
+		_uv_cache[_used_vertices] = uv_a
+		_uv_cache[_used_vertices + 1] = uv_b
+		_uv_cache[_used_vertices + 2] = uv_c
 	_used_vertices += 3
 	_bounds_low = _bounds_low.min(a).min(b).min(c)
 	_bounds_high = _bounds_high.max(a).max(b).max(c)

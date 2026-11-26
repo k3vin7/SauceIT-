@@ -115,7 +115,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 28
+const PROTOCOL_VERSION := 35
 const STAGE_INPUT_TIMEOUT := 0.25
 const MOTION_REFRESH_SECONDS := 0.25
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
@@ -150,7 +150,7 @@ const MAX_CLIENTS := 3
 ## a different fight. The host tosses it and sends the answer; the level rides
 ## along rather than being derived, so nobody has to guess which band a bottle
 ## is in either.
-const STATE_STRIDE := 26
+const STATE_STRIDE := 29
 const STATE_CHARACTER_INDEX := 17
 ## Where one occupant is standing in the truck: x, y, z and the yaw they are
 ## facing. The truck carries no bottle, no health and no aim pitch, so it needs
@@ -2609,7 +2609,8 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			float(shooter.player.server_input_sequence), velocity.y,
 			shooter.player.mustard_slow, shooter.player.cheese_snag_left,
 			1.0 if shooter.player.in_mustard else 0.0, shooter.player.charge_effect_state(),
-			shooter.stream_recoil_pitch, shooter.stream_recoil_yaw]))
+			shooter.stream_recoil_pitch, shooter.stream_recoil_yaw, shooter.hose_flow_age,
+			shooter.player.external_drift.x, shooter.player.external_drift.z]))
 	return data
 
 
@@ -2656,7 +2657,8 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 			Vector3(data[index + 4], data[index + 19], data[index + 5]),
 			int(data[index + 8]), data[index + 9], data[index + 10],
 			data[index + 11], data[index + 12], int(data[index + 18]),
-			data[index + 20], data[index + 21], data[index + 22] > 0.5, data[index + 23])
+			data[index + 20], data[index + 21], data[index + 22] > 0.5, data[index + 23],
+			Vector3(data[index + 27], 0.0, data[index + 28]))
 		# The bottle and what its nozzle is doing are the host's, for everyone
 		# including the peer holding it: a client that decided its own would
 		# catch at different moments from the screen next to it.
@@ -2665,6 +2667,7 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		world.apply_bottle_state_code(shooter, clampf(data[index + 15], 0.0, 3.0))
 		shooter.stream_recoil_pitch = data[index + 24]
 		shooter.stream_recoil_yaw = data[index + 25]
+		shooter.hose_flow_age = data[index + 26]
 		# Lobby characters arrive through the reliable roster.
 		if not shooter.is_local:
 			if not lobby_flow:

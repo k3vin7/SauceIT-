@@ -45,6 +45,10 @@ const TutorialHudScript := preload("res://scripts/tutorial_hud.gd")
 const FESTIVAL_ENVIRONMENT := preload("res://assets/cartoon/festival_environment.tres")
 const TOMATINA_ENVIRONMENT := preload("res://assets/cartoon/tomatina_environment.tres")
 const FESTIVAL_PROP_SHADER := preload("res://assets/cartoon/festival_prop_toon.tres")
+const HOSE_SHADER := preload("res://assets/cartoon/hose_stream.gdshader")
+const HOSE_IMPACT_FOAM_SHADER := preload("res://assets/cartoon/hose_impact_foam.gdshader")
+const WATER_DROPLET := preload("res://assets/cartoon/water_droplet.tres")
+const SHOWER_WATER := preload("res://assets/cartoon/shower_water.tres")
 const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 	preload("res://assets/food_booths/food_booth_s1.glb"),
 	preload("res://assets/food_booths/food_booth_s2.glb"),
@@ -75,11 +79,11 @@ const SPLAT_ENEMY := 5
 const SPLAT_ROOF := 6
 const SPLAT_FLOOR_CLEAR := 7
 const SPLAT_BODY_WASH := 8
-## The fire hose's core passing over a teammate: everything off the body and
-## the glasses. Target is the peer; the cell is unused.
+## Local water contact uses the same target and cell as a paint splat.
 const SPLAT_BODY_HOSE := 9
-## The fire hose stripping a patch of wall. Target and cell as for SPLAT_WALL.
 const SPLAT_WALL_CLEAR := 10
+const SPLAT_VISOR_HOSE := 11
+const SPLAT_ROOF_CLEAR := 12
 
 ## What the nozzle is doing this frame. The **authority decides it and it
 ## travels in the state packet**, because it is the one part of firing that
@@ -142,6 +146,13 @@ const SAUCE_TINTS: Array[Color] = [
 	Color("c8342a"),  # ketchup
 	Color("fff0a8"),  # the fourth kind is unused and reads as mayo
 ]
+## Indexed by ContaminationGrid sauce kind, including the legacy mayo alias.
+const SAUCE_STREAM_MATERIALS: Array[ShaderMaterial] = [
+	preload("res://assets/cartoon/mayonnaise_stream.tres"),
+	preload("res://assets/cartoon/mustard_stream.tres"),
+	preload("res://assets/cartoon/ketchup_stream.tres"),
+	preload("res://assets/cartoon/mayonnaise_stream.tres"),
+]
 ## A MultiMesh instance with `use_colors` on is twelve floats of transform and
 ## then four of colour, so every slot is sixteen wide and the colour sits at the
 ## end of it. Named rather than spelled 16 at five call sites, because the number
@@ -150,6 +161,7 @@ const SAUCE_TINTS: Array[Color] = [
 const MULTIMESH_STRIDE := 16
 const MULTIMESH_COLOR_OFFSET := 12
 const SPLAT_SAUCE_SHIFT := 8
+const SPLAT_BRUSH_SHIFT := SPLAT_SAUCE_SHIFT + ContaminationGrid.KIND_BITS
 const SPLAT_SURFACE_MASK := 0xFF
 const FACES_PER_WALL := 6
 
@@ -176,12 +188,13 @@ class MayoPoint:
 	## a jet.
 	var severed := false
 	var burst_index := 0
+	var sauce := -1
 	var range_scale := 1.0
 	## Where the point is drawn from, relative to where it really is, when it
-	## was emitted: nothing for your own stream, the gap from the launch point
-	## to the tube in the character's hands for anybody else's. Faded out over
+	## was emitted, for the local first-person bottle. Faded out over
 	## `MUZZLE_DRAW_BLEND` -- see `_emit_point`.
 	var draw_offset := Vector3.ZERO
+	var first_collision := true
 
 class RibbonPoint:
 	var position := Vector3.ZERO
@@ -212,10 +225,13 @@ class Shooter:
 	var run_animation := StringName()
 	var death_animation := StringName()
 	var character_muzzle: Node3D
+	var character_bottle_origin: Node3D
+	var stream_target := Vector3.INF
 	## The character's head bone, and where on it the glasses go: the middle of
 	## their top edge in that bone's own space, and how wide they are in the
 	## model's units. See `_measure_face`.
 	var face_anchor: BoneAttachment3D
+	var visor_hitbox: Area3D
 	var face_frame := Transform3D.IDENTITY
 	var face_width := 0.0
 	var viewmodel_muzzle: Marker3D
@@ -285,8 +301,6 @@ class Shooter:
 	var sauce_kind := ContaminationGrid.KIND_MAYO
 	## This shooter's own copies of the ribbon materials, so its stream can be a
 	## different sauce from everyone else's.
-	var air_material: StandardMaterial3D
-	var landing_material: StandardMaterial3D
 	## How long the squirt under way has been running.
 	var burst_time := 0.0
 	## And how long sauce has actually been *coming out* of it.
@@ -380,6 +394,13 @@ class Shooter:
 	var hose_kick_pitch := 0.0
 	var hose_kick_pending := 0.0
 	var hose_was_open := false
+	var hose_flow_age := 0.0
+	var hose_impact_anchor := Vector2i(-1, -1)
+	var hose_impact_age := 0.0
+	var hose_brace := 0.0
+	var hose_path_frame := -1
+	var hose_path_limit := -1.0
+	var hose_path: Dictionary = {}
 	## The part of the kick that has not been let into the view yet. A squirt's
 	## kick is fed in over `recoil_attack_seconds` rather than applied whole on
 	## the frame the trigger goes down: the same 4 degrees arriving in one frame
@@ -769,7 +790,7 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 @export_range(1, 8, 1) var spacing_constraint_passes := 3
 
 @export_group("Landing and Grid")
-@export_range(0.05, 0.5, 0.01, "suffix:m") var grid_cell_size := 0.1
+@export_range(0.05, 0.5, 0.005, "suffix:m") var grid_cell_size := 0.1
 ## Splat radius in metres. Converted to cells internally, so changing the
 ## cell size does not change how big a splat is.
 ## Every surface that can take sauce uses this, so a splat is the same size on
@@ -1175,10 +1196,8 @@ var _sniper_zoom := 0.0
 var _letterbox: Array[ColorRect] = []
 var _view_layout := Rect2()
 var _hud_layer: CanvasLayer
-var _mayo_material: Material
 ## White plus `vertex_color_use_as_albedo`, for the two shared pools only.
 var _pool_material: Material
-var _landing_material: Material
 var _shadow_material: Material
 var _camera: Camera3D
 var _floor: FloorContamination
@@ -1215,6 +1234,8 @@ var _rescue_hud: Control
 var _minimap: Minimap
 var _key_legend: Control
 var _stage_music: AudioStreamPlayer
+## Half amplitude for weapon reports and local nozzle puffs.
+const LOUD_COMBAT_SFX_GAIN_DB := -6.0206
 var _sauce_audio: AudioStreamPlayer
 ## The squirt's own voice, kept on two players rather than one: the loop has to
 ## go on sounding while the start and end one-shots play over it, and a single
@@ -1246,6 +1267,7 @@ const FINALE_WAVES := [0.0, 9.0, 19.0]
 const FINALE_SPAWN_INTERVAL := 0.55
 const PressKing := preload("res://scripts/tomatina_press_king.gd")
 const FINALE_COUNT_TAG := -999
+const ESCAPE_SHOVE_CUE := 2
 const PRESS_KING_LOB_CUE := 7
 const HOSE_COUNTERATTACK_CUE := 8
 const PRESS_KING_RISE_CUE := 9
@@ -1299,32 +1321,41 @@ const TOMATINA_HOSES := [
 ]
 ## The fire hose, once the truck is in. A toggle rather than a trigger: one
 ## press opens it and it runs until the player closes it, steps off the stand
-## or goes down. The jet reaches more than twice as far as the old squirt did
-## and bursts every body it crosses instead of nudging it back a step -- see
-## `_advance_fire_hoses`.
-const HOSE_RANGE := 22.0
+## or goes down. The stream leaves under pressure and falls under gravity.
+## At level aim the flight time stays the same, so speed sets the horizontal reach.
+const HOSE_EXIT_SPEED := 39.0
+const HOSE_AIR_DRAG := 1.0
+const HOSE_GRAVITY := 9.8
+const HOSE_TRACE_STEP := 1.0 / 15.0
+const HOSE_MAX_FLIGHT_TIME := 6.0
 const HOSE_SPRAY_RADIUS := 2.2
 const HOSE_JET_RADIUS := 0.45
 ## How far the hose line pays out from its reel before the hose is dropped.
 ## Opening needs the player at the stand (`_hose_slot`); keeping it open only
 ## needs the hose to reach -- see `_advance_fire_hoses`.
 const HOSE_TETHER := 5.0
-## The jet's thrust on whoever holds it, as a steady backward speed fed into
-## the body's desired velocity. Just under half a walk: standing still on the
-## hose means being walked off the end of it, holding it means leaning in.
-const HOSE_RECOIL_SPEED := 2.4
-## The jet is a straight hitscan line along the aim -- see `_hose_line`.
-## Sampled every `HOSE_STEP` metres for the floor it washes on the way.
+## Backward drift from the main opening and from the steady jet, in m/s.
+const HOSE_STEADY_RECOIL := 3.1
+const HOSE_OPENING_SURGE := 5.5
+## Floor wash samples stay close together and only wash near the surface.
 const HOSE_STEP := 0.5
+const HOSE_FLOOR_WASH_HEIGHT := 0.65
+const HOSE_FLOOR_WASH_RADII := [0.36, 0.44, 0.52, 0.60, 0.68, 0.76, 0.86]
+const HOSE_IMPACT_WASH_STEP := 0.03
+const HOSE_FLOOR_WASH_OFFSETS := [-1.0, -0.5, 0.0, 0.5, 1.0]
+enum HoseContact { NONE, MIST, CORE }
 const HOSE_GROUND_Y := 0.1
 ## The patch of wall one tick of water strips clean, in metres.
 const HOSE_WALL_WASH_RADIUS := 0.9
-## How the drawn jet is cut up, and how far from the nozzle its mist begins.
-const HOSE_VISUAL_STEP := 1.0
+const HOSE_BODY_WASH_RADIUS := 0.29
+const HOSE_VISOR_WASH_RADIUS := 0.16
+## How far from the nozzle the mist begins.
 const HOSE_MIST_START := 4.0
+static var _hose_mist_start_time := -log(1.0 - HOSE_MIST_START * HOSE_AIR_DRAG / HOSE_EXIT_SPEED) / HOSE_AIR_DRAG
 ## Where the nozzle is held in the aim's frame: low on the right, beside the
 ## view rather than under the crosshair.
-const HOSE_HOLD := Vector3(0.42, -0.34, -0.32)
+const HOSE_HOLD := Vector3(0.32, -0.38, -0.32)
+const HOSE_TIP := Vector3(0.0, 0.0, -0.57)
 ## The lurch when the main opens: the nozzle and the view are thrown up
 ## together over the attack, and settle while the hose runs. The rumble is
 ## what the view does for as long as it is open.
@@ -2071,14 +2102,33 @@ func _emit_lanes(shooter: Shooter) -> void:
 	shooter.lane_angle = 0.0
 
 
-## Where a fitted part's shot leaves: the mouth of the part on the first-person
-## bottle. That bottle hangs off the aim pivot on every peer, so it is the same
-## place on all of them -- the reason `_emit_point` launches the stream from it
-## too. Everyone else's screen draws the shot from their character's bottle.
+## Simulation uses the same authored muzzle in both camera modes and on every peer.
 func part_launch_origin(shooter: Shooter, part: int) -> Vector3:
-	if not is_instance_valid(shooter.viewmodel_muzzle):
-		return shooter.aim_pivot.global_position
-	return shooter.viewmodel_muzzle.to_global(Vector3(0.0, 0.0, -SauceParts.tip_reach(part)))
+	var reach := SauceParts.tip_reach(part)
+	if is_instance_valid(shooter.character_muzzle):
+		var mouth := shooter.character_muzzle.global_position
+		return mouth if reach == 0.0 else mouth + _world_nozzle_forward(shooter) * reach
+	if is_instance_valid(shooter.viewmodel_muzzle):
+		return shooter.viewmodel_muzzle.to_global(Vector3.FORWARD * reach)
+	return shooter.aim_pivot.global_position
+
+
+func _world_nozzle_forward(shooter: Shooter) -> Vector3:
+	if is_instance_valid(shooter.character_bottle_origin) and is_instance_valid(shooter.character_muzzle):
+		var forward := shooter.character_muzzle.global_position - shooter.character_bottle_origin.global_position
+		if not forward.is_zero_approx():
+			return forward.normalized()
+	return shooter.attack_direction
+
+
+func _bottle_sweep_origin(shooter: Shooter, launch: Vector3) -> Vector3:
+	if is_instance_valid(shooter.character_bottle_origin):
+		return shooter.character_bottle_origin.global_position
+	return launch - shooter.attack_direction * bottle_length
+
+
+func _first_person_tip(shooter: Shooter, part: int) -> Vector3:
+	return shooter.weapon_sway.to_global(shooter.viewmodel_muzzle.position + Vector3.FORWARD * SauceParts.tip_reach(part))
 
 
 ## The straight parts leave from the bottle, off to the side of the eyes, so
@@ -2088,15 +2138,11 @@ func _part_aim_direction(shooter: Shooter, origin: Vector3) -> Vector3:
 	var forward := shooter.attack_direction
 	var profile: Dictionary = SauceParts.PROJECTILES[shooter.sauce_part]
 	var reach := float(profile.reach)
-	var eye := shooter.aim_pivot.global_position
-	var query := PhysicsRayQueryParameters3D.create(eye, eye + forward * reach)
-	query.exclude = [shooter.player.get_rid()]
-	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	var target: Vector3 = eye + forward * reach if hit.is_empty() else hit.position
+	var target := _target_along_aim(shooter, reach)
+	shooter.stream_target = target
 	var to_target := target - origin
-	# Something nearer than the bottle's mouth: just fire along the aim.
-	if to_target.length_squared() < 0.01 or to_target.normalized().dot(forward) < 0.5:
-		return forward
+	if to_target.dot(forward) <= 0.05:
+		return _world_nozzle_forward(shooter)
 	return to_target.normalized()
 
 
@@ -2127,16 +2173,17 @@ func _fire_part_volley(shooter: Shooter) -> void:
 func show_part_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vector3) -> void:
 	if _sauce_parts == null or not SauceParts.PROJECTILES.has(part):
 		return
-	# Drawn leaving the part on the character's bottle when that is the bottle
-	# this screen shows; it really flies from `origin` on every peer.
 	var draw_from := Vector3.INF
 	var sweep_from := Vector3.INF
 	var shooter: Shooter = _shooters.get(peer)
 	if shooter != null:
-		sweep_from = shooter.aim_pivot.global_position
-		if is_instance_valid(shooter.muzzle) and shooter.muzzle != shooter.viewmodel_muzzle \
-				and forward.length_squared() > 0.000001:
-			draw_from = shooter.muzzle.global_position + forward.normalized() * SauceParts.tip_reach(part)
+		sweep_from = _bottle_sweep_origin(shooter, origin)
+		if shooter == _local and _first_person and is_instance_valid(shooter.weapon_sway):
+			draw_from = _first_person_tip(shooter, part)
+		elif not _is_authority():
+			# The received origin is authoritative. Join the short ribbon root
+			# to the interpolated bottle pose visible on this client.
+			draw_from = part_launch_origin(shooter, part)
 	_sauce_parts.show_volley(peer, part, sauce, origin, forward, draw_from, sweep_from)
 	if map_kind == MapKind.TOMATINA and shooter != null and (shooter.is_local or _is_authority()):
 		var pitch_scale := 1.0
@@ -2153,9 +2200,9 @@ func show_part_volley(peer: int, part: int, sauce: int, origin: Vector3, forward
 		if shooter.is_local:
 			_start_part_recoil(shooter, part, pitch_scale)
 	if part == SauceParts.Part.CANNON:
-		_play_combat_warning(origin, 155.0, 0.16)
+		_play_combat_warning(origin, 155.0, 0.16, null, LOUD_COMBAT_SFX_GAIN_DB)
 	elif part == SauceParts.Part.ARC:
-		_play_combat_warning(origin, 235.0, 0.10)
+		_play_combat_warning(origin, 235.0, 0.10, null, LOUD_COMBAT_SFX_GAIN_DB)
 
 
 ## The host advances the recoil shared by the player's view and firing direction.
@@ -2210,8 +2257,7 @@ func _report_air_shot(shooter: Shooter, delta: float) -> void:
 	if shooter.air_puff > 0.0:
 		return
 	shooter.air_puff = air_puff_interval
-	var from: Vector3 = shooter.muzzle.global_position if is_instance_valid(shooter.muzzle) \
-		else shooter.player.global_position
+	var from := part_launch_origin(shooter, shooter.sauce_part)
 	air_shot_fired.emit(shooter.peer_id, from, shooter.attack_direction)
 
 
@@ -2776,6 +2822,7 @@ func _build_sauce_audio() -> void:
 	_sauce_audio = AudioStreamPlayer.new()
 	_sauce_audio.name = "SauceAudio"
 	_sauce_audio.bus = "SFX"
+	_sauce_audio.volume_db = LOUD_COMBAT_SFX_GAIN_DB
 	add_child(_sauce_audio)
 	_spray_loop_audio = AudioStreamPlayer.new()
 	_spray_loop_audio.name = "SprayLoopAudio"
@@ -2873,7 +2920,7 @@ func _place_viewmodel() -> void:
 		return
 	_local.player.rotation.y = _local.aim_yaw
 	if _local.aim_pivot != null:
-		_local.aim_pivot.global_position = _local.player.render_position() + Vector3.UP * eye_height
+		_local.aim_pivot.global_position = _local.player.render_position() + Vector3.UP * player_eye_offset(_local)
 		_local.aim_pivot.rotation = Vector3(effective_aim_pitch(_local), _local.stream_recoil_yaw, 0.0)
 
 
@@ -3222,7 +3269,10 @@ func _build_world() -> void:
 	_floor.brush_radius = contamination_brush_radius
 	if map_kind == MapKind.TOMATINA:
 		_floor.clean_color = Color("5c5c5c")
-		_floor.upload_tiles_per_frame = 2
+		# Keep about 22 m of ground per draw and cap dirty texture uploads.
+		_floor.tile_cells = 448
+		_floor.tile_sample_margin = 2
+		_floor.upload_tiles_per_frame = 1
 		if TomatinaMap.street_profile_enabled():
 			_floor.terrain_height = TomatinaMap.STREET_PROFILE.height_at
 			_floor.terrain_regions = TomatinaMap.STREET_PROFILE.relief_bounds()
@@ -3263,23 +3313,7 @@ func _build_world() -> void:
 	_camera.near = 0.05
 	add_child(_camera)
 
-	# **Two ways of colouring one sauce, because the two things drawn differ.**
-	# The droplet and impact pools are one pool each for the whole world, so their
-	# sauce cannot be in the material: it goes in the instance colour, and the
-	# material is white with `vertex_color_use_as_albedo` to let it through. The
-	# ribbons are one per shooter, and their mesh carries vertices and nothing
-	# else -- no colour array to put a tint in -- so each shooter gets its own
-	# copy of the material and the sauce is that copy's albedo.
-	var mayo_material := StandardMaterial3D.new()
-	mayo_material.albedo_color = Color("fff0a8")
-	mayo_material.roughness = 0.28
-	mayo_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mayo_material.cull_mode = BaseMaterial3D.CULL_DISABLED
-
-	var landing_material := mayo_material.duplicate() as StandardMaterial3D
-	landing_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	landing_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-
+	# The landing droplet pool gets its color per instance.
 	var shadow_material := StandardMaterial3D.new()
 	shadow_material.albedo_color = Color(0.08, 0.07, 0.055, 0.18)
 	shadow_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -3288,12 +3322,11 @@ func _build_world() -> void:
 	shadow_material.no_depth_test = false
 	shadow_material.render_priority = -1
 
-	var pool_material := mayo_material.duplicate() as StandardMaterial3D
-	pool_material.albedo_color = Color.WHITE
+	var pool_material := StandardMaterial3D.new()
+	pool_material.roughness = 0.28
+	pool_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	pool_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	pool_material.vertex_color_use_as_albedo = true
-
-	_mayo_material = mayo_material
-	_landing_material = landing_material
 	_pool_material = pool_material
 	_shadow_material = shadow_material
 	_build_shooter_visuals(_local)
@@ -3351,7 +3384,7 @@ func create_avatar(peer_id: int, slot: int, is_local: bool) -> Shooter:
 	if _shooters.has(peer_id):
 		return _shooters[peer_id]
 	var shooter := _create_shooter(peer_id, is_local, slot)
-	if _mayo_material != null:
+	if _shadow_material != null:
 		_build_shooter_visuals(shooter)
 	# Anyone but the player at this keyboard is driven by the packets they send.
 	shooter.player.use_injected_input = not is_local
@@ -3635,19 +3668,12 @@ func _create_shooter(peer_id: int, is_local: bool, slot := 0) -> Shooter:
 
 func _build_shooter_visuals(shooter: Shooter) -> void:
 	var suffix := str(shooter.peer_id)
-	# Duplicated, not shared: the sauce lives in this material's albedo, so two
-	# players carrying different bottles need two materials or one of them is
-	# drawn in the other's sauce.
-	shooter.air_material = _mayo_material.duplicate() as StandardMaterial3D
-	shooter.landing_material = _landing_material.duplicate() as StandardMaterial3D
-	# In the sauce the bottle starts with, not in the material's own mayo: on
-	# the Tomatina streets everyone starts on ketchup, and until the first
-	# refill the stream was drawn as mayo out of a ketchup bottle.
-	_apply_sauce_look(shooter)
-	shooter.air_visual = _make_stream_visual("AirRibbon" + suffix, shooter.air_material)
-	shooter.nozzle_visual = _make_stream_visual("NozzleRibbon" + suffix, shooter.air_material, 4)
-	shooter.landing_visual = _make_stream_visual("LandingRibbon" + suffix, shooter.landing_material)
+	var material := SAUCE_STREAM_MATERIALS[shooter.sauce_kind]
+	shooter.air_visual = _make_stream_visual("AirRibbon" + suffix, material)
+	shooter.nozzle_visual = _make_stream_visual("NozzleRibbon" + suffix, material, 4)
+	shooter.landing_visual = _make_stream_visual("LandingRibbon" + suffix, material)
 	shooter.shadow_visual = _make_stream_visual("ProjectedShadow" + suffix, _shadow_material)
+	_apply_sauce_look(shooter)
 
 
 func _build_crosshair() -> void:
@@ -4311,7 +4337,7 @@ func _build_player_body(shooter: Shooter) -> void:
 	# The player body itself only yaws.
 	var aim_pivot := Node3D.new()
 	aim_pivot.name = "AimPivot"
-	aim_pivot.position = Vector3(0.0, eye_height, 0.0)
+	aim_pivot.position = Vector3.UP * player_eye_offset(shooter)
 	shooter.player.add_child(aim_pivot)
 	shooter.aim_pivot = aim_pivot
 	aim_pivot.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
@@ -4379,6 +4405,12 @@ func _build_player_visual(shooter: Shooter) -> void:
 			attachment.bone_name = "SauceTubeMuzzle"
 			skeleton.add_child(attachment)
 			shooter.character_muzzle = attachment
+		if skeleton.find_bone(SAUCE_TUBE_SOCKET) >= 0:
+			var grip := BoneAttachment3D.new()
+			grip.name = "BottleGrip"
+			grip.bone_name = SAUCE_TUBE_SOCKET
+			skeleton.add_child(grip)
+			shooter.character_bottle_origin = grip
 	if shooter.character_muzzle == null:
 		push_error("%s is missing its SauceTubeMuzzle socket" % character_name)
 
@@ -4455,6 +4487,7 @@ const PLAYER_CHARACTER_EYE_LEVELS := [-0.62, 0.42, 0.48, 0.80]
 ## where the face is on the body and bulges out past the hat above it.
 const PLAYER_CHARACTER_GLASSES_FORWARD := [0.55, 0.03, 0.03, 0.03]
 const PLAYER_CHARACTER_GLASSES_WIDTHS := [1.60, 0.86, 0.86, 0.86]
+const VISOR_HIT_LAYER := 1 << 15
 ## character index -> [frame in head-bone space, width], measured once.
 var _face_cache := {}
 
@@ -4482,6 +4515,24 @@ func _fit_glasses_to_face(shooter: Shooter, visual: Node3D, skeleton: Skeleton3D
 	shooter.face_anchor = anchor
 	shooter.face_frame = measured[0]
 	shooter.face_width = measured[1]
+	# The visible lens extends past the movement capsule on some models.
+	# Only sauce raycasts query this separate, non-solid surface.
+	var visor_hitbox := Area3D.new()
+	visor_hitbox.name = "VisorHitbox"
+	visor_hitbox.collision_layer = VISOR_HIT_LAYER
+	visor_hitbox.collision_mask = 0
+	visor_hitbox.monitoring = false
+	visor_hitbox.monitorable = false
+	visor_hitbox.set_meta("visor_player", shooter.player)
+	var height := shooter.face_width * VisorContamination.LENS_SIZE.y / VisorContamination.LENS_SIZE.x
+	visor_hitbox.transform = shooter.face_frame.translated_local(Vector3.DOWN * height * 0.5)
+	var collision := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(shooter.face_width, height, 0.015 / visual.scale.x)
+	collision.shape = shape
+	visor_hitbox.add_child(collision)
+	anchor.add_child(visor_hitbox)
+	shooter.visor_hitbox = visor_hitbox
 
 
 ## The face, off the mesh: every vertex skinned mostly to the head bone or to
@@ -4600,6 +4651,7 @@ func set_character_variant(peer_id: int, requested_index: int) -> void:
 	shooter.player_visual = null
 	shooter.procedural_motion = null
 	shooter.face_anchor = null
+	shooter.visor_hitbox = null
 	shooter.face_width = 0.0
 	shooter.player_animation = null
 	shooter.player_animation_name = StringName()
@@ -4607,12 +4659,14 @@ func set_character_variant(peer_id: int, requested_index: int) -> void:
 	shooter.run_animation = StringName()
 	shooter.death_animation = StringName()
 	shooter.character_muzzle = null
+	shooter.character_bottle_origin = null
 	shooter.character_gauge = null
 	shooter.character_gauge_material = null
 	_apply_player_character_size(shooter, index)
 	_build_player_visual(shooter)
 	if shooter.player_visual != null and shooter.player.contamination != null:
 		shooter.player.contamination.add_visual_overlay(shooter.player_visual)
+	_update_aim(shooter)
 	set_first_person(_first_person)
 
 
@@ -4644,6 +4698,7 @@ func _apply_player_character_size(shooter: Shooter, index: int) -> void:
 			mesh.height = height
 		shooter.body_mesh.position.y = center_y
 	if shooter.player.contamination != null:
+		shooter.player.contamination.axis_offset.y = center_y
 		shooter.player.contamination.configure(shooter.player, shooter.body_mesh,
 			radius, height, _body_color(shooter.is_local))
 
@@ -4668,20 +4723,22 @@ func _update_player_animation(shooter: Shooter) -> void:
 	elif shooter.player.state == MayoPlayer.State.NORMAL \
 			and Vector2(shooter.player.velocity.x, shooter.player.velocity.z).length_squared() > 0.01:
 		desired = shooter.run_animation if shooter.player.is_running() else shooter.walk_animation
+	var backing := desired == shooter.walk_animation and _hose_slot_of(shooter.peer_id) >= 0 \
+		and shooter.player.velocity.dot(shooter.player.global_basis.z) > 0.25
+	player.speed_scale = -1.0 if backing else 1.0
 	if desired == shooter.player_animation_name:
 		return
 	shooter.player_animation_name = desired
 	if shooter == _local and is_instance_valid(shooter.weapon):
 		shooter.weapon.visible = _first_person and shooter.player.state != MayoPlayer.State.DEAD \
 			and (_tutorial == null or _tutorial.has_bottle(shooter.peer_id))
-	player.speed_scale = 1.0
 	if desired == StringName("IdleCarry"):
 		if not shooter.walk_animation.is_empty():
 			player.play(shooter.walk_animation)
 			player.seek(0.0, true)
 			player.pause()
 	elif not desired.is_empty():
-		player.play(desired)
+		player.play(desired, -1.0, 1.0, backing)
 
 
 func _update_character_gauge(shooter: Shooter) -> void:
@@ -5087,8 +5144,9 @@ func warm_stage_materials() -> void:
 	light.rotation_degrees = Vector3(-35.0, -35.0, 0.0)
 	light.shadow_enabled = ($KeyLight as DirectionalLight3D).shadow_enabled
 	warmup.add_child(light)
-	var materials: Array[Material] = [_floor.grid.tile_material(0), _mayo_material,
-		_landing_material, _pool_material, _sauce_parts._projectile_materials[0]]
+	var materials: Array[Material] = [_floor.grid.tile_material(0), _pool_material]
+	for sauce in STATION_SAUCES:
+		materials.append(SAUCE_STREAM_MATERIALS[sauce])
 	if _blast_material != null:
 		materials.append(_blast_material)
 	var sample_mesh := SphereMesh.new()
@@ -5332,13 +5390,11 @@ func _build_refuge_shower(room: int) -> void:
 	spray.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
 	spray.emission_sphere_radius = 0.14
 	spray.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var droplet := BoxMesh.new()
-	droplet.size = Vector3(0.021, 0.16, 0.021)
-	var water := StandardMaterial3D.new()
-	water.albedo_color = Color("b5ecff")
-	water.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	droplet.material = water
-	spray.mesh = droplet
+	spray.particle_flag_align_y = true
+	spray.scale_amount_min = 0.72
+	spray.scale_amount_max = 1.22
+	spray.mesh = WATER_DROPLET
+	spray.material_override = SHOWER_WATER
 	add_child(spray)
 	_refuge_shower_sprays.append(spray)
 
@@ -7880,7 +7936,7 @@ func _update_camera() -> void:
 	if _crosshair is Crosshair:
 		(_crosshair as Crosshair).scope = smoothstep(0.0, 1.0, _sniper_zoom)
 	var aim_basis := _aim_basis()
-	var eye := _player.render_position() + Vector3.UP * eye_height
+	var eye := _player.render_position() + Vector3.UP * player_eye_offset(_local)
 	var tilt := _player.fall_tilt()
 	# The stumble shakes the view in both camera modes; it is small enough that
 	# the shoulder camera keeps the capsule in frame.
@@ -7896,9 +7952,12 @@ func _update_camera() -> void:
 	# Legacy squirt, hit, and fire hose effects keep their own camera offsets.
 	var shake := _shake_offset(_local) * camera_motion_scale
 	var kick := _local.recoil_pitch + _local.sway_pitch * camera_sway_fraction + shake.x \
-		+ _local.hose_kick_pitch + _hose_rumble(_local)
+		+ (_local.hose_kick_pitch * 0.42 + _hose_rumble(_local)) * camera_motion_scale
 	if kick != 0.0:
 		aim_basis = aim_basis.rotated(aim_basis.x, kick)
+	if _first_person:
+		var shove := clampf(_local.hose_kick_pitch / deg_to_rad(HOSE_KICK_DEGREES), 0.0, 1.0)
+		eye += aim_basis.z * (0.07 * shove * camera_motion_scale)
 	var drift := _local.sway_yaw * camera_sway_fraction + shake.y
 	if drift != 0.0:
 		aim_basis = aim_basis.rotated(aim_basis.y, drift)
@@ -7919,6 +7978,16 @@ func _update_camera() -> void:
 	_camera.global_transform = Transform3D(aim_basis, eye)
 
 
+## Eye height is measured from the feet so a shorter capsule lowers the view.
+func player_eye_offset(shooter: Shooter) -> float:
+	var foot := MayoPlayer.CAPSULE_HEIGHT * 0.5
+	return (eye_height + foot) * float(PLAYER_CHARACTER_SIZE_MULTIPLIERS[shooter.character_index]) - foot
+
+
+func player_eye_position(shooter: Shooter) -> Vector3:
+	return shooter.player.global_position + Vector3.UP * player_eye_offset(shooter)
+
+
 func _update_aim(shooter: Shooter = null) -> void:
 	if shooter == null:
 		shooter = _local
@@ -7926,8 +7995,8 @@ func _update_aim(shooter: Shooter = null) -> void:
 		return
 	# Recoil turns the aim pivot while movement keeps the body's mouse yaw.
 	shooter.player.rotation.y = shooter.aim_yaw
-	# Restore the authoritative muzzle origin before physics casts.
-	shooter.aim_pivot.position = Vector3.UP * eye_height
+	shooter.aim_pivot.position = Vector3.UP * player_eye_offset(shooter)
+	shooter.stream_target = Vector3.INF
 	var aim := Vector3(effective_aim_pitch(shooter), shooter.stream_recoil_yaw, 0.0)
 	shooter.aim_pivot.rotation = aim
 	aim.y += shooter.aim_yaw
@@ -7954,6 +8023,59 @@ func debug_aim_at(target: Vector3) -> void:
 	debug_set_aim(rad_to_deg(atan2(-to_target.x, -to_target.z)), rad_to_deg(asin(to_target.y)))
 
 
+func sauce_self_exclusions(shooter: Shooter) -> Array[RID]:
+	var excluded: Array[RID] = [shooter.player.get_rid()]
+	if is_instance_valid(shooter.visor_hitbox):
+		excluded.append(shooter.visor_hitbox.get_rid())
+	return excluded
+
+
+## Glasses face forwards and can protrude past the player collision capsule.
+## Treat a ray into the lens like a hit on its wearer.
+func cast_sauce_ray(space: PhysicsDirectSpaceState3D, query: PhysicsRayQueryParameters3D) -> Dictionary:
+	var hit := space.intersect_ray(query)
+	while not hit.is_empty() and hit.collider is Area3D:
+		var area := hit.collider as Area3D
+		var wearer := area.get_meta("visor_player", null) as MayoPlayer
+		if is_instance_valid(wearer) and (query.to - query.from).dot(area.global_basis.z) > 0.0:
+			hit.collider = wearer
+			return hit
+		var excluded := query.exclude
+		excluded.append(area.get_rid())
+		query.exclude = excluded
+		hit = space.intersect_ray(query)
+	return hit
+
+
+func _target_along_aim(shooter: Shooter, reach: float) -> Vector3:
+	var eye := shooter.aim_pivot.global_position
+	var end := eye + shooter.attack_direction * reach
+	var query := PhysicsRayQueryParameters3D.create(eye, end)
+	query.exclude = sauce_self_exclusions(shooter)
+	query.collide_with_areas = true
+	var hit := cast_sauce_ray(get_world_3d().direct_space_state, query)
+	if hit.is_empty():
+		return end
+	var player := hit.collider as MayoPlayer
+	if player != null:
+		var other: Shooter = _shooters.get(player.peer_id)
+		if other != null and is_instance_valid(other.face_anchor) and other.face_width > 0.0:
+			# The reticle's ray already crosses the lens. Use that point on the
+			# ray when the capsule's surface is set back from the visible face.
+			var lens := _face_mask_position(other, hit.position, shooter.attack_direction)
+			if lens.is_finite() and absf(lens.x) <= 0.5 and absf(lens.y) <= 0.5:
+				var frame := other.face_anchor.global_transform * other.face_frame
+				var height := other.face_width * VisorContamination.LENS_SIZE.y / VisorContamination.LENS_SIZE.x
+				return frame * Vector3(lens.x * other.face_width, (lens.y - 0.5) * height, 0.0)
+	return hit.position
+
+
+func _stream_aim_target(shooter: Shooter) -> Vector3:
+	if not shooter.stream_target.is_finite():
+		shooter.stream_target = _target_along_aim(shooter, aim_convergence_distance)
+	return shooter.stream_target
+
+
 func _emit_point(shooter: Shooter = null) -> void:
 	if shooter == null:
 		shooter = _local
@@ -7964,36 +8086,20 @@ func _emit_point(shooter: Shooter = null) -> void:
 	var focused := shooter.sauce_part == SauceParts.Part.FOCUS
 	var spread := 0.28 if focused else 1.0
 	var jitter := shooter.rng.randf_range(-lateral_position_jitter, lateral_position_jitter) * spread
-	# **Every peer launches from the same place**: the bottle under the aim
-	# pivot, which is where the player holding it sees it leave. Another
-	# player's stream used to be launched from the tube in their character's
-	# hands instead -- 1.3 m under the aim line and 2 m out -- and a point sent
-	# from there at the convergence point leaves about 29 degrees above the
-	# aim. Their own screen showed the stream on the crosshair while the host,
-	# who decides where it lands, sent it over the target's head.
-	#
-	# The character's tube is still where it is *drawn* leaving from: the gap
-	# rides on the point as `draw_offset` and fades as it flies.
-	var launch: Node3D = shooter.viewmodel_muzzle if is_instance_valid(shooter.viewmodel_muzzle) \
-		else shooter.muzzle
-	if launch != shooter.muzzle and is_instance_valid(shooter.muzzle):
-		point.draw_offset = shooter.muzzle.global_position - launch.global_position
-	point.position = launch.global_position + shooter.attack_direction * muzzle_forward_offset \
-		+ aim_basis.x * jitter
-	# The nozzle is held off to the side, so the strand is launched at the point
-	# the crosshair marks rather than parallel to the view axis.
-	var convergence := shooter.aim_pivot.global_position + shooter.attack_direction * aim_convergence_distance
+	var launch := part_launch_origin(shooter, shooter.sauce_part)
+	var forward_offset := 0.0 if is_instance_valid(shooter.character_muzzle) else muzzle_forward_offset
+	point.position = launch + shooter.attack_direction * forward_offset + aim_basis.x * jitter
+	if shooter == _local and _first_person and is_instance_valid(shooter.weapon_sway):
+		point.draw_offset = _first_person_tip(shooter, shooter.sauce_part) - launch
+	var to_target := _stream_aim_target(shooter) - point.position
+	# A point-blank obstruction is found by the first sweep along the barrel.
+	# Leave the nozzle forwards while the reticle's point is behind its mouth.
+	var direction := to_target.normalized() if to_target.dot(shooter.attack_direction) > 0.05 else _world_nozzle_forward(shooter)
 	var angle := shooter.rng.randf_range(-yaw_angle_jitter, yaw_angle_jitter) * spread
-	var direction := (convergence - point.position).normalized().rotated(aim_basis.y, angle).normalized()
+	direction = direction.rotated(aim_basis.y, angle)
 	if shooter.lane_angle != 0.0:
 		direction = direction.rotated(aim_basis.y, shooter.lane_angle).normalized()
-	# The first cast runs from the eyes, not from the nozzle. The nozzle is the
-	# better part of a metre ahead of the aim pivot, so a body pressed up
-	# against the player has the point born *inside* it, where a ray finds no
-	# surface: too close to hurt, and the stream went through it. Starting the
-	# sweep at the pivot covers that gap; the player's own capsule is excluded
-	# by `self_hit_distance`, and the point is still drawn from the nozzle.
-	point.last_collision_position = shooter.aim_pivot.global_position
+	point.last_collision_position = _bottle_sweep_origin(shooter, launch)
 	# Speed jitter is independent of the yaw jitter above: it spreads where a
 	# point runs out of pressure, and so spreads the landing point along the
 	# strand axis rather than across it.
@@ -8019,6 +8125,7 @@ func _emit_point(shooter: Shooter = null) -> void:
 	point.launch_direction = direction
 	point.collision_slot = shooter.next_collision_slot
 	point.burst_index = shooter.burst_index
+	point.sauce = shooter.sauce_kind
 	var slots := maxi(raycast_frame_stride, 2 if map_kind == MapKind.TOMATINA else 1)
 	shooter.next_collision_slot = (shooter.next_collision_slot + 1) % slots
 	shooter.points.push_back(point)
@@ -8059,7 +8166,8 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 		return
 	var space_state := get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.new()
-	var own_body: Array[RID] = [shooter.player.get_rid()]
+	query.collide_with_areas = true
+	var own_body := sauce_self_exclusions(shooter)
 	var no_exclusions: Array[RID] = []
 	var physics_frame := int(Engine.get_physics_frames())
 	var stride := maxi(raycast_frame_stride, 1)
@@ -8078,7 +8186,14 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 	# Scaling velocity by k requires gravity * k² for the same spatial arc.
 	# stream_range only ends pressure; it does not stop a point or its damage.
 	var travel_scale := extend_speed / maxf(emission_speed, 0.001)
-	var flight_gravity := gravity_acceleration * travel_scale * travel_scale
+	var gravity_step := gravity_acceleration * travel_scale * travel_scale * delta
+	var pressure_lifetime := point_time_lifetime * emission_speed / maxf(extend_speed, 0.001)
+	var motion_floor_squared := raycast_min_accumulated_motion * raycast_min_accumulated_motion
+	var catch_up_squared := catch_up_motion * catch_up_motion
+	var near_floor_height := strand_thickness * 1.25
+	var phase_slot := physics_frame % stride
+	var cut_cheese := authority and not _cheese_threads.is_empty()
+	var three_way := _is_three_way(shooter)
 	for point in points:
 		if point.phase == PointPhase.LANDING:
 			point.landing_age += delta
@@ -8086,30 +8201,31 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 
 		point.age += delta
 		if point.powered:
-			var time_expired := use_time_lifetime and point.age >= point_time_lifetime * point.range_scale * emission_speed / maxf(extend_speed, 0.001)
+			var time_expired := use_time_lifetime and point.age >= pressure_lifetime * point.range_scale
 			var distance_expired := use_distance_lifetime and point.distance_travelled >= stream_range * point.range_scale
 			if time_expired or distance_expired:
 				point.powered = false
 		if not point.powered:
-			point.velocity.y -= flight_gravity * delta
+			point.velocity.y -= gravity_step
 
 		var previous := point.position
 		var next := previous + point.velocity * delta
 		point.distance_travelled += previous.distance_to(next)
-		var accumulated_motion := point.last_collision_position.distance_to(next)
-		var scheduled := physics_frame % stride == point.collision_slot % stride
-		var near_floor := next.y <= strand_thickness * 1.25
-		var must_catch_up := accumulated_motion >= catch_up_motion
-		var should_cast := accumulated_motion >= raycast_min_accumulated_motion \
-			and (scheduled or near_floor or must_catch_up)
+		var accumulated_squared := point.last_collision_position.distance_squared_to(next)
+		var should_cast := accumulated_squared >= motion_floor_squared and (phase_slot == point.collision_slot % stride \
+			or next.y <= near_floor_height or accumulated_squared >= catch_up_squared)
 		if should_cast:
 			query.from = point.last_collision_position
 			query.to = next
 			query.exclude = own_body if point.distance_travelled < self_hit_distance else no_exclusions
+			query.hit_from_inside = point.first_collision
+			point.first_collision = false
 			if debug_profile_enabled:
 				debug_raycast_count += 1
-			var hit := space_state.intersect_ray(query)
-			if not _cheese_threads.is_empty() and authority:
+			var hit := cast_sauce_ray(space_state, query)
+			if not hit.is_empty() and (hit.normal as Vector3).is_zero_approx():
+				hit.normal = (query.from - query.to).normalized()
+			if cut_cheese and not _cheese_threads.is_empty():
 				var end: Vector3 = next if hit.is_empty() else hit.position
 				_cut_cheese_by_stream(point.last_collision_position, end)
 			if not hit.is_empty():
@@ -8118,6 +8234,7 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 				# shooter, but a client's splats would be its own guess, so it
 				# waits for the broadcast.
 				var collider := hit.collider as Node
+				var sauce := point.sauce if point.sauce >= 0 else shooter.sauce_kind
 				var on_floor: bool = collider != null and collider.is_in_group("mayo_floor")
 				# Presentation first, and **above the authority test on purpose**:
 				# the spray and the splat are what the hit looks and sounds like,
@@ -8128,18 +8245,18 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 					var on_body := collider is MayoEnemy
 					if on_body and (collider as MayoEnemy).is_alive():
 						_note_stream_contact(collider as MayoEnemy, hit.position,
-							hit.normal, point.velocity, shooter)
+							hit.normal, point.velocity, shooter, sauce)
 					else:
-						_spawn_impact_spray(hit.position, hit.normal, point.velocity, false, shooter)
+						_spawn_impact_spray(hit.position, hit.normal, point.velocity, false, shooter, 1.0, false, sauce)
 				if authority and collider != null:
 					if on_floor:
-						_record_floor_splat(shooter, point.burst_index, hit.position)
+						_record_floor_splat(shooter, point.burst_index, hit.position, sauce, point.velocity)
 					elif collider.is_in_group("mayo_contaminable"):
 						# 3갈래의 가닥은 한 점이 주는 피해가 기본 줄기보다 적다.
 						var lane_damage := -1.0
-						if _is_three_way(shooter) and collider is MayoEnemy:
+						if three_way and collider is MayoEnemy:
 							lane_damage = (collider as MayoEnemy).sauce_damage_per_hit * SauceParts.THREE_WAY_SCALE
-						_record_splat(collider, hit.position, hit.normal, shooter, true, -1, lane_damage)
+						_record_splat(collider, hit.position, hit.normal, shooter, true, sauce, lane_damage, query.to - query.from)
 				_begin_landing(point, hit.position, hit.normal, on_floor)
 			else:
 				point.position = next
@@ -8147,15 +8264,23 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 		else:
 			point.position = next
 
+	# Keep strand order and the existing back-to-front droplet order while
+	# removing points in one pass, even when a whole strand lands together.
+	var first_kept := points.size()
 	for i in range(points.size() - 1, -1, -1):
 		var point := points[i]
 		if point.phase == PointPhase.LANDING and point.landing_age >= landing_transition_time:
 			if droplets_on_floor if point.landed_on_floor else droplets_on_surfaces:
-				_spawn_landing_droplets(point.position,
-					shooter.sauce_kind if shooter != null else ContaminationGrid.KIND_MAYO)
-			points.remove_at(i)
-		elif point.position.y < -1.0:
-			points.remove_at(i)
+				_spawn_landing_droplets(point.position, point.sauce if point.sauce >= 0 else shooter.sauce_kind)
+		elif point.position.y >= -1.0:
+			first_kept -= 1
+			if first_kept != i:
+				points[first_kept] = point
+	if first_kept > 0:
+		var retained := points.size() - first_kept
+		for i in retained:
+			points[i] = points[i + first_kept]
+		points.resize(retained)
 
 
 ## Settles a point onto whatever it hit. The offset is along the surface's own
@@ -8180,8 +8305,12 @@ func _begin_landing(point: MayoPoint, hit_position: Vector3, hit_normal: Vector3
 ## using. Working it out independently on each machine would mean agreeing on
 ## burst boundaries as well as on cells, for nothing.
 func _record_floor_splat(shooter: Shooter, burst_index: int,
-		hit_position: Vector3, stored_sauce := -1) -> void:
+		hit_position: Vector3, stored_sauce := -1, impact_direction := Vector3.ZERO,
+		brush := ContaminationGrid.BRUSH_POOL) -> void:
 	var sauce := shooter.sauce_kind if stored_sauce < 0 else stored_sauce
+	if map_kind == MapKind.TOMATINA and brush == ContaminationGrid.BRUSH_POOL and not impact_direction.is_zero_approx():
+		var travel := _floor.global_basis.inverse() * impact_direction.normalized()
+		brush = ContaminationGrid.stroke_brush(Vector2(travel.x, travel.z))
 	var frame := int(Engine.get_physics_frames())
 	var span := maxi(1, roundi(coat_seconds * float(Engine.physics_ticks_per_second)))
 	if shooter.coat_burst != burst_index or frame - shooter.coat_frame >= span:
@@ -8189,10 +8318,12 @@ func _record_floor_splat(shooter: Shooter, burst_index: int,
 		shooter.coat_frame = frame
 		_next_coat += 1
 		shooter.coat_id = _next_coat
-	var cell := _floor.paint_mayo(hit_position, shooter.coat_id, sauce)
+	if map_kind == MapKind.TOMATINA:
+		brush = _floor.grid.position_brush(_floor._to_grid(hit_position), brush)
+	var cell := _floor.paint_mayo(hit_position, shooter.coat_id, sauce, brush)
 	if cell.x >= 0:
 		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_FLOOR, sauce), shooter.coat_id,
+			_splat_code(SPLAT_FLOOR, sauce, brush), shooter.coat_id,
 			cell.x, cell.y]))
 
 
@@ -8206,18 +8337,29 @@ func _record_floor_splat(shooter: Shooter, burst_index: int,
 ## damage depend on how many decorative lumps happened to come back down on the
 ## thing that threw them.
 func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
-		shooter: Shooter, damaging := true, stored_sauce := -1, damage := -1.0) -> void:
+		shooter: Shooter, damaging := true, stored_sauce := -1, damage := -1.0,
+		impact_direction := Vector3.ZERO, brush := ContaminationGrid.BRUSH_POOL) -> void:
 	var sauce := shooter.sauce_kind if stored_sauce < 0 else stored_sauce
+	var directional := map_kind == MapKind.TOMATINA and brush == ContaminationGrid.BRUSH_POOL \
+		and not impact_direction.is_zero_approx()
 	if surface is ContaminableObject:
 		var wall := surface as ContaminableObject
-		var splat := wall.paint_mayo(hit_position, hit_normal, sauce)
+		if directional:
+			brush = ContaminationGrid.stroke_brush(wall.paint_tangent(hit_normal, impact_direction.normalized()))
+		if map_kind == MapKind.TOMATINA:
+			brush = wall.position_brush(hit_position, hit_normal, brush)
+		var splat := wall.paint_mayo(hit_position, hit_normal, sauce, brush)
 		var index := _walls.find(wall)
 		if splat.x < 0 or index < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_WALL, sauce),
+			_splat_code(SPLAT_WALL, sauce, brush),
 			index * FACES_PER_WALL + splat.x, splat.y, splat.z]))
 		return
+	if directional and (surface is MayoPlayer or surface is MayoEnemy):
+		var travel := impact_direction.normalized()
+		var u_axis := Vector3.UP.cross(hit_normal).normalized()
+		brush = ContaminationGrid.stroke_brush(Vector2(travel.dot(u_axis), travel.y))
 	if surface is MayoPlayer:
 		var player := surface as MayoPlayer
 		# **Mustard slows whoever it lands on, and that includes the party.**
@@ -8226,24 +8368,28 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 		# that stops at a body it plainly hit.
 		if damaging and sauce == ContaminationGrid.KIND_MUSTARD:
 			player.splash_mustard()
-		var cell := player.paint_mayo(hit_position, hit_normal, sauce)
-		if cell.x < 0:
-			return
-		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_BODY, sauce), player.peer_id,
-			cell.x, cell.y]))
-		_record_visor_splat(player, hit_position, sauce)
+		var body_brush := brush
+		if map_kind == MapKind.TOMATINA and player.contamination != null:
+			var body := player.contamination
+			body_brush = body.grid.position_brush(body._to_grid(hit_position, hit_normal), brush)
+		var cell := player.paint_mayo(hit_position, hit_normal, sauce, body_brush)
+		if cell.x >= 0:
+			_pending_splats.append_array(PackedInt32Array([
+				_splat_code(SPLAT_BODY, sauce, body_brush), player.peer_id, cell.x, cell.y]))
+		_record_visor_splat(player, hit_position, sauce, impact_direction, brush)
 		return
 	if surface is StallRoof:
 		var roof := surface as StallRoof
 		var roof_index := _roofs.find(roof)
 		if roof_index < 0:
 			return
-		var roof_cell := roof.paint_mayo(hit_position, hit_normal, sauce)
+		if map_kind == MapKind.TOMATINA and roof.contamination != null:
+			brush = roof.contamination.grid.position_brush(roof.contamination._to_grid(hit_position), brush)
+		var roof_cell := roof.paint_mayo(hit_position, hit_normal, sauce, brush)
 		if roof_cell.x < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_ROOF, sauce), roof_index,
+			_splat_code(SPLAT_ROOF, sauce, brush), roof_index,
 			roof_cell.x, roof_cell.y]))
 		return
 	if surface is MayoEnemy:
@@ -8315,11 +8461,14 @@ func _record_splat(surface: Node, hit_position: Vector3, hit_normal: Vector3,
 				_burst_ketchup(enemy, shooter)
 		if damaging and sauce == ContaminationGrid.KIND_MUSTARD:
 			enemy.splash_mustard()
-		var enemy_cell := enemy.paint_mayo(hit_position, hit_normal, sauce)
+		if map_kind == MapKind.TOMATINA and enemy.contamination != null:
+			var body := enemy.contamination
+			brush = body.grid.position_brush(body._to_grid(hit_position, hit_normal), brush)
+		var enemy_cell := enemy.paint_mayo(hit_position, hit_normal, sauce, brush)
 		if enemy_cell.x < 0:
 			return
 		_pending_splats.append_array(PackedInt32Array([
-			_splat_code(SPLAT_ENEMY, sauce), index,
+			_splat_code(SPLAT_ENEMY, sauce, brush), index,
 			enemy_cell.x, enemy_cell.y]))
 
 
@@ -8347,12 +8496,12 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 			SauceParts.mortar_charge(shot.launch_velocity))
 		return
 	if target.is_in_group("mayo_floor"):
-		_record_floor_splat(shooter, shooter.burst_index, at, sauce)
+		_record_floor_splat(shooter, shooter.burst_index, at, sauce, shot.velocity)
 	elif target.is_in_group("mayo_contaminable"):
 		var direct: float = float(profile.damage) * float(shot.get("damage_scale", 1.0))
 		if target is MayoEnemy:
 			direct = SauceParts.scaled_damage(direct, target as MayoEnemy)
-		_record_splat(target, at, normal, shooter, true, sauce, direct)
+		_record_splat(target, at, normal, shooter, true, sauce, direct, shot.get("impact_direction", shot.velocity))
 	if blast <= 0.0:
 		return
 
@@ -8392,39 +8541,50 @@ func apply_splats(data: PackedInt32Array) -> void:
 	while index + 3 < data.size():
 		var code := data[index]
 		var kind := code & SPLAT_SURFACE_MASK
-		var sauce := code >> SPLAT_SAUCE_SHIFT
+		var sauce := (code >> SPLAT_SAUCE_SHIFT) & ContaminationGrid.KIND_MASK
+		var brush := code >> SPLAT_BRUSH_SHIFT
 		var target := data[index + 1]
 		var cell := Vector2i(data[index + 2], data[index + 3])
 		index += 4
 		if kind == SPLAT_FLOOR:
-			_floor.paint_mayo_cell(cell, target, sauce)
+			_floor.paint_mayo_cell(cell, target, sauce, brush)
 			continue
 		if kind == SPLAT_FLOOR_CLEAR:
-			_floor.wash_cell(cell)
+			if target >= 0 and target < HOSE_FLOOR_WASH_RADII.size():
+				_floor.wash_cell(cell, HOSE_FLOOR_WASH_RADII[target])
 			continue
 		if kind == SPLAT_BODY:
 			var body_shooter: Shooter = _shooters.get(target)
 			if body_shooter != null:
-				body_shooter.player.paint_mayo_cell(cell, sauce)
+				body_shooter.player.paint_mayo_cell(cell, sauce, brush)
 			continue
 		if kind == SPLAT_BODY_WASH:
 			_apply_refuge_shower(target, cell.x)
 			continue
-		if kind == SPLAT_BODY_HOSE:
-			_apply_hose_wash(target)
+		if kind == SPLAT_BODY_HOSE or kind == SPLAT_VISOR_HOSE:
+			var washed_shooter: Shooter = _shooters.get(target)
+			if washed_shooter != null:
+				var washed_player := washed_shooter.player
+				if kind == SPLAT_BODY_HOSE and washed_player.contamination != null:
+					washed_player.contamination.wash_cell(cell, HOSE_BODY_WASH_RADIUS)
+				elif kind == SPLAT_VISOR_HOSE and washed_player.visor != null:
+					washed_player.visor.wash_cell(cell, HOSE_VISOR_WASH_RADIUS)
 			continue
 		if kind == SPLAT_WALL_CLEAR:
 			var cleared_wall := target / FACES_PER_WALL
 			if cleared_wall >= 0 and cleared_wall < _walls.size():
 				_walls[cleared_wall].wash_cell(target % FACES_PER_WALL, cell, HOSE_WALL_WASH_RADIUS)
 			continue
-		if kind == SPLAT_ROOF:
+		if kind == SPLAT_ROOF or kind == SPLAT_ROOF_CLEAR:
 			if target >= 0 and target < _roofs.size():
-				_roofs[target].paint_mayo_cell(cell, sauce)
+				if kind == SPLAT_ROOF_CLEAR:
+					_roofs[target].contamination.wash_cell(cell, HOSE_WALL_WASH_RADIUS)
+				else:
+					_roofs[target].paint_mayo_cell(cell, sauce, brush)
 			continue
 		if kind == SPLAT_ENEMY:
 			if target >= 0 and target < _enemies.size():
-				_enemies[target].paint_mayo_cell(cell, sauce)
+				_enemies[target].paint_mayo_cell(cell, sauce, brush)
 			continue
 		if kind == SPLAT_VISOR or kind == SPLAT_VISOR_CLEAR:
 			var visor_shooter: Shooter = _shooters.get(target)
@@ -8432,29 +8592,23 @@ func apply_splats(data: PackedInt32Array) -> void:
 				if kind == SPLAT_VISOR_CLEAR:
 					visor_shooter.player.visor.clear()
 				else:
-					visor_shooter.player.visor.paint_cell(cell, sauce)
+					visor_shooter.player.visor.paint_cell(cell, sauce, brush)
 			continue
 		var wall_index := target / FACES_PER_WALL
 		var face := target % FACES_PER_WALL
 		if wall_index >= 0 and wall_index < _walls.size():
-			_walls[wall_index].paint_mayo_cell(face, cell, sauce)
+			_walls[wall_index].paint_mayo_cell(face, cell, sauce, brush)
 
 
-## **Everything about this shooter that is the colour of its sauce.** The bottle's
-## contents, and its two ribbon materials.
-##
-## Called where the sauce changes rather than every frame: it is a refill and
-## nothing else, and setting an albedo on two materials per shooter per frame is
-## work for a value that changes once a minute.
+## The bottle and all three visible ribbons use the equipped sauce.
 func _apply_sauce_look(shooter: Shooter) -> void:
 	_update_bottle_gauge(shooter)
-	var tint: Color = SAUCE_TINTS[shooter.sauce_kind]
-	if shooter.air_material != null:
-		shooter.air_material.albedo_color = tint
-	if shooter.landing_material != null:
-		# The landing ribbon keeps the alpha its own material was built with.
-		shooter.landing_material.albedo_color = Color(tint.r, tint.g, tint.b,
-			shooter.landing_material.albedo_color.a)
+	if not is_instance_valid(shooter.air_visual):
+		return
+	var material := SAUCE_STREAM_MATERIALS[shooter.sauce_kind]
+	shooter.air_visual.set_ribbon_material(material)
+	shooter.nozzle_visual.set_ribbon_material(material)
+	shooter.landing_visual.set_ribbon_material(material)
 
 
 ## **Six stacks of ketchup going off on a body.**
@@ -8589,33 +8743,55 @@ func _stain_body_with_sauce(enemy: MayoEnemy, from: Vector3, sauce: int) -> void
 			cell.x, cell.y]))
 
 
-## The surface and the sauce in one int, the way `apply_splats` reads them back.
-func _splat_code(surface: int, sauce: int) -> int:
-	return surface | (sauce << SPLAT_SAUCE_SHIFT)
+## The surface, sauce and brush share one word in the four-int splat.
+func _splat_code(surface: int, sauce: int, brush := ContaminationGrid.BRUSH_POOL) -> int:
+	return surface | (sauce << SPLAT_SAUCE_SHIFT) | (brush << SPLAT_BRUSH_SHIFT)
 
 
 ## A hit that lands in front of a player's eyes goes on their glasses as well
 ## as on their body. Decided by the server off the same hit, so the mask that
 ## blinds them and the mask everyone else sees on their face are one thing.
 ##
-## One impact deliberately marks two surfaces. The lenses have no collider --
-## the ray always hits the capsule -- so a hit on the forehead marks the
-## forehead and is then projected onto the lenses in front of it, where
-## physically the lenses would have caught it first. Giving them a collider
-## would be truer and would also shield the body and the floor behind the head,
-## which is a bigger change than the doubling is worth. What keeps it honest is
-## the filtering below: anything level with the lenses or behind them, and
-## anything projecting outside the physical lens, marks nothing.
+## Project an incoming hit onto the character's lens plane in its posed head space.
+## The body sweep can stop just in front of or behind that plane.
+func _face_mask_position(shooter: Shooter, at: Vector3, direction: Vector3) -> Vector2:
+	var frame := shooter.face_anchor.global_transform * shooter.face_frame
+	var into_face := frame.affine_inverse()
+	var local := into_face * at
+	var travel := into_face.basis * direction.normalized()
+	if travel.z <= 0.001:
+		return Vector2.INF
+	var distance := -local.z / travel.z
+	if absf(distance) > 0.85:
+		return Vector2.INF
+	local += travel * distance
+	var height := shooter.face_width * VisorContamination.LENS_SIZE.y / VisorContamination.LENS_SIZE.x
+	return Vector2(local.x / shooter.face_width, local.y / height + 0.5)
+
+
 func _record_visor_splat(player: MayoPlayer, hit_position: Vector3,
-		sauce := ContaminationGrid.KIND_MAYO) -> void:
+		sauce := ContaminationGrid.KIND_MAYO, impact_direction := Vector3.ZERO,
+		brush := ContaminationGrid.BRUSH_POOL) -> void:
 	if player.visor == null:
 		return
-	var direction := player.visor.to_local(hit_position)
-	var cell := player.visor.paint_from_hit(direction, sauce)
-	if cell.x < 0:
-		return
-	_pending_splats.append_array(PackedInt32Array([
-		_splat_code(SPLAT_VISOR, sauce), player.peer_id, cell.x, cell.y]))
+	var shooter: Shooter = _shooters.get(player.peer_id)
+	var cell: Vector2i
+	if not impact_direction.is_zero_approx() and shooter != null \
+			and is_instance_valid(shooter.face_anchor) and shooter.face_width > 0.0:
+		if map_kind == MapKind.TOMATINA and (brush == ContaminationGrid.BRUSH_POOL or brush >= ContaminationGrid.BRUSH_STROKE):
+			var lens := shooter.face_anchor.global_transform * shooter.face_frame
+			var local := lens.basis.orthonormalized().transposed() * impact_direction.normalized()
+			brush = ContaminationGrid.stroke_brush(Vector2(local.x, local.y))
+		var at := _face_mask_position(shooter, hit_position, impact_direction)
+		if at.is_finite() and map_kind == MapKind.TOMATINA:
+			brush = player.visor.grid.position_brush(at * VisorContamination.LENS_SIZE, brush)
+		cell = player.visor.paint_face_mask(at, sauce, brush)
+	else:
+		# Diffuse bursts and splashes do not have a single incoming shot.
+		cell = player.visor.paint_from_hit(player.visor.to_local(hit_position), sauce, brush)
+	if cell.x >= 0:
+		_pending_splats.append_array(PackedInt32Array([
+			_splat_code(SPLAT_VISOR, sauce, brush), player.peer_id, cell.x, cell.y]))
 
 
 ## Which supply point the player can reach, or -1. Counters are front-facing.
@@ -8929,7 +9105,7 @@ func _update_visuals(shooter: Shooter = null) -> void:
 	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, thickness, 0.004)
 	shooter.shadow_visual.update_ribbon(shadow_segments, camera_position, camera_forward,
 		thickness * 0.72, 0.012)
-	if shooter != _local or map_kind != MapKind.TOMATINA:
+	if shooter != _local:
 		_update_nozzle_visual(shooter)
 
 
@@ -8947,18 +9123,20 @@ func _nozzle_segments(shooter: Shooter, camera_position: Vector3) -> Array:
 			or (tail.phase == PointPhase.LANDING and tail.landing_age > 0.001) \
 			or _is_near_camera(tail, camera_position):
 		return []
-	var forward := -shooter.weapon_sway.global_basis.z
-	var tip := shooter.weapon_sway.to_global(shooter.muzzle.position) - forward * 0.003
-	var gap := tip.distance_to(tail.position)
+	var local_view := shooter == _local and _first_person
+	var forward := -shooter.weapon_sway.global_basis.z if local_view else _world_nozzle_forward(shooter)
+	var tip := _first_person_tip(shooter, shooter.sauce_part) if local_view else part_launch_origin(shooter, shooter.sauce_part)
+	var tail_drawn := _ribbon_point_position(tail, local_view)
+	var gap := tip.distance_to(tail_drawn)
 	if gap > 0.8 or gap < 0.001:
 		return []
 	var bend := tip + forward * minf(0.06, gap * 0.3)
 	var nozzle_width := clampf(bottle_radius * 0.32 / maxf(strand_thickness, 0.001), 0.05, 1.0)
 	var segment: Array = []
 	for index in 4:
-		var t := float(index) / 3.0
+		var t := 1.0 - float(index) / 3.0
 		var point := RibbonPoint.new()
-		point.position = tip.lerp(bend, t).lerp(bend.lerp(tail.position, t), t)
+		point.position = tip.lerp(bend, t).lerp(bend.lerp(tail_drawn, t), t)
 		point.width_scale = lerpf(nozzle_width, 0.62 if tail.range_scale > 1.0 else 1.0, t)
 		segment.push_back(point)
 	return [segment]
@@ -8981,7 +9159,13 @@ func _is_near_camera(point: MayoPoint, camera_position: Vector3) -> bool:
 
 
 ## How long a point takes to be drawn where it really is. See `draw_offset`.
-const MUZZLE_DRAW_BLEND := 0.22
+const MUZZLE_DRAW_BLEND := 0.16
+
+
+func _ribbon_point_position(point: MayoPoint, local_view: bool) -> Vector3:
+	if local_view and point.phase == PointPhase.AIR and point.age < MUZZLE_DRAW_BLEND and point.draw_offset != Vector3.ZERO:
+		return point.position + point.draw_offset * (1.0 - smoothstep(0.0, MUZZLE_DRAW_BLEND, point.age))
+	return point.position
 
 
 func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: Shooter = null) -> Array:
@@ -9005,13 +9189,7 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: S
 				result.push_back(current)
 				current = []
 		var visual_point := RibbonPoint.new()
-		visual_point.position = point.position
-		# Somebody else's stream is drawn leaving their character's tube and
-		# joins its real path over the first moment of flight. Drawing only.
-		if phase == PointPhase.AIR and point.age < MUZZLE_DRAW_BLEND \
-				and point.draw_offset != Vector3.ZERO:
-			visual_point.position += point.draw_offset \
-				* (1.0 - smoothstep(0.0, MUZZLE_DRAW_BLEND, point.age))
+		visual_point.position = _ribbon_point_position(point, shooter == _local and _first_person)
 		visual_point.width_scale = 0.62 if point.range_scale > 1.0 else 1.0
 		if phase == PointPhase.LANDING:
 			var progress := clampf(point.landing_age / landing_transition_time, 0.0, 1.0)
@@ -9286,34 +9464,36 @@ func _take_speck(now: float, at: Vector3, velocity: Vector3, radius: float,
 ## frames, swept from where it was last tested rather than from last frame, so
 ## spreading the tests out cannot let one tunnel through a floor.
 func _land_speck(speck: MayoSpeck, space_state: PhysicsDirectSpaceState3D,
-		physics_frame: int, stride: int) -> bool:
-	if physics_frame % stride != speck.cast_slot:
+		query: PhysicsRayQueryParameters3D, phase_slot: int, paints: bool) -> bool:
+	if phase_slot != speck.cast_slot:
 		return false
 	var from := speck.last_tested
 	var to := speck.position
 	speck.last_tested = to
 	if from.distance_squared_to(to) < 0.000001:
 		return false
-	var query := PhysicsRayQueryParameters3D.create(from, to)
-	query.collide_with_areas = false
+	query.from = from
+	query.to = to
 	var hit := space_state.intersect_ray(query)
 	if hit.is_empty():
 		return false
 	if debug_profile_enabled:
 		debug_raycast_count += 1
 	var collider := hit.collider as Node
-	if collider == null or not _is_authority() or not impact_paints:
+	if collider == null or not paints:
 		return true
 	var shooter: Shooter = _shooters.get(speck.peer_id)
 	if shooter == null:
 		return true
+	var brush := ContaminationGrid.BRUSH_BEAD if speck.radius >= 0.105 else ContaminationGrid.BRUSH_FLECK
+	var travel := speck.velocity if map_kind == MapKind.TOMATINA else Vector3.ZERO
 	if collider.is_in_group("mayo_floor"):
 		# The same coat as the burst that threw it, so a spatter landing on
 		# ground the stream has already covered does not stack a second layer on
 		# a cell the same trigger pull already raised.
-		_record_floor_splat(shooter, shooter.burst_index, hit.position, speck.sauce)
+		_record_floor_splat(shooter, shooter.burst_index, hit.position, speck.sauce, travel, brush)
 	elif collider.is_in_group("mayo_contaminable"):
-		_record_splat(collider, hit.position, hit.normal, shooter, false, speck.sauce)
+		_record_splat(collider, hit.position, hit.normal, shooter, false, speck.sauce, -1.0, travel, brush)
 	return true
 
 
@@ -9332,8 +9512,11 @@ func _simulate_specks(delta: float) -> void:
 		return
 	var now := Time.get_ticks_msec() * 0.001
 	var space_state := get_world_3d().direct_space_state
-	var physics_frame := int(Engine.get_physics_frames())
-	var stride := maxi(impact_raycast_stride, 1)
+	var phase_slot := int(Engine.get_physics_frames()) % maxi(impact_raycast_stride, 1)
+	var query := PhysicsRayQueryParameters3D.new()
+	var paints := impact_paints and _is_authority()
+	var drag := maxf(1.0 - impact_drag * delta, 0.0)
+	var gravity_step := gravity_acceleration * impact_gravity_scale * delta
 	for active_index in range(_active_speck_indices.size() - 1, -1, -1):
 		var i := _active_speck_indices[active_index]
 		var speck: MayoSpeck = _specks[i]
@@ -9343,12 +9526,12 @@ func _simulate_specks(delta: float) -> void:
 			_active_speck_indices.remove_at(active_index)
 			_speck_buffer_dirty = true
 			continue
-		speck.velocity *= maxf(1.0 - impact_drag * delta, 0.0)
+		speck.velocity *= drag
 		# A fraction of real weight: see `impact_gravity_scale`. At full gravity
 		# the fan is over before it can be seen.
-		speck.velocity.y -= gravity_acceleration * impact_gravity_scale * delta
+		speck.velocity.y -= gravity_step
 		speck.position += speck.velocity * delta
-		if _land_speck(speck, space_state, physics_frame, stride):
+		if _land_speck(speck, space_state, query, phase_slot, paints):
 			speck.active = false
 			_blank_speck(i)
 			_active_speck_indices.remove_at(active_index)
@@ -9468,13 +9651,13 @@ func _write_speck_transform(index: int, speck: MayoSpeck,
 ## Local presentation, run on every peer off its own copy of the hit -- see
 ## `_spawn_impact_spray`.
 func _note_stream_contact(enemy: MayoEnemy, at: Vector3, normal: Vector3,
-		direction: Vector3, shooter: Shooter) -> void:
+		direction: Vector3, shooter: Shooter, sauce := -1) -> void:
 	var key := enemy.get_instance_id()
 	var first := not _enemy_contact_clock.has(key)
 	_enemy_contact_clock[key] = 0.22
 	shooter.on_target_left = on_target_window
 	if first or not _enemy_impact_clock.has(key):
-		_spawn_impact_spray(at, normal, direction, true, shooter, 1.6 if first else 1.0, true)
+		_spawn_impact_spray(at, normal, direction, true, shooter, 1.6 if first else 1.0, true, sauce)
 		_enemy_impact_clock[key] = impact_min_interval
 	if first:
 		if _is_authority() and shooter.is_local and _crosshair is Crosshair:
@@ -10214,6 +10397,7 @@ func _toggle_fire_hose(shooter: Shooter) -> void:
 	var held := _hose_slot_of(shooter.peer_id)
 	if held >= 0:
 		_hose_users.erase(held)
+		shooter.hose_flow_age = 0.0
 		shooter.player.external_drift = Vector3.ZERO
 		_update_stage_objective()
 		return
@@ -10225,55 +10409,100 @@ func _toggle_fire_hose(shooter: Shooter) -> void:
 	_update_stage_objective()
 
 
-## The jet leaves along the full aim, pitch and all, the way the bottle's
-## strand does: the hose is aimed with the mouse, not laid along the ground.
-func _hose_direction(shooter: Shooter) -> Vector3:
-	return -_aim_basis(shooter).z
-
-
-## **The jet is a hitscan line, not a thrown arc.** What it hits is decided
-## along the aim from the eye -- the crosshair -- out to `HOSE_RANGE` or the
-## first piece of the street in the way (walls, props, the ground), all at
-## once. Bodies do not stop it: the water carries on through everything it
-## crosses.
-##
-## The water is *drawn* from the nozzle held low on the right to where that line
-## stops, so the stream converges on the crosshair instead of running down the
-## middle of the screen -- see `_update_hose_visuals`. The gameplay line stays on
-## the aim, so what is hit is what the crosshair was on.
 func _hose_eye(shooter: Shooter) -> Vector3:
-	return shooter.player.global_position + Vector3.UP * eye_height
+	return player_eye_position(shooter)
 
 
-## `end` is where the line stops; `hit` is the static hit there, empty when the
-## jet ran its full range in the air.
-func _hose_line(shooter: Shooter) -> Dictionary:
+## Closed-form flight under gravity and linear air resistance.
+func _hose_water_position(origin: Vector3, velocity: Vector3, age: float) -> Vector3:
+	var settling := Vector3.DOWN * (HOSE_GRAVITY / HOSE_AIR_DRAG)
+	var carry := (1.0 - exp(-HOSE_AIR_DRAG * age)) / HOSE_AIR_DRAG
+	return origin + (velocity - settling) * carry + settling * age
+
+
+func _hose_water_velocity(velocity: Vector3, age: float) -> Vector3:
+	var settling := Vector3.DOWN * (HOSE_GRAVITY / HOSE_AIR_DRAG)
+	return settling + (velocity - settling) * exp(-HOSE_AIR_DRAG * age)
+
+
+func _hose_nozzle_aim(shooter: Shooter) -> Basis:
+	var aim := _aim_basis(shooter)
+	var age := shooter.hose_flow_age
+	var lift := deg_to_rad(9.0) * (1.0 - exp(-age * 26.0)) * exp(-age * 6.0)
+	return aim.rotated(aim.x, lift)
+
+
+## Physics and rendering use the same nozzle pose and first surface hit.
+func _hose_path(shooter: Shooter, max_flight_time := HOSE_MAX_FLIGHT_TIME) -> Dictionary:
+	var aim := _hose_nozzle_aim(shooter)
 	var eye := _hose_eye(shooter)
-	var far := eye + _hose_direction(shooter) * HOSE_RANGE
-	var hit := _tomatina_static_hit(eye, far)
-	return {"eye": eye, "end": far if hit.is_empty() else hit.position as Vector3, "hit": hit}
+	var origin := eye + aim * (HOSE_HOLD + HOSE_TIP)
+	var velocity := -aim.z * HOSE_EXIT_SPEED
+	var frame := Engine.get_physics_frames()
+	if shooter.hose_path_frame == frame and shooter.hose_path_limit == max_flight_time \
+			and origin == shooter.hose_path.origin and velocity == shooter.hose_path.velocity:
+		return shooter.hose_path
+
+	var points := PackedVector3Array([origin])
+	var space := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(eye, origin, 1)
+	query.exclude = [shooter.player.get_rid()]
+	var hit := _static_body_on_ray(space, query)
+	var duration := 0.0
+	if hit.is_empty():
+		while duration < max_flight_time:
+			var next_time := minf(duration + HOSE_TRACE_STEP, max_flight_time)
+			query.from = points[-1]
+			query.to = _hose_water_position(origin, velocity, next_time)
+			hit = _static_body_on_ray(space, query)
+			if not hit.is_empty():
+				var fraction := query.from.distance_to(hit.position) / maxf(query.from.distance_to(query.to), 0.001)
+				duration = lerpf(duration, next_time, clampf(fraction, 0.0, 1.0))
+				points.append(hit.position)
+				break
+			points.append(query.to)
+			duration = next_time
+
+	shooter.hose_path_frame = frame
+	shooter.hose_path_limit = max_flight_time
+	shooter.hose_path = {"origin": origin, "velocity": velocity, "points": points,
+		"hit": hit, "duration": duration}
+	return shooter.hose_path
 
 
-## Every `HOSE_STEP` metres from `from` to `to`, `to` included and `from` not.
-func _hose_samples(from: Vector3, to: Vector3) -> PackedVector3Array:
-	var points := PackedVector3Array()
-	var length := from.distance_to(to)
-	var steps := maxi(1, ceili(length / HOSE_STEP))
-	for step in range(1, steps + 1):
-		points.append(from.lerp(to, float(step) / float(steps)))
-	return points
+func _wash_hose_floor(points: PackedVector3Array, side: Vector3, washed: Dictionary[Vector2i, bool]) -> void:
+	for index in range(1, points.size()):
+		var from := points[index - 1]
+		var to := points[index]
+		var count := maxi(1, ceili(from.distance_to(to) / HOSE_STEP))
+		for step in range(1, count + 1):
+			var at := from.lerp(to, float(step) / float(count))
+			var height := at.y - TomatinaMap.ground_height(at)
+			if height < -0.1 or height > HOSE_FLOOR_WASH_HEIGHT:
+				continue
+			for offset in HOSE_FLOOR_WASH_OFFSETS:
+				var cell := _floor.wash_cell_at(at + side * float(offset))
+				if not washed.has(cell):
+					washed[cell] = true
+					_wash_floor_cell(cell, 0)
 
 
-## Whether the line came down on the ground rather than into a wall or the air.
-func _hose_landed(line: Dictionary) -> bool:
-	var hit: Dictionary = line["hit"]
-	return not hit.is_empty() and (hit.normal as Vector3).y > 0.6
+func _wash_floor_impact(shooter: Shooter, at: Vector3, delta: float) -> void:
+	var cell := _floor.wash_cell_at(at)
+	# A moving stream sweeps a narrow stripe. Splash water spreads around a
+	# point only while the stream keeps landing in that spot.
+	if shooter.hose_impact_age == 0.0 or shooter.hose_flow_age <= delta \
+			or (cell - shooter.hose_impact_anchor).length_squared() > 4:
+		shooter.hose_impact_anchor = cell
+		shooter.hose_impact_age = 0.0
+	var size := mini(int(shooter.hose_impact_age / HOSE_IMPACT_WASH_STEP), HOSE_FLOOR_WASH_RADII.size() - 1)
+	_wash_floor_cell(cell, size)
+	shooter.hose_impact_age = minf(shooter.hose_impact_age + delta, HOSE_IMPACT_WASH_STEP * HOSE_FLOOR_WASH_RADII.size())
 
 
-func _wash_floor_at(sample: Vector3) -> void:
-	var cell := _floor.wash_at(sample)
-	if cell.x >= 0:
-		_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR_CLEAR, -1, cell.x, cell.y]))
+func _wash_floor_cell(cell: Vector2i, size: int) -> void:
+	if _floor.wash_cell(cell, HOSE_FLOOR_WASH_RADII[size]):
+		_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR_CLEAR, size, cell.x, cell.y]))
 
 
 ## Authority, once a tick. Every open hose shoves whoever holds it, washes the
@@ -10284,12 +10513,9 @@ func _wash_floor_at(sample: Vector3) -> void:
 ## The thrust walks a player off the end of it if they do nothing, which is
 ## the point of the thrust: a fire main is held, not stood next to.
 ##
-## **The floor is washed where the water is, and where it is dirty.** A jet
-## aimed flat drags its five columns along the whole run, like it always did;
-## where the line meets the ground it washes a wider patch, where it meets a
-## wall it strips that patch of wall, and a teammate in the core comes out
-## clean. The clear is a splat packet to every peer, so clean cells are never
-## sent.
+## Water washes the floor where the falling stream reaches it, coats a wider
+## patch at impact, and strips the walls or teammates it reaches.
+## The clear is a splat packet to every peer, so clean cells are never sent.
 ##
 ## The core bursts enemies and stops bowling balls. The surrounding mist
 ## pushes enemies away, and only the core washes the Press King's armor.
@@ -10297,8 +10523,9 @@ func _advance_fire_hoses(delta: float) -> void:
 	if map_kind != MapKind.TOMATINA:
 		return
 	for pushed: Shooter in _shooters.values():
-		if is_instance_valid(pushed.player):
+		if _hose_slot_of(pushed.peer_id) < 0 and is_instance_valid(pushed.player):
 			pushed.player.external_drift = Vector3.ZERO
+			pushed.hose_flow_age = 0.0
 	if _hose_users.is_empty():
 		return
 	for slot in _hose_users.keys():
@@ -10307,39 +10534,49 @@ func _advance_fire_hoses(delta: float) -> void:
 		if shooter == null or shooter.player.is_incapacitated() or not _stage_input_enabled \
 				or reel.distance_squared_to(shooter.player.global_position) > HOSE_TETHER * HOSE_TETHER:
 			_hose_users.erase(slot)
+			if shooter != null:
+				shooter.player.external_drift = Vector3.ZERO
+				shooter.hose_flow_age = 0.0
 			_update_stage_objective()
 			continue
-		var line := _hose_line(shooter)
-		var from: Vector3 = line["eye"]
-		var end: Vector3 = line["end"]
-		var direction := _hose_direction(shooter)
-		var flat := Vector3(direction.x, 0.0, direction.z)
-		var flat_length := flat.length()
-		var forward := flat / flat_length if flat_length > 0.01 else -Basis(Vector3.UP, shooter.aim_yaw).z
-		# The thrust: back along the aim, flat, whatever the pitch -- the body
-		# is on the ground and that is where it is pushed along.
-		shooter.player.external_drift = -forward * HOSE_RECOIL_SPEED
-		var side := forward.cross(Vector3.UP)
-		# Level or aimed down, the water runs along the street under it and
-		# drags its five columns the whole way; aimed up, it only washes what
-		# it hits.
-		for at in _hose_samples(from, end):
-			if at.y > from.y + 0.05:
-				continue
-			for offset in [-1.2, -0.6, 0.0, 0.6, 1.2]:
-				_wash_floor_at(at + side * float(offset))
-		if _hose_landed(line):
-			for dx in [-1.5, -0.75, 0.0, 0.75, 1.5]:
-				for dz in [-1.5, -0.75, 0.0, 0.75, 1.5]:
-					_wash_floor_at(end + Vector3(float(dx), 0.0, float(dz)))
-		elif not (line["hit"] as Dictionary).is_empty():
-			_wash_wall_at(line["hit"])
-		_wash_players_in_jet(shooter, from, end)
-		var span := end - from
-		var reach := span.length()
-		var axis := span / maxf(reach, 0.001)
+		shooter.hose_flow_age = minf(shooter.hose_flow_age + delta, HOSE_MAX_FLIGHT_TIME)
+		var path := _hose_path(shooter, shooter.hose_flow_age)
+		var points: PackedVector3Array = path.points
+		var from: Vector3 = path.origin
+		var flat: Vector3 = path.velocity / HOSE_EXIT_SPEED
+		flat.y = 0.0
+		var forward := flat.normalized()
+		var age := shooter.hose_flow_age
+		var pressure := 1.0 - exp(-age * 32.0)
+		var surge := HOSE_OPENING_SURGE * exp(-age * 4.5)
+		var push := (HOSE_STEADY_RECOIL + surge) * pressure
+		var move := shooter.player.movement_input()
+		var step := shooter.player.global_basis * Vector3(move.x, 0.0, move.y)
+		if shooter.player.is_on_floor():
+			push *= 1.0 - 0.24 * maxf(0.0, step.dot(forward))
+		shooter.player.external_drift = -flat * push
+		var hit: Dictionary = path.hit
+		var washed_ground := false
+		if not hit.is_empty():
+			var end: Vector3 = hit.position
+			washed_ground = hit.collider == _floor \
+				or ((hit.normal as Vector3).y > 0.6 and end.y <= TomatinaMap.ground_height(end) + 0.22)
+			if washed_ground:
+				_wash_floor_impact(shooter, end, delta)
+			else:
+				_wash_hose_surface(hit)
+		if not washed_ground:
+			shooter.hose_impact_age = 0.0
+		if _floor.grid.painted_count > 0:
+			var washed: Dictionary[Vector2i, bool] = {}
+			_wash_hose_floor(points, forward.cross(Vector3.UP), washed)
+		if points.size() < 2:
+			continue
+		_wash_players_in_jet(shooter, points)
+		var span := points[-1] - from
+		var flat_reach := Vector2(span.x, span.z).length()
 		var midpoint := from + span * 0.5
-		var extent := reach * 0.5 + HOSE_SPRAY_RADIUS + _largest_enemy_radius
+		var extent := flat_reach * 0.5 + HOSE_SPRAY_RADIUS + _largest_enemy_radius
 		# A single hose can reject distant bodies without building a new index.
 		var candidates := _enemies
 		if _blast_grid_built or _hose_users.size() > 1:
@@ -10350,18 +10587,14 @@ func _advance_fire_hoses(delta: float) -> void:
 			var at := enemy.global_position
 			if absf(at.x - midpoint.x) > extent or absf(at.z - midpoint.z) > extent:
 				continue
-			var measure := _hose_measure(from, axis, reach, at, enemy.radius, enemy.height)
-			if measure.is_empty():
-				continue
-			var edge: float = measure[0]
-			var vertical_gap: float = measure[1]
-			if edge > HOSE_SPRAY_RADIUS or vertical_gap > HOSE_SPRAY_RADIUS:
+			var contact := _hose_contact(points, at, enemy.radius, enemy.height)
+			if contact == HoseContact.NONE:
 				continue
 			if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
-				if edge <= HOSE_JET_RADIUS and vertical_gap <= HOSE_JET_RADIUS:
+				if contact == HoseContact.CORE:
 					enemy.stop_ball_in_water()
 				continue
-			if edge > HOSE_JET_RADIUS or vertical_gap > HOSE_JET_RADIUS:
+			if contact == HoseContact.MIST:
 				if not enemy is PressKing:
 					enemy.take_shove(from, 0.65)
 				continue
@@ -10377,65 +10610,104 @@ func _advance_fire_hoses(delta: float) -> void:
 			_finish_tomato_kill(enemy, shooter)
 
 
-## How far a body stands off the jet line: (sideways gap past its radius,
-## vertical gap past its half height), or an empty array when it is behind the
-## nozzle or past where the line stopped. `centre` is the body's middle.
-func _hose_measure(from: Vector3, axis: Vector3, reach: float, centre: Vector3,
-		radius: float, height: float) -> Array:
-	var along := (centre - from).dot(axis)
-	if along <= 0.0 or along > reach + radius:
-		return []
-	var offset := centre - (from + axis * minf(along, reach))
-	return [Vector2(offset.x, offset.z).length() - radius, absf(offset.y) - height * 0.5]
+## Measure against the curved path and the body's upright capsule.
+func _hose_contact(points: PackedVector3Array, centre: Vector3,
+		radius: float, height: float, max_gap := HOSE_SPRAY_RADIUS, surface_hit: Variant = null) -> int:
+	if points.size() < 2 or (centre - points[0]).dot(points[1] - points[0]) < 0.0:
+		return HoseContact.NONE
+	var half_body := maxf(height * 0.5 - radius, 0.0)
+	var top := centre + Vector3.UP * half_body
+	var bottom := centre - Vector3.UP * half_body
+	var core_sq := (radius + HOSE_JET_RADIUS) ** 2
+	var spray_sq := (radius + max_gap) ** 2
+	var contact := HoseContact.NONE
+	var bounds := Vector3.ONE * (radius + max_gap)
+	var low := bottom - bounds
+	var high := top + bounds
+	for index in range(1, points.size()):
+		var from := points[index - 1]
+		var to := points[index]
+		if maxf(from.x, to.x) < low.x or minf(from.x, to.x) > high.x \
+				or maxf(from.z, to.z) < low.z or minf(from.z, to.z) > high.z \
+				or maxf(from.y, to.y) < low.y or minf(from.y, to.y) > high.y:
+			continue
+		var nearest := Geometry3D.get_closest_points_between_segments(from, to, bottom, top)
+		var gap := nearest[0].distance_squared_to(nearest[1])
+		if gap > spray_sq or (contact == HoseContact.MIST and gap > core_sq):
+			continue
+		# Cast from inside the water segment so a wall still shields the body at the end.
+		var inside := nearest[0].move_toward(from, 0.02)
+		if not _tomatina_static_hit(inside, nearest[1]).is_empty():
+			continue
+		if gap <= core_sq:
+			if surface_hit != null:
+				var direction := (to - from).normalized()
+				# Find the near side of the capsule, where the water first meets
+				# it. Using the axis's closest point alone misses the face on
+				# a head-height shot.
+				var across := (nearest[0] - nearest[1]).slide(direction)
+				var entry := sqrt(maxf(0.0, radius * radius - across.length_squared()))
+				var normal := (across - direction * entry).normalized()
+				surface_hit.append(nearest[1] + normal * radius)
+				surface_hit.append(normal)
+				surface_hit.append(direction)
+			return HoseContact.CORE
+		contact = HoseContact.MIST
+	return contact
 
 
-## Washes the patch of wall the jet hit, all of it, whatever sauce is on it.
-func _wash_wall_at(hit: Dictionary) -> void:
-	var wall := hit.get("collider") as ContaminableObject
-	if wall == null:
+## Flat faces and the stalls' unrolled roofs share the round wash footprint.
+func _wash_hose_surface(hit: Dictionary) -> void:
+	var wall := hit.collider as ContaminableObject
+	if wall != null:
+		var index := _walls.find(wall)
+		if index >= 0:
+			var washed := wall.wash_at(hit.position, hit.normal, HOSE_WALL_WASH_RADIUS)
+			if washed.x >= 0:
+				_pending_splats.append_array(PackedInt32Array([SPLAT_WALL_CLEAR,
+					index * FACES_PER_WALL + washed.x, washed.y, washed.z]))
 		return
-	var index := _walls.find(wall)
+	var roof := hit.collider as StallRoof
+	if roof == null:
+		return
+	var index := _roofs.find(roof)
 	if index < 0:
 		return
-	var washed := wall.wash_at(hit.position, hit.normal, HOSE_WALL_WASH_RADIUS)
-	if washed.x >= 0:
-		_pending_splats.append_array(PackedInt32Array([SPLAT_WALL_CLEAR,
-			index * FACES_PER_WALL + washed.x, washed.y, washed.z]))
+	var cell := roof.contamination.wash_at(hit.position, HOSE_WALL_WASH_RADIUS)
+	if cell.x >= 0:
+		_pending_splats.append_array(PackedInt32Array([SPLAT_ROOF_CLEAR, index, cell.x, cell.y]))
 
 
-## A teammate in the core of the jet comes out clean: every sauce off the body,
-## and the glasses. Only sent for a body or a lens that has anything on it.
-func _wash_players_in_jet(user: Shooter, from: Vector3, end: Vector3) -> void:
-	var span := end - from
-	var reach := span.length()
-	if reach <= 0.001:
-		return
-	var axis := span / reach
+## Only the spot hit by the core is washed. Its cell can be replayed without
+## reconstructing the other player's pose on the receiving machine.
+func _wash_players_in_jet(user: Shooter, points: PackedVector3Array) -> void:
+	var surface_hit: Array[Vector3] = []
 	for other: Shooter in _shooters.values():
 		if other == user or not is_instance_valid(other.player):
 			continue
 		var player := other.player
-		var measure := _hose_measure(from, axis, reach, player.global_position,
-			MayoPlayer.CAPSULE_RADIUS, MayoPlayer.CAPSULE_HEIGHT)
-		if measure.is_empty() or measure[0] > HOSE_JET_RADIUS or measure[1] > HOSE_JET_RADIUS:
+		var body_dirty := player.contamination != null and player.contamination.painted_cell_count() > 0
+		var visor_dirty := player.visor != null and player.visor.painted_cell_count() > 0
+		if not body_dirty and not visor_dirty:
 			continue
-		var dirty := (player.contamination != null and player.contamination.painted_cell_count() > 0) \
-			or (player.visor != null and player.visor.painted_cell_count() > 0)
-		if not dirty:
+		surface_hit.clear()
+		var capsule := other.player_collision.shape as CapsuleShape3D
+		if _hose_contact(points, other.player_collision.global_position, capsule.radius,
+				capsule.height, HOSE_JET_RADIUS, surface_hit) != HoseContact.CORE:
 			continue
-		_apply_hose_wash(player.peer_id)
-		_pending_splats.append_array(PackedInt32Array([SPLAT_BODY_HOSE, player.peer_id, 0, 0]))
-
-
-## Every peer, off the splat batch, so the grids stay byte-identical.
-func _apply_hose_wash(peer: int) -> void:
-	var shooter: Shooter = _shooters.get(peer)
-	if shooter == null:
-		return
-	if shooter.player.contamination != null:
-		shooter.player.contamination.clear()
-	if shooter.player.visor != null:
-		shooter.player.visor.clear()
+		if body_dirty:
+			var cell := player.contamination.wash_at(surface_hit[0], surface_hit[1], HOSE_BODY_WASH_RADIUS)
+			if cell.x >= 0:
+				_pending_splats.append_array(PackedInt32Array([SPLAT_BODY_HOSE, player.peer_id, cell.x, cell.y]))
+		if visor_dirty:
+			var cell: Vector2i
+			if is_instance_valid(other.face_anchor) and other.face_width > 0.0:
+				cell = player.visor.wash_face_mask(
+					_face_mask_position(other, surface_hit[0], surface_hit[2]), HOSE_VISOR_WASH_RADIUS)
+			else:
+				cell = player.visor.wash_from_hit(player.visor.to_local(surface_hit[0]), HOSE_VISOR_WASH_RADIUS)
+			if cell.x >= 0:
+				_pending_splats.append_array(PackedInt32Array([SPLAT_VISOR_HOSE, player.peer_id, cell.x, cell.y]))
 
 
 ## The first hose opening calls one announced counterattack before the boss.
@@ -10559,12 +10831,22 @@ func _build_hose_nozzle(nozzle_name: String) -> Node3D:
 	_hose_part(nozzle, mouth, dark_brass, Vector3(0.0, 0.0, -0.53), Vector3(-90.0, 0.0, 0.0))
 	var tip := Marker3D.new()
 	tip.name = "Tip"
-	tip.position = Vector3(0.0, 0.0, -0.57)
+	tip.position = HOSE_TIP
 	nozzle.add_child(tip)
 	var rear := Marker3D.new()
 	rear.name = "Rear"
 	rear.position = Vector3(0.0, 0.0, 0.23)
 	nozzle.add_child(rear)
+	var right_grip := Marker3D.new()
+	right_grip.name = "RightGrip"
+	right_grip.position = Vector3(0.064, -0.047, 0.065)
+	right_grip.rotation.z = -0.62
+	nozzle.add_child(right_grip)
+	var left_grip := Marker3D.new()
+	left_grip.name = "LeftGrip"
+	left_grip.position = Vector3(-0.069, -0.056, -0.33)
+	left_grip.rotation.z = 0.66
+	nozzle.add_child(left_grip)
 	return nozzle
 
 
@@ -10625,30 +10907,31 @@ func _hose_nozzle_for(shooter: Shooter) -> Node3D:
 	var nozzle: Node3D = _hose_nozzles.get(shooter.peer_id)
 	if is_instance_valid(nozzle) and nozzle.get_parent() == shooter.aim_pivot:
 		return nozzle
-	var hold := HOSE_HOLD
 	nozzle = Node3D.new()
 	nozzle.name = "HoseHold"
-	var to_crosshair := Vector3(0.0, 0.0, -aim_convergence_distance) - hold
-	nozzle.transform = Transform3D(Basis.looking_at(to_crosshair, Vector3.UP), hold)
+	nozzle.position = HOSE_HOLD
 	shooter.aim_pivot.add_child(nozzle)
-	var kick := Node3D.new()
-	kick.name = "Kick"
-	nozzle.add_child(kick)
-	kick.add_child(_build_hose_nozzle("HoseNozzle"))
+	nozzle.add_child(_build_hose_nozzle("HoseNozzle"))
 	nozzle.hide()
 	_hose_nozzles[shooter.peer_id] = nozzle
 	return nozzle
 
 
 func _hose_nozzle_marker(nozzle: Node3D, marker_name: String) -> Node3D:
-	return nozzle.get_node("Kick/HoseNozzle/" + marker_name) as Node3D
+	return nozzle.get_node("HoseNozzle/" + marker_name) as Node3D
+
+
+func hose_grip_poses(shooter: Shooter) -> Array[Transform3D]:
+	var nozzle: Node3D = _hose_nozzles.get(shooter.peer_id)
+	if not is_instance_valid(nozzle) or not nozzle.visible:
+		return []
+	return [_hose_nozzle_marker(nozzle, "LeftGrip").global_transform,
+		_hose_nozzle_marker(nozzle, "RightGrip").global_transform]
 
 
 ## A run of cylinders laid end to end through `points`, from a pool that grows
-## to the longest run asked for and hides what a shorter one leaves over. The
-## radius is per segment so the jet can widen along its length.
-func _lay_segments(pool: Array, points: PackedVector3Array, material: Material,
-		radius_at: Callable) -> void:
+## to the longest run asked for and hides what a shorter one leaves over.
+func _lay_segments(pool: Array, points: PackedVector3Array, material: Material) -> void:
 	var needed := maxi(points.size() - 1, 0)
 	while pool.size() < needed:
 		var segment := MeshInstance3D.new()
@@ -10656,9 +10939,8 @@ func _lay_segments(pool: Array, points: PackedVector3Array, material: Material,
 		mesh.height = 1.0
 		mesh.radial_segments = 10
 		mesh.rings = 1
-		var radius: float = radius_at.call(pool.size(), needed)
-		mesh.top_radius = radius
-		mesh.bottom_radius = radius
+		mesh.top_radius = 0.075
+		mesh.bottom_radius = 0.075
 		segment.mesh = mesh
 		segment.material_override = material
 		segment.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -10682,15 +10964,180 @@ func _lay_segments(pool: Array, points: PackedVector3Array, material: Material,
 		segment.show()
 
 
+func _make_hose_flow(effect_name: String, start_radius: float, end_radius: float,
+		spread_distance: float, mist := false) -> MeshInstance3D:
+	var tube := CylinderMesh.new()
+	tube.height = 1.0
+	tube.top_radius = 1.0
+	tube.bottom_radius = 1.0
+	tube.radial_segments = 18
+	tube.rings = 32
+	tube.cap_top = false
+	tube.cap_bottom = false
+	var water := ShaderMaterial.new()
+	water.shader = HOSE_SHADER
+	water.set_shader_parameter("flow_type", 2 if mist else 1)
+	water.set_shader_parameter("start_radius", start_radius)
+	water.set_shader_parameter("end_radius", end_radius)
+	water.set_shader_parameter("spread_distance", spread_distance)
+	water.set_shader_parameter("flow_gravity", HOSE_GRAVITY)
+	water.set_shader_parameter("flow_drag", HOSE_AIR_DRAG)
+	water.render_priority = -1 if mist else 0
+	var flow := MeshInstance3D.new()
+	flow.name = effect_name
+	flow.mesh = tube
+	flow.material_override = water
+	flow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	flow.hide()
+	add_child(flow)
+	return flow
+
+
+func _make_hose_droplets() -> MultiMeshInstance3D:
+	var droplets := MultiMesh.new()
+	droplets.transform_format = MultiMesh.TRANSFORM_3D
+	droplets.mesh = WATER_DROPLET
+	droplets.instance_count = 104
+	for i in droplets.instance_count:
+		droplets.set_instance_transform(i, Transform3D.IDENTITY)
+	var water := ShaderMaterial.new()
+	water.shader = HOSE_SHADER
+	water.set_shader_parameter("flow_type", 3)
+	water.set_shader_parameter("start_radius", 0.22)
+	water.set_shader_parameter("end_radius", 1.23)
+	water.set_shader_parameter("spread_distance", 12.0)
+	water.set_shader_parameter("flow_gravity", HOSE_GRAVITY)
+	water.set_shader_parameter("flow_drag", HOSE_AIR_DRAG)
+	water.render_priority = 1
+	var spray := MultiMeshInstance3D.new()
+	spray.name = "AirborneHoseDroplets"
+	spray.multimesh = droplets
+	spray.material_override = water
+	spray.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	spray.hide()
+	add_child(spray)
+	return spray
+
+
+func _place_hose_flow(flow: GeometryInstance3D, path: Dictionary, start_time: float) -> void:
+	var duration: float = path.duration - start_time
+	if duration <= 0.01:
+		flow.hide()
+		return
+	var points: PackedVector3Array = path.points
+	var velocity := _hose_water_velocity(path.velocity, start_time)
+	var origin := _hose_water_position(path.origin, path.velocity, start_time)
+	var finish := points[-1]
+	var span := finish - origin
+	var flat := Vector3(velocity.x, 0.0, velocity.z)
+	var forward := flat.normalized() if flat.length_squared() > 0.0001 else Vector3.FORWARD
+	var side := Vector3.UP.cross(forward)
+	var basis := Basis(side, Vector3.UP, forward)
+	var to_local := basis.transposed()
+	flow.global_transform = Transform3D(basis, origin)
+	var water := flow.material_override as ShaderMaterial
+	water.set_shader_parameter("flow_velocity", to_local * velocity)
+	water.set_shader_parameter("flow_duration", duration)
+	# The ray hits a short chord of the trajectory. Match its endpoint exactly.
+	var correction := span - _hose_water_position(Vector3.ZERO, velocity, duration)
+	water.set_shader_parameter("flow_correction", to_local * correction)
+	var pad := float(water.get_shader_parameter("end_radius")) * 1.1
+	var apex_time := clampf(log(1.0 + maxf(velocity.y, 0.0) * HOSE_AIR_DRAG / HOSE_GRAVITY)
+		/ HOSE_AIR_DRAG, 0.0, duration)
+	var top := maxf(span.y, _hose_water_position(Vector3.ZERO, velocity, apex_time).y)
+	var bottom := minf(0.0, span.y)
+	var rear := Vector3(-pad, bottom - pad, -pad)
+	flow.custom_aabb = AABB(rear, Vector3(2.0 * pad, top - bottom + 2.0 * pad,
+		Vector2(span.x, span.z).length() + 2.0 * pad))
+	flow.show()
+
+
+func _make_hose_splash() -> CPUParticles3D:
+	var spray := CPUParticles3D.new()
+	spray.name = "HoseImpactSpray"
+	spray.emitting = false
+	spray.amount = 124
+	spray.lifetime = 0.55
+	spray.lifetime_randomness = 0.48
+	spray.spread = 76.0
+	spray.initial_velocity_min = 1.6
+	spray.initial_velocity_max = 6.3
+	spray.gravity = Vector3.DOWN * 9.8
+	spray.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
+	spray.emission_sphere_radius = 0.12
+	spray.particle_flag_align_y = true
+	spray.scale_amount_min = 0.55
+	spray.scale_amount_max = 1.85
+	spray.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	spray.mesh = WATER_DROPLET
+	add_child(spray)
+	return spray
+
+
+func _make_hose_impact_foam() -> MeshInstance3D:
+	var patch := MeshInstance3D.new()
+	patch.name = "HoseImpactFoam"
+	var surface := QuadMesh.new()
+	surface.size = Vector2(3.2, 3.2)
+	patch.mesh = surface
+	var foam := ShaderMaterial.new()
+	foam.shader = HOSE_IMPACT_FOAM_SHADER
+	foam.render_priority = -2
+	patch.material_override = foam
+	patch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	patch.hide()
+	add_child(patch)
+	return patch
+
+
+func _update_hose_impact(visual: Dictionary, path: Dictionary, delta: float) -> void:
+	var spray: CPUParticles3D = visual["splash"]
+	var patch: MeshInstance3D = visual["foam"]
+	var hit: Dictionary = path.get("hit", {})
+	var old_strength: float = visual["foam_strength"]
+	var has_hit := not hit.is_empty()
+	var strength := move_toward(old_strength, 1.0 if has_hit else 0.0, delta * (12.0 if has_hit else 4.0))
+	if strength != old_strength:
+		visual["foam_strength"] = strength
+		(patch.material_override as ShaderMaterial).set_shader_parameter("strength", strength)
+		patch.visible = strength > 0.01
+	if spray.emitting != has_hit:
+		spray.emitting = has_hit
+	if not has_hit:
+		visual.erase("impact_normal")
+		return
+	var normal: Vector3 = hit.normal
+	var position: Vector3 = hit.position
+	var velocity := _hose_water_velocity(path.velocity, path.duration)
+	if normal == visual.get("impact_normal") and position == visual.get("impact_position") \
+			and velocity == visual.get("impact_velocity"):
+		return
+	visual["impact_normal"] = normal
+	visual["impact_position"] = position
+	visual["impact_velocity"] = velocity
+	var flow_direction := velocity.normalized()
+	var along_surface := flow_direction.slide(normal)
+	spray.global_position = position + normal * 0.045
+	spray.direction = (normal + along_surface * 0.90).normalized()
+	var across := along_surface.normalized()
+	if across.is_zero_approx():
+		var reference := Vector3.UP if absf(normal.y) < 0.9 else Vector3.FORWARD
+		across = reference.cross(normal).normalized()
+	var surface_up := normal.cross(across)
+	var size := Vector2(1.0, 0.86) if normal.y > 0.6 else Vector2(0.72, 0.62)
+	patch.global_transform = Transform3D(Basis(across * size.x, surface_up * size.y, normal),
+		position + normal * 0.035 + across * 0.14)
+
+
 func _free_hose_visuals() -> void:
 	for visual in _hose_visuals.values():
-		for segment in visual["jet"]:
-			segment.queue_free()
-		for segment in visual["spray"]:
-			segment.queue_free()
+		visual["jet"].queue_free()
+		visual["mist"].queue_free()
+		visual["droplets"].queue_free()
 		for segment in visual["line"]:
 			segment.queue_free()
 		visual["splash"].queue_free()
+		visual["foam"].queue_free()
 	_hose_visuals.clear()
 	for slot in _hose_stands:
 		var stand: Dictionary = _hose_stands[slot]
@@ -10701,6 +11148,8 @@ func _free_hose_visuals() -> void:
 			nozzle.hide()
 	for shooter: Shooter in _shooters.values():
 		shooter.hose_was_open = false
+		shooter.hose_flow_age = 0.0
+		shooter.hose_brace = 0.0
 		shooter.hose_kick_pitch = 0.0
 		shooter.hose_kick_pending = 0.0
 
@@ -10712,8 +11161,7 @@ func _free_hose_visuals() -> void:
 ## the status packet keeps current on clients, so the thump and the lurch
 ## happen on every machine, not just the host's. For each open hose, the line
 ## from its reel to that nozzle, sagging by however much is not paid out; the
-## jet, as a chain of cylinders down the same arc the authority kills along,
-## widening toward the far end; and a splash where the water comes down.
+## water along the aim line, with a wider mist and scattered impact droplets.
 func _update_hose_visuals() -> void:
 	var delta := get_process_delta_time()
 	for shooter: Shooter in _shooters.values():
@@ -10727,19 +11175,23 @@ func _update_hose_visuals() -> void:
 		elif not open and shooter.hose_was_open:
 			_play_combat_warning(shooter.player.global_position, 260.0, 0.15)
 		shooter.hose_was_open = open
+		shooter.hose_brace = lerpf(shooter.hose_brace, 1.0 if open else 0.0,
+			1.0 - exp(-delta * 6.0))
 		if shooter.hose_kick_pending > 0.0:
 			var arriving := minf(deg_to_rad(HOSE_KICK_DEGREES) * delta / HOSE_KICK_ATTACK,
 				shooter.hose_kick_pending)
 			shooter.hose_kick_pitch += arriving
 			shooter.hose_kick_pending -= arriving
 		shooter.hose_kick_pitch *= exp(-delta / HOSE_KICK_SETTLE)
-		var nozzle := _hose_nozzle_for(shooter)
-		nozzle.visible = open and (shooter != _local or _first_person) \
-			and shooter.player.state != MayoPlayer.State.DEAD
-		# The nozzle is thrown further than the view, so the lurch reads as the
-		# hose jumping in the hands and the head following it.
-		(nozzle.get_node("Kick") as Node3D).rotation.x = shooter.hose_kick_pitch * 1.8 \
-			+ _hose_rumble(shooter) * 2.0
+		var nozzle: Node3D = _hose_nozzles.get(shooter.peer_id)
+		if open:
+			nozzle = _hose_nozzle_for(shooter)
+		if not is_instance_valid(nozzle):
+			continue
+		nozzle.visible = open and shooter.player.state == MayoPlayer.State.NORMAL
+		if open:
+			var aim := _hose_nozzle_aim(shooter)
+			nozzle.global_transform = Transform3D(aim, _hose_eye(shooter) + aim * HOSE_HOLD)
 	for slot in TOMATINA_HOSES.size():
 		var visual: Dictionary = _hose_visuals.get(slot, {})
 		var shooter: Shooter = _shooters.get(int(_hose_users.get(slot, -1)))
@@ -10751,72 +11203,51 @@ func _update_hose_visuals() -> void:
 			label.modulate = Color("8bdff4") if _horde_spawned else Color("ddd6ba")
 		if shooter == null or not is_instance_valid(shooter.player):
 			if not visual.is_empty():
-				for segment in visual["jet"]:
-					segment.hide()
-				for segment in visual["spray"]:
-					segment.hide()
-				for segment in visual["line"]:
-					segment.hide()
-				visual["splash"].hide()
+				if visual.erase("flow_origin"):
+					visual["jet"].hide()
+					visual["mist"].hide()
+					visual["droplets"].hide()
+				if visual.erase("line_start"):
+					for segment in visual["line"]:
+						segment.hide()
+				_update_hose_impact(visual, {}, delta)
 			continue
 		if visual.is_empty():
-			var water := StandardMaterial3D.new()
-			water.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			water.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-			water.albedo_color = Color(0.62, 0.86, 1.0, 0.78)
-			var splash := MeshInstance3D.new()
-			var splash_mesh := SphereMesh.new()
-			splash_mesh.radius = 1.0
-			splash_mesh.height = 2.0
-			splash.mesh = splash_mesh
-			var foam := StandardMaterial3D.new()
-			foam.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			foam.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-			foam.albedo_color = Color(0.86, 0.96, 1.0, 0.6)
-			splash.material_override = foam
-			splash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			add_child(splash)
-			var mist := water.duplicate() as StandardMaterial3D
-			mist.albedo_color = Color(0.62, 0.86, 1.0, 0.09)
-			visual = {"jet": [], "spray": [], "line": [], "splash": splash, "mist": mist,
-				"water": water, "rubber": _hose_material(Color(0.16, 0.42, 0.47), 0.0, 0.8)}
+			visual = {
+				"jet": _make_hose_flow("HoseJet", 0.055, 0.30, 10.0),
+				"mist": _make_hose_flow("HoseMist", 0.21, 1.36, 13.0, true),
+				"droplets": _make_hose_droplets(),
+				"line": [],
+				"splash": _make_hose_splash(),
+				"foam": _make_hose_impact_foam(),
+				"foam_strength": 0.0,
+				"rubber": _hose_material(Color(0.16, 0.42, 0.47), 0.0, 0.8),
+			}
 			_hose_visuals[slot] = visual
 		var nozzle := _hose_nozzle_for(shooter)
-		# Straight from the nozzle in the right hand to where the hitscan line
-		# stopped: it starts thin beside the view and only fills out further
-		# down the street, so it does not curtain off the middle of the screen.
-		var tip := _hose_nozzle_marker(nozzle, "Tip").global_position
-		var line := _hose_line(shooter)
-		var end: Vector3 = line["end"]
-		var jet_points := PackedVector3Array([tip])
-		var jet_length := tip.distance_to(end)
-		var jet_steps := clampi(ceili(jet_length / HOSE_VISUAL_STEP), 1, 32)
-		for step in range(1, jet_steps + 1):
-			jet_points.append(tip.lerp(end, float(step) / float(jet_steps)))
-		_lay_segments(visual["jet"], jet_points, visual["water"],
-			func(index: int, _count: int) -> float:
-				return lerpf(0.05, HOSE_JET_RADIUS * 0.8, clampf(float(index) / 8.0, 0.0, 1.0)))
-		var mist_points := PackedVector3Array()
-		if jet_length > HOSE_MIST_START + 1.0:
-			var mist_from := HOSE_MIST_START / jet_length
-			for index in 5:
-				mist_points.append(tip.lerp(end, lerpf(mist_from, 1.0, float(index) / 4.0)))
-		_lay_segments(visual["spray"], mist_points, visual["mist"],
-			func(index: int, _count: int) -> float: return lerpf(0.4, HOSE_SPRAY_RADIUS, clampf(index / 3.0, 0.0, 1.0)))
-		if not (line["hit"] as Dictionary).is_empty():
-			var pulse := 1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.02)
-			var flat := 0.35 if _hose_landed(line) else 1.0
-			visual["splash"].global_transform = Transform3D(Basis.from_scale(
-				Vector3(1.4 * pulse, flat, 1.4 * pulse) * (1.0 if flat < 1.0 else 0.55)), end)
-			visual["splash"].show()
-		else:
-			visual["splash"].hide()
+		var path := _hose_path(shooter, shooter.hose_flow_age)
+		var endpoint: Vector3 = path.points[-1]
+		# TIME animates each material while the simulated path stays still.
+		if path.origin != visual.get("flow_origin") or path.velocity != visual.get("flow_velocity") \
+				or path.duration != visual.get("flow_duration") or endpoint != visual.get("flow_endpoint"):
+			_place_hose_flow(visual["jet"], path, 0.0)
+			_place_hose_flow(visual["mist"], path, _hose_mist_start_time)
+			_place_hose_flow(visual["droplets"], path, _hose_mist_start_time)
+			visual["flow_origin"] = path.origin
+			visual["flow_velocity"] = path.velocity
+			visual["flow_duration"] = path.duration
+			visual["flow_endpoint"] = endpoint
+		_update_hose_impact(visual, path, delta)
 		# The line: a quadratic curve from the reel to the back of the nozzle,
 		# hanging by whatever length is not paid out, held off the ground.
 		if stand.is_empty() or not is_instance_valid(stand["anchor"]):
 			continue
 		var start: Vector3 = stand["anchor"].global_position
 		var finish := _hose_nozzle_marker(nozzle, "Rear").global_position
+		if start == visual.get("line_start") and finish == visual.get("line_finish"):
+			continue
+		visual["line_start"] = start
+		visual["line_finish"] = finish
 		var slack := clampf(HOSE_TETHER - start.distance_to(finish), 0.4, 3.0)
 		var control := (start + finish) * 0.5 - Vector3.UP * slack * 0.7
 		control.y = maxf(control.y, HOSE_GROUND_Y - 0.6)
@@ -10826,8 +11257,7 @@ func _update_hose_visuals() -> void:
 			var at := start.lerp(control, t).lerp(control.lerp(finish, t), t)
 			at.y = maxf(at.y, HOSE_GROUND_Y + 0.08)
 			line_points.append(at)
-		_lay_segments(visual["line"], line_points, visual["rubber"],
-			func(_index: int, _count: int) -> float: return 0.075)
+		_lay_segments(visual["line"], line_points, visual["rubber"])
 
 
 func _escape_shove(shooter: Shooter) -> void:
@@ -10863,9 +11293,9 @@ func _escape_shove(shooter: Shooter) -> void:
 		pushed.append(_enemies.find(enemy))
 	if not pushed.is_empty() and is_instance_valid(_net) and _net.is_online():
 		_net.broadcast_shove_clearance(shooter.peer_id, pushed)
-	_play_combat_warning(origin, 110.0, 0.12)
+	show_combat_warning(origin, Vector3.ZERO, 0.12, ESCAPE_SHOVE_CUE)
 	if is_instance_valid(_net) and _net.is_online():
-		_net.broadcast_combat_warning(origin, Vector3.ZERO, 0.12, 2)
+		_net.broadcast_combat_warning(origin, Vector3.ZERO, 0.12, ESCAPE_SHOVE_CUE)
 
 
 func apply_shove_clearance(peer: int, indices: PackedInt32Array) -> void:
@@ -10951,7 +11381,9 @@ func show_combat_warning(at: Vector3, direction: Vector3, duration: float, cue: 
 		get_tree().create_timer(duration).timeout.connect(warning.queue_free)
 		return
 	var charge := cue == PRESS_KING_CHARGE_CUE
-	_play_combat_warning(at, 170.0 if charge else [180.0, 230.0, 110.0, 150.0, 310.0, 420.0, 500.0][cue], duration)
+	var pitch: float = 170.0 if charge else [180.0, 230.0, 110.0, 150.0, 310.0, 420.0, 500.0][cue]
+	var gain_db := LOUD_COMBAT_SFX_GAIN_DB if cue == ESCAPE_SHOVE_CUE else 0.0
+	_play_combat_warning(at, pitch, duration, null, gain_db)
 	if direction.is_zero_approx() or (cue == 3 and duration < 0.15):
 		return
 	var length: float = 22.0 if charge else [0.0, 0.0, 0.0, 9.0, 12.0, 5.0, 10.0][cue]
@@ -11049,7 +11481,8 @@ func _tomatina_warning_sound(cue: int) -> AudioStreamWAV:
 	return wave
 
 
-func _play_combat_warning(at: Vector3, pitch: float, duration: float, sound: AudioStream = null) -> void:
+func _play_combat_warning(at: Vector3, pitch: float, duration: float,
+		sound: AudioStream = null, gain_db := 0.0) -> void:
 	if muted:
 		return
 	if _warning_sound == null:
@@ -11059,7 +11492,7 @@ func _play_combat_warning(at: Vector3, pitch: float, duration: float, sound: Aud
 	voice.stream = sound if sound != null else _warning_sound
 	voice.pitch_scale = pitch / 220.0
 	voice.max_distance = 48.0
-	voice.volume_db = -9.0
+	voice.volume_db = -9.0 + gain_db
 	add_child(voice)
 	voice.global_position = at
 	voice.finished.connect(voice.queue_free)
@@ -11515,14 +11948,17 @@ func _tomatina_static_hit(from: Vector3, to: Vector3, layer_mask := 1) -> Dictio
 	if from.is_equal_approx(to):
 		return {}
 	var query := PhysicsRayQueryParameters3D.create(from, to, layer_mask)
-	var ignored: Array[RID] = []
-	var space := get_world_3d().direct_space_state
+	return _static_body_on_ray(get_world_3d().direct_space_state, query)
+
+
+func _static_body_on_ray(space: PhysicsDirectSpaceState3D, query: PhysicsRayQueryParameters3D) -> Dictionary:
 	while true:
-		query.exclude = ignored
 		var hit := space.intersect_ray(query)
 		if hit.is_empty() or hit.collider is StaticBody3D:
 			return hit
+		var ignored := query.exclude
 		ignored.append(hit.rid)
+		query.exclude = ignored
 	return {}
 
 
@@ -11687,7 +12123,9 @@ func show_tomato_blast(at: Vector3, radius: float, sauce := -1) -> void:
 		_leave_debris(at, 0.48, TomatoVisuals.TOMATO)
 	_prepare_tomatina_blast_effects()
 	if not muted:
-		_play_contact_accent(_tomato_blast_sound, at, 0.72, 8.0)
+		# Sauce-colored blasts are mortar impacts, including their remote replay.
+		var gain_db := 8.0 + (LOUD_COMBAT_SFX_GAIN_DB if sauce >= 0 else 0.0)
+		_play_contact_accent(_tomato_blast_sound, at, 0.72, gain_db)
 	var effect: Node3D = _blast_effects.pop_back() if not _blast_effects.is_empty() else _make_blast_effect()
 	var flash := effect.get_child(0) as MeshInstance3D
 	var shock := effect.get_child(1) as MeshInstance3D
@@ -11770,7 +12208,9 @@ func _update_character_part_tip(shooter: Shooter) -> void:
 		if wanted != SauceParts.Part.STANDARD:
 			shooter.character_part_tip = SauceParts.build_tip(wanted, anchor, Vector3.ZERO)
 	if is_instance_valid(shooter.character_part_tip):
-		shooter.character_part_tip.global_basis = _aim_basis(shooter)
+		var forward := _world_nozzle_forward(shooter)
+		var up := _aim_basis(shooter).y
+		shooter.character_part_tip.global_basis = Basis.looking_at(forward, up if absf(forward.dot(up)) < 0.99 else _aim_basis(shooter).x)
 
 
 func _update_item_views() -> void:
@@ -11898,8 +12338,8 @@ func apply_player_motion_state(data: PackedFloat64Array) -> void:
 			3: motion.eat_left = remaining
 
 
-## Rendered bottle/arms belong to the camera, never to an interpolated body.
-## weapon + muzzle remain under AimPivot for authoritative physics queries.
+## The camera's bottle and arms have their own presentation transform.
+## The character's authored socket supplies the simulated muzzle.
 func first_person_visual_transform(shooter: Shooter) -> Transform3D:
 	var visual := shooter.weapon.transform
 	if map_kind == MapKind.TOMATINA:

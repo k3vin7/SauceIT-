@@ -6,7 +6,7 @@ extends StaticBody3D
 ## same data.
 
 @export_group("Contamination Grid")
-@export_range(0.05, 0.5, 0.01, "suffix:m") var cell_size := 0.1
+@export_range(0.05, 0.5, 0.005, "suffix:m") var cell_size := 0.1
 @export_range(0.05, 1.5, 0.01, "suffix:m") var brush_radius := 0.4
 @export var floor_size := Vector2(12.0, 12.0)
 @export var clean_color := Color("53616d")
@@ -51,6 +51,8 @@ var terrain_regions: Array[Rect2] = []
 ## what a frame with sauce landing on it actually costs. Bigger tiles mean fewer
 ## draw calls and a larger upload when one is touched; smaller means the reverse.
 @export_range(32, 4096, 32) var tile_cells := 512
+## Extra samples across each tile edge, for the filtered sauce contour.
+var tile_sample_margin := 0
 
 @export_group("Slippery Look")
 ## Deep mayo is drawn in its own colour rather than a darker shade of the same
@@ -127,28 +129,28 @@ func configure(new_cell_size: float, new_brush_radius: float) -> void:
 ## `kind` is which sauce is landing, and it defaults to mayo so that every
 ## caller written when there was only one sauce still means what it said.
 func paint_mayo(world_position: Vector3, coat := -1,
-		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
+		kind := ContaminationGrid.KIND_MAYO, brush := ContaminationGrid.BRUSH_POOL) -> Vector2i:
 	return grid.paint(_to_grid(world_position), brush_radius, thickness_per_pass,
-		coat, kind)
+		coat, kind, brush)
 
 
 func paint_mayo_cell(cell: Vector2i, coat := -1,
-		kind := ContaminationGrid.KIND_MAYO) -> void:
-	grid.paint_cell(cell, brush_radius, thickness_per_pass, coat, kind)
+		kind := ContaminationGrid.KIND_MAYO, brush := ContaminationGrid.BRUSH_POOL) -> void:
+	grid.paint_cell(cell, brush_radius, thickness_per_pass, coat, kind, brush)
 
 
 ## Returns the center of the wash patch when it cleared any sauce.
 func wash_at(world_position: Vector3) -> Vector2i:
-	var cell := grid.cell_of(_to_grid(world_position))
+	var cell := wash_cell_at(world_position)
 	return cell if wash_cell(cell) else Vector2i(-1, -1)
 
 
-func wash_cell(cell: Vector2i) -> bool:
-	if not grid.has_cell(cell):
-		return false
-	var reach := maxi(1, ceili(0.42 / grid.cell_size))
-	var offset := Vector2i.ONE * reach
-	return grid.fill_rect(cell - offset, cell + offset, 0, ContaminationGrid.KIND_MAYO)
+func wash_cell_at(world_position: Vector3) -> Vector2i:
+	return grid.cell_of(_to_grid(world_position))
+
+
+func wash_cell(cell: Vector2i, radius_meters := 0.42) -> bool:
+	return grid.erase_disc(cell, radius_meters)
 
 
 func is_mayo_at(world_position: Vector3) -> bool:
@@ -255,7 +257,7 @@ func cells_md5() -> String:
 
 
 func snapshot_cells() -> PackedByteArray:
-	return grid.cells.duplicate()
+	return grid.snapshot()
 
 
 func restore_cells(cells: PackedByteArray) -> bool:
@@ -410,7 +412,7 @@ func _push_shader_values() -> void:
 
 
 func _rebuild_grid() -> void:
-	grid.configure(floor_size, cell_size, clean_color, mayo_color, tile_cells)
+	grid.configure(floor_size, cell_size, clean_color, mayo_color, tile_cells, tile_sample_margin)
 	grid.scatter_ketchup = pavement_mask != null
 	# The grid keeps the count of cells past it, so it has to know where it is.
 	grid.deep_threshold = slip_thickness

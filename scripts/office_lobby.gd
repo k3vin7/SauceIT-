@@ -24,6 +24,8 @@ signal character_requested
 
 const CharacterSelectScript := preload("res://scripts/character_select.gd")
 const ROOM_SCENE := preload("res://maps/command_runtime.scn")
+const WATER_DROPLET := preload("res://assets/cartoon/water_droplet.tres")
+const SHOWER_WATER := preload("res://assets/cartoon/shower_water.tres")
 
 ## 아래 세 값은 방 씬에 해당 노드가 없을 때만 쓰는 기본값이다.
 const SCREEN_POSITION := Vector3(0.0, 2.35, -8.65)
@@ -342,14 +344,12 @@ func _build_shower() -> void:
 	_shower_water.initial_velocity_min = 2.6
 	_shower_water.initial_velocity_max = 3.4
 	_shower_water.gravity = Vector3(0.0, -7.0, 0.0)
-	var drop := BoxMesh.new()
-	drop.size = Vector3(0.018, 0.16, 0.018)
-	var water := StandardMaterial3D.new()
-	water.albedo_color = Color(0.72, 0.9, 1.0, 0.75)
-	water.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	water.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	drop.material = water
-	_shower_water.mesh = drop
+	_shower_water.particle_flag_align_y = true
+	_shower_water.scale_amount_min = 0.70
+	_shower_water.scale_amount_max = 1.07
+	_shower_water.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_shower_water.mesh = WATER_DROPLET
+	_shower_water.material_override = SHOWER_WATER
 	_shower_water.position = Vector3(0.0, -0.06, 0.0)
 	head.add_child(_shower_water)
 

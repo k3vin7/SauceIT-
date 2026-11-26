@@ -89,21 +89,51 @@ func set_view(fov_degrees: float, aspect: float) -> void:
 ## away entirely. The mask is the screen, so the screen's own frustum is what it
 ## has to be divided by.
 func paint_from_hit(direction: Vector3,
-		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
-	var depth := -direction.z
-	if depth <= 0.001:
+		kind := ContaminationGrid.KIND_MAYO, brush := ContaminationGrid.BRUSH_POOL) -> Vector2i:
+	if direction.z >= -0.001:
 		return Vector2i(-1, -1)
+	return grid.paint(_project_to_mask(direction), brush_radius, 1, -1, kind, brush)
+
+
+## Coordinates are centred on the actual lens, in fractions of its width and height.
+func paint_face_mask(at: Vector2, kind: int, brush := ContaminationGrid.BRUSH_POOL) -> Vector2i:
+	if not at.is_finite():
+		return Vector2i(-1, -1)
+	return grid.paint(at * LENS_SIZE, brush_radius, 1, -1, kind, brush)
+
+
+func wash_face_mask(at: Vector2, radius_meters: float) -> Vector2i:
+	if not at.is_finite():
+		return Vector2i(-1, -1)
+	var cell := grid.cell_of(at * LENS_SIZE)
+	return cell if wash_cell(cell, radius_meters) else Vector2i(-1, -1)
+
+
+func wash_from_hit(direction: Vector3, radius_meters: float) -> Vector2i:
+	if direction.z >= -0.001:
+		return Vector2i(-1, -1)
+	var cell := grid.cell_of(_project_to_mask(direction))
+	return cell if wash_cell(cell, radius_meters) else Vector2i(-1, -1)
+
+
+func wash_cell(cell: Vector2i, radius_meters: float) -> bool:
+	return grid.erase_disc(cell, radius_meters)
+
+
+func _project_to_mask(direction: Vector3) -> Vector2:
+	var depth := -direction.z
 	var tan_up := tan(deg_to_rad(view_fov_degrees) * 0.5)
 	var tan_across := tan_up * view_aspect
 	# -1 to 1 across the screen, then out to the mask's own metres.
 	var screen := Vector2(
 		direction.x / (depth * tan_across),
 		direction.y / (depth * tan_up))
-	return grid.paint(screen * LENS_SIZE * 0.5, brush_radius, 1, -1, kind)
+	return screen * LENS_SIZE * 0.5
 
 
-func paint_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
-	grid.paint_cell(cell, brush_radius, 1, -1, kind)
+func paint_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO,
+		brush := ContaminationGrid.BRUSH_POOL) -> void:
+	grid.paint_cell(cell, brush_radius, 1, -1, kind, brush)
 
 
 func clear() -> void:
@@ -124,7 +154,7 @@ func cells_md5() -> String:
 
 
 func snapshot_cells() -> PackedByteArray:
-	return grid.cells.duplicate()
+	return grid.snapshot()
 
 
 func restore_cells(cells: PackedByteArray) -> bool:
@@ -198,6 +228,9 @@ func _build_lens() -> void:
 	# only the sauce on it is drawn. See visor_lens.gdshader for why.
 	material.shader = preload("res://scripts/visor_lens.gdshader")
 	material.set_shader_parameter("mask_texture", grid.texture)
+	material.set_shader_parameter("fine_contours", grid.contour_texture != null)
+	if grid.contour_texture != null:
+		material.set_shader_parameter("contour_texture", grid.contour_texture)
 	material.set_shader_parameter("lens_size", LENS_SIZE)
 	material.set_shader_parameter("mayo_color", mayo_color)
 	_lens.material_override = material

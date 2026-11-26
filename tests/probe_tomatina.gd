@@ -716,15 +716,36 @@ func _run() -> void:
 	_check(teammate.state == MayoPlayer.State.NORMAL and is_equal_approx(teammate.health, 40.0),
 		"a teammate was not rescued in place with partial health")
 
-	# --- the fire hose: a toggle, a long wide jet, and a sweep ---
+	# --- the fire hose follows gravity, including collision and washing ---
 	_check(scene.TOMATINA_RESCUE_WINDOW >= 20.0, "a downed player waits less than 20 s for a rescue")
 	var hose := TomatinaMap.at_cell(scene.TOMATINA_HOSES[0]) + Vector3.UP * 1.28
 	player.global_position = hose
 	scene._local.aim_yaw = PI
-	var wet := hose + Vector3.BACK * 2.0
-	var wet_far := hose + Vector3.BACK * 16.0 + Vector3.RIGHT * 1.0
-	floor_body.paint_mayo(wet)
-	floor_body.paint_mayo(wet_far)
+	scene._local.aim_pitch = 0.0
+	var water: Dictionary = scene._hose_path(scene._local)
+	var points: PackedVector3Array = water.points
+	if points.size() < 4:
+		push_error("the test lane did not leave room for a hose arc")
+		quit(1)
+		return
+	var impact := points[-1]
+	var source := points[0]
+	_check(water.hit.get("collider") == floor_body and source.y - impact.y > 1.2,
+		"a level hose stayed in the air instead of landing")
+	var mid := points[points.size() / 2]
+	var fraction := Vector2(mid.x - source.x, mid.z - source.z).length() \
+		/ maxf(Vector2(impact.x - source.x, impact.z - source.z).length(), 0.001)
+	_check(mid.y > lerpf(source.y, impact.y, fraction) + 0.25, "the hose still drew a straight chord")
+	var along := Vector3(impact.x - source.x, 0.0, impact.z - source.z).normalized()
+	var under_high_water := source + along * 2.0
+	var beyond_impact := impact + along * 3.5
+	var drop_position := points[-3] + Vector3.RIGHT * 0.25
+	floor_body.paint_mayo(under_high_water)
+	floor_body.paint_mayo(beyond_impact)
+	floor_body.paint_mayo(impact)
+	var grid := floor_body.grid
+	var drop_cell := grid.cell_of(floor_body._to_grid(drop_position))
+	grid.fill_rect(drop_cell, drop_cell, 1, ContaminationGrid.KIND_KETCHUP)
 	var swept: MayoEnemy = null
 	var bystander: MayoEnemy = null
 	for enemy in scene._enemies:
@@ -736,40 +757,23 @@ func _run() -> void:
 				break
 	_check(swept != null and bystander != null, "no two grunts left to hose")
 	if swept != null and bystander != null:
-		swept.global_position = hose + Vector3.BACK * 15.0 + Vector3.DOWN * 1.0
-		bystander.global_position = hose + Vector3.BACK * 8.0 + Vector3.RIGHT * 2.0 + Vector3.DOWN * 0.58
-	# The jet is a hitscan line along the aim now, not a drooping arc: aim it
-	# down the street at the grunt 15 m out, and it carries on to the ground
-	# past it.
-	if swept != null:
-		var eye: Vector3 = player.global_position + Vector3.UP * scene.eye_height
-		var to_swept: Vector3 = swept.global_position - eye
-		scene._local.aim_pitch = atan2(to_swept.y, Vector2(to_swept.x, to_swept.z).length())
-	# Put a detached ketchup drop between the sample centres of two spray columns.
-	var line: Dictionary = scene._hose_line(scene._local)
-	var spray_samples: PackedVector3Array = scene._hose_samples(line["eye"], line["end"])
-	var drop_position := spray_samples[mini(10, spray_samples.size() - 1)] \
-		+ Vector3.BACK * 0.22 + Vector3.RIGHT * 0.30
-	var grid := floor_body.grid
-	var drop_cell := grid.cell_of(floor_body._to_grid(drop_position))
-	var dry_neighbours := Vector2i.ONE * ceili(0.75 / grid.cell_size)
-	grid.fill_rect(drop_cell - dry_neighbours, drop_cell + dry_neighbours, 0, ContaminationGrid.KIND_MAYO)
-	grid.fill_rect(drop_cell, drop_cell, 1, ContaminationGrid.KIND_KETCHUP)
+		swept.global_position = points[-3]
+		bystander.global_position = points[-4] + Vector3.RIGHT * 1.9
 	scene.tomato_action(peer, 0)
 	_check(scene._hose_slot_of(peer) == 0, "[E] at the hose stand did not open the hose")
 	scene._advance_fire_hoses(0.016)
-	_check(floor_body.thickness_at(drop_position) == 0, "the hose missed a detached ketchup drop between samples")
-	var wet_after_first := floor_body.thickness_at(wet)
-	var wet_kind := floor_body.sauce_kind_at(wet)
-	# The first tick kills whatever was standing in the jet, and a grunt bursts
-	# ketchup onto the floor as it goes -- onto the path the same tick washed.
-	# The next tick washes that too; what the check wants is the floor once the
-	# water has been on it a moment.
-	scene._advance_fire_hoses(0.016)
-	_check(floor_body.thickness_at(wet) == 0, "the hose did not clear the aimed path (after first tick: thickness %d kind %d)" % [wet_after_first, wet_kind])
-	_check(floor_body.thickness_at(wet_far) == 0, "the hose did not reach 16 m down the aimed path")
+	_check(floor_body.thickness_at(impact) > 0, "opening the hose washed its landing before the water arrived")
+	if swept != null:
+		_check(swept.is_alive(), "opening the hose hit a distant enemy instantly")
+	# The first hit can coat the freshly washed path in ketchup again.
+	for tick in ceili(float(water.duration) * 60.0) + 2:
+		scene._advance_fire_hoses(1.0 / 60.0)
+	_check(floor_body.thickness_at(impact) == 0, "water did not wash the landing patch")
+	_check(floor_body.thickness_at(drop_position) == 0, "descending water missed a detached ketchup drop")
+	_check(floor_body.thickness_at(under_high_water) > 0, "water washed the ground while still high in the air")
+	_check(floor_body.thickness_at(beyond_impact) > 0, "the hose washed past the impact")
 	if swept != null and bystander != null:
-		_check(not swept.is_alive(), "a grunt 15 m down the jet survived the water")
+		_check(not swept.is_alive(), "a grunt in the falling jet survived the water")
 		_check(bystander.is_alive() and bystander._shove.length_squared() > 0.0,
 			"a grunt in the water spray was not pushed safely out of the jet")
 	scene.tomato_action(peer, 0)
@@ -827,8 +831,20 @@ func _run() -> void:
 	_check(not cleared[0], "the party escaped with the Press King alive")
 	if boss != null:
 		boss.advance(2.21, [])
-		scene._press_king.wash_armor(1.0)
-		_check(scene._press_king.exposed_left > 0.0 and boss.is_alive(), "the hose did not open the boss armor")
+		var player_before_wash := player.global_position
+		var boss_before_wash := boss.global_position
+		player.global_position = hose
+		scene._local.aim_yaw = PI
+		scene._local.aim_pitch = 0.0
+		var boss_path: Dictionary = scene._hose_path(scene._local)
+		var boss_points: PackedVector3Array = boss_path.points
+		boss.global_position = boss_points[maxi(0, boss_points.size() - 3)] + Vector3.UP * 1.4
+		scene._hose_users[0] = peer
+		scene._advance_fire_hoses(1.0)
+		scene._hose_users.clear()
+		player.global_position = player_before_wash
+		boss.global_position = boss_before_wash
+		_check(scene._press_king.exposed_left > 0.0 and boss.is_alive(), "the falling jet did not open the boss armor")
 		boss.advance(0.8, [])
 		var exposed: float = scene._press_king.exposed_left
 		scene._press_king.wash_armor(1.0)

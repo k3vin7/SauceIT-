@@ -143,6 +143,8 @@ func _run() -> void:
 	_check(wall_a.painted_cell_count() > 100,
 		"the wall test painted only %d cells" % wall_a.painted_cell_count())
 
+	_probe_detailed_stamps()
+
 	# The reference hash. Run this probe twice, in two processes, and compare:
 	# a mismatch means paint() depends on something outside the centre cell.
 	print("MAYO_GRID_HASH %s" % left.cells_md5())
@@ -153,3 +155,38 @@ func _run() -> void:
 	for failure in failures:
 		push_error(failure)
 	quit(1)
+
+
+func _probe_detailed_stamps() -> void:
+	var author := ContaminationGrid.new()
+	var replica := ContaminationGrid.new()
+	for grid in [author, replica]:
+		grid.configure(Vector2(1.0, 1.0), 0.025, Color.GRAY, Color.WHEAT)
+		grid.wrap_x = true
+	var center := Vector2i(0, 20)
+	var sauce := ContaminationGrid.KIND_MUSTARD
+	var brush := ContaminationGrid.stroke_brush(Vector2.RIGHT)
+	author.paint_cell(center, 0.2, 1, 7, sauce, brush)
+	replica.paint_cell(center, 0.2, 1, 7, sauce, brush)
+	_check(author.snapshot() == replica.snapshot(), "a directional fine stamp did not replay byte-for-byte")
+	var received := ContaminationGrid.new()
+	received.configure(Vector2(1.0, 1.0), 0.025, Color.GRAY, Color.WHEAT)
+	_check(received.restore_cells(author.snapshot()) and received.snapshot() == author.snapshot(),
+		"a snapshot lost the continuous stain edge")
+	_check(author.cells[center.y * author.width + author.width - 1] > 0,
+		"a directional stamp stopped at the wrap seam")
+	var before := author.cells.duplicate()
+	_check(author.paint_cell(center, 0.2, 1, 7, sauce, brush).x < 0 and author.cells == before,
+		"a repeated fine stamp counted the same coat twice")
+
+	_check(author.erase_disc(center, 0.11) and replica.erase_disc(center, 0.11), "fine wash did not remove sauce")
+	_check(author.snapshot() == replica.snapshot() and author.cells[center.y * author.width] == 0,
+		"fine wash did not clear the centre or replay its edge")
+
+	# A no-op cannot change the authority's coat history if peers receive no packet.
+	var fleck := ContaminationGrid.BRUSH_FLECK
+	for grid in [author, replica]:
+		grid.fill_rect(Vector2i.ZERO, Vector2i(grid.width - 1, grid.height - 1),
+			ContaminationGrid.MAX_THICKNESS, sauce)
+	_check(author.paint_cell(center, 0.2, 1, 8, sauce, fleck).x < 0
+		and author._coats.keys() == replica._coats.keys(), "a saturated fine stamp changed the active coats")

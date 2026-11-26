@@ -506,7 +506,7 @@ func _add_loot_candidate(out: Array, shooter, body: int) -> void:
 
 func _candidate(out: Array, shooter, kind: String, id: int, at: Vector3, text: String, priority: float,
 		anchor := Vector3.INF) -> void:
-	var eye: Vector3 = shooter.player.global_position + Vector3.UP * world.eye_height
+	var eye: Vector3 = world.player_eye_position(shooter)
 	var offset := at - eye
 	var distance := offset.length()
 	var facing: Vector3 = -world._aim_basis(shooter).z

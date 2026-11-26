@@ -91,15 +91,16 @@ func build(base_radius: float, roof_height: float, cell_size: float,
 
 
 func paint_mayo(world_position: Vector3, world_normal: Vector3,
-		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
+		kind := ContaminationGrid.KIND_MAYO, brush := ContaminationGrid.BRUSH_POOL) -> Vector2i:
 	if contamination == null:
 		return Vector2i(-1, -1)
-	return contamination.paint_mayo(world_position, world_normal, kind)
+	return contamination.paint_mayo(world_position, world_normal, kind, brush)
 
 
-func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
+func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO,
+		brush := ContaminationGrid.BRUSH_POOL) -> void:
 	if contamination != null:
-		contamination.paint_mayo_cell(cell, kind)
+		contamination.paint_mayo_cell(cell, kind, brush)
 
 
 func cells_md5() -> String:

@@ -11,6 +11,9 @@ func bind(visor: VisorContamination) -> void:
 	var shader_material := ShaderMaterial.new()
 	shader_material.shader = preload("res://scripts/visor_overlay.gdshader")
 	shader_material.set_shader_parameter("mask_texture", visor.grid.texture)
+	shader_material.set_shader_parameter("fine_contours", visor.grid.contour_texture != null)
+	if visor.grid.contour_texture != null:
+		shader_material.set_shader_parameter("contour_texture", visor.grid.contour_texture)
 	shader_material.set_shader_parameter("lens_size", VisorContamination.LENS_SIZE)
 	shader_material.set_shader_parameter("mayo_color", visor.mayo_color)
 	material = shader_material
