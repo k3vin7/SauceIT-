@@ -58,7 +58,12 @@ static func _build_grunt_mesh(radius: float, overripe: bool) -> ArrayMesh:
 			Color("381b2d"))
 	var mesh := _merge_parts(root)
 	root.free()
-	return mesh
+	# Grunts share two meshes. Generate index LODs once per variant so distant
+	# bodies can stay on the same mesh and shader while the camera moves.
+	var importer := ImporterMesh.new()
+	importer.add_surface(Mesh.PRIMITIVE_TRIANGLES, mesh.surface_get_arrays(0), [], {}, mesh.surface_get_material(0))
+	importer.generate_lods(25.0, 60.0, [])
+	return importer.get_mesh()
 
 
 ## Each rigid body moves as one piece. Bake its primitive transforms and

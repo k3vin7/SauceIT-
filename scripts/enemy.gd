@@ -280,7 +280,11 @@ var contact_permission := Callable()
 var authority := true:
 	set(value):
 		authority = value
-		_update_grunt_frame_processing()
+		if not authority and is_inside_tree() and kind == EnemyKind.TOMATO_GRUNT:
+			# New guests can receive their first pose before the next frame.
+			set_process(true)
+		else:
+			_update_grunt_frame_processing()
 var contamination: BodyContamination
 ## Half the silhouette's width: the arms reach this far out, so it is also the
 ## capsule that the unwrap wraps around.
@@ -450,6 +454,7 @@ var _last_seen := Vector3.INF
 var _remote_position := Vector3.INF
 var _direct_left := 0.0
 var near_visuals := true
+var _grunt_model: MeshInstance3D
 var _direct_goal := Vector3.INF
 var _direct_route := false
 var _direct_offset := Vector3.ZERO
@@ -890,8 +895,9 @@ func build_tomato_grunt(cell_size: float, brush_radius: float, tier := 0) -> voi
 	shove_speed = 8.0
 	shove_needs_party = false
 	_add_sphere_collider(radius)
-	_finish_primitive_body(cell_size, brush_radius, _sphere_mask(radius),
-		TomatoVisualsScript.grunt(radius, tier), TomatoVisualsScript.TOMATO)
+	var visual := TomatoVisualsScript.grunt(radius, tier)
+	_grunt_model = visual.get_node("Body") as MeshInstance3D
+	_finish_primitive_body(cell_size, brush_radius, _sphere_mask(radius), visual, TomatoVisualsScript.TOMATO)
 
 
 ## The brute: the tank. Three hundred health and a telegraphed charge
@@ -1738,6 +1744,7 @@ func open_escape_clearance(source: MayoPlayer) -> void:
 	add_collision_exception_with(source)
 	source.add_collision_exception_with(self)
 	_escape_collision_left = 0.45
+	_update_grunt_frame_processing()
 
 
 func _update_escape_clearance(delta: float) -> void:
@@ -1891,14 +1898,33 @@ func _refresh_sight_rings() -> void:
 ## overripe swelling and the debug ranges still have per-frame work.
 func _update_grunt_frame_processing() -> void:
 	if is_inside_tree() and kind == EnemyKind.TOMATO_GRUNT:
-		set_process(not authority or burst_tier >= 2 or show_sight_rings)
+		set_process(not authority and (_remote_position != Vector3.INF or _escape_collision_left > 0.0)
+			or near_visuals and burst_tier >= 2 and is_alive() or show_sight_rings)
+
+
+func update_visual_distance(distance_squared: float, grunt_shadow_distance: float) -> void:
+	var near := distance_squared <= 65.0 ** 2
+	if near_visuals != near:
+		near_visuals = near
+		_update_grunt_frame_processing()
+	if _grunt_model != null:
+		var shadow := GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		if distance_squared <= grunt_shadow_distance * grunt_shadow_distance:
+			shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		if _grunt_model.cast_shadow != shadow:
+			_grunt_model.cast_shadow = shadow
 
 
 func _process(delta: float) -> void:
 	if not authority:
 		if _remote_position != Vector3.INF:
-			global_position = global_position.lerp(_remote_position, minf(delta * 24.0, 1.0))
+			if global_position.distance_squared_to(_remote_position) < 0.000001:
+				global_position = _remote_position
+				_remote_position = Vector3.INF
+			else:
+				global_position = global_position.lerp(_remote_position, minf(delta * 24.0, 1.0))
 		_update_escape_clearance(delta)
+		_update_grunt_frame_processing()
 	if not near_visuals and _sight_ring == null:
 		return
 	if _brute_motion != null and is_alive():
@@ -2252,12 +2278,16 @@ func restore_cells(cells: PackedByteArray) -> bool:
 ## It rides in the packet rather than in a join message because it changes
 ## whenever somebody joins or leaves, and the cost is one float per body.
 func network_state() -> Array:
+	return [global_position, facing_yaw, health, network_pose(), max_health]
+
+
+func network_pose() -> float:
 	var pose := fall_angle
 	if kind == EnemyKind.TOMATO_BRUTE and is_alive() and is_charging():
 		pose += BRUTE_CHARGE_POSE_FLAG
 	if kind == EnemyKind.TOMATO_BRUTE and is_alive() and _alerted:
 		pose += BRUTE_ALERT_POSE_FLAG
-	return [global_position, facing_yaw, health, pose, max_health]
+	return pose
 
 
 ## Rolled rather than slid: the visual turns by the ground it covered, top
@@ -2298,7 +2328,9 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	# fallen one on the whole body.
 	_remote_position = Vector3.INF
 	if is_alive():
-		var smooth := interpolate and kind != EnemyKind.TOMATO_BALL and step.length_squared() < 16.0
+		var step_squared := step.length_squared()
+		var smooth := interpolate and kind != EnemyKind.TOMATO_BALL \
+			and step_squared >= 0.000001 and step_squared < 16.0
 		if smooth:
 			_remote_position = new_position
 		global_transform = Transform3D(Basis(Vector3.UP, facing_yaw),
@@ -2325,11 +2357,12 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 		# a time fade, is under-advanced by exactly the packets that went
 		# missing. Wants the real interval between packets.
 		_advance_gait(step, walking, 1.0 / float(Engine.physics_ticks_per_second))
+	_update_grunt_frame_processing()
 
 
 ## Called only when the encounter cannot put any player in this grunt's sight.
 ## Wake checks still run every world tick, including after a hit or a blast.
-func rest_outside_sight() -> bool:
+func rest_outside_sight(wake_delay := 0.0) -> bool:
 	if not authority or not staged_senses or kind != EnemyKind.TOMATO_GRUNT \
 			or tutorial_trapped or not is_alive() or _alerted or horde_alert \
 			or _visible_target != null or _last_seen != Vector3.INF or _memory_left > 0.0 \
@@ -2339,8 +2372,8 @@ func rest_outside_sight() -> bool:
 			or _contact_kick_left > 0.0 or absf(fall_angle) >= 0.0001 \
 			or not _grounded_at_rest():
 		return false
-	# The first tick back in range can sense immediately.
-	sense_left = 0.0
+	# Stagger the first checks as a dense pack enters sensing range.
+	sense_left = wake_delay
 	return true
 
 

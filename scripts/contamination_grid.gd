@@ -514,15 +514,17 @@ func _paint_detail(centre: Vector2i, radius_meters: float, deposit: int, kind: i
 		var first := width
 		var last := -1
 		var channels := 0
-		for offset in length:
+		# Clip the scanline once. The kept samples still read the same stamp
+		# indices, including when a brush crosses the edge of the floor.
+		var first_offset := 0 if wrap_x else maxi(0, -left)
+		var end_offset := length if wrap_x else mini(length, width - left)
+		for offset in range(first_offset, end_offset):
 			var ink := rows[data + offset]
 			if ink == 0:
 				continue
 			var column := left + offset
 			if wrap_x:
 				column = posmod(column, width)
-			elif column < 0 or column >= width:
-				continue
 			var index := base + column
 			var pixel_channels := 0
 			if ink > contour_cells[index]:

@@ -4,10 +4,12 @@ render_mode unshaded, cull_back, depth_draw_never, shadows_disabled;
 uniform float phase = 0.0;
 varying vec3 local_surface;
 varying flat vec3 local_camera;
+varying flat float viewer_distance;
 
 void vertex() {
 	local_surface = VERTEX;
 	local_camera = (inverse(MODEL_MATRIX) * vec4(CAMERA_POSITION_WORLD, 1.0)).xyz;
+	viewer_distance = distance(CAMERA_POSITION_WORLD, MODEL_MATRIX[3].xyz);
 }
 
 float hash3(vec3 p) {
@@ -68,10 +70,11 @@ void fragment() {
 	vec3 safe_ray = mix(vec3(-1.0), vec3(1.0), side) * max(abs(ray), vec3(0.0001));
 	vec3 exits = (side - vec3(0.5) - local_surface) / safe_ray;
 	float length_inside = max(0.0, min(exits.x, min(exits.y, exits.z)));
-	float stride = length_inside / 28.0;
+	int samples = int(round(mix(28.0, 10.0, smoothstep(12.0, 40.0, viewer_distance))));
+	float stride = length_inside / float(samples);
 	vec3 accumulated = vec3(0.0);
 	float opacity = 0.0;
-	for (int i = 0; i < 28; i++) {
+	for (int i = 0; i < samples; i++) {
 		vec3 point = local_surface + ray * (float(i) + 0.5) * stride;
 		vec4 flame = flame_sample(vec3(point.x * 2.0, point.y + 0.5, point.z * 2.0),
 			TIME + phase);

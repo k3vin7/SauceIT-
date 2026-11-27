@@ -69,13 +69,15 @@ var _death_rest := Transform3D.IDENTITY
 var _death_clock := 0.0
 var _death_landed := false
 var _splinters: CPUParticles3D
+static var _model_scene: PackedScene
 
 
 static func make_visual() -> Node3D:
-	var asset := load(MODEL) as PackedScene
-	if asset == null:
+	if _model_scene == null:
+		_model_scene = load(MODEL) as PackedScene
+	if _model_scene == null:
 		return null
-	var visual := asset.instantiate() as Node3D
+	var visual := _model_scene.instantiate() as Node3D
 	visual.rotation.y = PI
 	EnemyInk.apply(visual)
 	return visual
@@ -489,11 +491,10 @@ func _chase(delta: float, targets: Array) -> void:
 
 ## The boss replaces the unused topple angle with its action, phase and timer
 ## within the existing enemy packet. Quantized hundredths survive float32.
-func network_state() -> Array:
+func network_pose() -> float:
 	var flags := int(act) | (16 if armor_broken else 0)
-	var packed := (flags * 100000 + mini(999, roundi(act_time * 100.0)) * 100
+	return float(flags * 100000 + mini(999, roundi(act_time * 100.0)) * 100
 		+ clampi(ceili(exposed_left * 8.0), 0, 99))
-	return [global_position, facing_yaw, health, packed, max_health]
 
 
 func apply_network_state(new_position: Vector3, yaw: float, new_health: float,

@@ -1265,7 +1265,7 @@ const TOMATO_BURST_PAINT_PER_TICK := 64
 const TOMATINA_HORDE_BASE := 86
 const FINALE_DURATION := 30.0
 const FINALE_WAVES := [0.0, 9.0, 19.0]
-const FINALE_SPAWN_INTERVAL := 0.55
+const FINALE_SPAWN_INTERVAL := 0.28
 const PressKing := preload("res://scripts/tomatina_press_king.gd")
 const FINALE_COUNT_TAG := -999
 const ESCAPE_SHOVE_CUE := 2
@@ -2768,8 +2768,10 @@ func _process(_delta: float) -> void:
 			var camera: Camera3D = get_viewport().get_camera_3d()
 			if camera != null:
 				var at := camera.global_position
+				var light := $KeyLight as DirectionalLight3D
+				var grunt_shadow_distance := minf(light.directional_shadow_max_distance * 0.6, 42.0)
 				for enemy in _enemies:
-					enemy.near_visuals = enemy.global_position.distance_squared_to(at) <= 65.0 ** 2
+					enemy.update_visual_distance(enemy.global_position.distance_squared_to(at), grunt_shadow_distance)
 	if not is_instance_valid(_viewmodel_animation):
 		_viewmodel_animation = preload("res://scripts/viewmodel_animation.gd").new()
 		_viewmodel_animation.name = "FirstPersonAnimation"
@@ -4367,7 +4369,8 @@ func _build_environment() -> void:
 	elif map_kind == MapKind.TOMATINA:
 		sun.light_color = Color("fff5e6")
 		sun.light_energy = 0.98
-		sun.directional_shadow_max_distance = 95.0
+		sun.directional_shadow_max_distance = 75.0
+		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
 	add_child(sun)
 
 
@@ -5221,12 +5224,12 @@ func warm_stage_materials() -> void:
 	camera.current = true
 	warmup.add_child(camera)
 	var light := DirectionalLight3D.new()
+	var stage_light := $KeyLight as DirectionalLight3D
 	light.rotation_degrees = Vector3(-35.0, -35.0, 0.0)
-	light.shadow_enabled = ($KeyLight as DirectionalLight3D).shadow_enabled
+	light.shadow_enabled = stage_light.shadow_enabled
+	light.directional_shadow_mode = stage_light.directional_shadow_mode
 	warmup.add_child(light)
-	var materials: Array[Material] = [_floor.grid.tile_material(0), _pool_material]
-	for sauce in STATION_SAUCES:
-		materials.append(SAUCE_STREAM_MATERIALS[sauce])
+	var materials: Array[Material] = [_floor.grid.tile_material(0)]
 	if _blast_material != null:
 		materials.append(_blast_material)
 	var sample_mesh := SphereMesh.new()
@@ -5237,28 +5240,62 @@ func warm_stage_materials() -> void:
 		sample.mesh = sample_mesh
 		sample.material_override = materials[index]
 		sample.position = Vector3(float(index % 3 - 1) * 0.5, 0.48 - (index / 3) * 0.48, 0.0)
+		sample.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		warmup.add_child(sample)
-	var impact := MultiMeshInstance3D.new()
-	var impact_mesh := MultiMesh.new()
-	impact_mesh.transform_format = MultiMesh.TRANSFORM_3D
-	impact_mesh.use_colors = true
-	impact_mesh.mesh = _speck_multimesh.mesh
-	impact_mesh.instance_count = 1
-	impact_mesh.set_instance_transform(0, Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * 0.24),
-		Vector3(0.0, -0.51, 0.0)))
-	impact_mesh.set_instance_color(0, Color.WHITE)
-	impact.multimesh = impact_mesh
-	warmup.add_child(impact)
+	# Draw the actual dynamic ribbon vertex layout and the instanced, colored
+	# droplet layout. A sphere alone prepares different shader variants.
+	for index in STATION_SAUCES.size():
+		var material: Material = SAUCE_STREAM_MATERIALS[STATION_SAUCES[index]]
+		_warm_ribbon(warmup, camera, material, 0.84 - index * 0.16)
+	_warm_ribbon(warmup, camera, _shadow_material, 0.26)
+	_warm_instances(warmup, _speck_multimesh.mesh, Vector3(0.0, -0.51, 0.0), true)
+	_warm_instances(warmup, _landing_droplets.multimesh.mesh, Vector3(0.25, -0.51, 0.0), true)
+	_warm_instances(warmup, TomatoDebris.piece_mesh(), Vector3(0.82, -0.51, 0.0),
+		false, TomatoDebris.piece_material(TomatoVisuals.TOMATO))
 	if not _enemies.is_empty() and _enemies[0].contamination._visual_overlay != null:
 		var sample := MeshInstance3D.new()
 		sample.mesh = sample_mesh
 		sample.material_overlay = _enemies[0].contamination._visual_overlay
 		sample.position = Vector3(0.5, -0.51, 0.0)
 		warmup.add_child(sample)
+	if not practice_range:
+		var boss := PressKing.make_visual()
+		if boss != null:
+			boss.scale *= 0.12
+			boss.position = Vector3(-0.88, -0.92, 0.0)
+			warmup.add_child(boss)
 	warmup.render_target_update_mode = SubViewport.UPDATE_ONCE
 	await get_tree().process_frame
 	await get_tree().process_frame
 	warmup.queue_free()
+
+
+func _warm_ribbon(viewport: SubViewport, camera: Camera3D, material: Material, y: float) -> void:
+	var ribbon := StreamVisualScript.new()
+	ribbon.setup(material, 4)
+	viewport.add_child(ribbon)
+	var first := RibbonPoint.new()
+	var last := RibbonPoint.new()
+	first.position = Vector3(-0.34, y, 0.2)
+	last.position = Vector3(0.34, y, 0.2)
+	ribbon.update_ribbon([[first, last]], camera.global_position, Vector3.FORWARD, 0.07)
+
+
+func _warm_instances(viewport: SubViewport, sample_mesh: Mesh, at: Vector3, colored: bool,
+		material: Material = null) -> void:
+	var sample := MultiMeshInstance3D.new()
+	var batch := MultiMesh.new()
+	batch.transform_format = MultiMesh.TRANSFORM_3D
+	batch.use_colors = colored
+	batch.mesh = sample_mesh
+	batch.instance_count = 1
+	batch.set_instance_transform(0, Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * 0.24), at))
+	if colored:
+		batch.set_instance_color(0, Color.WHITE)
+	sample.multimesh = batch
+	sample.material_override = material
+	sample.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	viewport.add_child(sample)
 
 
 func play_stage_intro() -> void:
@@ -6966,7 +7003,8 @@ func _advance_horde_spawn(delta: float) -> void:
 	if _horde_pending <= 0 or _horde_spawn_wait > 0.0:
 		return
 	_horde_spawn_wait = FINALE_SPAWN_INTERVAL
-	var slots := HORDE_SPAWN_PER_TICK
+	# Keep the wave size and spread arrivals across separate ticks.
+	var slots := 1
 	if not _finale_specials_pending.is_empty():
 		var wave: int = _finale_specials_pending.front()
 		if _spawn_plaza_reinforcement(FINALE_SPECIALS[wave], wave):
@@ -7498,10 +7536,10 @@ func _advance_enemies(delta: float) -> void:
 		for breakout in _street_breakouts:
 			if breakout.leg >= 0:
 				_advance_street_breakout(breakout, delta, encounter_targets[breakout.leg])
-	# Who each body has to steer round, bucketed once a tick rather than every
-	# body reading every other. With the horde in that was 270 bodies squared
-	# a tick, and it was the whole of the lag -- see `_crowd_neighbours`.
-	var buckets := _crowd_buckets()
+	# The first active steerer takes a spatial snapshot for the rest of the tick.
+	# A quiet encounter needs no buckets even if the whole roster is loaded.
+	var buckets: Dictionary
+	var buckets_ready := false
 	var neighbours_by_cell := {}
 	var target_load := {}
 	if map_kind == MapKind.TOMATINA and targets.size() > 1:
@@ -7540,10 +7578,21 @@ func _advance_enemies(delta: float) -> void:
 				elif leg == 3:
 					chasing = alley_targets
 			var at := enemy.global_position
-			if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and (chasing.is_empty() \
-					or not encounter_bounds[leg].grow(enemy.sight_range + 1.0).has_point(Vector2(at.x, at.z))) \
-					and enemy.rest_outside_sight():
-				continue
+			if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT:
+				if enemy.vanished or enemy._rested:
+					continue
+				var reach := enemy.sight_range + 1.0
+				var can_sense := not chasing.is_empty() \
+					and encounter_bounds[leg].grow(reach).has_point(Vector2(at.x, at.z))
+				if can_sense and chasing.size() > 1:
+					# A split team can enclose a long, empty stretch of street.
+					can_sense = false
+					for player: MayoPlayer in chasing:
+						if at.distance_squared_to(player.global_position) <= reach * reach:
+							can_sense = true
+							break
+				if not can_sense and enemy.rest_outside_sight(float(index % 6) / 60.0):
+					continue
 			if enemy.is_alive() and not enemy.vanished \
 					and (enemy.kind != MayoEnemy.EnemyKind.TOMATO_BALL or enemy.is_ball_live()):
 				enemy.in_mustard = _floor.is_slowing_at(at)
@@ -7557,6 +7606,9 @@ func _advance_enemies(delta: float) -> void:
 		# anyway, so a tick of age is nothing it can see.
 		enemy.crowd_hold = (frame + index) % 2 == 1
 		if not enemy.crowd_hold and enemy.is_alive() and enemy.needs_crowd_steering():
+			if not buckets_ready:
+				buckets = _crowd_buckets()
+				buckets_ready = true
 			var cell := _crowd_cell(previous_position)
 			if not neighbours_by_cell.has(cell):
 				neighbours_by_cell[cell] = _crowd_neighbours(buckets, cell)
@@ -7865,20 +7917,27 @@ func enemy_at(index: int) -> MayoEnemy:
 ## `MayoEnemy.network_state`.
 func enemy_state(start := 0, count := -1) -> PackedFloat32Array:
 	var data := PackedFloat32Array()
+	fill_enemy_state(data, start, count)
+	return data
+
+
+func fill_enemy_state(data: PackedFloat32Array, start: int, count: int) -> void:
 	var end := _enemies.size() if count < 0 else mini(_enemies.size(), start + count)
 	if end <= start:
-		return data
+		data.clear()
+		return
 	data.resize((end - start) * ENEMY_STATE_STRIDE)
 	for index in range(start, end):
-		var state: Array = _enemies[index].network_state()
-		var position: Vector3 = state[0]
+		var enemy := _enemies[index]
+		var position := enemy.global_position
 		var offset := (index - start) * ENEMY_STATE_STRIDE
 		data[offset] = position.x
 		data[offset + 1] = position.y
 		data[offset + 2] = position.z
-		for field in range(1, 5):
-			data[offset + field + 2] = state[field]
-	return data
+		data[offset + 3] = enemy.facing_yaw
+		data[offset + 4] = enemy.health
+		data[offset + 5] = enemy.network_pose()
+		data[offset + 6] = enemy.max_health
 
 
 func apply_enemy_state(data: PackedFloat32Array, interpolate := false, start := 0) -> void:
@@ -11049,8 +11108,7 @@ func _advance_press_king_wave(delta: float) -> void:
 	if _press_king_wave_wait > 0.0:
 		return
 	_press_king_wave_wait = FINALE_SPAWN_INTERVAL
-	var count := mini(HORDE_SPAWN_PER_TICK, _press_king_wave_pending)
-	var spawned := _spawn_plaza_grunts(count, _press_king_wave_side)
+	var spawned := _spawn_plaza_grunts(1, _press_king_wave_side)
 	_press_king_wave_pending -= spawned
 	if spawned > 0:
 		_press_king_wave_side = (_press_king_wave_side + 1) % TomatinaMap.HORDE_EDGES.size()

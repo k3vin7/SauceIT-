@@ -129,6 +129,8 @@ var _inventory_peers := PackedInt32Array()
 var _motion_sent := PackedFloat64Array()
 var _motion_refresh_at := 0.0
 var _enemy_snapshots_by_peer := {}
+var _enemy_snapshot_batches: Dictionary[int, PackedFloat32Array] = {}
+var _enemy_snapshot_scratch := PackedFloat32Array()
 const AUTH_VERSION_PREFIX := "mayo-version:"
 ## How often one address is worth answering. A blocked address can reconnect as
 ## fast as its machine allows, and an answer to each would be a packet out for
@@ -338,6 +340,7 @@ var _late_syncing := {}
 func bind(new_world: Node) -> void:
 	if world != new_world:
 		_enemy_snapshots_by_peer.clear()
+		_enemy_snapshot_batches.clear()
 		_tomatina_snapshot_number = 0
 		_tomatina_snapshot_phase = 0
 		_clear_stage_input()
@@ -2237,7 +2240,13 @@ func _send_tomatina_enemy_snapshots(peer_ids: PackedInt32Array) -> void:
 		var staggered := _tomatina_snapshot_number + batch_number
 		var refresh := staggered % ENEMY_SNAPSHOT_REFRESH_PERIOD == 0
 		var far_turn := staggered % ENEMY_SNAPSHOT_FAR_PERIOD == 0
-		var state: PackedFloat32Array = world.enemy_state(start, ENEMY_SNAPSHOT_BATCH_SIZE)
+		world.fill_enemy_state(_enemy_snapshot_scratch, start, ENEMY_SNAPSHOT_BATCH_SIZE)
+		# Most batches hold idle enemies. Keep their last encoded payload for
+		# refreshes, and allocate a new immutable payload only when it differs.
+		var state: PackedFloat32Array = _enemy_snapshot_batches.get(start, PackedFloat32Array())
+		if state != _enemy_snapshot_scratch:
+			state = _enemy_snapshot_scratch.duplicate()
+			_enemy_snapshot_batches[start] = state
 		var recipients := PackedInt32Array()
 		for id in positions:
 			var previous: PackedFloat32Array = _enemy_snapshots_by_peer[id].get(start, PackedFloat32Array())
