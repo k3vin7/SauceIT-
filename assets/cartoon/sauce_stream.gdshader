@@ -13,14 +13,21 @@ uniform float fold_frequency = 7.0;
 uniform float scroll_speed = 1.15;
 uniform float grain_strength : hint_range(0.0, 1.0) = 0.0;
 
-// UV.x runs across the ribbon; UV.y measures distance from the tip of the sauce.
+// UV.x runs across the ribbon; UV.y measures distance along each connected run.
+varying float surface_fold;
+
+void vertex() {
+	// Interpolate the surface wave across each ribbon section. The ribbon's
+	// vertices stay on the collision path, including its caps and final drop.
+	float wave = UV.y * fold_frequency + TIME * scroll_speed;
+	surface_fold = sin(wave) * fold_strength * 0.45;
+}
+
 void fragment() {
 	float side = clamp(UV.x * 2.0 - 1.0, -1.0, 1.0);
 	float skin = sqrt(max(0.0, 1.0 - side * side));
 	float flow = UV.y + TIME * scroll_speed;
-	float wave = UV.y * fold_frequency + TIME * scroll_speed;
-	float roll = sin(wave);
-	float folds = roll * fold_strength * 0.45;
+	float folds = surface_fold;
 	float form = clamp(0.17 + 0.81 * skin - 0.14 * side + folds, 0.0, 1.0);
 	vec3 pigmented = mix(shadow_color.rgb, sauce_pigment(sauce_kind), form);
 

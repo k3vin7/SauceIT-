@@ -570,6 +570,32 @@ func _run() -> void:
 	_check(not scene._overripe_bursts.has(ripe) and not scene._pending_splats.is_empty(),
 		"the overripe tomato did not explode after its warning")
 
+	# Finish a second blast in a simulated physics tick. It schedules the
+	# same number of floor stamps, and authority sends them in paint order.
+	scene._pending_splats.clear()
+	scene._burst_ground_budget = scene.TOMATO_BURST_TICK_CAP
+	scene._blast_grid_in_tick = true
+	scene._burst_tomato(ripe, ripe_at, scene._local)
+	scene._blast_grid_in_tick = false
+	var scheduled: int = scene._burst_floor_points.size()
+	_check(scheduled == scene.TOMATO_BURST_SPLAT_CAP,
+		"the queued blast did not keep the full floor stamp count")
+	var sent_floor := 0
+	var steps := 0
+	var floor_code: int = scene._splat_code(scene.SPLAT_FLOOR, ContaminationGrid.KIND_KETCHUP)
+	while not scene._burst_floor_points.is_empty() and steps <= scheduled:
+		scene._pending_splats.clear()
+		scene._flush_burst_floor()
+		var sent_this_step := 0
+		for index in range(0, scene._pending_splats.size(), scene.SPLAT_STRIDE):
+			sent_this_step += int(scene._pending_splats[index] == floor_code)
+		_check(sent_this_step <= scene.TOMATO_BURST_PAINT_PER_TICK,
+			"one physics tick exceeded the blast floor stamp budget")
+		sent_floor += sent_this_step
+		steps += 1
+	_check(sent_floor == scheduled and steps > 1 and scene._burst_floor_points.is_empty(),
+		"the queued blast skipped, duplicated or retained floor stamps")
+
 	_probe_cheese_thread(scene)
 
 	# --- shove, the timed horde and extraction ---
@@ -875,6 +901,7 @@ func _run() -> void:
 
 	scene.free()
 	await process_frame
+	await _probe_resting_grunt()
 
 	# --- stage 1 is unharmed ---
 	var festival = load("res://stage_1_festival.tscn").instantiate()
@@ -897,6 +924,54 @@ func _run() -> void:
 		for failure in failures:
 			push_error(failure)
 		quit(1)
+
+
+func _probe_resting_grunt() -> void:
+	var fixture := Node3D.new()
+	root.add_child(fixture)
+	var floor := StaticBody3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(20.0, 0.5, 20.0)
+	var ground := CollisionShape3D.new()
+	ground.shape = box
+	ground.position.y = -0.25
+	floor.add_child(ground)
+	fixture.add_child(floor)
+
+	var grunt := MayoEnemy.new()
+	fixture.add_child(grunt)
+	grunt.build_tomato_grunt(0.05, 0.2)
+	grunt.staged_senses = true
+	_check(not grunt.is_processing(), "a normal host grunt still had an empty render callback")
+	grunt.authority = false
+	_check(grunt.is_processing(), "a guest grunt lost render interpolation")
+	grunt.authority = true
+	grunt.burst_tier = 2
+	_check(grunt.is_processing(), "an overripe grunt lost its render animation")
+	grunt.burst_tier = 0
+	grunt.position.y = grunt.stand_height() + 0.08
+	for tick in 20:
+		await physics_frame
+		grunt.advance(1.0 / 60.0, [])
+		if grunt.is_on_floor():
+			break
+	grunt.sense_left = 0.10
+	_check(grunt.rest_outside_sight() and grunt.sense_left == 0.0,
+		"a settled grunt outside sight did not leave the active AI tick")
+
+	var target := MayoPlayer.new()
+	fixture.add_child(target)
+	target.position = Vector3(0.0, 1.2, -3.0)
+	await physics_frame
+	grunt.advance(1.0 / 60.0, [target])
+	_check(grunt._visible_target == target, "a nearby target waited for an idle sense timer")
+	grunt._visible_target = null
+	grunt._alerted = false
+	grunt.take_sauce_hit(target.global_position, 0.1)
+	_check(not grunt.rest_outside_sight() and grunt._last_seen == target.global_position,
+		"a distant hit failed to wake a resting grunt")
+	fixture.queue_free()
+	await process_frame
 
 
 func _probe_victim_surfaces(art: TomatinaVillageArt) -> void:

@@ -25,6 +25,8 @@ func _run() -> void:
 		for pitch in pitches:
 			await _check_stream(world, shooter, part, pitch)
 	await _check_projectiles(world, shooter)
+	_check_ribbon_buffer(world)
+	_check_landing_droplet_pool(world)
 
 	for failure in failures:
 		push_error(failure)
@@ -127,6 +129,57 @@ func _check_projectiles(world, shooter) -> void:
 	if fired != world.SauceParts.BURST_SHOTS:
 		failures.append("expected three burst shot reports, got %d" % fired)
 	print("burst shot reports: ", fired)
+
+
+func _check_ribbon_buffer(world) -> void:
+	var ribbon := StreamVisual.new()
+	world.add_child(ribbon)
+	ribbon.setup(world.SAUCE_STREAM_MATERIALS[ContaminationGrid.KIND_KETCHUP], 128)
+	var strand: Array = []
+	for index in 100:
+		strand.append({"position": Vector3(float(index) * 0.1, 1.0, 0.0), "width_scale": 1.0})
+	var short_strand := strand.slice(0, 4)
+	var camera_position := Vector3(0.0, 1.0, 4.0)
+	ribbon.update_ribbon([short_strand], camera_position, Vector3.FORWARD, 0.1)
+	var small := ribbon.mesh
+	ribbon.update_ribbon([strand], camera_position, Vector3.FORWARD, 0.1)
+	var large := ribbon.mesh
+	if large == small or not ribbon.custom_aabb.has_point(strand[-1].position):
+		failures.append("growing ribbon lost its tail or did not resize its buffer")
+	ribbon.update_ribbon([short_strand], camera_position, Vector3.FORWARD, 0.1)
+	if ribbon.mesh != small or ribbon.custom_aabb.has_point(strand[-1].position):
+		failures.append("shrinking ribbon did not reuse the small buffer and update its bounds")
+	ribbon.update_ribbon([strand], camera_position, Vector3.FORWARD, 0.1)
+	if ribbon.mesh != large or not ribbon.custom_aabb.has_point(strand[-1].position):
+		failures.append("growing ribbon again did not reuse the large buffer and restore bounds")
+	# Almost coincident samples can request a full cap on a multi-point strand.
+	var position: Vector3 = strand[0].position
+	var adjacent := {"position": position + Vector3.DOWN * 0.000001, "width_scale": 1.0}
+	ribbon.update_ribbon([[strand[0], adjacent]], camera_position, Vector3.FORWARD, 0.1)
+	if not ribbon.visible or not ribbon.custom_aabb.has_point(position):
+		failures.append("almost coincident ribbon samples lost their shared cap")
+	ribbon.queue_free()
+
+
+func _check_landing_droplet_pool(world) -> void:
+	var pool := LandingDropletPool.new()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 21
+	pool.build(world, StandardMaterial3D.new(), 4, 16, 12)
+	pool.spawn(Vector3.ZERO, 0, Color.WHITE, 2, 0.10, 0.02, 0.02, rng, 0.0)
+	pool.spawn(Vector3.RIGHT * 4.0, 1, Color.YELLOW, 1, 1.0, 0.02, 0.02, rng, 0.0)
+	pool.advance(0.02)
+	if pool.multimesh.visible_instance_count != 3:
+		failures.append("the landing pool submitted inactive slots")
+	pool.advance(0.20)
+	var survivor := pool.droplets[2]
+	if pool.multimesh.visible_instance_count != 1 or survivor.render_index != 0 \
+			or not is_equal_approx(pool._buffer[3], survivor.position.x) or pool._buffer[14] != Color.YELLOW.b:
+		failures.append("a surviving droplet lost its live transform or sauce tint after compaction")
+	pool.advance(2.0)
+	if pool.multimesh.visible_instance_count != 0:
+		failures.append("expired landing drops were still submitted")
+	pool.instance.queue_free()
 
 
 func _report_count(world, clip: AudioStream = null) -> int:

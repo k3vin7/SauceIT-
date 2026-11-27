@@ -22,6 +22,7 @@ const CAP := Color("f2f2f2")
 static var _sphere_meshes := {}
 static var _cylinder_meshes := {}
 static var _grunt_meshes := {}
+static var _rigid_meshes: Dictionary[Vector4, ArrayMesh] = {}
 const CRATE := Color("8c6a3e")
 
 
@@ -55,6 +56,14 @@ static func _build_grunt_mesh(radius: float, overripe: bool) -> ArrayMesh:
 	if overripe:
 		_cylinder(root, "Split", Vector3(0.0, 0.0, 0.0), radius * 1.025, radius * 0.17,
 			Color("381b2d"))
+	var mesh := _merge_parts(root)
+	root.free()
+	return mesh
+
+
+## Each rigid body moves as one piece. Bake its primitive transforms and
+## pigments into one surface so the base and sauce each need just one draw.
+static func _merge_parts(root: Node3D) -> ArrayMesh:
 	var surface := SurfaceTool.new()
 	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var offset := 0
@@ -71,7 +80,6 @@ static func _build_grunt_mesh(radius: float, overripe: bool) -> ArrayMesh:
 		for index: int in arrays[Mesh.ARRAY_INDEX]:
 			surface.add_index(offset + index)
 		offset += vertices.size()
-	root.free()
 	var material := StandardMaterial3D.new()
 	material.vertex_color_use_as_albedo = true
 	material.vertex_color_is_srgb = true
@@ -169,6 +177,9 @@ static func _brute_eye(root: Node3D, radius: float, suffix: String, at: Vector3,
 static func bowler(radius: float, height: float) -> Node3D:
 	var root := Node3D.new()
 	root.name = "BowlingTomatoVisual"
+	var key := Vector4(0.0, radius, height, 0.0)
+	if _rigid_meshes.has(key):
+		return _finish_rigid(root, key)
 	_cylinder(root, "Body", Vector3(0.0, -height * 0.1, 0.0), radius, height * 0.8, CRATE)
 	_cylinder(root, "UpperHoop", Vector3(0.0, height * 0.22, 0.0), radius * 1.025,
 		height * 0.09, Color("614731"))
@@ -178,7 +189,7 @@ static func bowler(radius: float, height: float) -> Node3D:
 	_cylinder(root, "Stem", Vector3(0.0, height * 0.45 + radius * 0.5, -radius * 0.3),
 		radius * 0.07, radius * 0.25, STEM)
 	_eyes(root, radius, -height * 0.05, -radius * 0.09)
-	return root
+	return _finish_rigid(root, key)
 
 
 ## The thing it rolls: a tomato and nothing else. Darker, so it reads as a
@@ -186,19 +197,25 @@ static func bowler(radius: float, height: float) -> Node3D:
 static func ball(radius: float) -> Node3D:
 	var root := Node3D.new()
 	root.name = "TomatoBallVisual"
+	var key := Vector4(1.0, radius, 0.0, 0.0)
+	if _rigid_meshes.has(key):
+		return _finish_rigid(root, key)
 	_sphere(root, "Body", Vector3.ZERO, radius, Color("c0281a"), 0.5)
 	for index in 3:
 		var angle := TAU * float(index) / 3.0
 		_sphere(root, "Spot%d" % index,
 			Vector3(cos(angle) * radius * 0.7, sin(angle * 1.7) * radius * 0.5, sin(angle) * radius * 0.7),
 			radius * 0.28, OVERRIPE, 0.6)
-	return root
+	return _finish_rigid(root, key)
 
 
 ## The spitter: a ketchup bottle with a head and a nozzle.
 static func spitter(radius: float, height: float) -> Node3D:
 	var root := Node3D.new()
 	root.name = "KetchupSpitterVisual"
+	var key := Vector4(2.0, radius, height, 0.0)
+	if _rigid_meshes.has(key):
+		return _finish_rigid(root, key)
 	var body_height := height * 0.62
 	_cylinder(root, "Body", Vector3(0.0, -height * 0.5 + body_height * 0.5, 0.0), radius,
 		body_height, BOTTLE)
@@ -213,7 +230,7 @@ static func spitter(radius: float, height: float) -> Node3D:
 	_cylinder(root, "Nozzle", Vector3(0.0, head_y, -radius * 0.7), radius * 0.16, radius * 0.6, CAP,
 		Vector3(deg_to_rad(90.0), 0.0, 0.0))
 	_eyes(root, radius * 0.62, head_y)
-	return root
+	return _finish_rigid(root, key)
 
 
 ## The crawler: tomato, mozzarella, basil, tomato, mozzarella -- a caprese skewer
@@ -221,6 +238,9 @@ static func spitter(radius: float, height: float) -> Node3D:
 static func caprese(segment_radius: float, count: int, spacing: float) -> Node3D:
 	var root := Node3D.new()
 	root.name = "CapreseCrawlerVisual"
+	var key := Vector4(3.0, segment_radius, float(count), spacing)
+	if _rigid_meshes.has(key):
+		return _finish_rigid(root, key)
 	var colors := [TOMATO, MOZZARELLA, BASIL]
 	var total := spacing * float(count - 1)
 	for index in count:
@@ -232,6 +252,20 @@ static func caprese(segment_radius: float, count: int, spacing: float) -> Node3D
 	_capsule(root, "Spine", Vector3(0.0, 0.0, -total * 0.5), Vector3(0.0, 0.0, total * 0.5),
 		segment_radius * 0.3, MOZZARELLA)
 	_eyes(root, segment_radius * 1.15, 0.0, -total * 0.5)
+	return _finish_rigid(root, key)
+
+
+static func _finish_rigid(root: Node3D, key: Vector4) -> Node3D:
+	var mesh := _rigid_meshes.get(key) as ArrayMesh
+	if mesh == null:
+		mesh = _merge_parts(root)
+		_rigid_meshes[key] = mesh
+		for part in root.get_children():
+			part.free()
+	var model := MeshInstance3D.new()
+	model.name = "Body"
+	model.mesh = mesh
+	root.add_child(model)
 	return root
 
 

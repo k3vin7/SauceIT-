@@ -49,6 +49,7 @@ const HOSE_SHADER := preload("res://assets/cartoon/hose_stream.gdshader")
 const HOSE_IMPACT_FOAM_SHADER := preload("res://assets/cartoon/hose_impact_foam.gdshader")
 const WATER_DROPLET := preload("res://assets/cartoon/water_droplet.tres")
 const SHOWER_WATER := preload("res://assets/cartoon/shower_water.tres")
+const WaterSpray := preload("res://scripts/water_spray.gd")
 const FOOD_BOOTH_SCENES: Array[PackedScene] = [
 	preload("res://assets/food_booths/food_booth_s1.glb"),
 	preload("res://assets/food_booths/food_booth_s2.glb"),
@@ -1259,6 +1260,7 @@ var _refuge_status_label: Label
 const TOMATO_SPLATS_PER_M2 := 6.0
 const TOMATO_BURST_SPLAT_CAP := 240
 const TOMATO_BURST_TICK_CAP := 300
+const TOMATO_BURST_PAINT_PER_TICK := 64
 ## Solo reinforcement budget across the three finale approaches (up from 48).
 const TOMATINA_HORDE_BASE := 86
 const FINALE_DURATION := 30.0
@@ -1435,6 +1437,8 @@ var _warning_sound: AudioStreamWAV
 var _siren_label: Label3D
 @export_range(12, 96, 1) var tomatina_active_grunt_cap := 32
 var _burst_ground_budget := TOMATO_BURST_TICK_CAP
+var _burst_floor_points := PackedVector3Array()
+var _burst_floor_next := 0
 ## peer id -> seconds until the next juice drop may land on their glasses.
 var _juice_splash_clock: Dictionary = {}
 ## Peer -> whether that body was on the floor last tick, for the landing splash.
@@ -1579,6 +1583,9 @@ var load_complete := false
 var _enabled_stage_occlusion := false
 var _enemy_visual_lod_left := 0.0
 var _ribbons_dirty := false
+var _ribbon_point_pool: Array[RibbonPoint] = []
+var _ribbon_points_used := 0
+var _stream_ray := PhysicsRayQueryParameters3D.new()
 const LOAD_WALL_BATCH := 36
 const LOAD_ENEMY_BATCH := 24
 var debug_timings_us := {
@@ -1705,6 +1712,7 @@ func _physics_process(delta: float) -> void:
 		_blast_grid_built = false
 		_burst_ground_budget = TOMATO_BURST_TICK_CAP
 		if map_kind == MapKind.TOMATINA:
+			_flush_burst_floor()
 			_advance_tomatina_rescues(delta)
 			_advance_tomatina_loot(delta)
 			_advance_overripe_bursts(delta)
@@ -3279,8 +3287,10 @@ func _build_world() -> void:
 	_floor.brush_radius = contamination_brush_radius
 	if map_kind == MapKind.TOMATINA:
 		_floor.clean_color = Color("5c5c5c")
-		# Keep about 22 m of ground per draw and cap dirty texture uploads.
-		_floor.tile_cells = 448
+		# Cap each paint upload at one roughly 11 m tile. The cell grid stays
+		# shared with collision, so the contour and network positions line up.
+		_floor.tile_cells = 224
+		_floor.batch_clean_tiles = true
 		_floor.tile_sample_margin = 2
 		_floor.upload_tiles_per_frame = 1
 		if TomatinaMap.street_profile_enabled():
@@ -5433,7 +5443,7 @@ func _build_tomatina() -> void:
 		_build_start_marker(TomatinaMap.start_arrow())
 
 
-var _refuge_shower_sprays: Array[CPUParticles3D] = []
+var _refuge_shower_sprays: Array[GPUParticles3D] = []
 
 
 func _build_refuge_shower(room: int) -> void:
@@ -5445,26 +5455,14 @@ func _build_refuge_shower(room: int) -> void:
 	sign.pixel_size = 0.009
 	add_child(sign)
 
-	var spray := CPUParticles3D.new()
+	var spray := WaterSpray.make(100, 0.85, 0.14, Vector2(1.5, 2.1), Vector2(0.72, 1.22))
 	spray.name = "RefugeShowerSpray%d" % room
 	spray.position = at + Vector3.UP * 2.69
-	spray.emitting = false
 	spray.one_shot = true
-	spray.amount = 100
-	spray.lifetime = 0.85
-	spray.direction = Vector3.DOWN
-	spray.spread = 12.0
-	spray.initial_velocity_min = 1.5
-	spray.initial_velocity_max = 2.1
-	spray.gravity = Vector3.DOWN * 2.4
-	spray.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
-	spray.emission_sphere_radius = 0.14
-	spray.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	spray.particle_flag_align_y = true
-	spray.scale_amount_min = 0.72
-	spray.scale_amount_max = 1.22
-	spray.mesh = WATER_DROPLET
 	spray.material_override = SHOWER_WATER
+	var motion := spray.process_material as ParticleProcessMaterial
+	motion.spread = 12.0
+	motion.gravity = Vector3.DOWN * 2.4
 	add_child(spray)
 	_refuge_shower_sprays.append(spray)
 
@@ -6323,11 +6321,10 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 		var angle := _tomato_rng.randf_range(0.0, TAU)
 		var reach := sqrt(_tomato_rng.randf()) * radius
 		var at := centre + Vector3(cos(angle) * reach, 0.0, sin(angle) * reach)
-		var cell := _floor.paint_mayo(at, -1, ContaminationGrid.KIND_KETCHUP)
-		if cell.x >= 0:
-			_pending_splats.append_array(PackedInt32Array([
-				_splat_code(SPLAT_FLOOR, ContaminationGrid.KIND_KETCHUP), -1,
-				cell.x, cell.y]))
+		if _blast_grid_in_tick:
+			_burst_floor_points.append(at)
+		else:
+			_paint_burst_floor_splat(at)
 	var overripe := _is_overripe(enemy)
 	_splash_enemies(centre, radius,
 		overripe_burst_damage if overripe else tomato_burst_damage, shooter, enemy, overripe)
@@ -6347,6 +6344,31 @@ func _burst_tomato(enemy: MayoEnemy, centre := Vector3.INF, shooter: Shooter = n
 				player.peer_id, cell.x, cell.y]))
 		_record_visor_splat(player, centre, ContaminationGrid.KIND_KETCHUP)
 	_blast_fragments(centre, radius)
+
+
+## An explosion resolves damage and effects immediately. Spread its floor
+## stamps across physics ticks and send each stamp when the floor applies it.
+func _flush_burst_floor() -> void:
+	if _burst_floor_points.is_empty():
+		return
+	var end := mini(_burst_floor_next + TOMATO_BURST_PAINT_PER_TICK, _burst_floor_points.size())
+	for index in range(_burst_floor_next, end):
+		_paint_burst_floor_splat(_burst_floor_points[index])
+	if end == _burst_floor_points.size():
+		_burst_floor_points.clear()
+		_burst_floor_next = 0
+	elif end >= TOMATO_BURST_TICK_CAP * 4:
+		_burst_floor_points = _burst_floor_points.slice(end)
+		_burst_floor_next = 0
+	else:
+		_burst_floor_next = end
+
+
+func _paint_burst_floor_splat(at: Vector3) -> void:
+	var cell := _floor.paint_mayo(at, -1, ContaminationGrid.KIND_KETCHUP)
+	if cell.x >= 0:
+		_pending_splats.append_array(PackedInt32Array([
+			_splat_code(SPLAT_FLOOR, ContaminationGrid.KIND_KETCHUP), -1, cell.x, cell.y]))
 
 
 ## Juice landing on bodies: every tomato inside `radius` of `centre`, `source`
@@ -6873,6 +6895,8 @@ func _reset_tomatina_finale() -> void:
 	_truck_exit_requested = false
 	_truck_escape_finished = false
 	_overripe_bursts.clear()
+	_burst_floor_points.clear()
+	_burst_floor_next = 0
 	_splash_ripples.clear()
 	_press_king_rise_at = Vector3.INF
 	_press_king_rise_left = 0.0
@@ -7455,14 +7479,19 @@ func _advance_enemies(delta: float) -> void:
 	for shooter in _shooters.values():
 		targets.push_back(shooter.player)
 	var encounter_targets := [[], [], [], []]
+	var encounter_bounds: Array[Rect2] = [Rect2(), Rect2(), Rect2(), Rect2()]
 	var alley_targets := []
 	if map_kind == MapKind.TOMATINA:
 		_update_tomatina_checkpoint(targets)
 		for player: MayoPlayer in targets:
-			var leg := TomatinaMap.encounter_at(StreetMap.cell_at(player.global_position))
+			var position := player.global_position
+			var leg := TomatinaMap.encounter_at(StreetMap.cell_at(position))
 			if leg >= 0:
+				var plane := Vector2(position.x, position.z)
+				encounter_bounds[leg] = Rect2(plane, Vector2.ZERO) if encounter_targets[leg].is_empty() \
+					else encounter_bounds[leg].expand(plane)
 				encounter_targets[leg].push_back(player)
-				if leg == 3 and not TomatinaMap.in_rect(_plaza_rect, player.global_position):
+				if leg == 3 and not TomatinaMap.in_rect(_plaza_rect, position):
 					alley_targets.push_back(player)
 		if not _horde_spawned:
 			_advance_alley_ambushes(encounter_targets)
@@ -7510,6 +7539,14 @@ func _advance_enemies(delta: float) -> void:
 					chasing = []
 				elif leg == 3:
 					chasing = alley_targets
+			var at := enemy.global_position
+			if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT and (chasing.is_empty() \
+					or not encounter_bounds[leg].grow(enemy.sight_range + 1.0).has_point(Vector2(at.x, at.z))) \
+					and enemy.rest_outside_sight():
+				continue
+			if enemy.is_alive() and not enemy.vanished \
+					and (enemy.kind != MayoEnemy.EnemyKind.TOMATO_BALL or enemy.is_ball_live()):
+				enemy.in_mustard = _floor.is_slowing_at(at)
 		elif _tutorial != null:
 			chasing = _tutorial.targets_for(enemy, targets)
 		# Dead ones are advanced too: they are still toppling.
@@ -7971,6 +8008,10 @@ func _update_mustard_field() -> void:
 		var player: MayoPlayer = shooter.player
 		if is_instance_valid(player):
 			player.in_mustard = _floor.is_slowing_at(player.global_position)
+	if map_kind == MapKind.TOMATINA:
+		# Query enemy footing when it is about to move. Resting grunts have
+		# no movement to slow, and recheck the surface on their first tick back.
+		return
 	for enemy in _enemies:
 		if not is_instance_valid(enemy) or not enemy.is_alive() or enemy.vanished or enemy.hidden_in_breakout:
 			continue
@@ -8105,16 +8146,25 @@ func sauce_self_exclusions(shooter: Shooter) -> Array[RID]:
 ## Treat a ray into the lens like a hit on its wearer.
 func cast_sauce_ray(space: PhysicsDirectSpaceState3D, query: PhysicsRayQueryParameters3D) -> Dictionary:
 	var hit := space.intersect_ray(query)
+	if hit.is_empty() or not hit.collider is Area3D:
+		return hit
+	var original_exclusions: Array[RID] = []
+	var skipped_areas := false
 	while not hit.is_empty() and hit.collider is Area3D:
 		var area := hit.collider as Area3D
 		var wearer := area.get_meta("visor_player", null) as MayoPlayer
 		if is_instance_valid(wearer) and (query.to - query.from).dot(area.global_basis.z) > 0.0:
 			hit.collider = wearer
-			return hit
+			break
 		var excluded := query.exclude
+		if not skipped_areas:
+			original_exclusions = excluded.duplicate()
+			skipped_areas = true
 		excluded.append(area.get_rid())
 		query.exclude = excluded
 		hit = space.intersect_ray(query)
+	if skipped_areas:
+		query.exclude = original_exclusions
 	return hit
 
 
@@ -8273,10 +8323,12 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 	if points.is_empty():
 		return
 	var space_state := get_world_3d().direct_space_state
-	var query := PhysicsRayQueryParameters3D.new()
+	var query := _stream_ray
 	query.collide_with_areas = true
 	var own_body := sauce_self_exclusions(shooter)
 	var no_exclusions: Array[RID] = []
+	var excluded_self := false
+	query.exclude = no_exclusions
 	var physics_frame := int(Engine.get_physics_frames())
 	var stride := maxi(raycast_frame_stride, 1)
 	var authority := _is_authority()
@@ -8349,7 +8401,10 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 		if should_cast:
 			query.from = point.last_collision_position
 			query.to = next
-			query.exclude = own_body if point.distance_travelled < self_hit_distance else no_exclusions
+			var exclude_self := point.distance_travelled < self_hit_distance
+			if excluded_self != exclude_self:
+				query.exclude = own_body if exclude_self else no_exclusions
+				excluded_self = exclude_self
 			query.hit_from_inside = point.first_collision
 			point.first_collision = false
 			if debug_profile_enabled:
@@ -8450,9 +8505,11 @@ func _record_floor_splat(shooter: Shooter, burst_index: int,
 		shooter.coat_frame = frame
 		_next_coat += 1
 		shooter.coat_id = _next_coat
+	var local := _floor._to_grid(hit_position)
 	if map_kind == MapKind.TOMATINA:
-		brush = _floor.grid.position_brush(_floor._to_grid(hit_position), brush)
-	var cell := _floor.paint_mayo(hit_position, shooter.coat_id, sauce, brush)
+		brush = _floor.grid.position_brush(local, brush)
+	var cell := _floor.grid.paint(local, _floor.brush_radius, _floor.thickness_per_pass,
+		shooter.coat_id, sauce, brush)
 	if cell.x >= 0:
 		_pending_splats.append_array(PackedInt32Array([
 			_splat_code(SPLAT_FLOOR, sauce, brush), shooter.coat_id,
@@ -9232,16 +9289,18 @@ func _update_visuals(shooter: Shooter = null) -> void:
 	var landing_segments: Array = []
 	var shadow_segments: Array = []
 	var local_view := shooter == _local and _first_person
+	_ribbon_points_used = 0
 	_for_each_lane(shooter, func():
 		var near_contact := _near_floor_stream_contact(shooter, camera_position, camera_forward) if local_view else null
-		var airborne := _segments_for_phase(PointPhase.AIR, camera_position, shooter, near_contact != null)
+		var lane := _lane_ribbons(shooter, camera_position, near_contact != null, true)
+		var airborne: Array = lane[PointPhase.AIR]
 		if near_contact != null:
 			airborne.push_back(_floor_nozzle_strip(shooter, near_contact))
 		elif local_view:
 			_join_first_person_nozzle(shooter, camera_position, airborne)
 		air_segments.append_array(airborne)
-		landing_segments.append_array(_segments_for_phase(PointPhase.LANDING, camera_position, shooter))
-		shadow_segments.append_array(_shadow_segments(camera_position, shooter)))
+		landing_segments.append_array(lane[PointPhase.LANDING])
+		shadow_segments.append_array(lane[RIBBON_SHADOW]))
 	var thickness := strand_thickness * (SauceParts.THREE_WAY_SCALE if _is_three_way(shooter) else 1.0)
 	shooter.air_visual.update_ribbon(air_segments, camera_position, camera_forward, thickness)
 	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, thickness, 0.004)
@@ -9392,74 +9451,75 @@ func _ribbon_point_position(point: MayoPoint, local_view: bool) -> Vector3:
 	return point.position
 
 
+const RIBBON_SHADOW := 2
+
+
 func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: Shooter = null,
 		cover_close_root := false) -> Array:
-	if shooter == null:
-		shooter = _local
-	var result: Array = []
-	var current: Array = []
-	# Points skipped here are not array-adjacent to the next kept one, so the
-	# run breaks and `previous` is cleared; within a run adjacency holds.
-	var previous: MayoPoint = null
-	for point in shooter.points:
-		var covered := cover_close_root and point.burst_index == shooter.burst_index \
-			and point.age <= CLOSE_FLOOR_STREAM_AGE and point.distance_travelled <= CLOSE_FLOOR_STREAM_REACH
-		if point.phase != phase or covered or _is_near_camera(point, camera_position):
-			if not current.is_empty():
-				result.push_back(current)
-				current = []
-			previous = null
-			continue
-		if previous != null and (previous.burst_index != point.burst_index \
-				or point.severed):
-			if not current.is_empty():
-				result.push_back(current)
-				current = []
-		var visual_point := RibbonPoint.new()
-		visual_point.position = _ribbon_point_position(point, shooter == _local and _first_person)
-		visual_point.width_scale = 0.62 if point.range_scale > 1.0 else 1.0
-		if phase == PointPhase.AIR:
-			visual_point.width_scale *= lerpf(0.36, 1.0, smoothstep(0.0, 0.72, point.distance_travelled))
-		if phase == PointPhase.LANDING:
-			var progress := clampf(point.landing_age / landing_transition_time, 0.0, 1.0)
-			visual_point.opacity = 1.0 - progress
-			visual_point.width_scale *= 1.0 - progress
-		current.push_back(visual_point)
-		previous = point
-	if not current.is_empty():
-		result.push_back(current)
-	return result
+	return _lane_ribbons(_local if shooter == null else shooter, camera_position, cover_close_root)[phase]
 
 
 func _shadow_segments(camera_position: Vector3, shooter: Shooter = null) -> Array:
-	if shooter == null:
-		shooter = _local
-	var result: Array = []
-	var current: Array = []
+	return _lane_ribbons(_local if shooter == null else shooter, camera_position)[RIBBON_SHADOW]
+
+
+## Build all three views of a lane in the same pass. The mesh consumes the
+## pooled render samples synchronously, so the next shooter can reuse them.
+func _lane_ribbons(shooter: Shooter, camera_position: Vector3, cover_close_root := false,
+		reuse_points := false) -> Array:
+	var segments := [[], [], []]
+	var phase_run: Array = []
+	var shadow_run: Array = []
 	var previous: MayoPoint = null
+	var local_view := shooter == _local and _first_person
 	for point in shooter.points:
 		if _is_near_camera(point, camera_position):
-			if not current.is_empty():
-				result.push_back(current)
-				current = []
+			phase_run = []
+			shadow_run = []
 			previous = null
 			continue
-		if previous != null and (previous.burst_index != point.burst_index \
-				or point.severed):
-			if not current.is_empty():
-				result.push_back(current)
-				current = []
+		var breaks := previous == null or previous.burst_index != point.burst_index or point.severed
+		if breaks:
+			shadow_run = []
+			segments[RIBBON_SHADOW].push_back(shadow_run)
+		if breaks or previous.phase != point.phase:
+			phase_run = []
 		previous = point
-		var visual_point := RibbonPoint.new()
-		visual_point.position = Vector3(point.position.x, 0.0, point.position.z)
+
+		var fade := 1.0
 		if point.phase == PointPhase.LANDING:
-			var progress := clampf(point.landing_age / landing_transition_time, 0.0, 1.0)
-			visual_point.opacity = 1.0 - progress
-			visual_point.width_scale = 1.0 - progress
-		current.push_back(visual_point)
-	if not current.is_empty():
-		result.push_back(current)
-	return result
+			fade -= clampf(point.landing_age / landing_transition_time, 0.0, 1.0)
+		shadow_run.push_back(_ribbon_sample(Vector3(point.position.x, 0.0, point.position.z), fade, fade,
+			reuse_points))
+
+		var covered := cover_close_root and point.phase == PointPhase.AIR and point.burst_index == shooter.burst_index \
+			and point.age <= CLOSE_FLOOR_STREAM_AGE and point.distance_travelled <= CLOSE_FLOOR_STREAM_REACH
+		if covered:
+			phase_run = []
+			continue
+		if phase_run.is_empty():
+			segments[point.phase].push_back(phase_run)
+		var width := 0.62 if point.range_scale > 1.0 else 1.0
+		if point.phase == PointPhase.AIR:
+			width *= lerpf(0.36, 1.0, smoothstep(0.0, 0.72, point.distance_travelled))
+		phase_run.push_back(_ribbon_sample(_ribbon_point_position(point, local_view), width * fade, fade,
+			reuse_points))
+	return segments
+
+
+func _ribbon_sample(at: Vector3, width: float, opacity: float, reuse: bool) -> RibbonPoint:
+	var sample: RibbonPoint
+	if reuse:
+		if _ribbon_points_used == _ribbon_point_pool.size():
+			_ribbon_point_pool.append(RibbonPoint.new())
+		sample = _ribbon_point_pool[_ribbon_points_used]
+		_ribbon_points_used += 1
+	else:
+		sample = RibbonPoint.new()
+	sample.position = at
+	sample.width_scale = width
+	sample.opacity = opacity
+	return sample
 
 
 ## Builds the landing droplets' pool. The sizing argument is the whole of what
@@ -9513,6 +9573,7 @@ func _build_impact_pool(_unused_material: Material) -> void:
 	instance.name = "ImpactSprayPool"
 	instance.add_to_group("mayo_droplets")
 	instance.multimesh = _speck_multimesh
+	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_speck_pool = instance
 	_update_speck_bounds()
 	add_child(instance)
@@ -11281,24 +11342,14 @@ func _place_hose_flow(flow: GeometryInstance3D, path: Dictionary, start_time: fl
 	flow.show()
 
 
-func _make_hose_splash() -> CPUParticles3D:
-	var spray := CPUParticles3D.new()
+func _make_hose_splash() -> GPUParticles3D:
+	var spray := WaterSpray.make(124, 0.55, 0.12, Vector2(1.6, 6.3), Vector2(0.55, 1.85))
 	spray.name = "HoseImpactSpray"
-	spray.emitting = false
-	spray.amount = 124
-	spray.lifetime = 0.55
-	spray.lifetime_randomness = 0.48
-	spray.spread = 76.0
-	spray.initial_velocity_min = 1.6
-	spray.initial_velocity_max = 6.3
-	spray.gravity = Vector3.DOWN * 9.8
-	spray.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
-	spray.emission_sphere_radius = 0.12
-	spray.particle_flag_align_y = true
-	spray.scale_amount_min = 0.55
-	spray.scale_amount_max = 1.85
-	spray.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	spray.mesh = WATER_DROPLET
+	spray.visibility_aabb = AABB(Vector3.ONE * -5.5, Vector3.ONE * 11.0)
+	var motion := spray.process_material as ParticleProcessMaterial
+	motion.lifetime_randomness = 0.48
+	motion.spread = 76.0
+	motion.gravity = Vector3.DOWN * 9.8
 	add_child(spray)
 	return spray
 
@@ -11320,7 +11371,7 @@ func _make_hose_impact_foam() -> MeshInstance3D:
 
 
 func _update_hose_impact(visual: Dictionary, path: Dictionary, delta: float) -> void:
-	var spray: CPUParticles3D = visual["splash"]
+	var spray: GPUParticles3D = visual["splash"]
 	var patch: MeshInstance3D = visual["foam"]
 	var hit: Dictionary = path.get("hit", {})
 	var old_strength: float = visual["foam_strength"]
@@ -11347,7 +11398,8 @@ func _update_hose_impact(visual: Dictionary, path: Dictionary, delta: float) -> 
 	var flow_direction := velocity.normalized()
 	var along_surface := flow_direction.slide(normal)
 	spray.global_position = position + normal * 0.045
-	spray.direction = (normal + along_surface * 0.90).normalized()
+	var motion := spray.process_material as ParticleProcessMaterial
+	motion.direction = (normal + along_surface * 0.90).normalized()
 	var across := along_surface.normalized()
 	if across.is_zero_approx():
 		var reference := Vector3.UP if absf(normal.y) < 0.9 else Vector3.FORWARD

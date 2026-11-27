@@ -173,6 +173,7 @@ var _rolled_deaths := {}
 var _coins := {}
 var _coin_serial := 0
 var _projectiles: Array[Dictionary] = []
+var _projectile_ray := PhysicsRayQueryParameters3D.new()
 var _close_impact_ribbons: Array[Dictionary] = []
 var _coin_mesh: CylinderMesh
 var _free_projectile_ribbons: Array[StreamVisual] = []
@@ -526,6 +527,14 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 			_close_impact_ribbons.remove_at(i)
 		else:
 			_draw_close_impact(trace)
+	if _projectiles.is_empty():
+		return
+	var space := get_world_3d().direct_space_state
+	var query := _projectile_ray
+	query.collide_with_areas = true
+	var self_exclusions: Dictionary[int, Array] = {}
+	var last_peer := -1
+	var last_had_pierces := false
 	for i in range(_projectiles.size() - 1, -1, -1):
 		var shot: Dictionary = _projectiles[i]
 		var profile: Dictionary = PROJECTILES[shot.part]
@@ -538,15 +547,26 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 			to = ballistic_position(shot.origin, shot.launch_velocity, gravity, float(shot.age) + delta)
 		var sweep: Vector3 = shot.get("sweep_from", from)
 		shot.erase("sweep_from")
-		var query := PhysicsRayQueryParameters3D.create(sweep, to)
-		var shooter = world.shooter_for(shot.peer)
-		var skipped: Array = (shot.get("passed", []) as Array).duplicate()
-		if shooter != null:
-			skipped.append_array(world.sauce_self_exclusions(shooter))
-		query.exclude = skipped
+		query.from = sweep
+		query.to = to
+		var peer: int = shot.peer
+		var shooter = world.shooter_for(peer)
+		var has_pierces := shot.has("passed")
+		if peer != last_peer or has_pierces or last_had_pierces:
+			if not self_exclusions.has(peer):
+				var own_body: Array[RID] = []
+				if shooter != null:
+					own_body = world.sauce_self_exclusions(shooter)
+				self_exclusions[peer] = own_body
+			var skipped: Array[RID] = self_exclusions[peer]
+			if has_pierces:
+				skipped = skipped.duplicate()
+				skipped.append_array(shot.passed)
+			query.exclude = skipped
+		last_peer = peer
+		last_had_pierces = has_pierces
 		query.hit_from_inside = float(shot.age) == 0.0
-		query.collide_with_areas = true
-		var hit: Dictionary = world.cast_sauce_ray(get_world_3d().direct_space_state, query)
+		var hit: Dictionary = world.cast_sauce_ray(space, query)
 		if not hit.is_empty():
 			shot.impact_direction = to - sweep
 			if (hit.normal as Vector3).is_zero_approx():

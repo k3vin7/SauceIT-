@@ -25,7 +25,7 @@ signal character_requested
 const CharacterSelectScript := preload("res://scripts/character_select.gd")
 const ROOM_SCENE := preload("res://maps/command_runtime.scn")
 const OfficeMirror := preload("res://scripts/office_mirror.gd")
-const WATER_DROPLET := preload("res://assets/cartoon/water_droplet.tres")
+const WaterSpray := preload("res://scripts/water_spray.gd")
 const SHOWER_WATER := preload("res://assets/cartoon/shower_water.tres")
 
 ## 아래 세 값은 방 씬에 해당 노드가 없을 때만 쓰는 기본값이다.
@@ -115,7 +115,7 @@ var _shower_anchor := Vector3.INF
 var _range_position := Vector3.INF
 ## 옆으로 긴 물건: Target -> [길이 방향(월드), 절반 길이(m)].
 var _spans: Dictionary = {}
-var _shower_water: CPUParticles3D
+var _shower_water: GPUParticles3D
 var _doctor_label: Label
 var _doctor_tween: Tween
 var _doctor_last := -1
@@ -333,24 +333,12 @@ func _build_shower() -> void:
 	# The prompt is pinned beside the red valve on the pipe, as the stage pins
 	# its own beside the cross on the shower post.
 	_shower_anchor = (head.get_parent() as Node3D).to_global(head.position + Vector3(-0.36, -1.4, 0.0))
-	_shower_water = CPUParticles3D.new()
+	_shower_water = WaterSpray.make(90, 0.75, 0.13, Vector2(2.6, 3.4), Vector2(0.70, 1.07))
 	_shower_water.name = "ShowerWater"
-	_shower_water.emitting = false
-	_shower_water.amount = 90
-	_shower_water.lifetime = 0.75
-	_shower_water.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
-	_shower_water.emission_sphere_radius = 0.13
-	_shower_water.direction = Vector3.DOWN
-	_shower_water.spread = 9.0
-	_shower_water.initial_velocity_min = 2.6
-	_shower_water.initial_velocity_max = 3.4
-	_shower_water.gravity = Vector3(0.0, -7.0, 0.0)
-	_shower_water.particle_flag_align_y = true
-	_shower_water.scale_amount_min = 0.70
-	_shower_water.scale_amount_max = 1.07
-	_shower_water.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_shower_water.mesh = WATER_DROPLET
 	_shower_water.material_override = SHOWER_WATER
+	var motion := _shower_water.process_material as ParticleProcessMaterial
+	motion.spread = 9.0
+	motion.gravity = Vector3.DOWN * 7.0
 	_shower_water.position = Vector3(0.0, -0.06, 0.0)
 	head.add_child(_shower_water)
 

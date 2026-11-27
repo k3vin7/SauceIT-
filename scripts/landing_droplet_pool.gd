@@ -25,6 +25,7 @@ class Droplet:
 	## the alternative is a pool per sauce and three times the instances.
 	var sauce := ContaminationGrid.KIND_MAYO
 	var active := false
+	var render_index := -1
 	var position := Vector3.ZERO
 	var radius := 0.014
 	var expires_at := 0.0
@@ -81,6 +82,7 @@ func build(parent: Node3D, material: Material, size: int, stride: int,
 	multimesh.use_colors = true
 	multimesh.mesh = mesh
 	multimesh.instance_count = size
+	multimesh.visible_instance_count = 0
 	_buffer.resize(size * _stride)
 	_buffer.fill(0.0)
 	multimesh.buffer = _buffer
@@ -89,6 +91,7 @@ func build(parent: Node3D, material: Material, size: int, stride: int,
 	instance.name = "LandingDropletPool"
 	instance.add_to_group("mayo_droplets")
 	instance.multimesh = multimesh
+	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# Like the strand ribbons, the pool's bounds are set by hand -- a MultiMesh
 	# whose buffer is written directly does not work them out -- and, like them,
 	# they used to be a fixed box around the origin from when the world was one
@@ -113,6 +116,7 @@ func spawn(position: Vector3, sauce: int, tint: Color, count: int,
 	for _i in count:
 		var droplet := droplets[_cursor]
 		if not droplet.active:
+			droplet.render_index = active_indices.size()
 			active_indices.push_back(_cursor)
 		else:
 			# The cursor walks the pool in order and every droplet is given the
@@ -129,8 +133,7 @@ func spawn(position: Vector3, sauce: int, tint: Color, count: int,
 		droplet.expires_at = expires_at
 		droplet.radius = rng.randf_range(radius_min, radius_max)
 		droplet.position = position + Vector3(cos(angle) * spread_radius, droplet.radius, sin(angle) * spread_radius)
-		write((_cursor - 1 + droplets.size()) % droplets.size(),
-			droplet.position, droplet.radius * 2.0, tint)
+		write(droplet.render_index, droplet.position, droplet.radius * 2.0, tint)
 	_buffer_dirty = true
 
 
@@ -143,10 +146,20 @@ func advance(now: float) -> void:
 		var droplet := droplets[i]
 		if now >= droplet.expires_at:
 			droplet.active = false
-			write(i, Vector3.ZERO, 0.0)
-			active_indices.remove_at(active_index)
+			droplet.render_index = -1
+			# Move the last live instance into the hole. Simulation slot IDs
+			# remain stable, but the renderer sees a contiguous live prefix.
+			var last := active_indices.size() - 1
+			if active_index != last:
+				var moved := active_indices[last]
+				droplets[moved].render_index = active_index
+				active_indices[active_index] = moved
+				for component in _stride:
+					_buffer[active_index * _stride + component] = _buffer[last * _stride + component]
+			active_indices.resize(last)
 			_buffer_dirty = true
 	if _buffer_dirty:
+		multimesh.visible_instance_count = active_indices.size()
 		multimesh.buffer = _buffer
 		update_bounds()
 		_buffer_dirty = false

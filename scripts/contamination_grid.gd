@@ -1,6 +1,8 @@
 class_name ContaminationGrid
 extends RefCounted
 
+signal tile_paint_changed(index: int, has_paint: bool)
+
 ## One rectangular contamination grid: the cell mask, the texture it uploads to,
 ## and the material that renders it. The floor owns one; a wall owns one per
 ## face. Local coordinates run from -extent/2 to +extent/2 on both axes, so the
@@ -109,7 +111,12 @@ var _tiles_across := 1
 var _tiles_down := 1
 var _tile_textures: Array[ImageTexture] = []
 var _tile_materials: Array[ShaderMaterial] = []
+const UPLOAD_THICKNESS := 1
+const UPLOAD_CONTOUR := 2
+const UPLOAD_BOTH := UPLOAD_THICKNESS | UPLOAD_CONTOUR
 var _tile_dirty := PackedByteArray()
+var track_tile_paint := false
+var _tile_paint_channels := PackedByteArray()
 var _next_upload_tile := 0
 var _tile_margin := 0
 var _tile_samples: Array[Rect2i] = []
@@ -185,6 +192,8 @@ func configure(new_extent: Vector2, new_cell_size: float, clean_color: Color,
 	_tiles_down = ceili(float(height) / float(tile_cells))
 	_tile_dirty.resize(_tiles_across * _tiles_down)
 	_tile_dirty.fill(0)
+	_tile_paint_channels.resize(_tile_dirty.size() if track_tile_paint else 0)
+	_tile_paint_channels.fill(0)
 	_next_upload_tile = 0
 	_tile_textures.clear()
 	_contour_textures.clear()
@@ -261,7 +270,7 @@ func tile_region(index: int) -> Rect2:
 func _touch_tile(column: int, row: int) -> void:
 	var tile_x := column / tile_cells
 	var tile_y := row / tile_cells
-	_tile_dirty[tile_y * _tiles_across + tile_x] = 1
+	_tile_dirty[tile_y * _tiles_across + tile_x] |= UPLOAD_BOTH
 	# The border texels belong to the neighbouring tile's filter too.
 	if _tile_margin > 0 and _tile_dirty.size() > 1:
 		var x := column % tile_cells
@@ -271,9 +280,9 @@ func _touch_tile(column: int, row: int) -> void:
 			_touch_tile_span(column, row, column, row)
 
 
-func _touch_tile_span(left: int, top: int, right: int, bottom: int) -> void:
+func _touch_tile_span(left: int, top: int, right: int, bottom: int, channels := UPLOAD_BOTH) -> void:
 	if _tile_dirty.size() == 1:
-		_tile_dirty[0] = 1
+		_tile_dirty[0] |= channels
 		return
 	var first_x := maxi(0, left - _tile_margin) / tile_cells
 	var last_x := mini(width - 1, right + _tile_margin) / tile_cells
@@ -282,11 +291,11 @@ func _touch_tile_span(left: int, top: int, right: int, bottom: int) -> void:
 	for tile_y in range(first_y, last_y + 1):
 		var base := tile_y * _tiles_across
 		for tile_x in range(first_x, last_x + 1):
-			_tile_dirty[base + tile_x] = 1
+			_tile_dirty[base + tile_x] |= channels
 
 
 func _touch_all_tiles() -> void:
-	_tile_dirty.fill(1)
+	_tile_dirty.fill(UPLOAD_BOTH)
 
 
 ## Cell containing a local position, without clamping.
@@ -478,11 +487,18 @@ func _paint_detail(centre: Vector2i, radius_meters: float, deposit: int, kind: i
 	var sector := (style - BRUSH_STROKE) if style >= BRUSH_STROKE else posmod(seed, STROKE_DIRECTIONS)
 	var stamp := (phase * STROKE_DIRECTIONS + sector) * 32 + style
 	var key := Vector4i(roundi(cell_size * 100000.0), roundi(radius_meters * 10000.0), kind, stamp * 4 + variant)
-	if not _detail_brushes.has(key):
+	var rows: PackedInt32Array
+	if _detail_brushes.has(key):
+		rows = _detail_brushes[key]
+	else:
 		if _detail_brushes.size() >= DETAIL_BRUSH_LIMIT:
-			_detail_brushes.erase(_detail_brushes.keys()[0])
-		_detail_brushes[key] = _build_detail_brush(key, style, variant)
-	var rows: PackedInt32Array = _detail_brushes[key]
+			var oldest := Vector4i.ZERO
+			for cached_key in _detail_brushes:
+				oldest = cached_key
+				break
+			_detail_brushes.erase(oldest)
+		rows = _build_detail_brush(key, style, variant)
+		_detail_brushes[key] = rows
 	var changed := false
 	var deduplicate := track_coat or (wrap_x and radius_meters * 4.0 >= extent.x)
 	var start := 0
@@ -497,6 +513,7 @@ func _paint_detail(centre: Vector2i, radius_meters: float, deposit: int, kind: i
 		var base := row * width
 		var first := width
 		var last := -1
+		var channels := 0
 		for offset in length:
 			var ink := rows[data + offset]
 			if ink == 0:
@@ -507,21 +524,23 @@ func _paint_detail(centre: Vector2i, radius_meters: float, deposit: int, kind: i
 			elif column < 0 or column >= width:
 				continue
 			var index := base + column
-			var wrote := ink > contour_cells[index]
-			if wrote:
+			var pixel_channels := 0
+			if ink > contour_cells[index]:
 				contour_cells[index] = ink
+				pixel_channels = UPLOAD_CONTOUR
 			if ink >= 128 and (not deduplicate or not coated.has(index)):
 				var here := int(cells[index])
 				if (here & KIND_MASK) != kind or here >> KIND_BITS < MAX_THICKNESS:
 					if deduplicate:
 						coated[index] = true
 					_write_deposit(index, here, deposit, kind)
-					wrote = true
-			if wrote:
+					pixel_channels |= UPLOAD_THICKNESS
+			if pixel_channels != 0:
 				first = mini(first, column)
 				last = maxi(last, column)
+				channels |= pixel_channels
 		if last >= 0:
-			_touch_tile_span(first, row, last, row)
+			_touch_tile_span(first, row, last, row, channels)
 			changed = true
 	dirty = dirty or changed
 	return changed
@@ -570,22 +589,20 @@ static func _build_detail_brush(key: Vector4i, brush: int, variant: int) -> Pack
 			var at := origin + spread_axis * radius * reach
 			var size := maxf(0.98, radius * scatter * (1.0 - 0.20 * float(dot)))
 			_add_detail_ellipse(pixels, at, spread_axis, Vector2(size, size * 0.86))
-	var offsets := pixels.keys()
-	offsets.sort_custom(func(a: Vector2i, b: Vector2i) -> bool: return a.x < b.x if a.y == b.y else a.y < b.y)
+	var spans: Dictionary[int, Vector2i] = {}
+	for pixel in pixels:
+		var span: Vector2i = spans.get(pixel.y, Vector2i(pixel.x, pixel.x))
+		spans[pixel.y] = Vector2i(mini(span.x, pixel.x), maxi(span.y, pixel.x))
+	var row_indices := spans.keys()
+	row_indices.sort()
 	var rows := PackedInt32Array()
-	var row_offset := 0
-	while row_offset < offsets.size():
-		var first: Vector2i = offsets[row_offset]
-		var last := first
-		row_offset += 1
-		while row_offset < offsets.size() and offsets[row_offset].y == first.y:
-			last = offsets[row_offset]
-			row_offset += 1
-		rows.append(first.y)
-		rows.append(first.x)
-		rows.append(last.x - first.x + 1)
-		for column in range(first.x, last.x + 1):
-			rows.append(pixels.get(Vector2i(column, first.y), 0))
+	for row in row_indices:
+		var span: Vector2i = spans[row]
+		rows.append(row)
+		rows.append(span.x)
+		rows.append(span.y - span.x + 1)
+		for column in range(span.x, span.y + 1):
+			rows.append(pixels.get(Vector2i(column, row), 0))
 	return rows
 
 
@@ -919,21 +936,37 @@ func upload_if_dirty(tile_budget := 0, focus := Vector2.INF) -> void:
 		var index := preferred if offset < 0 else (first + offset) % tile_total
 		if index < 0:
 			continue
-		if _tile_dirty[index] == 0:
+		var channels := _tile_dirty[index]
+		if channels == 0:
 			continue
 		_tile_dirty[index] = 0
 		var sample := _tile_samples[index]
 		var size := sample.size
-		var data := _tile_bytes(cells, sample)
-		if not contour_cells.is_empty():
+		var painted := _tile_paint_channels[index] if track_tile_paint else 0
+		var was_painted := painted != 0
+		if channels & UPLOAD_CONTOUR and not contour_cells.is_empty():
 			var field := _tile_bytes(contour_cells, sample)
 			_contour_textures[index].update(Image.create_from_data(size.x, size.y, false, Image.FORMAT_R8, field))
+			if track_tile_paint:
+				painted &= ~UPLOAD_CONTOUR
+				if field.count(0) < field.size():
+					painted |= UPLOAD_CONTOUR
 			bytes_uploaded += field.size()
-		var tile_image := Image.create_from_data(size.x, size.y, false, Image.FORMAT_R8, data)
-		_tile_textures[index].update(tile_image)
-		if tile_total == 1:
-			image = tile_image
-		bytes_uploaded += data.size()
+		if channels & UPLOAD_THICKNESS:
+			var data := _tile_bytes(cells, sample)
+			var tile_image := Image.create_from_data(size.x, size.y, false, Image.FORMAT_R8, data)
+			_tile_textures[index].update(tile_image)
+			if tile_total == 1:
+				image = tile_image
+			if track_tile_paint:
+				painted &= ~UPLOAD_THICKNESS
+				if data.count(0) < data.size():
+					painted |= UPLOAD_THICKNESS
+			bytes_uploaded += data.size()
+		if track_tile_paint:
+			_tile_paint_channels[index] = painted
+			if was_painted != (painted != 0):
+				tile_paint_changed.emit(index, painted != 0)
 		texture_uploads += 1
 		uploaded += 1
 		if offset >= 0:
@@ -941,7 +974,7 @@ func upload_if_dirty(tile_budget := 0, focus := Vector2.INF) -> void:
 		if tile_budget > 0 and uploaded >= tile_budget:
 			break
 	bytes_uploaded_total += bytes_uploaded
-	dirty = _tile_dirty.has(1)
+	dirty = _tile_dirty.count(0) < tile_total
 	if measure_uploads:
 		upload_time_us += Time.get_ticks_usec() - started
 

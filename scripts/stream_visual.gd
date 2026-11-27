@@ -1,13 +1,18 @@
 class_name StreamVisual
 extends MeshInstance3D
 
-## Fixed-capacity, camera-facing dynamic ribbon. The ArrayMesh surface and its GPU
-## vertex buffer are allocated once; frames only upload the used vertex prefix.
+## Camera-facing ribbon with reusable GPU buffers sized for the visible strand.
 
 const CAP_STEPS := 10
+const MIN_BUFFER_VERTICES := 96
+
+static var _cap_ring := PackedVector2Array()
 
 var ribbon_material: Material
 var _dynamic_mesh: ArrayMesh
+var _mesh_buffers: Dictionary[int, ArrayMesh] = {}
+var _buffer_capacity := 0
+var _has_uv := false
 var _vertex_cache := PackedVector3Array()
 var _uv_cache := PackedVector2Array()
 var _side_cache: Array[Vector3] = []
@@ -27,18 +32,46 @@ var min_view_distance := 0.5
 func setup(material: Material, maximum_points: int = 192) -> void:
 	ribbon_material = material
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	# Worst case allows a round disc for every isolated point. Normal continuous
-	# strands use only ~6 vertices per point, so only a small prefix is uploaded.
+	# Keep CPU staging large enough for isolated discs. Most strands need only
+	# a fraction of this many vertices on the GPU.
 	_max_vertices = maximum_points * CAP_STEPS * 3 + 60
 	_vertex_cache.resize(_max_vertices)
-	_vertex_cache.fill(Vector3.ZERO)
+	_has_uv = material is ShaderMaterial
+	if _has_uv:
+		_uv_cache.resize(_max_vertices)
+	if _cap_ring.is_empty():
+		for i in CAP_STEPS + 1:
+			_cap_ring.append(Vector2.from_angle(TAU * float(i) / CAP_STEPS))
+	_select_mesh_buffer()
+	visible = false
 
+
+func _select_mesh_buffer() -> void:
+	if _used_vertices <= _buffer_capacity and _used_vertices * 4 > _buffer_capacity:
+		return
+	var capacity := MIN_BUFFER_VERTICES
+	while capacity < _used_vertices:
+		capacity *= 2
+	capacity = mini(capacity, _max_vertices)
+	if capacity == _buffer_capacity:
+		return
+	_buffer_capacity = capacity
+	_dynamic_mesh = _mesh_buffers.get(capacity)
+	if _dynamic_mesh != null:
+		_previous_used_vertices = capacity
+		_dynamic_mesh.surface_set_material(0, ribbon_material)
+		mesh = _dynamic_mesh
+		return
+
+	var vertices := PackedVector3Array()
+	vertices.resize(capacity)
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = _vertex_cache
-	if material is ShaderMaterial:
-		_uv_cache.resize(_max_vertices)
-		arrays[Mesh.ARRAY_TEX_UV] = _uv_cache
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	if _has_uv:
+		var uvs := PackedVector2Array()
+		uvs.resize(capacity)
+		arrays[Mesh.ARRAY_TEX_UV] = uvs
 	_dynamic_mesh = ArrayMesh.new()
 	_dynamic_mesh.add_surface_from_arrays(
 		Mesh.PRIMITIVE_TRIANGLES,
@@ -48,22 +81,16 @@ func setup(material: Material, maximum_points: int = 192) -> void:
 		Mesh.ARRAY_FLAG_USE_DYNAMIC_UPDATE
 	)
 	_dynamic_mesh.surface_set_material(0, ribbon_material)
+	_mesh_buffers[capacity] = _dynamic_mesh
+	_previous_used_vertices = 0
 	mesh = _dynamic_mesh
-	# Dynamic vertex updates do not recalculate the resource AABB, so it is set
-	# by hand in `update_ribbon` from the vertices actually written. It used to
-	# be a fixed 48 m box around the origin, which was the whole world when the
-	# world was one 48 m floor -- on a street that runs 186 m the box is nowhere
-	# near the strand, and the renderer culls a stream that is right in front of
-	# the player. Nothing else notices: the points still fly, still collide and
-	# still paint, so the stains keep landing while the strand blinks out as the
-	# view turns and the stale box leaves the frustum.
-	visible = false
 
 
 func set_ribbon_material(material: Material) -> void:
 	if ribbon_material != material:
 		ribbon_material = material
-		_dynamic_mesh.surface_set_material(0, material)
+		if _dynamic_mesh != null:
+			_dynamic_mesh.surface_set_material(0, material)
 
 
 func update_ribbon(
@@ -86,6 +113,7 @@ func update_ribbon(
 		visible = false
 		return
 
+	_select_mesh_buffer()
 	var upload_vertices := maxi(_used_vertices, _previous_used_vertices)
 	var collapse_point := _vertex_cache[0]
 	for i in range(_used_vertices, upload_vertices):
@@ -94,7 +122,7 @@ func update_ribbon(
 	# measurable even though only the prefix was sent to RenderingServer.
 	var vertex_bytes := _vertex_cache.slice(0, upload_vertices).to_byte_array()
 	_dynamic_mesh.surface_update_vertex_region(0, 0, vertex_bytes)
-	if not _uv_cache.is_empty():
+	if _has_uv:
 		_dynamic_mesh.surface_update_attribute_region(0, 0, _uv_cache.slice(0, _used_vertices).to_byte_array())
 	_previous_used_vertices = _used_vertices
 	# Vertices are written in world space and this node carries no transform of
@@ -161,27 +189,30 @@ func _append_strip(points: Array, camera_position: Vector3, camera_forward: Vect
 			sides[i] = joined.normalized()
 
 	var distance_a := first_distance
-	for i in points.size() - 1:
-		var point_a = points[i]
-		var point_b = points[i + 1]
-		var center_a: Vector3 = centres[i] + Vector3.UP * y_offset
-		var center_b: Vector3 = centres[i + 1] + Vector3.UP * y_offset
-		var half_a := base_width * 0.5 * float(point_a.width_scale)
-		var half_b := base_width * 0.5 * float(point_b.width_scale)
-		var left_a := center_a - sides[i] * half_a
-		var right_a := center_a + sides[i] * half_a
-		var left_b := center_b - sides[i + 1] * half_b
-		var right_b := center_b + sides[i + 1] * half_b
-		var distance_b := distance_a
-		if not _uv_cache.is_empty():
-			distance_b += center_a.distance_to(center_b)
-		var uv_left_a := Vector2(0.0, distance_a)
-		var uv_right_a := Vector2(1.0, distance_a)
-		var uv_left_b := Vector2(0.0, distance_b)
-		var uv_right_b := Vector2(1.0, distance_b)
+	var height_offset := Vector3.UP * y_offset
+	var half_width := base_width * 0.5
+	var center_a := centres[0] + height_offset
+	var edge := sides[0] * (half_width * float(points[0].width_scale))
+	var left_a := center_a - edge
+	var right_a := center_a + edge
+	var uv_left_a := Vector2(0.0, distance_a)
+	var uv_right_a := Vector2(1.0, distance_a)
+	for i in range(1, count):
+		var center_b := centres[i] + height_offset
+		edge = sides[i] * (half_width * float(points[i].width_scale))
+		var left_b := center_b - edge
+		var right_b := center_b + edge
+		if _has_uv:
+			distance_a += center_a.distance_to(center_b)
+		var uv_left_b := Vector2(0.0, distance_a)
+		var uv_right_b := Vector2(1.0, distance_a)
 		_append_triangle(left_a, left_b, right_a, uv_left_a, uv_left_b, uv_right_a)
 		_append_triangle(right_a, left_b, right_b, uv_right_a, uv_left_b, uv_right_b)
-		distance_a = distance_b
+		center_a = center_b
+		left_a = left_b
+		right_a = right_b
+		uv_left_a = uv_left_b
+		uv_right_a = uv_right_b
 
 	if draw_caps:
 		_append_round_cap(points[0], sides[0], camera_position, camera_forward, base_width, y_offset,
@@ -203,20 +234,19 @@ func _append_round_cap(point, side_hint: Vector3, camera_position: Vector3, came
 		side = Vector3.RIGHT
 	var up := face.cross(side).normalized()
 	var radius := base_width * 0.5 * float(point.width_scale)
-	var arc := TAU if inward.is_zero_approx() else PI
-	var start := PI if inward.dot(up) > 0.0 else 0.0
-	var steps := CAP_STEPS if arc == TAU else CAP_STEPS / 2
-	var increment := arc / steps
-	for i in steps:
-		var angle_a := start + increment * i
-		var angle_b := angle_a + increment
-		var ring_a := Vector2(cos(angle_a), sin(angle_a))
-		var ring_b := Vector2(cos(angle_b), sin(angle_b))
-		var edge_a := center + (side * ring_a.x + up * ring_a.y) * radius
+	var steps := CAP_STEPS if inward.is_zero_approx() else CAP_STEPS / 2
+	var start := CAP_STEPS / 2 if steps != CAP_STEPS and inward.dot(up) > 0.0 else 0
+	var ring_a := _cap_ring[start]
+	var edge_a := center + (side * ring_a.x + up * ring_a.y) * radius
+	var uv_a := Vector2(0.5 + 0.5 * ring_a.x, distance + ring_a.y * radius)
+	var uv_center := Vector2(0.5, distance)
+	for i in range(start + 1, start + steps + 1):
+		var ring_b := _cap_ring[i]
 		var edge_b := center + (side * ring_b.x + up * ring_b.y) * radius
-		_append_triangle(center, edge_a, edge_b, Vector2(0.5, distance),
-			Vector2(0.5 + 0.5 * ring_a.x, distance + ring_a.y * radius),
-			Vector2(0.5 + 0.5 * ring_b.x, distance + ring_b.y * radius))
+		var uv_b := Vector2(0.5 + 0.5 * ring_b.x, distance + ring_b.y * radius)
+		_append_triangle(center, edge_a, edge_b, uv_center, uv_a, uv_b)
+		edge_a = edge_b
+		uv_a = uv_b
 
 
 ## Direction from `position` toward the viewer, stabilised near the camera.
@@ -234,7 +264,7 @@ func _append_triangle(a: Vector3, b: Vector3, c: Vector3,
 	_vertex_cache[_used_vertices] = a
 	_vertex_cache[_used_vertices + 1] = b
 	_vertex_cache[_used_vertices + 2] = c
-	if not _uv_cache.is_empty():
+	if _has_uv:
 		_uv_cache[_used_vertices] = uv_a
 		_uv_cache[_used_vertices + 1] = uv_b
 		_uv_cache[_used_vertices + 2] = uv_c

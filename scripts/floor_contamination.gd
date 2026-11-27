@@ -93,13 +93,24 @@ var tile_sample_margin := 0
 @export_range(0.0, 1.0, 0.01) var mayo_roughness := 0.34
 @export_range(0.0, 1.0, 0.01) var deep_roughness := 0.06
 
+class FloorBatch:
+	var clean: MeshInstance3D
+	var tiles: Array[MeshInstance3D] = []
+	var painted_tiles := 0
+
+
 var grid := ContaminationGrid.new()
 var _floor_mesh: MeshInstance3D
 var upload_tiles_per_frame := 0
+var batch_clean_tiles := false
+var _batches_by_tile: Array[FloorBatch] = []
+var _clean_batch_material: ShaderMaterial
+var _festival_before_attack := false
 
 
 func _ready() -> void:
 	add_to_group("mayo_floor")
+	grid.tile_paint_changed.connect(_on_tile_paint_changed)
 	_rebuild_floor()
 
 
@@ -119,7 +130,7 @@ func configure(new_cell_size: float, new_brush_radius: float) -> void:
 	cell_size = new_cell_size
 	brush_radius = new_brush_radius
 	if grid_changed and is_node_ready():
-		_rebuild_grid()
+		_rebuild_floor()
 
 
 ## Returns the centre cell of the splat, or (-1, -1) if it fell off the grid.
@@ -170,9 +181,8 @@ func is_mayo_at(world_position: Vector3) -> bool:
 ## and the one the player aimed for would be indistinguishable from the one they
 ## were punished by.
 func is_slippery_at(world_position: Vector3) -> bool:
-	var local := _to_grid(world_position)
-	return grid.kind_at(local) == ContaminationGrid.KIND_MAYO \
-		and grid.thickness_at(local) >= slip_thickness
+	var sauce := grid.sauce_at(_to_grid(world_position))
+	return sauce.y == ContaminationGrid.KIND_MAYO and sauce.x >= slip_thickness
 
 
 ## **Mustard only: true where the floor drags on whatever is standing in it.**
@@ -181,9 +191,8 @@ func is_slippery_at(world_position: Vector3) -> bool:
 ## floor, answered off the same bytes the shader draws, and player-shaped in no
 ## way at all, so an enemy wading through mustard is slowed by the same call.
 func is_slowing_at(world_position: Vector3) -> bool:
-	var local := _to_grid(world_position)
-	return grid.kind_at(local) == ContaminationGrid.KIND_MUSTARD \
-		and grid.thickness_at(local) >= slow_thickness
+	var sauce := grid.sauce_at(_to_grid(world_position))
+	return sauce.y == ContaminationGrid.KIND_MUSTARD and sauce.x >= slow_thickness
 
 
 ## How thick the sauce here is, 0 to `ContaminationGrid.MAX_THICKNESS`.
@@ -306,6 +315,9 @@ func _rebuild_floor() -> void:
 ## cells. The terrain collision is assembled from the rendered triangles.
 func _rebuild_tiles() -> PackedVector3Array:
 	var faces := PackedVector3Array()
+	var tiles: Array[MeshInstance3D] = []
+	_batches_by_tile.clear()
+	_clean_batch_material = null
 	for index in grid.tile_count():
 		var region := grid.tile_region(index)
 		var quad := MeshInstance3D.new()
@@ -325,7 +337,58 @@ func _rebuild_tiles() -> PackedVector3Array:
 		add_child(quad)
 		if index == 0:
 			_floor_mesh = quad
+		tiles.append(quad)
+	if batch_clean_tiles:
+		_build_clean_batches(tiles)
 	return faces
+
+
+## Keep the exact fine-tile geometry, but draw each clean 2x2 group in one
+## call. Expose its separate masks only while a texture actually holds paint.
+func _build_clean_batches(tiles: Array[MeshInstance3D]) -> void:
+	_clean_batch_material = grid.tile_material(0).duplicate() as ShaderMaterial
+	_clean_batch_material.set_shader_parameter("mask_texture", null)
+	_clean_batch_material.set_shader_parameter("contour_texture", null)
+	_clean_batch_material.set_shader_parameter("fine_contours", false)
+	var batches: Dictionary[Vector2i, FloorBatch] = {}
+	for index in tiles.size():
+		var key := grid.tile_origin(index) / (grid.tile_cells * 2)
+		if not batches.has(key):
+			batches[key] = FloorBatch.new()
+		var batch: FloorBatch = batches[key]
+		batch.tiles.append(tiles[index])
+		_batches_by_tile.append(batch)
+	for batch: FloorBatch in batches.values():
+		var surface := SurfaceTool.new()
+		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for tile in batch.tiles:
+			surface.append_from(tile.mesh, 0, tile.transform)
+			tile.hide()
+		batch.clean = MeshInstance3D.new()
+		batch.clean.mesh = surface.commit()
+		batch.clean.material_override = _clean_batch_material
+		batch.clean.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(batch.clean)
+
+
+func _on_tile_paint_changed(index: int, has_paint: bool) -> void:
+	var batch := _batches_by_tile[index]
+	var was_clean := batch.painted_tiles == 0
+	batch.painted_tiles += 1 if has_paint else -1
+	var clean := batch.painted_tiles == 0
+	if clean == was_clean:
+		return
+	batch.clean.visible = clean
+	for tile in batch.tiles:
+		tile.visible = not clean
+
+
+func set_festival_before_attack(enabled: bool) -> void:
+	_festival_before_attack = enabled
+	for index in grid.tile_count():
+		grid.tile_material(index).set_shader_parameter("festival_before_attack", enabled)
+	if _clean_batch_material != null:
+		_clean_batch_material.set_shader_parameter("festival_before_attack", enabled)
 
 
 func _tile_has_relief(region: Rect2) -> bool:
@@ -412,8 +475,10 @@ func _push_shader_values() -> void:
 
 
 func _rebuild_grid() -> void:
+	grid.track_tile_paint = batch_clean_tiles
 	grid.configure(floor_size, cell_size, clean_color, mayo_color, tile_cells, tile_sample_margin)
 	grid.scatter_ketchup = pavement_mask != null
 	# The grid keeps the count of cells past it, so it has to know where it is.
 	grid.deep_threshold = slip_thickness
 	_push_shader_values()
+	set_festival_before_attack(_festival_before_attack)

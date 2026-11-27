@@ -110,6 +110,7 @@ var solo_health := 240.0
 	set(value):
 		show_sight_rings = value
 		_refresh_sight_rings()
+		_update_grunt_frame_processing()
 @export var sight_ring_color := Color(0.95, 0.15, 0.15, 0.85)
 @export var give_up_ring_color := Color(0.95, 0.45, 0.15, 0.35)
 
@@ -276,7 +277,10 @@ var health := 240.0:
 var attack_permission := Callable()
 var contact_permission := Callable()
 ## Clients simulate no enemies at all, exactly as they simulate no bodies.
-var authority := true
+var authority := true:
+	set(value):
+		authority = value
+		_update_grunt_frame_processing()
 var contamination: BodyContamination
 ## Half the silhouette's width: the arms reach this far out, so it is also the
 ## capsule that the unwrap wraps around.
@@ -398,7 +402,10 @@ var _rested := false
 var burst_radius := 0.0
 ## 0 small, 1 medium, 2 large: which of the three a grunt was dealt. The large
 ## one is drawn bigger and darker so it can be told apart before it goes.
-var burst_tier := 0
+var burst_tier := 0:
+	set(value):
+		burst_tier = value
+		_update_grunt_frame_processing()
 ## Set by `vanish`: the body is out of the world, in pieces on the road.
 var vanished := false
 ## A bowled tomato that met a wall asks the world to burst it here; INF when
@@ -482,6 +489,7 @@ var cheese_cast_left := 0.7
 
 func _ready() -> void:
 	_refresh_sight_rings()
+	_update_grunt_frame_processing()
 	add_to_group("mayo_enemy")
 	# What the strand looks for. Being in this group is what makes sauce stick.
 	add_to_group("mayo_contaminable")
@@ -1051,6 +1059,9 @@ func build_caprese_crawler(cell_size: float, brush_radius: float) -> void:
 
 # --- La Tomatina behaviour -----------------------------------------------------
 
+const NO_SPECIAL_MOVEMENT: Dictionary = {}
+
+
 ## The one trick each stage 2 body has, run once a tick on the authority after
 ## the target is chosen and before the body moves. Returns overrides for the
 ## walk: "flat", a direction to walk instead of the chase, and "pace", a factor
@@ -1063,7 +1074,7 @@ func _advance_special(delta: float, target: MayoPlayer) -> Dictionary:
 			return _advance_bowler(delta, target)
 		EnemyKind.KETCHUP_SPITTER:
 			return _advance_spitter(delta, target)
-	return {}
+	return NO_SPECIAL_MOVEMENT
 
 
 func _can_see_straight(target: MayoPlayer) -> bool:
@@ -1876,6 +1887,13 @@ func _refresh_sight_rings() -> void:
 		_give_up_ring = _make_ring("GiveUpRing", give_up_range, 0.2, give_up_ring_color)
 
 
+## Ordinary host grunts are posed by their physics tick. Remote smoothing,
+## overripe swelling and the debug ranges still have per-frame work.
+func _update_grunt_frame_processing() -> void:
+	if is_inside_tree() and kind == EnemyKind.TOMATO_GRUNT:
+		set_process(not authority or burst_tier >= 2 or show_sight_rings)
+
+
 func _process(delta: float) -> void:
 	if not authority:
 		if _remote_position != Vector3.INF:
@@ -1889,8 +1907,12 @@ func _process(delta: float) -> void:
 		_brute_motion.advance_expression(delta, _alerted)
 	if kind == EnemyKind.TOMATO_GRUNT and burst_tier >= 2 and is_alive():
 		var danger := clampf((0.42 - health_fraction()) / 0.42, 0.0, 1.0)
-		var swell := 1.0 + danger * (0.12 + sin(float(Time.get_ticks_msec()) * 0.022) * 0.07)
-		_visual_root.scale = Vector3.ONE * swell
+		var swell := 1.0
+		if danger > 0.0:
+			swell += danger * (0.12 + sin(float(Time.get_ticks_msec()) * 0.022) * 0.07)
+		var visual_scale := Vector3.ONE * swell
+		if _visual_root.scale != visual_scale:
+			_visual_root.scale = visual_scale
 	if _sight_ring == null:
 		return
 	# Flat on the ground under the body, whatever the body is doing. A little
@@ -2305,6 +2327,28 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 		_advance_gait(step, walking, 1.0 / float(Engine.physics_ticks_per_second))
 
 
+## Called only when the encounter cannot put any player in this grunt's sight.
+## Wake checks still run every world tick, including after a hit or a blast.
+func rest_outside_sight() -> bool:
+	if not authority or not staged_senses or kind != EnemyKind.TOMATO_GRUNT \
+			or tutorial_trapped or not is_alive() or _alerted or horde_alert \
+			or _visible_target != null or _last_seen != Vector3.INF or _memory_left > 0.0 \
+			or is_instance_valid(bait) or _attack_target != null or _attack_lock_left > 0.0 \
+			or _contact_cooldown > 0.0 or mustard_slow > 0.0 or _escape_collision_left > 0.0 \
+			or _flinch_left > 0.0 or _pressure_left > 0.0 or _pressure_pose >= 0.0001 \
+			or _contact_kick_left > 0.0 or absf(fall_angle) >= 0.0001 \
+			or not _grounded_at_rest():
+		return false
+	# The first tick back in range can sense immediately.
+	sense_left = 0.0
+	return true
+
+
+func _grounded_at_rest() -> bool:
+	return _escape_left <= 0.0 and _shove.is_zero_approx() and _blast_push.is_zero_approx() \
+		and velocity.is_zero_approx() and is_on_floor()
+
+
 ## Walks at `targets`' nearest member and hits it when it gets there. Returns
 ## the player it damaged this frame, or null -- the world owns what damage does,
 ## because on a client the answer is "nothing, wait for the packet".
@@ -2363,9 +2407,7 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 	# Keep sensing and hit timers running, but a grounded idle grunt has no
 	# movement to resolve. A hit, a remembered target or bait wakes it here.
 	if kind == EnemyKind.TOMATO_GRUNT and target == null and _last_seen == Vector3.INF \
-			and not baited and _escape_left <= 0.0 and _shove.is_zero_approx() \
-			and _blast_push.is_zero_approx() \
-			and velocity.is_zero_approx() and is_on_floor():
+			and not baited and _grounded_at_rest():
 		return pending_hit
 
 	# The stage 2 tricks: a charge, a throw, or a spit. Run here, with the
@@ -2441,16 +2483,20 @@ func advance(delta: float, targets: Array, target_load: Dictionary = {}) -> Mayo
 		velocity.x = _escape_push.x
 		velocity.z = _escape_push.z
 		_escape_left = maxf(0.0, _escape_left - delta)
-	if is_on_floor():
+	var grounded := is_on_floor()
+	if grounded:
 		velocity.y = 0.0
 	else:
 		velocity.y -= fall_gravity * delta
 	var stood_at := global_position
-	var measuring := nav != null and nav.measure_enemy_work
-	var movement_started := Time.get_ticks_usec() if measuring else 0
-	move_and_slide()
-	if measuring:
-		nav.enemy_movement_us += Time.get_ticks_usec() - movement_started
+	# Off-encounter bodies at rest already have floor contact. Falling,
+	# pushed and charging bodies still resolve their collisions every tick.
+	if not (staged_senses and grounded and targets.is_empty() and velocity == Vector3.ZERO and not brute_charge_step):
+		var measuring := nav != null and nav.measure_enemy_work
+		var movement_started := Time.get_ticks_usec() if measuring else 0
+		move_and_slide()
+		if measuring:
+			nav.enemy_movement_us += Time.get_ticks_usec() - movement_started
 	var charge_hit: MayoPlayer
 	if brute_charge_step:
 		var hit_wall := false
