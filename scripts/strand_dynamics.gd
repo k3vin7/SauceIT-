@@ -1,6 +1,9 @@
 class_name StrandDynamics
 extends RefCounted
 
+# A sharp flick makes a new arc instead of a straight strip across two paths.
+const SHARP_TURN_COS := 0.92
+
 ## **The shape of a strand between its points, and nothing else.**
 ##
 ## Which pairs are still joined, how far they may drift before they are not, how
@@ -67,6 +70,9 @@ static func update_connections(points: Array, taut: float, slack: float,
 		if front.burst_index != back.burst_index:
 			back.severed = true
 			continue
+		if front.launch_direction.dot(back.launch_direction) < SHARP_TURN_COS:
+			back.severed = true
+			continue
 		if front.position.distance_squared_to(back.position) \
 				> break_distance_squared(front, back, taut, slack,
 					extend_speed, emission_speed):
@@ -82,7 +88,8 @@ static func update_connections(points: Array, taut: float, slack: float,
 static func apply_inertial_follow(points: Array, burst_index: int,
 		player_movement: Vector3, air: int, front_follow: float,
 		follow_curve_power: float) -> void:
-	if player_movement.length_squared() <= 0.00000001 or points.is_empty():
+	var lateral := Vector3(player_movement.x, 0.0, player_movement.z)
+	if lateral.length_squared() <= 0.00000001 or points.is_empty():
 		return
 	var index := 0
 	while index < points.size():
@@ -91,10 +98,10 @@ static func apply_inertial_follow(points: Array, burst_index: int,
 			var denominator := maxf(float(last - index), 1.0)
 			for i in range(index, last + 1):
 				var point = points[i]
-				if point.phase != air:
+				if point.phase != air or point.age < point.aimed_until:
 					continue
 				var t := float(i - index) / denominator
-				point.position += player_movement * lerpf(front_follow, 1.0, pow(t, follow_curve_power))
+				point.position += lateral * lerpf(front_follow, 1.0, pow(t, follow_curve_power))
 		index = last + 1
 
 
@@ -121,17 +128,16 @@ static func apply_release_pressure_loss(points: Array, burst_index: int,
 					continue
 				# The burst's index 0 is its front tip; its last index is the muzzle.
 				var t := float(i - start) / denominator
-				point.velocity *= 1.0 - release_pressure_loss * pow(t, release_pressure_curve)
-				# Nothing is being pushed any more, so gravity takes over immediately.
+				point.release_speed_scale = 1.0 - release_pressure_loss * pow(t, release_pressure_curve)
+				point.release_time = 0.0
 				point.powered = false
 		start = last + 1
 
 
 ## Pulls pairs that have stretched past their travel spacing back together.
 ##
-## Only along the pair's own launch direction, and only the ends that are still
-## in the air: a point that has landed is where it landed. Several passes, because
-## one pass leaves the correction spread unevenly along a long strand.
+## Apply horizontal corrections only. In a steep or changing aim, pulling
+## a point upward along a pair's axis would override its ballistic height.
 static func enforce_spacing(points: Array, burst_index: int,
 		attack_direction: Vector3, air: int, passes: int, point_spacing: float,
 		extend_speed: float, emission_speed: float) -> void:
@@ -153,9 +159,9 @@ static func enforce_spacing(points: Array, burst_index: int,
 			var travel_spacing := point_spacing * extend_speed / maxf(emission_speed, 0.001)
 			if projected_gap <= travel_spacing:
 				continue
-			var correction: Vector3 = direction * (projected_gap - travel_spacing)
-			var front_free: bool = front.phase == air
-			var back_free: bool = back.phase == air
+			var correction := Vector3(direction.x, 0.0, direction.z) * (projected_gap - travel_spacing)
+			var front_free: bool = front.phase == air and front.age >= front.aimed_until
+			var back_free: bool = back.phase == air and back.age >= back.aimed_until
 			if front_free and back_free:
 				front.position -= correction * 0.5
 				back.position += correction * 0.5

@@ -105,6 +105,7 @@ func _solo() -> void:
 	var world = app.current_space
 	_check(world.practice_range and world.gameplay_input_enabled(), "the range is not live")
 	_check(world._enemies.size() == PracticeRange.TARGET_ROWS.size(), "the range has the wrong targets")
+	await _check_supply_stations(world)
 	for sauce in world.STATION_SAUCES.size():
 		world.request_range_sauce(sauce)
 		_check(world._local.sauce_kind == world.STATION_SAUCES[sauce] and world._local.sauce > 0.99,
@@ -115,6 +116,7 @@ func _solo() -> void:
 	world.request_range_part(world.SauceParts.Part.STANDARD)
 	world.open_range_panel()
 	_check(world.is_range_panel_open() and world._local.player.frozen, "the equipment panel did not open")
+	_check(world._range_part_list.is_visible_in_tree(), "the equipment menu lost the part controls")
 	world.close_range_panel()
 	_check(not world.is_range_panel_open() and not world._local.player.frozen, "the equipment panel did not close")
 
@@ -163,6 +165,41 @@ func _solo() -> void:
 	office = app.current_space as OfficeLobby
 	_check(await _until(func(): return office.can_enter_range(), 600), "the office is not ready after the range")
 	print("solo: office -> range -> sauces, parts, targets -> office OK")
+
+
+func _check_supply_stations(world) -> void:
+	_check(world._refill_stations.size() == 2, "the range does not have two supply stations")
+	if world._refill_stations.size() != 2:
+		return
+	var player: MayoPlayer = world._local.player
+	var spawn := player.global_position
+	for side in 2:
+		var station: Dictionary = world._refill_stations[side]
+		var front: Vector3 = station.position + station.facing
+		player.global_position = Vector3(front.x, spawn.y, front.z)
+		player.velocity = Vector3.ZERO
+		await physics_frame
+		await process_frame
+		var interact := InputEventAction.new()
+		interact.action = &"interact"
+		interact.pressed = true
+		world._unhandled_input(interact)
+		_check(world.is_range_panel_open() and world._range_station == side
+			and not world._range_part_list.is_visible_in_tree(), "the station did not open its refill menu")
+		for sauce in world.STATION_SAUCES.size():
+			world._local.sauce = 0.25
+			world._range_sauce_buttons[sauce].pressed.emit()
+			_check(world.local_sauce_kind() == sauce and world._local.sauce == 1.0,
+				"a station did not switch and refill the sauce")
+		var previous: int = world.local_sauce_kind()
+		world._local.sauce = 0.2
+		world._range_refill_button.pressed.emit()
+		_check(world.local_sauce_kind() == previous and world._local.sauce == 1.0,
+			"topping up did not preserve the selected sauce")
+		world.close_range_panel()
+	player.global_position = spawn
+	player.velocity = Vector3.ZERO
+	await physics_frame
 
 
 func _party() -> void:

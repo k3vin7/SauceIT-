@@ -473,9 +473,12 @@ func context_candidates(shooter) -> Array:
 		var shop := TomatinaMap.refuge_shop_at(room)
 		_candidate(out, shooter, "shop", room, shop, "장비 개조", 0.0, TomatinaMap.refuge_tent_at(room))
 	var station: int = world.station_in_reach(player)
-	if station >= 0 and (shooter.sauce < 0.999 or world.station_sauce_for(player) != shooter.sauce_kind):
+	if station >= 0:
 		var stall: Vector3 = world._refill_stations[station]["position"]
-		_candidate(out, shooter, "refill", station, at, "케첩 보충", 0.5, stall + Vector3.UP * 1.4)
+		if world.practice_range:
+			_candidate(out, shooter, "range_supply", station, at, "소스 충전·교체", 0.5, stall + Vector3.UP * 0.80)
+		elif shooter.sauce < 0.999 or world.station_sauce_for(player) != shooter.sauce_kind:
+			_candidate(out, shooter, "refill", station, at, "케첩 보충", 0.5, stall + Vector3.UP * 1.4)
 	if world.item_slots(shooter.peer_id).find(0, 1) >= 0:
 		for id in world._healing_tomatoes:
 			if int(id) < 0 or int(id) >= 1000000:

@@ -173,6 +173,7 @@ var _rolled_deaths := {}
 var _coins := {}
 var _coin_serial := 0
 var _projectiles: Array[Dictionary] = []
+var _close_impact_ribbons: Array[Dictionary] = []
 var _coin_mesh: CylinderMesh
 var _free_projectile_ribbons: Array[StreamVisual] = []
 var _projectile_segments: Array = [[]]
@@ -183,6 +184,8 @@ const BURST_WIDTH_SCALE := 1.7 * BURST_SIZE_SCALE
 const BURST_WIDTHS := [0.68, 1.0, 0.83, 0.91, 0.62, 0.43, 0.16]
 const PROJECTILE_RIBBON_POOL_LIMIT := 24
 const PROJECTILE_RIBBON_POINTS := 7
+const CLOSE_IMPACT_FLIGHT_TIME := 0.07
+const CLOSE_IMPACT_DRAW_TIME := 0.085
 ## Cross-sections start at the leading edge and taper along the flight path.
 const PROJECTILE_RIBBONS := {
 	Part.BURST: {"length": BURST_DRAW_LENGTH, "width": BURST_WIDTH_SCALE, "bend": 0.30, "sections": BURST_WIDTHS},
@@ -397,6 +400,9 @@ func reset() -> void:
 	for shot in _projectiles:
 		_release_projectile(shot.node)
 	_projectiles.clear()
+	for trace in _close_impact_ribbons:
+		_release_projectile(trace.node)
+	_close_impact_ribbons.clear()
 	_rolled_deaths.clear()
 	var victims = world.get("_victims")
 	if victims != null:
@@ -476,7 +482,50 @@ func _draw_projectile(shot: Dictionary, gravity: float) -> void:
 	ribbon.update_ribbon(_projectile_segments, camera.global_position, -camera.global_basis.z, strand_width)
 
 
+## The first physics sweep can land a shot before an in-flight ribbon is drawn.
+## Retain its render buffer briefly, using the visible mouth and confirmed impact.
+func _hold_close_impact(shot: Dictionary, at: Vector3, normal: Vector3) -> bool:
+	if float(shot.age) >= CLOSE_IMPACT_FLIGHT_TIME:
+		return false
+	var muzzle: Vector3 = shot.origin + shot.draw_offset
+	var touch := at + normal * 0.012
+	if muzzle.distance_squared_to(touch) <= 0.0001:
+		return false
+	var trace := {
+		"node": shot.node, "part": shot.part, "muzzle": muzzle, "contact": touch,
+		"remaining": CLOSE_IMPACT_DRAW_TIME,
+	}
+	_close_impact_ribbons.append(trace)
+	_draw_close_impact(trace)
+	return true
+
+
+func _draw_close_impact(trace: Dictionary) -> void:
+	var profile: Dictionary = PROJECTILE_RIBBONS[trace.part]
+	var sections: Array = profile.sections
+	var segment: Array = _projectile_segments[0]
+	var contact: Vector3 = trace.contact
+	var muzzle: Vector3 = trace.muzzle
+	var fade := smoothstep(0.0, 0.65, float(trace.remaining) / CLOSE_IMPACT_DRAW_TIME)
+	for index in PROJECTILE_RIBBON_POINTS:
+		var progress := float(index) / float(PROJECTILE_RIBBON_POINTS - 1)
+		segment[index].position = contact.lerp(muzzle, progress)
+		segment[index].width_scale = float(sections[index]) * fade
+	var ribbon: StreamVisual = trace.node
+	var camera: Camera3D = world._camera
+	var width: float = world.strand_thickness * float(profile.width) * 0.62
+	ribbon.update_ribbon(_projectile_segments, camera.global_position, -camera.global_basis.z, width)
+
+
 func advance_projectiles(delta: float, authority: bool) -> void:
+	for i in range(_close_impact_ribbons.size() - 1, -1, -1):
+		var trace: Dictionary = _close_impact_ribbons[i]
+		trace.remaining = float(trace.remaining) - delta
+		if trace.remaining <= 0.0:
+			_release_projectile(trace.node)
+			_close_impact_ribbons.remove_at(i)
+		else:
+			_draw_close_impact(trace)
 	for i in range(_projectiles.size() - 1, -1, -1):
 		var shot: Dictionary = _projectiles[i]
 		var profile: Dictionary = PROJECTILES[shot.part]
@@ -524,5 +573,6 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 			shot.age = float(shot.age) + delta
 			_draw_projectile(shot, gravity)
 			continue
-		_release_projectile(ribbon)
+		if hit.is_empty() or not _hold_close_impact(shot, hit.position, hit.normal):
+			_release_projectile(ribbon)
 		_projectiles.remove_at(i)

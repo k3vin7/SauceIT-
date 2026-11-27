@@ -191,9 +191,14 @@ class MayoPoint:
 	var sauce := -1
 	var range_scale := 1.0
 	## Where the point is drawn from, relative to where it really is, when it
-	## was emitted, for the local first-person bottle. Faded out over
-	## `MUZZLE_DRAW_BLEND` -- see `_emit_point`.
+	## was emitted, to match the local first-person prop at the strand root only.
 	var draw_offset := Vector3.ZERO
+	var draw_lateral := Vector3.ZERO
+	var first_step := -1.0
+	var release_time := -1.0
+	var release_speed_scale := 1.0
+	var aimed_until := 0.0
+	var aimed_distance := 0.0
 	var first_collision := true
 
 class RibbonPoint:
@@ -746,12 +751,12 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## strand read as a zigzag rather than as a line with some life in it. Halved
 ## with the spacing, so the ratio is what it was.
 @export_range(0.0, 0.05, 0.001, "suffix:m") var lateral_position_jitter := 0.0045
-@export_range(0.0, 0.08, 0.001, "suffix:rad") var yaw_angle_jitter := 0.009
+@export_range(0.0, 0.08, 0.001, "suffix:rad") var yaw_angle_jitter := 0.003
 ## A fraction of the launch speed, so what it does depends on that speed: at
 ## 7 m/s a tenth was a spread of 0.7 m/s, and at 14 it was 1.4, which pulled
 ## neighbouring points apart faster than the strand could hold and tore it with
 ## the aim standing still. Halved with the speed, so the spread is what it was.
-@export_range(0.0, 0.5, 0.01) var speed_magnitude_jitter := 0.05
+@export_range(0.0, 0.5, 0.01) var speed_magnitude_jitter := 0.02
 @export_range(0.0, 1.0, 0.01) var inherited_player_velocity := 0.22
 ## What the nozzle may have in the air at once, and so how long an arc can be
 ## before the stream has to wait for some of it to land. Worth reading in
@@ -847,7 +852,7 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 
 @export_group("Weapon Hold")
 @export_range(-0.6, 0.6, 0.01, "suffix:m") var weapon_offset_right := 0.155
-@export_range(-0.6, 0.3, 0.01, "suffix:m") var weapon_offset_up := -0.15
+@export_range(-0.6, 0.3, 0.01, "suffix:m") var weapon_offset_up := -0.08
 @export_range(0.1, 1.0, 0.01, "suffix:m") var weapon_offset_forward := 0.28
 ## Total length of the production tube viewmodel. The authored source is 1.2 m
 ## tall and is uniformly fitted to this length at runtime.
@@ -856,14 +861,8 @@ enum MapKind { FESTIVAL_STREET, TUTORIAL_RECTANGLE, TOMATINA }
 ## from this; it sets how wide the strand's ribbon is where it leaves the tip,
 ## see `_nozzle_segments`.
 @export_range(0.02, 0.14, 0.005, "suffix:m") var bottle_radius := 0.052
-## The strand is launched at the point the crosshair marks, this far down the
-## camera forward axis, so an off-centre nozzle still fires through the centre.
-##
-## Kept at about three quarters of `stream_range`: the strand crosses the
-## reticle here exactly and parallaxes away from it on either side, so the place
-## it is honest wants to be out where the fighting is. Doubling the range and
-## leaving this at the old 2.2 m would have put the crossing point halfway down
-## a stream that now reaches twice as far.
+## Reference convergence distance in front of the physical muzzle. The sight
+## sweeps to that depth and settles on the first surface or face it sees.
 @export_range(0.5, 12.0, 0.05, "suffix:m") var aim_convergence_distance := 4.4
 @export var show_crosshair := true
 ## The key list in the corner of the screen. **`F4` toggles it.** On by default
@@ -1968,8 +1967,8 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 		# The nozzle feeds the strand at the speed it is actually delivering, so
 		# a squeeze running out of pressure lays its points down more slowly
 		# instead of packing them closer together.
-		shooter.emit_distance += emission_speed * squeeze_pressure(shooter) \
-			* sauce_speed_scale(shooter) * delta
+		var feed_speed := emission_speed * squeeze_pressure(shooter) * sauce_speed_scale(shooter)
+		shooter.emit_distance += feed_speed * delta
 		shooter.burst_elapsed += delta
 		while shooter.emit_distance >= point_spacing:
 			shooter.emit_distance -= point_spacing
@@ -1981,7 +1980,10 @@ func _advance_strand(shooter: Shooter, delta: float) -> void:
 			# nothing disappears.
 			if shooter.points.size() >= maximum_point_count:
 				break
-			_emit_lanes(shooter)
+			# Emit each sample at its own instant within the physics tick. Starting all
+			# of them at the same instant stacked several rings at the muzzle.
+			var travel_time := minf(delta, shooter.emit_distance / maxf(feed_speed, 0.001))
+			_emit_lanes(shooter, travel_time)
 	else:
 		shooter.emit_distance = 0.0
 		if shooter.was_firing:
@@ -2078,8 +2080,8 @@ func _for_each_lane(shooter: Shooter, action: Callable) -> void:
 
 
 ## 새 점 하나를 내보낸다. 3갈래 노즐이면 옆 가닥 둘에도 하나씩, 좌우로 벌려서.
-func _emit_lanes(shooter: Shooter) -> void:
-	_emit_point(shooter)
+func _emit_lanes(shooter: Shooter, first_step := -1.0) -> void:
+	_emit_point(shooter, first_step)
 	if not _is_three_way(shooter):
 		return
 	while shooter.side_points.size() < 2:
@@ -2097,7 +2099,7 @@ func _emit_lanes(shooter: Shooter) -> void:
 			continue
 		shooter.points = lane
 		shooter.lane_angle = spread * (-1.0 if index == 0 else 1.0)
-		_emit_point(shooter)
+		_emit_point(shooter, first_step)
 	shooter.points = centre
 	shooter.lane_angle = 0.0
 
@@ -2203,6 +2205,11 @@ func show_part_volley(peer: int, part: int, sauce: int, origin: Vector3, forward
 		_play_combat_warning(origin, 155.0, 0.16, null, LOUD_COMBAT_SFX_GAIN_DB)
 	elif part == SauceParts.Part.ARC:
 		_play_combat_warning(origin, 235.0, 0.10, null, LOUD_COMBAT_SFX_GAIN_DB)
+	elif spray_start_sound != null and (part == SauceParts.Part.BURST or part == SauceParts.Part.SNIPER):
+		# Each real projectile gets one short report, including the later shots in a burst.
+		var pitch := 315.0 if part == SauceParts.Part.BURST else 380.0
+		var report_at := draw_from if shooter == _local and draw_from.is_finite() else origin
+		_play_combat_warning(report_at, pitch, 0.12, spray_start_sound, LOUD_COMBAT_SFX_GAIN_DB + 2.0)
 
 
 ## The host advances the recoil shared by the player's view and firing direction.
@@ -2644,7 +2651,8 @@ func _read_local_input() -> void:
 	_local.bottle_shake_input = shake
 	_local.firing = live and _fire_held() and not shaking
 	if map_kind == MapKind.TOMATINA and not _is_authority():
-		if _local.firing and not _preview_fire_down and _local.sauce > 0.0 and selected_item_slot(_local.peer_id) == 0:
+		if _local.firing and not _preview_fire_down and _local.sauce > 0.0 and selected_item_slot(_local.peer_id) == 0 \
+				and not SauceParts.PROJECTILES.has(_local.sauce_part):
 			_preview_fire_ms = Time.get_ticks_msec()
 			if spray_start_sound != null:
 				_spray_edge_audio.stream = spray_start_sound
@@ -3039,7 +3047,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if interact and is_instance_valid(play_support):
 		var target: Dictionary = play_support.context_target(_local)
 		if not target.is_empty():
-			if target.kind == "shop":
+			if target.kind == "range_supply":
+				open_range_panel(int(target.id))
+			elif target.kind == "shop":
 				_try_open_refuge_shop()
 			elif target.kind == "loot":
 				_start_local_loot_hold(int(target.id))
@@ -3670,7 +3680,9 @@ func _build_shooter_visuals(shooter: Shooter) -> void:
 	var suffix := str(shooter.peer_id)
 	var material := SAUCE_STREAM_MATERIALS[shooter.sauce_kind]
 	shooter.air_visual = _make_stream_visual("AirRibbon" + suffix, material)
+	shooter.air_visual.smooth_centres = true
 	shooter.nozzle_visual = _make_stream_visual("NozzleRibbon" + suffix, material, 4)
+	shooter.nozzle_visual.draw_caps = false
 	shooter.landing_visual = _make_stream_visual("LandingRibbon" + suffix, material)
 	shooter.shadow_visual = _make_stream_visual("ProjectedShadow" + suffix, _shadow_material)
 	_apply_sauce_look(shooter)
@@ -3862,6 +3874,10 @@ func _close_refuge_shop() -> void:
 # 다시 세우는 일뿐이고, 쏘는 것은 전부 스테이지 2의 코드 그대로다.
 
 var _range_panel: ColorRect
+var _range_title: Label
+var _range_part_list: VBoxContainer
+var _range_refill_button: Button
+var _range_station := -1
 var _range_sauce_buttons: Array[Button] = []
 var _range_part_buttons: Array[Button] = []
 var _range_status: Label
@@ -3903,10 +3919,9 @@ func _build_range_panel() -> void:
 	margin.add_child(content)
 
 	content.add_child(UI.eyebrow("사격 연습장", UI.MINT))
-	var title := Label.new()
-	title.text = "소스와 파츠 고르기"
-	title.add_theme_font_size_override("font_size", 24)
-	content.add_child(title)
+	_range_title = Label.new()
+	_range_title.add_theme_font_size_override("font_size", 24)
+	content.add_child(_range_title)
 	content.add_child(UI.eyebrow("소스 — 고르면 병이 가득 찹니다", UI.GOLD))
 	var sauces := HBoxContainer.new()
 	sauces.add_theme_constant_override("separation", 7)
@@ -3919,13 +3934,21 @@ func _build_range_panel() -> void:
 		choice.pressed.connect(request_range_sauce.bind(sauce))
 		sauces.add_child(choice)
 		_range_sauce_buttons.append(choice)
-	content.add_child(UI.eyebrow("파츠", UI.GOLD))
+	_range_refill_button = Button.new()
+	_range_refill_button.text = "현재 소스 가득 채우기"
+	_range_refill_button.focus_mode = Control.FOCUS_NONE
+	_range_refill_button.pressed.connect(_refill_range_current_sauce)
+	content.add_child(_range_refill_button)
+	_range_part_list = VBoxContainer.new()
+	_range_part_list.add_theme_constant_override("separation", 7)
+	content.add_child(_range_part_list)
+	_range_part_list.add_child(UI.eyebrow("파츠", UI.GOLD))
 	for part in SauceParts.CATALOG.size():
 		var choice := Button.new()
 		choice.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		choice.focus_mode = Control.FOCUS_NONE
 		choice.pressed.connect(request_range_part.bind(part))
-		content.add_child(choice)
+		_range_part_list.add_child(choice)
 		_range_part_buttons.append(choice)
 	_range_status = Label.new()
 	_range_status.add_theme_color_override("font_color", UI.MUTED)
@@ -3937,9 +3960,15 @@ func _build_range_panel() -> void:
 	content.add_child(close)
 
 
-func open_range_panel() -> void:
+func open_range_panel(station := -1) -> void:
 	if _range_panel == null or _local == null or _local.player.state != MayoPlayer.State.NORMAL:
 		return
+	if station >= 0 and station_in_reach(_local.player) != station:
+		return
+	_range_station = station
+	_range_title.text = "소스 충전소" if station >= 0 else "소스와 파츠 고르기"
+	_range_refill_button.visible = station >= 0
+	_range_part_list.visible = station < 0
 	_cancel_local_tomato_charge()
 	_refresh_range_panel()
 	_range_panel.show()
@@ -3954,6 +3983,7 @@ func close_range_panel() -> void:
 	if not is_range_panel_open():
 		return
 	_range_panel.hide()
+	_range_station = -1
 	_local.player.frozen = not _input_enabled
 	# 닫는 클릭이 그대로 한 발이 되지 않게 한다(상점을 닫을 때와 같다).
 	_tomato_fire_block = Input.is_action_pressed("fire_mayo")
@@ -3964,6 +3994,9 @@ func close_range_panel() -> void:
 ## 지금 든 것에 표시를 한다. 열려 있는 동안 매 프레임 불린다: 방장의 답이 온 뒤에 바뀐다.
 func _refresh_range_panel() -> void:
 	if _range_panel == null or _local == null:
+		return
+	if _range_station >= 0 and station_in_reach(_local.player) != _range_station:
+		close_range_panel()
 		return
 	for sauce in _range_sauce_buttons.size():
 		var held := _local.sauce_kind == STATION_SAUCES[sauce]
@@ -3990,9 +4023,16 @@ func _mark_range_choice(choice: Button, chosen: bool) -> void:
 		choice.remove_theme_color_override("font_hover_color")
 
 
+func _refill_range_current_sauce() -> void:
+	request_range_sauce(local_sauce_kind())
+
+
 ## 병을 `sauce`(`STATION_SAUCES`의 번호)로 가득 채운다. 이미 든 소스를 고르면 다시 채우기다.
 func request_range_sauce(sauce: int) -> void:
 	if not practice_range or _local == null or not can_select_refill_sauce(sauce):
+		return
+	if _range_station >= 0 and station_in_reach(_local.player) != _range_station:
+		close_range_panel()
 		return
 	if _is_authority():
 		refill_for(_local.peer_id, sauce)
@@ -4053,7 +4093,7 @@ func _advance_range(delta: float) -> void:
 			_make_range_dummy(_enemies[index])
 
 
-## 거리 표지: 사선에서 몇 미터인지 양쪽 벽에 적어 둔다.
+## 사선 양쪽 충전소와 벽의 거리 표시.
 func _build_range_props() -> void:
 	var half := float(PracticeRange.AREA.size.x) * StreetMap.CELL * 0.5 - 0.35
 	for metres: int in PracticeRange.DISTANCE_MARKS:
@@ -4075,6 +4115,36 @@ func _build_range_props() -> void:
 	line.modulate = Color("ffe9a8")
 	line.position = PracticeRange.line_at(0.0) + Vector3(-half, 2.4, 0.0)
 	add_child(line)
+	for side in [-1.0, 1.0]:
+		_build_range_refill_station(side, half - 0.70)
+
+
+func _build_range_refill_station(side: float, offset: float) -> void:
+	var at := PracticeRange.line_at(0.0) + Vector3(side * offset, 0.0, 1.45)
+	var base := TomatinaMap.ground_height(at)
+	var size := Vector3(0.72, 1.70, 1.40)
+	at.y = base + size.y * 0.5
+	var facing := Vector3(-side, 0.0, 0.0)
+	var box := {"position": at, "size": size, "facing": facing}
+	var machine := _create_vending_machine("RangeRefillLeft" if side < 0.0 else "RangeRefillRight",
+		box, true, Color("17464b"))
+	_add_refill_station(box)
+	var front := at + facing * (size.x * 0.5 + 0.025)
+	var sign := Label3D.new()
+	sign.name = "SupplyLabel"
+	sign.text = "소스 충전"
+	sign.font_size = 64
+	sign.pixel_size = 0.004
+	sign.outline_size = 6
+	sign.modulate = Color("edfff5")
+	sign.position = front + Vector3.UP * 0.34
+	sign.rotation.y = atan2(facing.x, facing.z)
+	machine.add_child(sign)
+	var right := Vector3.UP.cross(facing)
+	for sauce in STATION_SAUCES.size():
+		var swatch := at + facing * 0.014 + right * ((sauce - 1) * 0.29)
+		_add_machine_panel(machine, "SauceSwatch%d" % sauce, swatch, facing, size.x,
+			Vector2(0.18, 0.21), base + 0.88, SAUCE_TINTS[STATION_SAUCES[sauce]], 0.26)
 
 
 ## 피난처 상점이 팔 수 있는 파츠(비트마다 하나). 사무실 작업대에서 해금한 것으로, 세션이
@@ -5766,7 +5836,8 @@ func _add_refill_station(box: Dictionary, sauce := -1) -> void:
 ## obvious from across the street. It dispenses nothing: the sauce is topped up
 ## at the stalls, and these are scenery until there is something else worth
 ## handing out.
-func _create_vending_machine(machine_name: String, box: Dictionary, visible_surface := true) -> void:
+func _create_vending_machine(machine_name: String, box: Dictionary, visible_surface := true,
+		display_color := Color("e2483c")) -> Node3D:
 	var holder := Node3D.new()
 	holder.name = machine_name
 	add_child(holder)
@@ -5789,7 +5860,7 @@ func _create_vending_machine(machine_name: String, box: Dictionary, visible_surf
 	# `paint_mayo` works in the object's own local space.
 	_walls.push_back(chassis)
 	if not visible_surface:
-		return
+		return holder
 
 	# Depth along the facing axis, so the panel can be laid just proud of the
 	# front face whichever way the machine is turned.
@@ -5798,11 +5869,11 @@ func _create_vending_machine(machine_name: String, box: Dictionary, visible_surf
 
 	_add_machine_panel(holder, "Display", box["position"], facing,
 		depth, Vector2(across * 0.78, size.y * 0.58), size.y * 0.62,
-		Color("e2483c"), 1.6)
+		display_color, 1.6)
 	_add_machine_panel(holder, "Slot", box["position"], facing,
 		depth, Vector2(across * 0.6, size.y * 0.1), size.y * 0.2,
 		Color("0c0e10"), 0.0)
-
+	return holder
 
 
 ## One flat quad standing 1 cm off the machine's front face. Separate meshes
@@ -7169,7 +7240,7 @@ func _update_stage_objective(alive := -1) -> void:
 	if _stage_objective == null:
 		return
 	if practice_range:
-		_stage_objective.text = "사격 연습장\n[B] 소스·파츠 고르기\n[Esc] 메뉴 → 사무실로 돌아가기"
+		_stage_objective.text = "사격 연습장\n양쪽 충전소에서 소스 보충\n[B] 소스·파츠 고르기\n[Esc] 메뉴 → 사무실로 돌아가기"
 		_refuge_status_label.hide()
 		return
 	if map_kind == MapKind.TOMATINA:
@@ -8072,14 +8143,17 @@ func _target_along_aim(shooter: Shooter, reach: float) -> Vector3:
 
 func _stream_aim_target(shooter: Shooter) -> Vector3:
 	if not shooter.stream_target.is_finite():
-		shooter.stream_target = _target_along_aim(shooter, aim_convergence_distance)
+		var mouth := part_launch_origin(shooter, shooter.sauce_part)
+		var ahead := maxf(0.0, (mouth - shooter.aim_pivot.global_position).dot(shooter.attack_direction))
+		shooter.stream_target = _target_along_aim(shooter, aim_convergence_distance + ahead)
 	return shooter.stream_target
 
 
-func _emit_point(shooter: Shooter = null) -> void:
+func _emit_point(shooter: Shooter = null, first_step := -1.0) -> void:
 	if shooter == null:
 		shooter = _local
 	var point := MayoPoint.new()
+	point.first_step = first_step
 	# Both jitters use the aim's own axes rather than the world up axis, which
 	# degenerates to a zero vector when aiming straight up or down.
 	var aim_basis := shooter.attack_basis
@@ -8089,16 +8163,20 @@ func _emit_point(shooter: Shooter = null) -> void:
 	var launch := part_launch_origin(shooter, shooter.sauce_part)
 	var forward_offset := 0.0 if is_instance_valid(shooter.character_muzzle) else muzzle_forward_offset
 	point.position = launch + shooter.attack_direction * forward_offset + aim_basis.x * jitter
-	if shooter == _local and _first_person and is_instance_valid(shooter.weapon_sway):
-		point.draw_offset = _first_person_tip(shooter, shooter.sauce_part) - launch
 	var to_target := _stream_aim_target(shooter) - point.position
-	# A point-blank obstruction is found by the first sweep along the barrel.
-	# Leave the nozzle forwards while the reticle's point is behind its mouth.
-	var direction := to_target.normalized() if to_target.dot(shooter.attack_direction) > 0.05 else _world_nozzle_forward(shooter)
+	if shooter == _local and _first_person and is_instance_valid(shooter.weapon_sway):
+		var eye := shooter.aim_pivot.global_position
+		var tip := _first_person_tip(shooter, shooter.sauce_part) - eye
+		var tip_depth := tip.dot(shooter.attack_direction)
+		var launch_depth := (launch - eye).dot(shooter.attack_direction)
+		# Match the viewmodel on screen without sliding the strand backwards
+		# toward the camera before it rejoins the world-space trajectory.
+		if tip_depth > 0.05 and launch_depth > 0.05:
+			var offset := eye + tip * (launch_depth / tip_depth) - launch
+			var side := Vector3(aim_basis.x.x, 0.0, aim_basis.x.z).normalized()
+			point.draw_lateral = side * offset.dot(side)
+			point.draw_offset = offset - point.draw_lateral
 	var angle := shooter.rng.randf_range(-yaw_angle_jitter, yaw_angle_jitter) * spread
-	direction = direction.rotated(aim_basis.y, angle)
-	if shooter.lane_angle != 0.0:
-		direction = direction.rotated(aim_basis.y, shooter.lane_angle).normalized()
 	point.last_collision_position = _bottle_sweep_origin(shooter, launch)
 	# Speed jitter is independent of the yaw jitter above: it spreads where a
 	# point runs out of pressure, and so spreads the landing point along the
@@ -8107,7 +8185,8 @@ func _emit_point(shooter: Shooter = null) -> void:
 	# shortens the throw as the hand closes. Applied here rather than to the
 	# points already out: those have left the nozzle and keep whatever they were
 	# given.
-	var speed := extend_speed * squeeze_pressure(shooter) * sauce_speed_scale(shooter) \
+	var full_speed := extend_speed * STREAM_PRESSURE_BOOST * sauce_speed_scale(shooter)
+	var speed := full_speed * squeeze_pressure(shooter) \
 		* (1.0 + shooter.rng.randf_range(-speed_magnitude_jitter, speed_magnitude_jitter))
 	if focused:
 		speed *= 1.28
@@ -8118,11 +8197,26 @@ func _emit_point(shooter: Shooter = null) -> void:
 	if shooter.bottle_boosting and not _is_three_way(shooter):
 		speed *= 1.0 + bottle_charge_speed_bonus * shooter.bottle_boost_strength
 		point.range_scale *= 1.0 + bottle_charge_range_bonus * shooter.bottle_boost_strength
-	var player_velocity := shooter.player.velocity
 	var travel_scale := extend_speed / maxf(emission_speed, 0.001)
-	point.velocity = direction * speed + Vector3(player_velocity.x, 0.0, player_velocity.z) \
-		* inherited_player_velocity * travel_scale
-	point.launch_direction = direction
+	var gravity := gravity_acceleration * travel_scale * travel_scale
+	var flight_time := 0.0
+	if to_target.dot(shooter.attack_direction) > 0.05:
+		# Reserve enough pressure for the low arc when the bottle is still
+		# delivering. Near surfaces need less speed as the squeeze winds down.
+		var minimum := sqrt(maxf(0.0, gravity * (to_target.length() + to_target.y))) * 1.25
+		speed = maxf(speed, minf(minimum, full_speed))
+		flight_time = _stream_reticle_flight_time(to_target, speed, gravity)
+	var velocity: Vector3
+	if flight_time > 0.0:
+		velocity = to_target / flight_time + Vector3.UP * (gravity * flight_time * 0.5)
+		point.aimed_until = flight_time + 1.0 / float(Engine.physics_ticks_per_second)
+		point.aimed_distance = to_target.length()
+	else:
+		var movement := shooter.player.velocity
+		velocity = shooter.attack_direction * speed + Vector3(movement.x, 0.0, movement.z) \
+			* inherited_player_velocity * travel_scale
+	point.velocity = velocity.rotated(aim_basis.y, angle + shooter.lane_angle)
+	point.launch_direction = point.velocity.normalized()
 	point.collision_slot = shooter.next_collision_slot
 	point.burst_index = shooter.burst_index
 	point.sauce = shooter.sauce_kind
@@ -8131,15 +8225,29 @@ func _emit_point(shooter: Shooter = null) -> void:
 	shooter.points.push_back(point)
 
 
+const STREAM_PRESSURE_BOOST := 1.32
+
+
+## Solve the shorter flight time at the selected speed. This form also works
+## when the sight points straight up or down, since it divides by time, not XZ reach.
+static func _stream_reticle_flight_time(offset: Vector3, speed: float, gravity: float) -> float:
+	var distance_squared := offset.length_squared()
+	var term := speed * speed - gravity * offset.y
+	var discriminant := term * term - gravity * gravity * distance_squared
+	if term <= 0.0 or discriminant < 0.0 or distance_squared < 0.000001:
+		return 0.0
+	return sqrt(2.0 * distance_squared / (term + sqrt(discriminant)))
+
+
 func _points_connected(front: MayoPoint, back: MayoPoint) -> bool:
 	return StrandDynamics.points_connected(front, back)
 ## Latches the pairs that have come apart, once a frame, before anything asks.
 func _update_connections(shooter: Shooter) -> void:
 	StrandDynamics.update_connections(shooter.points, strand_break_distance,
-		falling_break_distance, extend_speed, emission_speed)
+		falling_break_distance, extend_speed * STREAM_PRESSURE_BOOST, emission_speed)
 func _break_distance_squared(front: MayoPoint = null, back: MayoPoint = null) -> float:
 	return StrandDynamics.break_distance_squared(front, back,
-		strand_break_distance, falling_break_distance, extend_speed, emission_speed)
+		strand_break_distance, falling_break_distance, extend_speed * STREAM_PRESSURE_BOOST, emission_speed)
 func _burst_end(start: int, shooter: Shooter = null) -> int:
 	if shooter == null:
 		shooter = _local
@@ -8186,7 +8294,7 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 	# Scaling velocity by k requires gravity * k² for the same spatial arc.
 	# stream_range only ends pressure; it does not stop a point or its damage.
 	var travel_scale := extend_speed / maxf(emission_speed, 0.001)
-	var gravity_step := gravity_acceleration * travel_scale * travel_scale * delta
+	var gravity := gravity_acceleration * travel_scale * travel_scale
 	var pressure_lifetime := point_time_lifetime * emission_speed / maxf(extend_speed, 0.001)
 	var motion_floor_squared := raycast_min_accumulated_motion * raycast_min_accumulated_motion
 	var catch_up_squared := catch_up_motion * catch_up_motion
@@ -8199,17 +8307,41 @@ func _simulate_points(delta: float, shooter: Shooter = null) -> void:
 			point.landing_age += delta
 			continue
 
-		point.age += delta
+		var step := point.first_step if point.first_step >= 0.0 else delta
+		point.first_step = -1.0
+		var previous_age := point.age
+		point.age += step
 		if point.powered:
 			var time_expired := use_time_lifetime and point.age >= pressure_lifetime * point.range_scale
 			var distance_expired := use_distance_lifetime and point.distance_travelled >= stream_range * point.range_scale
 			if time_expired or distance_expired:
 				point.powered = false
-		if not point.powered:
-			point.velocity.y -= gravity_step
+		var travel_velocity := point.velocity
+		# A trigger release cannot pull back liquid that is approaching the sight.
+		var drag_step := point.age - maxf(previous_age, point.aimed_until)
+		if point.release_time >= 0.0 and drag_step > 0.0:
+			var elapsed := point.release_time / RELEASE_SETTLE_TIME
+			point.release_time += drag_step * travel_scale
+			var end := point.release_time / RELEASE_SETTLE_TIME
+			var average := (_release_ease_area(end) - _release_ease_area(elapsed)) / (end - elapsed)
+			var before := maxf(0.00001, lerpf(1.0, point.release_speed_scale, smoothstep(0.0, 1.0, elapsed)))
+			var after := lerpf(1.0, point.release_speed_scale, smoothstep(0.0, 1.0, end))
+			var travel_ratio := lerpf(1.0, lerpf(1.0, point.release_speed_scale, average) / before, drag_step / step)
+			var speed_ratio := after / before
+			travel_velocity.x *= travel_ratio
+			travel_velocity.z *= travel_ratio
+			point.velocity.x *= speed_ratio
+			point.velocity.z *= speed_ratio
+			if end >= 1.0:
+				point.release_time = -1.0
+		# Pressure controls the stream's reach and cohesion. Every emitted drop
+		# is already in free flight, including while the trigger stays down.
+		var pull := gravity * step
+		point.velocity.y -= pull
+		travel_velocity.y -= pull * 0.5
 
 		var previous := point.position
-		var next := previous + point.velocity * delta
+		var next := previous + travel_velocity * step
 		point.distance_travelled += previous.distance_to(next)
 		var accumulated_squared := point.last_collision_position.distance_squared_to(next)
 		var should_cast := accumulated_squared >= motion_floor_squared and (phase_slot == point.collision_slot % stride \
@@ -8488,6 +8620,9 @@ func _part_projectile_impact(hit: Dictionary, shot: Dictionary, profile: Diction
 	var sauce: int = shot.sauce
 	_spawn_impact_spray(at, normal, shot.velocity, target is MayoEnemy, shooter,
 		1.0 if blast <= 0.0 else 3.0, blast > 0.0, sauce)
+	if not muted and (shot.part == SauceParts.Part.BURST or shot.part == SauceParts.Part.SNIPER):
+		var gain := 1.0 if target is MayoEnemy else -4.0
+		_play_contact_accent(first_contact_sound, at, 1.32, gain)
 	if not authority or target == null:
 		return
 	# The mortar's blast replaces the direct hit.
@@ -8878,7 +9013,7 @@ func refill_for(peer_id: int, sauce: int) -> bool:
 	if shooter == null:
 		return false
 	if practice_range:
-		# 연습장에는 보급소가 없다: 어디에 서 있든 고른 소스로 병이 찬다.
+		# 충전소와 B 장비 화면이 같은 무료 소스 선택을 사용한다.
 		if not can_select_refill_sauce(sauce):
 			return false
 		apply_refill(peer_id, sauce)
@@ -9058,7 +9193,7 @@ func _enforce_spacing_constraint(shooter: Shooter = null) -> void:
 		shooter = _local
 	StrandDynamics.enforce_spacing(shooter.points, shooter.burst_index,
 		shooter.attack_direction, PointPhase.AIR, spacing_constraint_passes,
-		point_spacing, extend_speed, emission_speed)
+		point_spacing, extend_speed * STREAM_PRESSURE_BOOST, emission_speed)
 func _trim_safety_cap(shooter: Shooter = null) -> void:
 	if shooter == null:
 		shooter = _local
@@ -9096,8 +9231,15 @@ func _update_visuals(shooter: Shooter = null) -> void:
 	var air_segments: Array = []
 	var landing_segments: Array = []
 	var shadow_segments: Array = []
+	var local_view := shooter == _local and _first_person
 	_for_each_lane(shooter, func():
-		air_segments.append_array(_segments_for_phase(PointPhase.AIR, camera_position, shooter))
+		var near_contact := _near_floor_stream_contact(shooter, camera_position, camera_forward) if local_view else null
+		var airborne := _segments_for_phase(PointPhase.AIR, camera_position, shooter, near_contact != null)
+		if near_contact != null:
+			airborne.push_back(_floor_nozzle_strip(shooter, near_contact))
+		elif local_view:
+			_join_first_person_nozzle(shooter, camera_position, airborne)
+		air_segments.append_array(airborne)
 		landing_segments.append_array(_segments_for_phase(PointPhase.LANDING, camera_position, shooter))
 		shadow_segments.append_array(_shadow_segments(camera_position, shooter)))
 	var thickness := strand_thickness * (SauceParts.THREE_WAY_SCALE if _is_three_way(shooter) else 1.0)
@@ -9107,6 +9249,65 @@ func _update_visuals(shooter: Shooter = null) -> void:
 		thickness * 0.72, 0.012)
 	if shooter != _local:
 		_update_nozzle_visual(shooter)
+
+
+const CLOSE_FLOOR_STREAM_REACH := 0.65
+const CLOSE_FLOOR_STREAM_AGE := 0.06
+
+
+## With a steep shot, the character's tube is almost touching the floor.
+## A swept sample can land before the first render frame, even though the
+## first-person bottle visibly sits further back. Use the actual impact.
+func _near_floor_stream_contact(shooter: Shooter, camera_position: Vector3,
+		camera_forward: Vector3) -> MayoPoint:
+	if not shooter.was_firing or shooter.nozzle != Nozzle.STREAM or shooter.points.is_empty():
+		return null
+	if not is_instance_valid(shooter.weapon_sway) or not is_instance_valid(shooter.viewmodel_muzzle):
+		return null
+	var mouth := part_launch_origin(shooter, shooter.sauce_part)
+	for index in range(shooter.points.size() - 1, maxi(-1, shooter.points.size() - 25), -1):
+		var point: MayoPoint = shooter.points[index]
+		if point.burst_index != shooter.burst_index:
+			break
+		if point.phase != PointPhase.LANDING or not point.landed_on_floor or point.landing_age > CLOSE_FLOOR_STREAM_AGE:
+			continue
+		var to_contact := point.position - camera_position
+		if to_contact.dot(camera_forward) <= _camera.near or to_contact.normalized().dot(shooter.attack_direction) < 0.88:
+			continue
+		if mouth.distance_squared_to(point.position) <= CLOSE_FLOOR_STREAM_REACH ** 2:
+			return point
+	return null
+
+
+func _floor_nozzle_strip(shooter: Shooter, contact: MayoPoint) -> Array:
+	var origin := _first_person_tip(shooter, shooter.sauce_part)
+	var tip := RibbonPoint.new()
+	tip.position = origin
+	tip.width_scale = clampf(bottle_radius * 0.45 / maxf(strand_thickness, 0.001), 0.08, 0.7)
+	var middle := RibbonPoint.new()
+	middle.position = origin.lerp(contact.position, 0.45)
+	middle.width_scale = 0.70
+	var impact := RibbonPoint.new()
+	impact.position = contact.position
+	impact.width_scale = 0.56
+	if contact.range_scale > 1.0:
+		tip.width_scale *= 0.62
+		middle.width_scale *= 0.62
+		impact.width_scale *= 0.62
+	return [tip, middle, impact]
+
+
+func _join_first_person_nozzle(shooter: Shooter, camera_position: Vector3, air_segments: Array) -> void:
+	var bridge := _nozzle_segments(shooter, camera_position)
+	if bridge.is_empty():
+		return
+	var path: Array = bridge[0]
+	var tail: Vector3 = path[0].position
+	for segment: Array in air_segments:
+		if tail.is_equal_approx(segment[-1].position):
+			# A single tapered strip avoids two crossing meshes at the tip.
+			segment.push_back(path[-1])
+			return
 
 
 ## A tapered visual connection from the recoiling nozzle to the newest sauce.
@@ -9145,6 +9346,9 @@ func _nozzle_segments(shooter: Shooter, camera_position: Vector3) -> Array:
 func _update_nozzle_visual(shooter: Shooter) -> void:
 	if shooter.nozzle_visual == null:
 		return
+	if shooter == _local and _first_person:
+		shooter.nozzle_visual.hide()
+		return
 	shooter.nozzle_visual.update_ribbon(_nozzle_segments(shooter, _camera.global_position),
 		_camera.global_position, -_camera.global_basis.z, strand_thickness)
 
@@ -9158,17 +9362,38 @@ func _is_near_camera(point: MayoPoint, camera_position: Vector3) -> bool:
 		< strand_near_cull_distance * strand_near_cull_distance
 
 
-## How long a point takes to be drawn where it really is. See `draw_offset`.
-const MUZZLE_DRAW_BLEND := 0.16
+const RELEASE_SETTLE_TIME := 0.12
+const STREAM_MUZZLE_BLEND_DISTANCE := 1.55
+const STREAM_RISING_MUZZLE_BLEND_DISTANCE := 4.8
+const STREAM_SIDE_BLEND_DISTANCE := 6.0
+
+
+# Integral of smoothstep, including its constant part past the release ramp.
+static func _release_ease_area(t: float) -> float:
+	var x := minf(t, 1.0)
+	return x * x * x * (1.0 - 0.5 * x) + maxf(0.0, t - 1.0)
 
 
 func _ribbon_point_position(point: MayoPoint, local_view: bool) -> Vector3:
-	if local_view and point.phase == PointPhase.AIR and point.age < MUZZLE_DRAW_BLEND and point.draw_offset != Vector3.ZERO:
-		return point.position + point.draw_offset * (1.0 - smoothstep(0.0, MUZZLE_DRAW_BLEND, point.age))
+	if local_view and point.phase == PointPhase.AIR and point.distance_travelled < STREAM_SIDE_BLEND_DISTANCE:
+		# Steep shots need a longer perspective transition so the near strip
+		# does not dip below its rising arc before rejoining the real path.
+		var rise := smoothstep(0.05, 0.45, point.launch_direction.y)
+		var join := lerpf(STREAM_MUZZLE_BLEND_DISTANCE, STREAM_RISING_MUZZLE_BLEND_DISTANCE, rise)
+		var side_join := STREAM_SIDE_BLEND_DISTANCE
+		if point.aimed_distance > 0.0:
+			# The ribbon must meet the real path before it reaches the sight.
+			var convergence := point.aimed_distance * 0.94
+			join = minf(join, convergence)
+			side_join = minf(side_join, convergence)
+		var root := 1.0 - smoothstep(0.0, join, point.distance_travelled)
+		var side := 1.0 - smoothstep(0.0, side_join, point.distance_travelled)
+		return point.position + point.draw_offset * root + point.draw_lateral * side
 	return point.position
 
 
-func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: Shooter = null) -> Array:
+func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: Shooter = null,
+		cover_close_root := false) -> Array:
 	if shooter == null:
 		shooter = _local
 	var result: Array = []
@@ -9177,7 +9402,9 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: S
 	# run breaks and `previous` is cleared; within a run adjacency holds.
 	var previous: MayoPoint = null
 	for point in shooter.points:
-		if point.phase != phase or _is_near_camera(point, camera_position):
+		var covered := cover_close_root and point.burst_index == shooter.burst_index \
+			and point.age <= CLOSE_FLOOR_STREAM_AGE and point.distance_travelled <= CLOSE_FLOOR_STREAM_REACH
+		if point.phase != phase or covered or _is_near_camera(point, camera_position):
 			if not current.is_empty():
 				result.push_back(current)
 				current = []
@@ -9191,6 +9418,8 @@ func _segments_for_phase(phase: PointPhase, camera_position: Vector3, shooter: S
 		var visual_point := RibbonPoint.new()
 		visual_point.position = _ribbon_point_position(point, shooter == _local and _first_person)
 		visual_point.width_scale = 0.62 if point.range_scale > 1.0 else 1.0
+		if phase == PointPhase.AIR:
+			visual_point.width_scale *= lerpf(0.36, 1.0, smoothstep(0.0, 0.72, point.distance_travelled))
 		if phase == PointPhase.LANDING:
 			var progress := clampf(point.landing_age / landing_transition_time, 0.0, 1.0)
 			visual_point.opacity = 1.0 - progress

@@ -65,7 +65,10 @@ func _run() -> void:
 	# One frame: at the speed the strand leaves at, a longer pause carries the
 	# first burst's tail more than the break distance away on its own, and the
 	# burst index would not be the thing under test.
+	var normal_break_distance: float = scene.strand_break_distance
+	scene.strand_break_distance = 0.35
 	var short_pause := await _two_bursts(scene, 1)
+	scene.strand_break_distance = normal_break_distance
 	print("short pause: gap %.3f m (threshold %.3f m) -> AIR segments = %d, sizes %s" % [
 		short_pause.gap, short_pause.threshold, short_pause.segments.size(),
 		str(short_pause.segments.map(func(seg): return seg.size()))])
@@ -174,19 +177,18 @@ func _tail_travel(scene, second_burst: bool) -> float:
 	Input.action_release("fire_mayo")
 	for _f in 14:
 		await physics_frame
-	var count: int = scene._points.size()
-	if count == 0:
+	if scene._points.is_empty():
 		return 0.0
-	var before: Vector3 = scene._points[count - 1].position
+	var tail = scene._points.back()
+	var before: Vector3 = tail.position
 	if second_burst:
 		Input.action_press("fire_mayo")
 	for _f in 12:
 		await physics_frame
 	if second_burst:
 		Input.action_release("fire_mayo")
-	if scene._points.size() < count:
-		return 0.0
-	return before.distance_to(scene._points[count - 1].position)
+	# Older drops may have landed and left the array, shifting every index.
+	return before.distance_to(tail.position)
 
 
 ## Fires a burst, pauses for `pause_frames`, then starts a second one and
@@ -198,17 +200,19 @@ func _two_bursts(scene, pause_frames: int) -> Dictionary:
 	Input.action_release("fire_mayo")
 	for _f in pause_frames:
 		await physics_frame
-	var count: int = scene._points.size()
-	var tail: Vector3 = scene._points[count - 1].position
+	var tail = scene._points.back()
 	Input.action_press("fire_mayo")
 	await physics_frame
-	var head: Vector3 = scene._points[scene._points.size() - 1].position
 	Input.action_release("fire_mayo")
-	return {
-		"gap": tail.distance_to(head),
-		"threshold": scene.strand_break_distance,
-		"segments": scene._segments_for_phase(0, scene._camera.global_position),
-	}
+	for head in scene._points:
+		if head.burst_index != tail.burst_index:
+			return {
+				"gap": tail.position.distance_to(head.position),
+				"threshold": sqrt(scene._break_distance_squared(tail, head)),
+				"segments": scene._segments_for_phase(0, scene._camera.global_position),
+			}
+	failures.push_back("second burst never emitted a point")
+	return {"gap": INF, "threshold": 0.0, "segments": []}
 
 
 ## Bow of a burst fired while strafing. With `trailing`, an earlier burst is

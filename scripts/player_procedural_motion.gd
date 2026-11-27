@@ -90,6 +90,8 @@ func _process_modification() -> void:
 		displacement += body.global_basis * (Vector3(0.0, 0.22, 0.0) * upright \
 			+ Vector3(0.0, sin(clock * 42.0) * 0.16, 0.0) * shooter.bottle_shake_show)
 	var slot: int = world.selected_item_slot(shooter.peer_id)
+	if slot == 0 and hose_grips.is_empty():
+		displacement += Vector3.UP * 0.14 * (1.0 - upright)
 	if slot != previous_slot:
 		equip_left = 0.3
 		previous_slot = slot

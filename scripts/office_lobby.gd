@@ -24,6 +24,7 @@ signal character_requested
 
 const CharacterSelectScript := preload("res://scripts/character_select.gd")
 const ROOM_SCENE := preload("res://maps/command_runtime.scn")
+const OfficeMirror := preload("res://scripts/office_mirror.gd")
 const WATER_DROPLET := preload("res://assets/cartoon/water_droplet.tres")
 const SHOWER_WATER := preload("res://assets/cartoon/shower_water.tres")
 
@@ -977,6 +978,24 @@ func _busy() -> bool:
 	return input_locked or is_map_open() or is_slot_open() or is_bench_open()
 
 
+func _dress_occupant(peer_id: int, body: CharacterBody3D, index: int) -> void:
+	super._dress_occupant(peer_id, body, index)
+	if peer_id != _local_id():
+		return
+	var visual := body.get_node("Character") as Node3D
+	# The mirror renders the existing animated avatar on its own render layer.
+	for child in visual.find_children("*", "GeometryInstance3D", true, false):
+		var geometry := child as GeometryInstance3D
+		geometry.layers = 1 << (OfficeMirror.AVATAR_LAYER - 1)
+		geometry.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	visual.visible = session == null or session.has_character(peer_id)
+
+
+func _adopt_local(body: CharacterBody3D, seat: int) -> void:
+	super._adopt_local(body, seat)
+	_view_camera().set_cull_mask_value(OfficeMirror.AVATAR_LAYER, false)
+
+
 func _view_camera() -> Camera3D:
 	if _camera_pivot == null or not is_instance_valid(_camera_pivot) \
 			or _camera_pivot.get_child_count() == 0:
@@ -1191,7 +1210,7 @@ func _refresh_panel(assignments: Dictionary) -> void:
 	for peer_id in _occupants:
 		var visual := (_occupants[peer_id] as Node).get_node_or_null("Character") as Node3D
 		if visual != null:
-			visual.visible = int(peer_id) != _local_id() and session.has_character(int(peer_id))
+			visual.visible = session.has_character(int(peer_id))
 	var stage_name := StageRegistry.display_name(session.selected_stage)
 	refresh_control_labels()
 	if _info_label != null:
