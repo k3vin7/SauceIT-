@@ -16,6 +16,7 @@ const ATTACK_AFTERMATH := ["FallenFront", "FallenBack", "FallenSide", "Collapsed
 const CARDINAL := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
 const CHUNK_SIZE := 42.0
 const HOUSE_CHUNK_WIDTH := 56.0
+const MERGED_FRONTAGE_MODELS := ["UrbanArcade", "UrbanArcadePier", "UrbanUpperShutters", "UrbanUpperCasements"]
 const DISTANT_DETAILS := ["FacadeWindow", "FacadeLantern", "FacadePots",
 	"CrushedTomatoes", "BrokenBoards", "TornBuntingHeap"]
 const WALL_DEPTH := 0.54
@@ -187,10 +188,18 @@ func emit_batches(parent: Node3D) -> void:
 	root.name = "TomatinaVillageArt"
 	parent.add_child(root)
 	var finishes := {}
+	var frontage_surfaces := _frontage_surfaces()
 	for name: String in _batches:
 		var finish := finish_for(name, finishes)
 		for chunk: Vector2i in _batches[name]:
 			var transforms: Array = _batches[name][chunk]
+			if name in MERGED_FRONTAGE_MODELS and frontage_surfaces.has(chunk):
+				var surface := frontage_surfaces[chunk]
+				var origin := Vector3(chunk.x * CHUNK_SIZE, 0.0, chunk.y * CHUNK_SIZE)
+				for placement: Transform3D in transforms:
+					placement.origin -= origin
+					surface.append_from(_meshes[name], 0, placement)
+				continue
 			var multimesh := MultiMesh.new()
 			multimesh.transform_format = MultiMesh.TRANSFORM_3D
 			multimesh.mesh = _meshes[name]
@@ -209,6 +218,15 @@ func emit_batches(parent: Node3D) -> void:
 			root.add_child(batch)
 			if name in ATTACK_AFTERMATH:
 				_aftermath.append(batch)
+	for chunk in frontage_surfaces:
+		var surface := frontage_surfaces[chunk]
+		surface.index()
+		var batch := MeshInstance3D.new()
+		batch.name = "StreetFrontage_%d_%d" % [chunk.x, chunk.y]
+		batch.position = Vector3(chunk.x * CHUNK_SIZE, 0.0, chunk.y * CHUNK_SIZE)
+		batch.mesh = surface.commit()
+		batch.material_override = finish_for(MERGED_FRONTAGE_MODELS[0], finishes)
+		root.add_child(batch)
 	_add_village_occluder(parent)
 	# 습격 전/후를 바꿔 칠하는 벽 재질(집·교회, 길가 담장).
 	_stained_materials.clear()
@@ -217,6 +235,25 @@ func emit_batches(parent: Node3D) -> void:
 			_stained_materials.append(finishes[key])
 	_batches.clear()
 	_facades.clear()
+
+
+func _frontage_surfaces() -> Dictionary[Vector2i, SurfaceTool]:
+	var surfaces: Dictionary[Vector2i, SurfaceTool] = {}
+	var counts: Dictionary[Vector2i, int] = {}
+	# The Press King entrance removes individual frontage pieces west of the plaza.
+	var breach_area := TomatinaMap.plaza_rect().grow(2.0 * StreetMap.CELL)
+	for name: String in MERGED_FRONTAGE_MODELS:
+		for chunk: Vector2i in _batches.get(name, {}):
+			var bounds := Rect2(Vector2(chunk) * CHUNK_SIZE, Vector2.ONE * CHUNK_SIZE)
+			if not bounds.intersects(breach_area):
+				counts[chunk] = counts.get(chunk, 0) + 1
+	for chunk in counts:
+		if counts[chunk] >= 2:
+			var surface := SurfaceTool.new()
+			surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+			surfaces[chunk] = surface
+	return surfaces
+
 
 func _add_village_occluder(parent: Node3D) -> void:
 	var vertices := PackedVector3Array()

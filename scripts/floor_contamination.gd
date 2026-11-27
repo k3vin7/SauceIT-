@@ -96,7 +96,7 @@ var tile_sample_margin := 0
 class FloorBatch:
 	var clean: MeshInstance3D
 	var tiles: Array[MeshInstance3D] = []
-	var painted_tiles := 0
+	var painted_mask := 0
 
 
 var grid := ContaminationGrid.new()
@@ -104,7 +104,8 @@ var _floor_mesh: MeshInstance3D
 var upload_tiles_per_frame := 0
 var batch_clean_tiles := false
 var _batches_by_tile: Array[FloorBatch] = []
-var _clean_batch_material: ShaderMaterial
+var _batch_slots_by_tile := PackedByteArray()
+var _clean_batch_materials: Dictionary[int, ShaderMaterial] = {}
 var _festival_before_attack := false
 
 
@@ -317,7 +318,8 @@ func _rebuild_tiles() -> PackedVector3Array:
 	var faces := PackedVector3Array()
 	var tiles: Array[MeshInstance3D] = []
 	_batches_by_tile.clear()
-	_clean_batch_material = null
+	_batch_slots_by_tile.clear()
+	_clean_batch_materials.clear()
 	for index in grid.tile_count():
 		var region := grid.tile_region(index)
 		var quad := MeshInstance3D.new()
@@ -343,52 +345,73 @@ func _rebuild_tiles() -> PackedVector3Array:
 	return faces
 
 
-## Keep the exact fine-tile geometry, but draw each clean 2x2 group in one
-## call. Expose its separate masks only while a texture actually holds paint.
+## Keep the clean part of each 2x2 group in one draw. Each tile's vertices
+## carry its local slot so a painted tile can leave the batch independently.
 func _build_clean_batches(tiles: Array[MeshInstance3D]) -> void:
-	_clean_batch_material = grid.tile_material(0).duplicate() as ShaderMaterial
-	_clean_batch_material.set_shader_parameter("mask_texture", null)
-	_clean_batch_material.set_shader_parameter("contour_texture", null)
-	_clean_batch_material.set_shader_parameter("fine_contours", false)
+	var clean_material := grid.tile_material(0).duplicate() as ShaderMaterial
+	clean_material.set_shader_parameter("mask_texture", null)
+	clean_material.set_shader_parameter("contour_texture", null)
+	clean_material.set_shader_parameter("fine_contours", false)
+	_clean_batch_materials[0] = clean_material
 	var batches: Dictionary[Vector2i, FloorBatch] = {}
 	for index in tiles.size():
 		var key := grid.tile_origin(index) / (grid.tile_cells * 2)
 		if not batches.has(key):
 			batches[key] = FloorBatch.new()
 		var batch: FloorBatch = batches[key]
+		_batch_slots_by_tile.append(batch.tiles.size())
 		batch.tiles.append(tiles[index])
 		_batches_by_tile.append(batch)
 	for batch: FloorBatch in batches.values():
 		var surface := SurfaceTool.new()
 		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-		for tile in batch.tiles:
+		var tile_slots := PackedVector2Array()
+		for slot in batch.tiles.size():
+			var tile := batch.tiles[slot]
 			surface.append_from(tile.mesh, 0, tile.transform)
+			var offset := tile_slots.size()
+			var vertices: PackedVector3Array = tile.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+			var end := offset + vertices.size()
+			tile_slots.resize(end)
+			for vertex in range(offset, end):
+				tile_slots[vertex] = Vector2(slot, 0.0)
 			tile.hide()
+		var arrays := surface.commit_to_arrays()
+		arrays[Mesh.ARRAY_TEX_UV2] = tile_slots
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		batch.clean = MeshInstance3D.new()
-		batch.clean.mesh = surface.commit()
-		batch.clean.material_override = _clean_batch_material
+		batch.clean.mesh = mesh
+		batch.clean.material_override = clean_material
 		batch.clean.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(batch.clean)
 
 
 func _on_tile_paint_changed(index: int, has_paint: bool) -> void:
 	var batch := _batches_by_tile[index]
-	var was_clean := batch.painted_tiles == 0
-	batch.painted_tiles += 1 if has_paint else -1
-	var clean := batch.painted_tiles == 0
-	if clean == was_clean:
+	var slot := int(_batch_slots_by_tile[index])
+	var bit := 1 << slot
+	batch.painted_mask = batch.painted_mask | bit if has_paint else batch.painted_mask & ~bit
+	batch.tiles[slot].visible = has_paint
+	batch.clean.visible = batch.painted_mask != (1 << batch.tiles.size()) - 1
+	if not batch.clean.visible:
 		return
-	batch.clean.visible = clean
-	for tile in batch.tiles:
-		tile.visible = not clean
+	# Every batch with this mask shares a material. Per-instance shader
+	# uniforms exhaust the Compatibility renderer's slots on the full map.
+	var material := _clean_batch_materials.get(batch.painted_mask) as ShaderMaterial
+	if material == null:
+		material = _clean_batch_materials[0].duplicate() as ShaderMaterial
+		material.set_shader_parameter("painted_floor_tiles", batch.painted_mask)
+		_clean_batch_materials[batch.painted_mask] = material
+	batch.clean.material_override = material
 
 
 func set_festival_before_attack(enabled: bool) -> void:
 	_festival_before_attack = enabled
 	for index in grid.tile_count():
 		grid.tile_material(index).set_shader_parameter("festival_before_attack", enabled)
-	if _clean_batch_material != null:
-		_clean_batch_material.set_shader_parameter("festival_before_attack", enabled)
+	for material in _clean_batch_materials.values():
+		material.set_shader_parameter("festival_before_attack", enabled)
 
 
 func _tile_has_relief(region: Rect2) -> bool:

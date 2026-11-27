@@ -39,7 +39,7 @@ func advance(dt: float, shooter, enabled: bool, strength: float) -> void:
 	var turn := Vector2(angle_difference(previous_aim.x, aim.x), angle_difference(previous_aim.y, aim.y)) / maxf(dt, 0.001)
 	previous_aim = aim
 	turn = turn.limit_length(5.0)
-	var velocity: Vector3 = body.global_basis.inverse() * body.velocity
+	var velocity: Vector3 = Basis(Vector3.UP, shooter.aim_yaw).inverse() * body.velocity
 	var shaking := 0.0
 	shake_clock += minf(dt, 0.05)
 	var target := Vector3(clampf(-velocity.x * 0.0015, -0.018, 0.018),

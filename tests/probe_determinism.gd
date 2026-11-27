@@ -217,11 +217,15 @@ func _probe_clean_floor_batches() -> void:
 	var centre := Vector2i(31, 31)
 	floor.grid.paint_cell(centre, 0.2, 1, -1, ContaminationGrid.KIND_MUSTARD)
 	floor.grid.upload_if_dirty(1)
-	_check(not batch.clean.visible and batch.tiles[0].visible,
-		"an uploaded stain did not switch to the fine tile meshes")
+	_check(batch.clean.visible and batch.tiles[0].visible and batch.painted_mask == 1,
+		"the first painted tile did not leave the clean batch independently")
+	for slot in range(1, 4):
+		_check(not batch.tiles[slot].visible, "a clean neighbour left the batch")
 	floor.grid.upload_if_dirty()
+	_check(not batch.clean.visible and batch.painted_mask == 15,
+		"the clean batch still draws after all four tiles hold paint")
 	floor.grid.erase_disc(centre, 0.65)
 	floor.grid.upload_if_dirty()
-	_check(batch.clean.visible and not batch.tiles[0].visible and batch.painted_tiles == 0,
+	_check(batch.clean.visible and not batch.tiles[0].visible and batch.painted_mask == 0,
 		"washing across the tile seam did not restore the clean batch")
 	floor.queue_free()

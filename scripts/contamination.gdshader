@@ -68,6 +68,7 @@ uniform bool festival_before_attack = false;
 uniform sampler2D pavement_mask : filter_nearest, repeat_disable, hint_default_black;
 uniform vec2 pavement_origin;
 uniform vec2 pavement_size = vec2(1.0);
+uniform int painted_floor_tiles = 0;
 varying vec3 surface_position;
 
 #include "res://assets/props/Stage2_TomatinaVillage/tomatina_splatter.gdshaderinc"
@@ -78,6 +79,11 @@ varying vec3 surface_position;
 #include "res://scripts/ketchup_surface.gdshaderinc"
 
 void vertex() {
+	// Clean floor batches tag each tile in UV2. Collapse the covered triangles
+	// when the independently textured tile takes over the same surface.
+	if (painted_floor_tiles != 0 && (painted_floor_tiles & (1 << int(UV2.x))) != 0) {
+		VERTEX = vec3(0.0);
+	}
 	surface_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 

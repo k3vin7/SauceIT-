@@ -1203,6 +1203,13 @@ var _camera: Camera3D
 var _floor: FloorContamination
 var _walls: Array[ContaminableObject] = []
 var _enemies: Array[MayoEnemy] = []
+const DORMANT_GRUNT_CELL_SIZE := 24.0
+var _active_tomatina_enemies: Dictionary[int, bool] = {}
+var _active_tomatina_order: Array[int] = []
+var _active_tomatina_order_dirty := false
+var _dormant_grunt_cells: Dictionary[Vector2i, Array] = {}
+var _dormant_cell_by_enemy: Dictionary[int, Vector2i] = {}
+var _max_dormant_sight_range := 0.0
 var _bowled_tomatoes: Array[MayoEnemy] = []
 var _blast_grid_in_tick := false
 var _blast_grid_built := false
@@ -1622,7 +1629,10 @@ func _ready() -> void:
 		set_physics_process(false)
 	await _build_world()
 	if map_kind == MapKind.TOMATINA:
-		if staged_loading and not get_viewport().use_occlusion_culling:
+		# On Compatibility the culling pass saved draws but made camera turns
+		# less consistent in the street. Leave the viewport default there.
+		var renderer := RenderingServer.get_current_rendering_method()
+		if staged_loading and renderer != "gl_compatibility" and not get_viewport().use_occlusion_culling:
 			get_viewport().use_occlusion_culling = true
 			_enabled_stage_occlusion = true
 		play_support = preload("res://scripts/tomatina_play_support.gd").new()
@@ -2936,10 +2946,13 @@ func _placeholder_tone(hertz: float, seconds: float, noisy := false) -> AudioStr
 func _place_viewmodel() -> void:
 	if _local == null or not is_instance_valid(_local.player):
 		return
-	_local.player.rotation.y = _local.aim_yaw
+	# The first-person camera and bottle can follow the mouse without rotating
+	# the character's physics body and its children between simulation steps.
+	if not _first_person:
+		_local.player.rotation.y = _local.aim_yaw
 	if _local.aim_pivot != null:
-		_local.aim_pivot.global_position = _local.player.render_position() + Vector3.UP * player_eye_offset(_local)
-		_local.aim_pivot.rotation = Vector3(effective_aim_pitch(_local), _local.stream_recoil_yaw, 0.0)
+		var eye := _local.player.render_position() + Vector3.UP * player_eye_offset(_local)
+		_local.aim_pivot.global_transform = Transform3D(_aim_basis(_local), eye)
 
 
 ## Everything on a body that follows the sauce level rather than the physics
@@ -6232,8 +6245,13 @@ func _register_enemy(enemy: MayoEnemy) -> void:
 	var index := _enemies.size()
 	_enemies.push_back(enemy)
 	_largest_enemy_radius = maxf(_largest_enemy_radius, enemy.radius)
-	if map_kind == MapKind.TOMATINA and not is_ball:
-		enemy.defeated.connect(_queue_healing_drop.bind(index))
+	if map_kind == MapKind.TOMATINA:
+		_active_tomatina_enemies[index] = true
+		_active_tomatina_order_dirty = true
+		if not is_ball:
+			enemy.defeated.connect(_queue_healing_drop.bind(index))
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT:
+			enemy.simulation_wake_requested.connect(_wake_tomatina_enemy.bind(index))
 	if _blast_grid_built and _blast_grid_in_tick:
 		_update_blast_cell(index, enemy.global_position)
 
@@ -7505,6 +7523,61 @@ func _advance_alley_ambushes(encounter_targets: Array) -> void:
 				break
 
 
+func _park_tomatina_grunt(index: int, enemy: MayoEnemy, at: Vector3) -> void:
+	var key := Vector2i(floori(at.x / DORMANT_GRUNT_CELL_SIZE), floori(at.z / DORMANT_GRUNT_CELL_SIZE))
+	var members: Array = _dormant_grunt_cells.get_or_add(key, [])
+	members.append(index)
+	_dormant_cell_by_enemy[index] = key
+	_max_dormant_sight_range = maxf(_max_dormant_sight_range, enemy.sight_range + 1.0)
+	_active_tomatina_enemies.erase(index)
+	_active_tomatina_order_dirty = true
+	enemy.set_simulation_dormant(true)
+
+
+func _wake_tomatina_enemy(index: int) -> void:
+	if not _dormant_cell_by_enemy.has(index):
+		return
+	var key := _dormant_cell_by_enemy[index]
+	_dormant_cell_by_enemy.erase(index)
+	var members := _dormant_grunt_cells[key]
+	members.erase(index)
+	if members.is_empty():
+		_dormant_grunt_cells.erase(key)
+	var enemy := _enemies[index]
+	enemy.set_simulation_dormant(false)
+	_active_tomatina_enemies[index] = true
+	_active_tomatina_order_dirty = true
+
+
+func _wake_nearby_tomatina_grunts(encounter_targets: Array) -> void:
+	if _dormant_grunt_cells.is_empty():
+		return
+	for leg in encounter_targets.size():
+		var nearby_players: Array = encounter_targets[leg]
+		for player: MayoPlayer in nearby_players:
+			var at := player.global_position
+			var first_x := floori((at.x - _max_dormant_sight_range) / DORMANT_GRUNT_CELL_SIZE)
+			var last_x := floori((at.x + _max_dormant_sight_range) / DORMANT_GRUNT_CELL_SIZE)
+			var first_z := floori((at.z - _max_dormant_sight_range) / DORMANT_GRUNT_CELL_SIZE)
+			var last_z := floori((at.z + _max_dormant_sight_range) / DORMANT_GRUNT_CELL_SIZE)
+			for z in range(first_z, last_z + 1):
+				for x in range(first_x, last_x + 1):
+					var members: Variant = _dormant_grunt_cells.get(Vector2i(x, z))
+					if members == null:
+						continue
+					for offset in range(members.size() - 1, -1, -1):
+						var index: int = members[offset]
+						var enemy := _enemies[index]
+						if posmod(int(enemy.get_meta("encounter", 3)), encounter_targets.size()) != leg:
+							continue
+						var reach := enemy.sight_range + 1.0
+						var gap := enemy.global_position - at
+						if nearby_players.size() > 1 and gap.length_squared() > reach * reach:
+							continue
+						if absf(gap.x) <= reach and absf(gap.z) <= reach:
+							_wake_tomatina_enemy(index)
+
+
 func _advance_enemies(delta: float) -> void:
 	if _enemies.is_empty():
 		return
@@ -7519,6 +7592,7 @@ func _advance_enemies(delta: float) -> void:
 	var encounter_targets := [[], [], [], []]
 	var encounter_bounds: Array[Rect2] = [Rect2(), Rect2(), Rect2(), Rect2()]
 	var alley_targets := []
+	var indices: Variant = _enemies.size()
 	if map_kind == MapKind.TOMATINA:
 		_update_tomatina_checkpoint(targets)
 		for player: MayoPlayer in targets:
@@ -7536,6 +7610,13 @@ func _advance_enemies(delta: float) -> void:
 		for breakout in _street_breakouts:
 			if breakout.leg >= 0:
 				_advance_street_breakout(breakout, delta, encounter_targets[breakout.leg])
+		_wake_nearby_tomatina_grunts(encounter_targets)
+		if _active_tomatina_order_dirty:
+			_active_tomatina_order.assign(_active_tomatina_enemies.keys())
+			# Keep the original roster order for the shared sensing budget.
+			_active_tomatina_order.sort()
+			_active_tomatina_order_dirty = false
+		indices = _active_tomatina_order
 	# The first active steerer takes a spatial snapshot for the rest of the tick.
 	# A quiet encounter needs no buckets even if the whole roster is loaded.
 	var buckets: Dictionary
@@ -7543,7 +7624,8 @@ func _advance_enemies(delta: float) -> void:
 	var neighbours_by_cell := {}
 	var target_load := {}
 	if map_kind == MapKind.TOMATINA and targets.size() > 1:
-		for enemy in _enemies:
+		for index in indices:
+			var enemy := _enemies[index]
 			if enemy.is_alive() and is_instance_valid(enemy._visible_target):
 				var peer := enemy._visible_target.peer_id
 				target_load[peer] = int(target_load.get(peer, 0)) + 1
@@ -7551,7 +7633,7 @@ func _advance_enemies(delta: float) -> void:
 	var budgeted := map_kind == MapKind.TOMATINA and _nav != null
 	if budgeted:
 		_nav.begin_enemy_tick(debug_profile_enabled)
-	for index in _enemies.size():
+	for index: int in indices:
 		var enemy: MayoEnemy = _enemies[index]
 		if enemy.hidden_in_breakout:
 			continue
@@ -7592,6 +7674,10 @@ func _advance_enemies(delta: float) -> void:
 							can_sense = true
 							break
 				if not can_sense and enemy.rest_outside_sight(float(index % 6) / 60.0):
+					# Scripted waves and ambushes still react to their encounter cues.
+					if not enemy.has_meta("horde") and not enemy.has_meta("alley_ambush") \
+							and not enemy.has_meta(TomatinaMap.ALLEY_REINFORCEMENT):
+						_park_tomatina_grunt(index, enemy, at)
 					continue
 			if enemy.is_alive() and not enemy.vanished \
 					and (enemy.kind != MayoEnemy.EnemyKind.TOMATO_BALL or enemy.is_ball_live()):
@@ -7895,6 +7981,12 @@ func debug_clear_enemies() -> void:
 	for enemy in _enemies:
 		enemy.queue_free()
 	_enemies.clear()
+	_active_tomatina_enemies.clear()
+	_active_tomatina_order.clear()
+	_active_tomatina_order_dirty = false
+	_dormant_grunt_cells.clear()
+	_dormant_cell_by_enemy.clear()
+	_max_dormant_sight_range = 0.0
 	_bowled_tomatoes.clear()
 	_pending_healing_deaths.clear()
 	_healing_deaths.clear()

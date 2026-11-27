@@ -58,7 +58,13 @@ func _run() -> void:
 	_check(village != null and village.get_child_count() > 30, "the Blender village kit was not placed")
 	if village != null:
 		var placed := {}
-		for batch: MultiMeshInstance3D in village.get_children():
+		var merged_frontages := 0
+		for batch in village.get_children():
+			if batch is MeshInstance3D:
+				_check(batch.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] != null,
+					"%s lost the frontage vertex colors" % batch.name)
+				merged_frontages += 1
+				continue
 			var model := str(batch.name).get_slice("_", 0)
 			if TomatinaVillageArt.STREET_ACCENTS.has(model):
 				_check(batch.material_override is StandardMaterial3D, "%s is missing its street accent" % batch.name)
@@ -66,6 +72,7 @@ func _run() -> void:
 				_check(batch.multimesh.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] != null,
 					"%s lost the Blender vertex colors" % batch.name)
 			placed[model] = int(placed.get(model, 0)) + batch.multimesh.instance_count
+		_check(merged_frontages > 0, "no street frontages were batched together")
 		_check(int(placed.get("TomatoTruck", 0)) == 6, "loaded tomato trucks are missing")
 		_check(int(placed.get("SauceVan", 0)) == 25, "street vans are missing, including the market lane cover")
 		_check(int(placed.get("OverturnedTomatoTruck", 0)) == 2, "overturned tomato trucks are missing")
@@ -967,9 +974,18 @@ func _probe_resting_grunt() -> void:
 	_check(grunt._visible_target == target, "a nearby target waited for an idle sense timer")
 	grunt._visible_target = null
 	grunt._alerted = false
+	var wake_requests: Array[bool] = []
+	grunt.simulation_wake_requested.connect(func():
+		wake_requests.append(true)
+		grunt.set_simulation_dormant(false))
+	grunt.set_simulation_dormant(true)
 	grunt.take_sauce_hit(target.global_position, 0.1)
 	_check(not grunt.rest_outside_sight() and grunt._last_seen == target.global_position,
 		"a distant hit failed to wake a resting grunt")
+	_check(wake_requests.size() == 1, "a hit did not restore the grunt to the active roster")
+	grunt.set_simulation_dormant(true)
+	grunt.global_position += Vector3.RIGHT
+	_check(wake_requests.size() == 2, "a scripted move did not invalidate the grunt's sleeping cell")
 	fixture.queue_free()
 	await process_frame
 

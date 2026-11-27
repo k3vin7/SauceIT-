@@ -267,12 +267,16 @@ var _ketchup_at := -1000.0
 @export var procedural_gait := false
 
 signal defeated
+signal simulation_wake_requested
+
+var _simulation_dormant := false
 
 var health := 240.0:
 	set(value):
 		var was_alive := health > 0.0
 		health = value
 		if was_alive and health <= 0.0:
+			_request_simulation_wake()
 			defeated.emit()
 var attack_permission := Callable()
 var contact_permission := Callable()
@@ -309,10 +313,18 @@ var nav: StreetNav
 ## *at* and that it cannot land a contact hit on a player while it is doing so.
 ## It is emphatically not a pause: an enemy that simply stopped would read as the
 ## AI switching off, which is the thing this is meant to avoid.
-var bait: Node3D = null
+var bait: Node3D = null:
+	set(value):
+		bait = value
+		if is_instance_valid(bait):
+			_request_simulation_wake()
 ## Tutorial heavy pinned between the wrecks. The tutorial snapshot replicates
 ## this latch; the ordinary enemy packet continues to carry its struggling pose.
-var tutorial_trapped := false
+var tutorial_trapped := false:
+	set(value):
+		tutorial_trapped = value
+		if value:
+			_request_simulation_wake()
 var _trap_position := Vector3.ZERO
 var _trap_clock := 0.0
 
@@ -445,7 +457,11 @@ var _escape_collision_left := 0.0
 signal special_warning(enemy: MayoEnemy, direction: Vector3, duration: float)
 
 var staged_senses := false
-var horde_alert := false
+var horde_alert := false:
+	set(value):
+		horde_alert = value
+		if value:
+			_request_simulation_wake()
 var sense_left := 0.0
 var _visible_target: MayoPlayer
 var _noticed_for := 0.0
@@ -1592,6 +1608,7 @@ func take_sauce_hit(from := Vector3.INF, damage := -1.0) -> bool:
 	# thrown at you, not a thing to fight.
 	if kind == EnemyKind.TOMATO_BALL:
 		return false
+	_request_simulation_wake()
 	var before := health
 	health = maxf(health - (damage if damage >= 0.0 else sauce_damage_per_hit), 0.0)
 	note_damage(before - health)
@@ -1684,6 +1701,7 @@ func take_shove(from: Vector3, strength := 1.0) -> void:
 	var away := Vector3(global_position.x - from.x, 0.0, global_position.z - from.z)
 	if away.length_squared() < 0.000001:
 		return
+	_request_simulation_wake()
 	# Set from whoever landed the hit, so a body being hosed from two sides is
 	# pushed by whichever stream reached it last. At 187 landings a second that
 	# alternates fast enough to average out into the middle of them.
@@ -1712,6 +1730,7 @@ func take_blast(from: Vector3, speed: float) -> bool:
 	var away := Vector3(global_position.x - from.x, 0.0, global_position.z - from.z)
 	if away.length_squared() < 0.000001:
 		return false
+	_request_simulation_wake()
 	_blast_push = away.normalized() * speed * share
 	_blast_push_decay = _blast_push.length() / BLAST_PUSH_SECONDS
 	if kind == EnemyKind.TOMATO_BRUTE and (_charge_left > 0.0 or _windup > 0.0):
@@ -1739,6 +1758,7 @@ func push_for_escape(source: MayoPlayer, direction: Vector3) -> void:
 
 
 func open_escape_clearance(source: MayoPlayer) -> void:
+	_request_simulation_wake()
 	_clear_escape_collision()
 	_escape_source = source
 	add_collision_exception_with(source)
@@ -2360,8 +2380,23 @@ func apply_network_state(new_position: Vector3, yaw: float, new_health: float,
 	_update_grunt_frame_processing()
 
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_LOCAL_TRANSFORM_CHANGED:
+		_request_simulation_wake()
+
+
+func set_simulation_dormant(dormant: bool) -> void:
+	_simulation_dormant = dormant
+	# A scripted move of a resting body invalidates its sleeping cell.
+	set_notify_local_transform(dormant)
+
+
+func _request_simulation_wake() -> void:
+	if _simulation_dormant:
+		simulation_wake_requested.emit()
+
+
 ## Called only when the encounter cannot put any player in this grunt's sight.
-## Wake checks still run every world tick, including after a hit or a blast.
 func rest_outside_sight(wake_delay := 0.0) -> bool:
 	if not authority or not staged_senses or kind != EnemyKind.TOMATO_GRUNT \
 			or tutorial_trapped or not is_alive() or _alerted or horde_alert \
