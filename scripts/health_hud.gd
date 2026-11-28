@@ -301,7 +301,8 @@ func _draw() -> void:
 
 
 func _draw_team() -> void:
-	if world.map_kind != world.MapKind.TOMATINA or world._shooters.size() < 2:
+	# The office keeps its own panel in this corner (`OfficeLobby`), roster included.
+	if world.map_kind != world.MapKind.TOMATINA or world._shooters.size() < 2 or world.practice_range:
 		return
 	var players: Array = world._shooters.values()
 	players.sort_custom(func(a, b): return a.spawn_slot < b.spawn_slot)

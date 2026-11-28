@@ -37,6 +37,12 @@ const DEFAULT_PORT := 24565
 ## only drains by one a tick -- see `apply_client_input` -- so the sustained rate
 ## is still one a tick and a flood is still dropped.
 const INPUT_PACKETS_PER_TICK := 3
+## Floats in one player's office-range state (`MayoPrototype.EMBEDDED_STATE_SIZE`).
+const RANGE_STATE_SIZE := 20
+## How often one peer may be sent the office's marks, and the largest surface accepted.
+const RANGE_SNAPSHOT_INTERVAL := 3.0
+const RANGE_GRID_MAX_BYTES := 8 * 1024 * 1024
+var _range_snapshot_sent: Dictionary = {}
 ## How many unplayed inputs the host holds per client. Each tick plays the oldest
 ## one, so every input the client predicted with is played once, in order, the
 ## same number of times the client played it. Past this many the oldest goes:
@@ -115,7 +121,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 36
+const PROTOCOL_VERSION := 38
 const STAGE_INPUT_TIMEOUT := 0.25
 const MOTION_REFRESH_SECONDS := 0.25
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
@@ -2376,17 +2382,17 @@ func run_lobby(delta: float) -> void:
 
 ## A guest's keys on their way to the host. Unreliable like the stage's: the
 ## host reuses recent input through short gaps, then lets the occupant stop.
-func send_lobby_input(move: Vector2, yaw: float, jump := false) -> void:
+func send_lobby_input(move: Vector2, yaw: float, jump := false, run := false) -> void:
 	if not _online or multiplayer.is_server() or not _lobby_space_ready():
 		return
 	if not _joined or _peer == null \
 			or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
-	_submit_lobby_input.rpc_id(1, move, yaw, jump)
+	_submit_lobby_input.rpc_id(1, move, yaw, jump, run)
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
-func _submit_lobby_input(move: Vector2, yaw: float, jump := false) -> void:
+func _submit_lobby_input(move: Vector2, yaw: float, jump := false, run := false) -> void:
 	if not multiplayer.is_server() or not _lobby_space_ready():
 		return
 	var sender := multiplayer.get_remote_sender_id()
@@ -2398,8 +2404,8 @@ func _submit_lobby_input(move: Vector2, yaw: float, jump := false) -> void:
 	if not all_finite([move, yaw]):
 		rejected_packets += 1
 		return
-	# The jump is a bool, and there is no wrong value for a key being down.
-	_lobby_input[sender] = [clamp_direction(move), wrap_angle(yaw), jump, _now()]
+	# The jump and the run are bools, and there is no wrong value for a key being down.
+	_lobby_input[sender] = [clamp_direction(move), wrap_angle(yaw), jump, _now(), run]
 
 
 ## A guest standing in the office's firing range. There its body is walked by
@@ -2428,6 +2434,89 @@ func _submit_lobby_pin(at: Vector3, yaw: float) -> void:
 		return
 	if lobby_space.has_method("accept_pin"):
 		lobby_space.accept_pin(sender, at, wrap_angle(yaw))
+
+
+## The office's firing range runs on every screen separately, so what a player
+## is doing with their bottle travels as that player's own state -- where they
+## stand, where they aim, whether they are firing, what they hold -- and each
+## screen stands a body for them in its own range (`OfficeLobby.accept_range_state`).
+## Through the host, like everything else: a guest's goes up and is passed on.
+func send_range_state(data: PackedFloat32Array) -> void:
+	if not _online or not _lobby_space_ready() or data.is_empty():
+		return
+	if multiplayer.is_server():
+		_apply_range_state.rpc(1, data)
+		return
+	if not _joined or _peer == null \
+			or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+	_submit_range_state.rpc_id(1, data)
+
+
+@rpc("any_peer", "call_remote", "unreliable_ordered")
+func _submit_range_state(data: PackedFloat32Array) -> void:
+	if not multiplayer.is_server() or not _lobby_space_ready():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if data.size() != RANGE_STATE_SIZE or not all_finite(Array(data)):
+		rejected_packets += 1
+		return
+	_apply_range_state.rpc(sender, data)
+	if lobby_space.has_method("accept_range_state"):
+		lobby_space.accept_range_state(sender, data)
+
+
+## Whoever walks into an office that has already been sprayed asks the host for
+## the marks that are there: every screen works its own out from then on, but
+## nothing replays what happened before it arrived. One message per marked
+## surface, as the stage's late join does.
+func request_range_snapshot() -> void:
+	if not _online or multiplayer.is_server() or not _lobby_space_ready():
+		return
+	if not _joined or _peer == null \
+			or _peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+	_request_range_snapshot.rpc_id(1)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_range_snapshot() -> void:
+	if not multiplayer.is_server() or not _lobby_space_ready() \
+			or not lobby_space.has_method("range_snapshot"):
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	# A snapshot is the whole building's worth of cells: not something to hand
+	# out as fast as it can be asked for.
+	var now := _now()
+	if now - float(_range_snapshot_sent.get(sender, -INF)) < RANGE_SNAPSHOT_INTERVAL:
+		return
+	_range_snapshot_sent[sender] = now
+	for entry: Array in lobby_space.range_snapshot():
+		var cells: PackedByteArray = entry[1]
+		var packed := cells.compress(FileAccess.COMPRESSION_ZSTD)
+		if not packed.is_empty() and packed.size() < cells.size():
+			_load_range_grid.rpc_id(sender, int(entry[0]), packed, cells.size())
+		else:
+			_load_range_grid.rpc_id(sender, int(entry[0]), cells, 0)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _load_range_grid(index: int, cells: PackedByteArray, raw_size: int) -> void:
+	if not _lobby_space_ready() or not lobby_space.has_method("accept_range_grid"):
+		return
+	if raw_size > 0:
+		if raw_size > RANGE_GRID_MAX_BYTES:
+			return
+		cells = cells.decompress(raw_size, FileAccess.COMPRESSION_ZSTD)
+	lobby_space.accept_range_grid(index, cells)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _apply_range_state(peer_id: int, data: PackedFloat32Array) -> void:
+	if peer_id == local_id() or not _lobby_space_ready() or data.size() != RANGE_STATE_SIZE:
+		return
+	if lobby_space.has_method("accept_range_state"):
+		lobby_space.accept_range_state(peer_id, data)
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")

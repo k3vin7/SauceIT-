@@ -2,13 +2,13 @@ extends SceneTree
 
 # 사무실 안의 사격 연습장을 확인한다(성능 측정 아님). 방 안에서 바로 쏘고, 어디로도 옮겨 가지 않는다.
 #   혼자하기
-#     * 문을 지나 방에 들어서면 연습장의 몸으로 바뀐다. 사무실은 그대로 사무실이다(Flow.OFFICE)
+#     * 캐릭터를 고르면 곧바로 병을 든 몸(연습장의 몸)이 된다. 사무실은 그대로 사무실이다(Flow.OFFICE)
 #     * 앞벽 진열대에서 소스 세 가지를, 뒷벽 선택대에서 파츠 전부를 집는다(E 안내 그대로)
 #     * 표적은 쓰러지고 같은 자리에 다시 선다. 플레이어는 다치지 않는다
-#     * 문으로 걸어 나오면 사무실의 몸으로 돌아오고, 그 자리에 서 있다
+#     * 병을 든 채 방 밖으로 나가 홀의 바닥과 벽에 쏘고, 물 호스로 씻고, 지도를 쓴다
 #   같이하기 (127.0.0.1)
-#     * 참가자가 방 안을 걷는 모습이 방장의 사무실에 보인다. 방장은 사무실에 그대로 있다
-#     * 참가자가 나오면 다시 사무실의 몸으로 걷는다
+#     * 참가자의 몸이 방장의 연습장 월드에 서서 참가자가 하는 대로 움직인다
+#     * 참가자가 쏜 소스가 방장의 화면에도 묻고, 팀원의 몸에도 소스가 묻는다
 
 const PORT := 24861
 const HOST_PICK := 3
@@ -144,8 +144,8 @@ func _solo() -> void:
 	var world = office.range_world()
 	_check(world != null and await _until(func(): return world.load_complete, 1200),
 		"the office has no firing range world")
-	_check(not office.in_range() and not world.is_embedded_active(), "the range was live before anyone walked in")
-	_check(await _walk_in(office), "walking through the door did not enter the range")
+	# 캐릭터를 골랐으니 문을 지나지 않아도 병을 든 몸이다.
+	_check(await _until(func(): return office.in_range(), 600), "picking a character did not hand over a bottle")
 	_check(app.flow == SauceApp.Flow.OFFICE and app.current_space == office, "entering the range left the office")
 	_check(world.is_embedded_active() and world.gameplay_input_enabled(), "the range did not take over")
 	_check(world._enemies.size() == PracticeRange.TARGET_ROWS.size(), "the range has the wrong targets")
@@ -296,10 +296,51 @@ func _party() -> void:
 	var seen := host_office._occupants[guest_id] as CharacterBody3D
 	_check(await _until(func(): return absf(seen.position.x - 14.0) < 0.3 and absf(seen.position.z - 17.0) < 0.3, 600),
 		"the host does not see the guest standing in the range")
-	_check(not host_office.in_range() and not host_office.range_world().is_embedded_active(),
-		"the guest walking in switched the host's range on")
+	# 방장의 월드에 참가자의 몸이 서 있고, 참가자가 선 곳에 있다. 사무실의 몸은 그리지 않는다.
+	var host_world = host_office.range_world()
+	_check(await _until(func(): return host_world.has_embedded_peer(guest_id), 600),
+		"the host's range has no body for the guest")
+	var proxy = host_world.shooter_for(host_world.EMBEDDED_PEER_BASE + guest_id)
+	_check(proxy != null and await _until(func(): return absf(proxy.player.global_position.x - 14.0) < 0.4 \
+		and absf(proxy.player.global_position.z - 17.0) < 0.4, 600),
+		"the guest's body in the host's range is not where the guest stands")
+	_check(not (seen.get_node("Character") as Node3D).visible, "the host draws the guest twice")
+	# 참가자가 바닥에 쏜다: 방장의 화면에도 묻는다.
+	var host_floor: int = host_world._floor.grid.painted_count
+	var guest_floor: int = guest_world._floor.grid.painted_count
+	guest_world._local.sauce = 1.0
+	await _spray(guest_world, Vector3(14.0, 0.0, 17.0), Vector3(16.5, 0.0, 15.5), 240)
+	_check(guest_world._floor.grid.painted_count > guest_floor, "the guest's own sauce left no mark")
+	_check(await _until(func(): return host_world._floor.grid.painted_count > host_floor, 600),
+		"the guest's sauce left no mark on the host's screen")
+	# 방장이 참가자의 몸에 쏜다: 방장의 화면에서 그 몸에 묻는다.
+	var body_before: int = proxy.player.contamination.painted_cell_count() if proxy != null else 0
+	host_world._local.sauce = 1.0
+	await _spray(host_world, Vector3(11.0, 0.0, 17.0), Vector3(14.0, 1.2, 17.0), 240)
+	_check(proxy != null and proxy.player.contamination.painted_cell_count() > body_before,
+		"sauce does not land on a teammate")
 	guest_world.perform_context_action(1, "range_part", 5)
 	_check(guest_world._local.sauce_part == 0, "a part was fitted from across the room")
+
+	# 늦게 들어온 사람: 그 전에 묻은 소스를 방장에게서 받는다. 참가자의 자국을 전부 지우고
+	# (방금 들어온 화면처럼) 다시 청한다 -- 바닥도 벽도 방장의 것과 같아져야 한다.
+	host_world._local.sauce = 1.0
+	await _spray(host_world, Vector3(9.0, 0.0, 17.0), Vector3(9.0, 1.5, 19.7), 200)
+	var host_walls := _wall_paint(host_world)
+	_check(host_walls > 0, "the host's sauce left no mark on the range wall")
+	guest_world._floor.grid.clear()
+	for wall in guest_world._walls:
+		for face in wall.face_count():
+			wall.grids[face].clear()
+	_check(guest_world._floor.grid.painted_count == 0 and _wall_paint(guest_world) == 0, "the guest's marks were not cleared")
+	guest.session._range_snapshot_sent.clear()
+	host.session._range_snapshot_sent.clear()
+	guest.session.request_range_snapshot()
+	_check(await _until(func(): return guest_world._floor.grid.painted_count == host_world._floor.grid.painted_count \
+		and _wall_paint(guest_world) == _wall_paint(host_world), 900),
+		"a late arrival was not sent the marks already there (floor %d/%d, walls %d/%d)" % [
+			guest_world._floor.grid.painted_count, host_world._floor.grid.painted_count,
+			_wall_paint(guest_world), _wall_paint(host_world)])
 
 	# 참가자가 병을 든 채 홀로 나온다: 방장은 홀을 걷는 모습을 본다.
 	await _stand(guest_world, Vector3(0.0, 0.0, 15.0), Vector3(0.0, 1.0, 0.0))

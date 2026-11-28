@@ -59,6 +59,9 @@ var view_fov := 78.0:
 ## How fast a body walks here. The office (`OfficeLobby`) is this same space
 ## with more floor, and sets its own.
 var walk_speed := WALK_SPEED
+## Top speed with the run key held. Zero means this space has no running (the
+## truck's bed is too small for it); the office sets it to the stage's.
+var run_speed := 0.0
 var input_locked := false
 ## Tests drive the local occupant through these instead of the keyboard, the
 ## same seam `debug_clear_enemies` opens in the stage. `Input` is global and a
@@ -66,6 +69,7 @@ var input_locked := false
 var debug_input_override := false
 var debug_move := Vector2.ZERO
 var debug_jump := false
+var debug_run := false
 
 var _occupants: Dictionary = {}
 var _animators: Dictionary = {}
@@ -132,7 +136,7 @@ func _physics_process(delta: float) -> void:
 	if not session.is_online() or session.is_server():
 		return
 	if _sends_lobby_input():
-		session.send_lobby_input(_local_move(), _yaw, _local_jump())
+		session.send_lobby_input(_local_move(), _yaw, _local_jump(), _local_run())
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -203,17 +207,21 @@ func step_occupants(client_input: Dictionary, delta: float) -> void:
 		var move := Vector2.ZERO
 		var yaw: float = _yaws.get(peer_id, body.rotation.y)
 		var jump := false
+		var run := false
 		if int(peer_id) == _local_id():
 			move = _local_move()
 			yaw = _yaw
 			jump = _local_jump()
+			run = _local_run()
 		elif client_input.has(peer_id):
+			# [move, yaw, jump, when it arrived, run]
 			var packet: Array = client_input[peer_id]
 			move = packet[0]
 			yaw = packet[1]
 			jump = packet.size() > 2 and bool(packet[2])
+			run = packet.size() > 4 and bool(packet[4])
 		_yaws[peer_id] = yaw
-		_step_body(body, move, yaw, jump, delta)
+		_step_body(body, move, yaw, jump, delta, run)
 		_update_walk_animation(int(peer_id),
 			Vector2(body.velocity.x, body.velocity.z).length_squared() > 0.04)
 
@@ -298,6 +306,23 @@ func _local_jump() -> bool:
 	return Input.is_action_pressed("jump")
 
 
+## Held to run, where the space allows it (`run_speed`). The stage registers
+## the action for itself; a space reached straight from the title adds it here.
+func _local_run() -> bool:
+	if run_speed <= 0.0:
+		return false
+	if debug_input_override:
+		return debug_run
+	if input_locked or _cursor_free:
+		return false
+	if not InputMap.has_action("run"):
+		InputMap.add_action("run")
+		var key := InputEventKey.new()
+		key.physical_keycode = KEY_SHIFT
+		InputMap.action_add_event("run", key)
+	return Input.is_action_pressed("run")
+
+
 ## The stage registers this action for itself; opened on its own, or reached
 ## straight from the title, the truck is the first space that wants it.
 func _ensure_jump_action() -> void:
@@ -309,7 +334,8 @@ func _ensure_jump_action() -> void:
 	InputMap.action_add_event("jump", key)
 
 
-func _step_body(body: CharacterBody3D, move: Vector2, yaw: float, jump: bool, delta: float) -> void:
+func _step_body(body: CharacterBody3D, move: Vector2, yaw: float, jump: bool, delta: float,
+		run := false) -> void:
 	body.rotation.y = yaw
 	var forward := -Basis(Vector3.UP, yaw).z
 	var right := Basis(Vector3.UP, yaw).x
@@ -323,8 +349,12 @@ func _step_body(body: CharacterBody3D, move: Vector2, yaw: float, jump: bool, de
 		body.velocity.y = JUMP_SPEED if jump else 0.0
 	else:
 		body.velocity.y -= GRAVITY * delta
-	body.velocity.x = move_toward(body.velocity.x, wish.x * walk_speed, ACCELERATION * delta)
-	body.velocity.z = move_toward(body.velocity.z, wish.z * walk_speed, ACCELERATION * delta)
+	# Running is for the floor, as in the stage: a jump keeps the speed it left with.
+	var top := run_speed if run and run_speed > 0.0 and body.is_on_floor() else walk_speed
+	if not body.is_on_floor():
+		top = maxf(walk_speed, Vector2(body.velocity.x, body.velocity.z).length())
+	body.velocity.x = move_toward(body.velocity.x, wish.x * top, ACCELERATION * delta)
+	body.velocity.z = move_toward(body.velocity.z, wish.z * top, ACCELERATION * delta)
 	body.move_and_slide()
 
 
