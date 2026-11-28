@@ -200,7 +200,7 @@ func _update_aim_feedback() -> void:
 	if reticle != null:
 		reticle.effective_range = world._input_enabled and not world.is_cinematic_active() \
 			and not shooter.player.is_incapacitated() and not shooter.player.is_wiping() \
-			and world._refuge_shop_room < 0 and not world.is_range_panel_open() and shooter.sauce > 0.0 \
+			and world._refuge_shop_room < 0 and shooter.sauce > 0.0 \
 			and world.selected_item_slot(shooter.peer_id) == 0 and world._hose_slot_of(shooter.peer_id) < 0 \
 			and _aim_within_range(shooter, origin, direction)
 	_update_arc(origin, direction)
@@ -268,7 +268,7 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 	reticle.landing_leaf.clear()
 	reticle.queue_redraw()
 	if not world._input_enabled or world._local.player.is_incapacitated() or world.is_cinematic_active() \
-			or world._refuge_shop_room >= 0 or world.is_range_panel_open():
+			or world._refuge_shop_room >= 0:
 		_mortar_static_path.clear()
 		_tomato_path.clear()
 		return
@@ -289,7 +289,8 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 		var profile: Dictionary = world.SauceParts.PROJECTILES[world.SauceParts.Part.ARC]
 		# Drawn from where the lob really leaves, the cap's mouth.
 		origin = world.part_launch_origin(world._local, world.SauceParts.Part.ARC)
-		velocity = world.SauceParts.mortar_launch_velocity(direction, world._local.bottle_charge)
+		velocity = world.SauceParts.mortar_launch_velocity(world.mortar_aim_direction(world._local),
+			world._local.bottle_charge)
 		gravity = profile.gravity
 		life = profile.life
 		step_seconds = world.get_physics_process_delta_time()
@@ -464,8 +465,15 @@ func context_candidates(shooter) -> Array:
 		if not world._hose_users.has(nearby_hose):
 			hose = nearby_hose
 	if hose >= 0:
-		_candidate(out, shooter, "hose", 0, at, "소방 호스 잡기 / 놓기", -1.0,
-			TomatinaMap.at_cell(world.TOMATINA_HOSES[hose]) + Vector3.UP * 1.2)
+		# 들고 멀리 간 호스는 감긴 자리가 아니라 내 손에 있다: 안내를 거기에 붙이지 않는다.
+		var held: bool = world._hose_slot_of(shooter.peer_id) >= 0
+		var reel: Vector3 = world.hose_reel(hose)
+		var mark: Vector3 = reel + Vector3.UP * 1.2
+		if held and reel.distance_to(at) > 4.0:
+			mark = Vector3.INF
+		_candidate(out, shooter, "hose", 0, at,
+			"물 호스 놓기" if held else ("물 호스 잡기" if world.practice_range else "소방 호스 잡기 / 놓기"),
+			-1.0, mark)
 	var room: int = world._refuge_shower_in_reach(at)
 	if room >= 0:
 		_candidate(out, shooter, "shower", room, TomatinaMap.refuge_shower_at(room), "샤워로 소스 씻기", 0.0,
@@ -489,6 +497,9 @@ func context_candidates(shooter) -> Array:
 			if is_instance_valid(node) and at.distance_squared_to(node.global_position) < 6.25:
 				_candidate(out, shooter, "pickup", int(id), node.global_position, "토마토 줍기", 0.0,
 					node.global_position + Vector3.UP * 0.35)
+	# 사격 연습장: 진열대의 병과 선택대의 파츠.
+	for pick: Array in world.range_picks(shooter):
+		_candidate(out, shooter, pick[0], pick[1], pick[2], pick[3], 0.0, pick[2] + Vector3.UP * 0.35)
 	if is_instance_valid(world._victims):
 		var body: int = world._victims.in_reach(at)
 		if body >= 0:

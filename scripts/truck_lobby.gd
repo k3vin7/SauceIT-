@@ -32,6 +32,8 @@ const GRAVITY := 20.0
 ## A hop rather than the stage's 8 m/s: the roof is 4.1 m up and a body is
 ## 2.56 m tall, so a jump that tops out around a metre clears it with room.
 const JUMP_SPEED := 6.5
+## How many physics ticks a pin holds without being renewed.
+const PIN_TICKS := 8
 ## Where each seat is, and which way the player riding in it faces. Occupants
 ## stand in the aisle in front of their seat rather than on the bench -- there
 ## is still no sitting clip, and a character that can walk away from a pose it
@@ -72,6 +74,12 @@ var _animators: Dictionary = {}
 ## not changed.
 var _worn: Dictionary = {}
 var _yaws: Dictionary = {}
+## Occupants somebody else is placing for the moment, peer id -> [position,
+## yaw, ticks left]. The office uses it for a player inside its firing range:
+## there the body is walked by the range, and this space only shows where it
+## is. A pin that is not renewed lapses after `PIN_TICKS`, so a dropped packet
+## or a player who left the range hands the body back to the keys.
+var _pinned: Dictionary = {}
 var _roster_label: Label
 var _stage_label: Label
 var _status_label: Label
@@ -123,7 +131,8 @@ func _physics_process(delta: float) -> void:
 		return
 	if not session.is_online() or session.is_server():
 		return
-	session.send_lobby_input(_local_move(), _yaw, _local_jump())
+	if _sends_lobby_input():
+		session.send_lobby_input(_local_move(), _yaw, _local_jump())
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -188,6 +197,9 @@ func occupant_pose(peer_id: int) -> Array:
 func step_occupants(client_input: Dictionary, delta: float) -> void:
 	for peer_id in _occupants:
 		var body: CharacterBody3D = _occupants[peer_id]
+		if _pinned.has(peer_id):
+			_hold_pinned(int(peer_id), body)
+			continue
 		var move := Vector2.ZERO
 		var yaw: float = _yaws.get(peer_id, body.rotation.y)
 		var jump := false
@@ -204,6 +216,35 @@ func step_occupants(client_input: Dictionary, delta: float) -> void:
 		_step_body(body, move, yaw, jump, delta)
 		_update_walk_animation(int(peer_id),
 			Vector2(body.velocity.x, body.velocity.z).length_squared() > 0.04)
+
+
+## Holds an occupant at `at` (the body's centre) facing `yaw`, instead of
+## walking it from its keys. Call again every tick to keep it there.
+func pin_occupant(peer_id: int, at: Vector3, yaw: float) -> void:
+	if _occupants.has(peer_id):
+		_pinned[peer_id] = [at, yaw, PIN_TICKS]
+
+
+func unpin_occupant(peer_id: int) -> void:
+	_pinned.erase(peer_id)
+
+
+func is_occupant_pinned(peer_id: int) -> bool:
+	return _pinned.has(peer_id)
+
+
+func _hold_pinned(peer_id: int, body: CharacterBody3D) -> void:
+	var pin: Array = _pinned[peer_id]
+	var at: Vector3 = pin[0]
+	var travelled := Vector2(at.x - body.position.x, at.z - body.position.z)
+	body.position = at
+	body.velocity = Vector3.ZERO
+	body.rotation.y = float(pin[1])
+	_yaws[peer_id] = float(pin[1])
+	_update_walk_animation(peer_id, travelled.length_squared() > 0.0001)
+	pin[2] = int(pin[2]) - 1
+	if int(pin[2]) <= 0:
+		_pinned.erase(peer_id)
 
 
 ## A pose from the host. The local occupant takes the position -- the host is
@@ -230,6 +271,12 @@ func apply_occupant_pose(peer_id: int, at: Vector3, yaw: float) -> void:
 
 
 # -- internals -----------------------------------------------------------------
+
+## Whether this peer's keys go to the host this tick. A space that is placing
+## the local body some other way (the office's firing range) says no.
+func _sends_lobby_input() -> bool:
+	return true
+
 
 func _local_id() -> int:
 	return session.local_id() if session != null else 1
@@ -459,6 +506,7 @@ func _sync_occupants(assignments: Dictionary) -> void:
 			_animators.erase(peer_id)
 			_yaws.erase(peer_id)
 			_worn.erase(peer_id)
+			_pinned.erase(peer_id)
 	for peer_id in assignments:
 		var seat := int(assignments[peer_id])
 		if not _occupants.has(peer_id):

@@ -115,7 +115,7 @@ func _run() -> void:
 		if tag == &"market_bowler":
 			continue
 		var body := _bowler_at(tag)
-		_check(is_equal_approx(body.solo_health, 32.0), "the %s does not have 32 base health" % tag)
+		_check(is_equal_approx(body.solo_health, 60.0), "the %s does not have 60 base health" % tag)
 		var crossing := TomatinaMap.at_cell(TomatinaMap.BOWLER_TARGETS[tag]) + Vector3.UP * 1.28
 		player.finish_respawn(crossing)
 		_check(body._has_clear_shot(player, body.global_position + Vector3.UP * (body.height * 0.3)),

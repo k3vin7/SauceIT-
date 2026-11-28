@@ -219,7 +219,7 @@ shading_mode = 0
 albedo_color = Color(0.3, 0.9, 1, 0.16)
 
 [sub_resource type="BoxShape3D" id="Shape_depart"]
-size = Vector3(6, 2, 2.6)
+size = Vector3(3.2, 2, 4.2)
 
 [node name="Command" type="Node3D" unique_id=1513484732]
 script = ExtResource("1_walk")
@@ -2027,19 +2027,19 @@ size = Vector3(7.2, 0.35, 0.35)
 material = SubResource("Mat_metal_dark")
 
 [node name="SignBox" type="CSGBox3D" parent="Departure"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.3, 7.135)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.62, 7.135)
 size = Vector3(2.2, 0.56, 0.16)
 material = SubResource("Mat_sign_green")
 
 [node name="Label" type="Label3D" parent="Departure"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.3, 7.225)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.62, 7.225)
 pixel_size = 0.012
 modulate = Color(1, 0.96, 0.86, 1)
 text = "출발"
 font_size = 40
 
 [node name="DepartPad" type="Node3D" parent="Departure"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 8.725)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 11.725)
 
 [node name="Pad" type="CSGBox3D" parent="Departure/DepartPad"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.015, 0)
@@ -2092,7 +2092,7 @@ size = Vector3(1.1, 0.035, 0.16)
 material = SubResource("Mat_yellow")
 
 [node name="DepartArea" type="Area3D" parent="Departure"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 8.725)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.24, 5.125)
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="Departure/DepartArea"]
 shape = SubResource("Shape_depart")
@@ -2584,8 +2584,8 @@ size = Vector3(10, 0.4, 10)
 material = SubResource("Mat_floor")
 
 [node name="Ceiling" type="CSGBox3D" parent="Annex"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 5.2, 15)
-size = Vector3(36.35, 0.25, 10)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 12, 5.2, 15)
+size = Vector3(50.35, 0.25, 10)
 material = SubResource("Mat_ceiling")
 
 [node name="ShowerWallA" type="CSGBox3D" parent="Annex/Hub"]
@@ -2631,9 +2631,9 @@ size = Vector3(10.175, 5, 0.35)
 material = SubResource("Mat_wall")
 
 [node name="BayWallRight" type="CSGBox3D" parent="Annex/Hub"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 13.0875, 2.5, 20)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 20.0875, 2.5, 20)
 use_collision = true
-size = Vector3(20.175, 5, 0.35)
+size = Vector3(34.175, 5, 0.35)
 material = SubResource("Mat_wall")
 
 [node name="BayLintel" type="CSGBox3D" parent="Annex/Hub"]
@@ -2948,501 +2948,6 @@ height = 0.1
 sides = 10
 material = SubResource("Mat_bulb")
 
-[node name="ShootingRange" type="Node3D" parent="Annex"]
-
-[node name="Floor" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 14, -0.2, 15)
-use_collision = true
-size = Vector3(18, 0.4, 10)
-material = SubResource("Mat_floor")
-
-[node name="FrontWall" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 18.0875, 2.5, 10)
-use_collision = true
-size = Vector3(10.175, 5, 0.35)
-material = SubResource("Mat_wall")
-
-[node name="OuterWall" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 23, 2.5, 15)
-use_collision = true
-size = Vector3(0.35, 5, 10.35)
-material = SubResource("Mat_wall")
-
-[node name="Counter" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 9.5, 0.5, 15)
-use_collision = true
-size = Vector3(0.7, 1, 9.65)
-material = SubResource("Mat_wood")
-
-[node name="CounterTop" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 9.5, 1.03, 15)
-size = Vector3(0.9, 0.06, 9.65)
-material = SubResource("Mat_wood_dark")
-
-[node name="Divider1" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.9, 1.4, 13.35)
-use_collision = true
-size = Vector3(2, 2.8, 0.1)
-material = SubResource("Mat_locker")
-
-[node name="DividerCap1" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.9, 2.83, 13.35)
-size = Vector3(2.1, 0.06, 0.18)
-material = SubResource("Mat_locker_cap")
-
-[node name="Divider2" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.9, 1.4, 16.65)
-use_collision = true
-size = Vector3(2, 2.8, 0.1)
-material = SubResource("Mat_locker")
-
-[node name="DividerCap2" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.9, 2.83, 16.65)
-size = Vector3(2.1, 0.06, 0.18)
-material = SubResource("Mat_locker_cap")
-
-[node name="LaneLine1" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 16.2, 0.012, 13.35)
-size = Vector3(12.6, 0.024, 0.1)
-material = SubResource("Mat_yellow")
-
-[node name="LaneLine2" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 16.2, 0.012, 16.65)
-size = Vector3(12.6, 0.024, 0.1)
-material = SubResource("Mat_yellow")
-
-[node name="Backstop" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 22.7, 2, 15)
-size = Vector3(0.25, 4, 9.6)
-material = SubResource("Mat_wood_dark")
-
-[node name="BackstopBase" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 22.3, 0.25, 15)
-size = Vector3(0.6, 0.5, 9.6)
-material = SubResource("Mat_rug")
-
-[node name="Target1" type="Node3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 15, 0, 11.7)
-
-[node name="Foot" type="CSGBox3D" parent="Annex/ShootingRange/Target1"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 0)
-size = Vector3(0.5, 0.1, 0.9)
-material = SubResource("Mat_metal_dark")
-
-[node name="Post" type="CSGBox3D" parent="Annex/ShootingRange/Target1"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.8, 0)
-use_collision = true
-size = Vector3(0.1, 1.5, 0.1)
-material = SubResource("Mat_metal_dark")
-
-[node name="Ring1" type="CSGCylinder3D" parent="Annex/ShootingRange/Target1"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 0, 1.75, 0)
-radius = 0.55
-height = 0.06
-sides = 20
-material = SubResource("Mat_white")
-
-[node name="Ring2" type="CSGCylinder3D" parent="Annex/ShootingRange/Target1"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.02, 1.75, 0)
-radius = 0.374
-height = 0.06
-sides = 20
-material = SubResource("Mat_red")
-
-[node name="Ring3" type="CSGCylinder3D" parent="Annex/ShootingRange/Target1"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.04, 1.75, 0)
-radius = 0.209
-height = 0.06
-sides = 16
-material = SubResource("Mat_white")
-
-[node name="Bull" type="CSGCylinder3D" parent="Annex/ShootingRange/Target1"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.06, 1.75, 0)
-radius = 0.0825
-height = 0.06
-sides = 12
-material = SubResource("Mat_red")
-
-[node name="Target2" type="Node3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 20.6, 0, 11.7)
-
-[node name="Foot" type="CSGBox3D" parent="Annex/ShootingRange/Target2"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 0)
-size = Vector3(0.5, 0.1, 0.9)
-material = SubResource("Mat_metal_dark")
-
-[node name="Post" type="CSGBox3D" parent="Annex/ShootingRange/Target2"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.8, 0)
-use_collision = true
-size = Vector3(0.1, 1.5, 0.1)
-material = SubResource("Mat_metal_dark")
-
-[node name="Ring1" type="CSGCylinder3D" parent="Annex/ShootingRange/Target2"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 0, 1.75, 0)
-radius = 0.7
-height = 0.06
-sides = 20
-material = SubResource("Mat_white")
-
-[node name="Ring2" type="CSGCylinder3D" parent="Annex/ShootingRange/Target2"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.02, 1.75, 0)
-radius = 0.476
-height = 0.06
-sides = 20
-material = SubResource("Mat_red")
-
-[node name="Ring3" type="CSGCylinder3D" parent="Annex/ShootingRange/Target2"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.04, 1.75, 0)
-radius = 0.266
-height = 0.06
-sides = 16
-material = SubResource("Mat_white")
-
-[node name="Bull" type="CSGCylinder3D" parent="Annex/ShootingRange/Target2"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.06, 1.75, 0)
-radius = 0.105
-height = 0.06
-sides = 12
-material = SubResource("Mat_red")
-
-[node name="Target3" type="Node3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 16, 0, 15)
-
-[node name="Foot" type="CSGBox3D" parent="Annex/ShootingRange/Target3"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 0)
-size = Vector3(0.5, 0.1, 0.9)
-material = SubResource("Mat_metal_dark")
-
-[node name="Post" type="CSGBox3D" parent="Annex/ShootingRange/Target3"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.8, 0)
-use_collision = true
-size = Vector3(0.1, 1.5, 0.1)
-material = SubResource("Mat_metal_dark")
-
-[node name="Ring1" type="CSGCylinder3D" parent="Annex/ShootingRange/Target3"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 0, 1.75, 0)
-radius = 0.55
-height = 0.06
-sides = 20
-material = SubResource("Mat_white")
-
-[node name="Ring2" type="CSGCylinder3D" parent="Annex/ShootingRange/Target3"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.02, 1.75, 0)
-radius = 0.374
-height = 0.06
-sides = 20
-material = SubResource("Mat_red")
-
-[node name="Ring3" type="CSGCylinder3D" parent="Annex/ShootingRange/Target3"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.04, 1.75, 0)
-radius = 0.209
-height = 0.06
-sides = 16
-material = SubResource("Mat_white")
-
-[node name="Bull" type="CSGCylinder3D" parent="Annex/ShootingRange/Target3"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.06, 1.75, 0)
-radius = 0.0825
-height = 0.06
-sides = 12
-material = SubResource("Mat_red")
-
-[node name="Target4" type="Node3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 20.6, 0, 15)
-
-[node name="Foot" type="CSGBox3D" parent="Annex/ShootingRange/Target4"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 0)
-size = Vector3(0.5, 0.1, 0.9)
-material = SubResource("Mat_metal_dark")
-
-[node name="Post" type="CSGBox3D" parent="Annex/ShootingRange/Target4"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.8, 0)
-use_collision = true
-size = Vector3(0.1, 1.5, 0.1)
-material = SubResource("Mat_metal_dark")
-
-[node name="Ring1" type="CSGCylinder3D" parent="Annex/ShootingRange/Target4"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 0, 1.75, 0)
-radius = 0.7
-height = 0.06
-sides = 20
-material = SubResource("Mat_white")
-
-[node name="Ring2" type="CSGCylinder3D" parent="Annex/ShootingRange/Target4"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.02, 1.75, 0)
-radius = 0.476
-height = 0.06
-sides = 20
-material = SubResource("Mat_red")
-
-[node name="Ring3" type="CSGCylinder3D" parent="Annex/ShootingRange/Target4"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.04, 1.75, 0)
-radius = 0.266
-height = 0.06
-sides = 16
-material = SubResource("Mat_white")
-
-[node name="Bull" type="CSGCylinder3D" parent="Annex/ShootingRange/Target4"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.06, 1.75, 0)
-radius = 0.105
-height = 0.06
-sides = 12
-material = SubResource("Mat_red")
-
-[node name="Target5" type="Node3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 17, 0, 18.3)
-
-[node name="Foot" type="CSGBox3D" parent="Annex/ShootingRange/Target5"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 0)
-size = Vector3(0.5, 0.1, 0.9)
-material = SubResource("Mat_metal_dark")
-
-[node name="Post" type="CSGBox3D" parent="Annex/ShootingRange/Target5"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.8, 0)
-use_collision = true
-size = Vector3(0.1, 1.5, 0.1)
-material = SubResource("Mat_metal_dark")
-
-[node name="Ring1" type="CSGCylinder3D" parent="Annex/ShootingRange/Target5"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 0, 1.75, 0)
-radius = 0.55
-height = 0.06
-sides = 20
-material = SubResource("Mat_white")
-
-[node name="Ring2" type="CSGCylinder3D" parent="Annex/ShootingRange/Target5"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.02, 1.75, 0)
-radius = 0.374
-height = 0.06
-sides = 20
-material = SubResource("Mat_red")
-
-[node name="Ring3" type="CSGCylinder3D" parent="Annex/ShootingRange/Target5"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.04, 1.75, 0)
-radius = 0.209
-height = 0.06
-sides = 16
-material = SubResource("Mat_white")
-
-[node name="Bull" type="CSGCylinder3D" parent="Annex/ShootingRange/Target5"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.06, 1.75, 0)
-radius = 0.0825
-height = 0.06
-sides = 12
-material = SubResource("Mat_red")
-
-[node name="Target6" type="Node3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 20.6, 0, 18.3)
-
-[node name="Foot" type="CSGBox3D" parent="Annex/ShootingRange/Target6"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 0)
-size = Vector3(0.5, 0.1, 0.9)
-material = SubResource("Mat_metal_dark")
-
-[node name="Post" type="CSGBox3D" parent="Annex/ShootingRange/Target6"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.8, 0)
-use_collision = true
-size = Vector3(0.1, 1.5, 0.1)
-material = SubResource("Mat_metal_dark")
-
-[node name="Ring1" type="CSGCylinder3D" parent="Annex/ShootingRange/Target6"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 0, 1.75, 0)
-radius = 0.7
-height = 0.06
-sides = 20
-material = SubResource("Mat_white")
-
-[node name="Ring2" type="CSGCylinder3D" parent="Annex/ShootingRange/Target6"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.02, 1.75, 0)
-radius = 0.476
-height = 0.06
-sides = 20
-material = SubResource("Mat_red")
-
-[node name="Ring3" type="CSGCylinder3D" parent="Annex/ShootingRange/Target6"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.04, 1.75, 0)
-radius = 0.266
-height = 0.06
-sides = 16
-material = SubResource("Mat_white")
-
-[node name="Bull" type="CSGCylinder3D" parent="Annex/ShootingRange/Target6"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -0.06, 1.75, 0)
-radius = 0.105
-height = 0.06
-sides = 12
-material = SubResource("Mat_red")
-
-[node name="LaneTag1" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 9.5, 3.3, 11.7)
-size = Vector3(0.08, 0.5, 0.9)
-material = SubResource("Mat_plate")
-
-[node name="LaneNumber1" type="Label3D" parent="Annex/ShootingRange"]
-transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 9.45, 3.3, 11.7)
-pixel_size = 0.012
-modulate = Color(1, 0.96, 0.86, 1)
-text = "1"
-font_size = 44
-
-[node name="LaneHanger1" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 9.5, 4.3, 11.7)
-size = Vector3(0.05, 1.55, 0.05)
-material = SubResource("Mat_metal_dark")
-
-[node name="LaneTag2" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 9.5, 3.3, 15)
-size = Vector3(0.08, 0.5, 0.9)
-material = SubResource("Mat_plate")
-
-[node name="LaneNumber2" type="Label3D" parent="Annex/ShootingRange"]
-transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 9.45, 3.3, 15)
-pixel_size = 0.012
-modulate = Color(1, 0.96, 0.86, 1)
-text = "2"
-font_size = 44
-
-[node name="LaneHanger2" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 9.5, 4.3, 15)
-size = Vector3(0.05, 1.55, 0.05)
-material = SubResource("Mat_metal_dark")
-
-[node name="LaneTag3" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 9.5, 3.3, 18.3)
-size = Vector3(0.08, 0.5, 0.9)
-material = SubResource("Mat_plate")
-
-[node name="LaneNumber3" type="Label3D" parent="Annex/ShootingRange"]
-transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 9.45, 3.3, 18.3)
-pixel_size = 0.012
-modulate = Color(1, 0.96, 0.86, 1)
-text = "3"
-font_size = 44
-
-[node name="LaneHanger3" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 9.5, 4.3, 18.3)
-size = Vector3(0.05, 1.55, 0.05)
-material = SubResource("Mat_metal_dark")
-
-[node name="RackShelf" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.6, 1, 10.45)
-use_collision = true
-size = Vector3(2.2, 0.08, 0.5)
-material = SubResource("Mat_wood")
-
-[node name="RackBack" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.6, 1.3, 10.22)
-size = Vector3(2.3, 1.2, 0.06)
-material = SubResource("Mat_wood_dark")
-
-[node name="RackLegs" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.6, 0.48, 10.45)
-size = Vector3(2, 0.96, 0.4)
-material = SubResource("Mat_wood_dark")
-
-[node name="RackBottle1" type="CSGCylinder3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.9, 1.3, 10.45)
-radius = 0.14
-height = 0.5
-sides = 10
-material = SubResource("Mat_red")
-
-[node name="RackCap1" type="CSGCylinder3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.9, 1.63, 10.45)
-radius = 0.07
-height = 0.16
-sides = 8
-cone = true
-material = SubResource("Mat_white")
-
-[node name="RackBottle2" type="CSGCylinder3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.6, 1.3, 10.45)
-radius = 0.14
-height = 0.5
-sides = 10
-material = SubResource("Mat_yellow")
-
-[node name="RackCap2" type="CSGCylinder3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.6, 1.63, 10.45)
-radius = 0.07
-height = 0.16
-sides = 8
-cone = true
-material = SubResource("Mat_white")
-
-[node name="RackBottle3" type="CSGCylinder3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.3, 1.3, 10.45)
-radius = 0.14
-height = 0.5
-sides = 10
-material = SubResource("Mat_cream")
-
-[node name="RackCap3" type="CSGCylinder3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.3, 1.63, 10.45)
-radius = 0.07
-height = 0.16
-sides = 8
-cone = true
-material = SubResource("Mat_white")
-
-[node name="LampA" type="Node3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 0, 15)
-
-[node name="Light" type="OmniLight3D" parent="Annex/ShootingRange/LampA"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.1, 0)
-light_color = Color(1, 0.905882, 0.686275, 1)
-light_energy = 2
-omni_range = 11
-
-[node name="Cord" type="CSGBox3D" parent="Annex/ShootingRange/LampA"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.85, 0)
-size = Vector3(0.04, 0.45, 0.04)
-material = SubResource("Mat_black")
-
-[node name="Shade" type="CSGCylinder3D" parent="Annex/ShootingRange/LampA"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.5, 0)
-radius = 0.5
-height = 0.32
-sides = 16
-cone = true
-material = SubResource("Mat_green_dark")
-
-[node name="Bulb" type="CSGCylinder3D" parent="Annex/ShootingRange/LampA"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.36, 0)
-radius = 0.12
-height = 0.1
-sides = 10
-material = SubResource("Mat_bulb")
-
-[node name="LampB" type="Node3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 16, 0, 15)
-
-[node name="Light" type="OmniLight3D" parent="Annex/ShootingRange/LampB"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.1, 0)
-light_color = Color(1, 0.905882, 0.686275, 1)
-light_energy = 2.2
-omni_range = 13
-
-[node name="Cord" type="CSGBox3D" parent="Annex/ShootingRange/LampB"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.85, 0)
-size = Vector3(0.04, 0.45, 0.04)
-material = SubResource("Mat_black")
-
-[node name="Shade" type="CSGCylinder3D" parent="Annex/ShootingRange/LampB"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.5, 0)
-radius = 0.5
-height = 0.32
-sides = 16
-cone = true
-material = SubResource("Mat_green_dark")
-
-[node name="Bulb" type="CSGCylinder3D" parent="Annex/ShootingRange/LampB"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.36, 0)
-radius = 0.12
-height = 0.1
-sides = 10
-material = SubResource("Mat_bulb")
-
 [node name="TruckBay" type="Node3D" parent="Annex"]
 
 [node name="Floor" type="CSGBox3D" parent="Annex/TruckBay"]
@@ -3655,210 +3160,502 @@ sides = 10
 material = SubResource("Mat_bulb")
 
 [node name="SignRodLeft" type="CSGBox3D" parent="Annex/TruckBay"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.9, 4.83, 28.6)
-size = Vector3(0.05, 0.5, 0.05)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.9, 4.99, 28.6)
+size = Vector3(0.05, 0.18, 0.05)
 material = SubResource("Mat_metal_dark")
 
 [node name="SignRodRight" type="CSGBox3D" parent="Annex/TruckBay"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.9, 4.83, 28.6)
-size = Vector3(0.05, 0.5, 0.05)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.9, 4.99, 28.6)
+size = Vector3(0.05, 0.18, 0.05)
 material = SubResource("Mat_metal_dark")
 
 [node name="Truck" type="Node3D" parent="Annex/TruckBay"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 31.9)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 31.7)
 
 [node name="Chassis" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.95, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.95, -0.1)
 use_collision = true
-size = Vector3(2.4, 0.3, 6)
+size = Vector3(2.6, 0.3, 6.6)
 material = SubResource("Mat_metal_dark")
 
 [node name="BedFloor" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.17, -1)
 use_collision = true
-size = Vector3(3, 0.14, 4)
+size = Vector3(3.6, 0.14, 4.6)
 material = SubResource("Mat_wood")
 
-[node name="BedSideLeft" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.44, 1.6, -1)
-use_collision = true
-size = Vector3(0.12, 0.72, 4)
-material = SubResource("Mat_green_dark")
-
-[node name="BedSideRight" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.44, 1.6, -1)
-use_collision = true
-size = Vector3(0.12, 0.72, 4)
-material = SubResource("Mat_green_dark")
-
 [node name="CoverLeft" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.45, 2.65, -1)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.74, 2.74, -1)
 use_collision = true
-size = Vector3(0.1, 1.4, 4)
+size = Vector3(0.12, 3, 4.6)
 material = SubResource("Mat_green")
 
 [node name="CoverRight" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.45, 2.65, -1)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.74, 2.74, -1)
 use_collision = true
-size = Vector3(0.1, 1.4, 4)
+size = Vector3(0.12, 3, 4.6)
 material = SubResource("Mat_green")
 
+[node name="BedSideLeft" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.75, 1.6, -1)
+size = Vector3(0.15, 0.72, 4.62)
+material = SubResource("Mat_green_dark")
+
+[node name="BedSideRight" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.75, 1.6, -1)
+size = Vector3(0.15, 0.72, 4.62)
+material = SubResource("Mat_green_dark")
+
 [node name="CoverTop" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3.4, -1)
-size = Vector3(3, 0.1, 4)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.3, -1)
+use_collision = true
+size = Vector3(3.6, 0.12, 4.6)
 material = SubResource("Mat_green")
 
 [node name="CoverFront" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.3, 0.95)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.74, 1.24)
 use_collision = true
-size = Vector3(2.8, 2.2, 0.1)
+size = Vector3(3.36, 3, 0.12)
 material = SubResource("Mat_green")
 
 [node name="CoverRib1" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3.46, -2.6)
-size = Vector3(3.06, 0.05, 0.12)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.385, -2.9)
+size = Vector3(3.66, 0.05, 0.12)
 material = SubResource("Mat_green_dark")
 
 [node name="CoverRib2" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3.46, -1)
-size = Vector3(3.06, 0.05, 0.12)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.385, -1)
+size = Vector3(3.66, 0.05, 0.12)
 material = SubResource("Mat_green_dark")
 
 [node name="CoverRib3" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3.46, 0.6)
-size = Vector3(3.06, 0.05, 0.12)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.385, 0.9)
+size = Vector3(3.66, 0.05, 0.12)
 material = SubResource("Mat_green_dark")
 
-[node name="Tailgate" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.78, -3.06)
+[node name="Ramp" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
+transform = Transform3D(1, 0, 0, 0, 0.9241, 0.382, 0, -0.382, 0.9241, 0, 0.5646, -4.7771)
 use_collision = true
-size = Vector3(3, 0.72, 0.1)
-material = SubResource("Mat_green_dark")
+size = Vector3(2.8, 0.12, 3.2461)
+material = SubResource("Mat_metal")
 
-[node name="TailgateStep" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.38, -3.3)
-use_collision = true
-size = Vector3(2.2, 0.1, 0.45)
-material = SubResource("Mat_metal_dark")
+[node name="RampStripeLeft" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
+transform = Transform3D(1, 0, 0, 0, 0.9241, 0.382, 0, -0.382, 0.9241, -1.32, 0.63, -4.8)
+size = Vector3(0.12, 0.02, 3.2461)
+material = SubResource("Mat_yellow")
 
-[node name="BedBenchLeft" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.05, 1.5, -1)
-size = Vector3(0.6, 0.1, 3.6)
-material = SubResource("Mat_wood_light")
+[node name="RampStripeRight" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
+transform = Transform3D(1, 0, 0, 0, 0.9241, 0.382, 0, -0.382, 0.9241, 1.32, 0.63, -4.8)
+size = Vector3(0.12, 0.02, 3.2461)
+material = SubResource("Mat_yellow")
 
-[node name="BedBenchRight" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.05, 1.5, -1)
-size = Vector3(0.6, 0.1, 3.6)
-material = SubResource("Mat_wood_light")
+[node name="BedEdge" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.245, -3.22)
+size = Vector3(3.36, 0.02, 0.16)
+material = SubResource("Mat_yellow")
 
 [node name="Cab" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 2.1)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.3, 2.4)
 use_collision = true
-size = Vector3(2.8, 2, 1.8)
+size = Vector3(3, 2.6, 1.8)
 material = SubResource("Mat_green")
 
 [node name="CabRoof" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3.04, 2.1)
-size = Vector3(2.9, 0.08, 1.9)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3.64, 2.4)
+size = Vector3(3.1, 0.08, 1.9)
 material = SubResource("Mat_green_dark")
 
 [node name="Windshield" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.45, 3.01)
-size = Vector3(2.4, 0.8, 0.04)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.9, 3.31)
+size = Vector3(2.6, 0.9, 0.04)
 material = SubResource("Mat_glass")
 
 [node name="WindowLeft" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.41, 2.45, 2.2)
-size = Vector3(0.04, 0.7, 1.1)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.51, 2.9, 2.5)
+size = Vector3(0.04, 0.8, 1.1)
 material = SubResource("Mat_glass")
 
 [node name="WindowRight" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.41, 2.45, 2.2)
-size = Vector3(0.04, 0.7, 1.1)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.51, 2.9, 2.5)
+size = Vector3(0.04, 0.8, 1.1)
 material = SubResource("Mat_glass")
 
 [node name="Grille" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 3.01)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, 3.31)
 size = Vector3(1.4, 0.5, 0.04)
 material = SubResource("Mat_metal_dark")
 
 [node name="Bumper" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 3.1)
-size = Vector3(2.9, 0.3, 0.2)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 3.4)
+size = Vector3(3.1, 0.3, 0.2)
 material = SubResource("Mat_metal")
 
 [node name="HeadlightLeft" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.05, 1.5, 3.02)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.1, 1.6, 3.32)
 size = Vector3(0.36, 0.3, 0.05)
 material = SubResource("Mat_bulb")
 
 [node name="HeadlightRight" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.05, 1.5, 3.02)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.1, 1.6, 3.32)
 size = Vector3(0.36, 0.3, 0.05)
 material = SubResource("Mat_bulb")
 
 [node name="TailLightLeft" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.3, 1.3, -3.02)
-size = Vector3(0.24, 0.2, 0.05)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.74, 1.6, -3.31)
+size = Vector3(0.14, 0.4, 0.05)
 material = SubResource("Mat_lamp_red")
 
 [node name="TailLightRight" type="CSGBox3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.3, 1.3, -3.02)
-size = Vector3(0.24, 0.2, 0.05)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.74, 1.6, -3.31)
+size = Vector3(0.14, 0.4, 0.05)
 material = SubResource("Mat_lamp_red")
 
 [node name="WheelFL" type="CSGCylinder3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -1.3, 0.55, 2)
+transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -1.45, 0.55, 2.2)
 radius = 0.55
 height = 0.42
 sides = 14
 material = SubResource("Mat_black")
 
 [node name="HubFL" type="CSGCylinder3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -1.521, 0.55, 2)
+transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -1.6675, 0.55, 2.2)
 radius = 0.22
 height = 0.06
 sides = 10
 material = SubResource("Mat_metal")
 
 [node name="WheelFR" type="CSGCylinder3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 1.3, 0.55, 2)
+transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 1.45, 0.55, 2.2)
 radius = 0.55
 height = 0.42
 sides = 14
 material = SubResource("Mat_black")
 
 [node name="HubFR" type="CSGCylinder3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 1.521, 0.55, 2)
+transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 1.6675, 0.55, 2.2)
 radius = 0.22
 height = 0.06
 sides = 10
 material = SubResource("Mat_metal")
 
 [node name="WheelRL" type="CSGCylinder3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -1.3, 0.55, -1.8)
+transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -1.45, 0.55, -1.9)
 radius = 0.55
 height = 0.42
 sides = 14
 material = SubResource("Mat_black")
 
 [node name="HubRL" type="CSGCylinder3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -1.521, 0.55, -1.8)
+transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, -1.6675, 0.55, -1.9)
 radius = 0.22
 height = 0.06
 sides = 10
 material = SubResource("Mat_metal")
 
 [node name="WheelRR" type="CSGCylinder3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 1.3, 0.55, -1.8)
+transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 1.45, 0.55, -1.9)
 radius = 0.55
 height = 0.42
 sides = 14
 material = SubResource("Mat_black")
 
 [node name="HubRR" type="CSGCylinder3D" parent="Annex/TruckBay/Truck"]
-transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 1.521, 0.55, -1.8)
+transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 1.6675, 0.55, -1.9)
 radius = 0.22
 height = 0.06
 sides = 10
 material = SubResource("Mat_metal")
+
+[node name="ShootingRange" type="Node3D" parent="Annex"]
+
+[node name="Floor" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 21, -0.2, 15)
+use_collision = true
+size = Vector3(32, 0.4, 10)
+material = SubResource("Mat_floor")
+
+[node name="FrontWall" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 25.0875, 2.5, 10)
+use_collision = true
+size = Vector3(24.175, 5, 0.35)
+material = SubResource("Mat_wall")
+
+[node name="OuterWall" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 37, 2.5, 15)
+use_collision = true
+size = Vector3(0.35, 5, 10.35)
+material = SubResource("Mat_wall")
+
+[node name="RackShelf" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.2, 1, 10.62)
+use_collision = true
+size = Vector3(3.2, 0.08, 0.5)
+material = SubResource("Mat_wood")
+
+[node name="RackLegs" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.2, 0.48, 10.62)
+size = Vector3(3, 0.96, 0.4)
+material = SubResource("Mat_wood_dark")
+
+[node name="RackBack" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.2, 1.55, 10.33)
+size = Vector3(3.3, 1.9, 0.06)
+material = SubResource("Mat_wood_dark")
+
+[node name="RackBottle1" type="CSGCylinder3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.2, 1.34, 10.6)
+radius = 0.16
+height = 0.6
+sides = 12
+material = SubResource("Mat_cream")
+
+[node name="RackCap1" type="CSGCylinder3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.2, 1.74, 10.6)
+radius = 0.08
+height = 0.2
+sides = 8
+cone = true
+material = SubResource("Mat_white")
+
+[node name="RackBottle2" type="CSGCylinder3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.2, 1.34, 10.6)
+radius = 0.16
+height = 0.6
+sides = 12
+material = SubResource("Mat_yellow")
+
+[node name="RackCap2" type="CSGCylinder3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.2, 1.74, 10.6)
+radius = 0.08
+height = 0.2
+sides = 8
+cone = true
+material = SubResource("Mat_white")
+
+[node name="RackBottle3" type="CSGCylinder3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.2, 1.34, 10.6)
+radius = 0.16
+height = 0.6
+sides = 12
+material = SubResource("Mat_red")
+
+[node name="RackCap3" type="CSGCylinder3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.2, 1.74, 10.6)
+radius = 0.08
+height = 0.2
+sides = 8
+cone = true
+material = SubResource("Mat_white")
+
+[node name="RackSignPlate" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.2, 2.85, 10.33)
+size = Vector3(2.6, 0.5, 0.05)
+material = SubResource("Mat_plate")
+
+[node name="RackSign" type="Label3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.2, 2.85, 10.37)
+pixel_size = 0.012
+modulate = Color(1, 0.96, 0.86, 1)
+text = "소스 진열대"
+font_size = 34
+
+[node name="PartsTableTop" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.5, 0.95, 19.4)
+use_collision = true
+size = Vector3(6.4, 0.08, 0.6)
+material = SubResource("Mat_wood")
+
+[node name="PartsTableBody" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.5, 0.47, 19.42)
+size = Vector3(6.2, 0.94, 0.5)
+material = SubResource("Mat_wood_dark")
+
+[node name="PartsTableBack" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.5, 1.55, 19.67)
+size = Vector3(6.5, 1.9, 0.06)
+material = SubResource("Mat_wood_dark")
+
+[node name="PartsMat1" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.95, 0.995, 19.4)
+size = Vector3(0.6, 0.012, 0.44)
+material = SubResource("Mat_locker_cap")
+
+[node name="PartsMat2" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.8, 0.995, 19.4)
+size = Vector3(0.6, 0.012, 0.44)
+material = SubResource("Mat_locker_cap")
+
+[node name="PartsMat3" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.65, 0.995, 19.4)
+size = Vector3(0.6, 0.012, 0.44)
+material = SubResource("Mat_locker_cap")
+
+[node name="PartsMat4" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.5, 0.995, 19.4)
+size = Vector3(0.6, 0.012, 0.44)
+material = SubResource("Mat_locker_cap")
+
+[node name="PartsMat5" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 9.35, 0.995, 19.4)
+size = Vector3(0.6, 0.012, 0.44)
+material = SubResource("Mat_locker_cap")
+
+[node name="PartsMat6" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.2, 0.995, 19.4)
+size = Vector3(0.6, 0.012, 0.44)
+material = SubResource("Mat_locker_cap")
+
+[node name="PartsMat7" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 11.05, 0.995, 19.4)
+size = Vector3(0.6, 0.012, 0.44)
+material = SubResource("Mat_locker_cap")
+
+[node name="PartsSignPlate" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.5, 2.85, 19.67)
+size = Vector3(2.6, 0.5, 0.05)
+material = SubResource("Mat_plate")
+
+[node name="PartsSign" type="Label3D" parent="Annex/ShootingRange"]
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 8.5, 2.85, 19.63)
+pixel_size = 0.012
+modulate = Color(1, 0.96, 0.86, 1)
+text = "파츠 선택대"
+font_size = 34
+
+[node name="FiringLineBoard" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 12, 4.3, 15)
+size = Vector3(0.08, 0.5, 3)
+material = SubResource("Mat_plate")
+
+[node name="FiringLineLabel" type="Label3D" parent="Annex/ShootingRange"]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 11.95, 4.3, 15)
+pixel_size = 0.012
+modulate = Color(1, 0.96, 0.86, 1)
+text = "사 선"
+font_size = 40
+
+[node name="FiringLineRodA" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 12, 4.82, 13.8)
+size = Vector3(0.05, 0.52, 0.05)
+material = SubResource("Mat_metal_dark")
+
+[node name="FiringLineRodB" type="CSGBox3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 12, 4.82, 16.2)
+size = Vector3(0.05, 0.52, 0.05)
+material = SubResource("Mat_metal_dark")
+
+[node name="Lamp1" type="Node3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 9, 0, 15)
+
+[node name="Light" type="OmniLight3D" parent="Annex/ShootingRange/Lamp1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.1, 0)
+light_color = Color(1, 0.905882, 0.686275, 1)
+light_energy = 2.2
+omni_range = 13
+
+[node name="Cord" type="CSGBox3D" parent="Annex/ShootingRange/Lamp1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.85, 0)
+size = Vector3(0.04, 0.45, 0.04)
+material = SubResource("Mat_black")
+
+[node name="Shade" type="CSGCylinder3D" parent="Annex/ShootingRange/Lamp1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.5, 0)
+radius = 0.5
+height = 0.32
+sides = 16
+cone = true
+material = SubResource("Mat_green_dark")
+
+[node name="Bulb" type="CSGCylinder3D" parent="Annex/ShootingRange/Lamp1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.36, 0)
+radius = 0.12
+height = 0.1
+sides = 10
+material = SubResource("Mat_bulb")
+
+[node name="Lamp2" type="Node3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 17, 0, 15)
+
+[node name="Light" type="OmniLight3D" parent="Annex/ShootingRange/Lamp2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.1, 0)
+light_color = Color(1, 0.905882, 0.686275, 1)
+light_energy = 2.2
+omni_range = 13
+
+[node name="Cord" type="CSGBox3D" parent="Annex/ShootingRange/Lamp2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.85, 0)
+size = Vector3(0.04, 0.45, 0.04)
+material = SubResource("Mat_black")
+
+[node name="Shade" type="CSGCylinder3D" parent="Annex/ShootingRange/Lamp2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.5, 0)
+radius = 0.5
+height = 0.32
+sides = 16
+cone = true
+material = SubResource("Mat_green_dark")
+
+[node name="Bulb" type="CSGCylinder3D" parent="Annex/ShootingRange/Lamp2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.36, 0)
+radius = 0.12
+height = 0.1
+sides = 10
+material = SubResource("Mat_bulb")
+
+[node name="Lamp3" type="Node3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 25, 0, 15)
+
+[node name="Light" type="OmniLight3D" parent="Annex/ShootingRange/Lamp3"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.1, 0)
+light_color = Color(1, 0.905882, 0.686275, 1)
+light_energy = 2.2
+omni_range = 13
+
+[node name="Cord" type="CSGBox3D" parent="Annex/ShootingRange/Lamp3"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.85, 0)
+size = Vector3(0.04, 0.45, 0.04)
+material = SubResource("Mat_black")
+
+[node name="Shade" type="CSGCylinder3D" parent="Annex/ShootingRange/Lamp3"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.5, 0)
+radius = 0.5
+height = 0.32
+sides = 16
+cone = true
+material = SubResource("Mat_green_dark")
+
+[node name="Bulb" type="CSGCylinder3D" parent="Annex/ShootingRange/Lamp3"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.36, 0)
+radius = 0.12
+height = 0.1
+sides = 10
+material = SubResource("Mat_bulb")
+
+[node name="Lamp4" type="Node3D" parent="Annex/ShootingRange"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 33, 0, 15)
+
+[node name="Light" type="OmniLight3D" parent="Annex/ShootingRange/Lamp4"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.1, 0)
+light_color = Color(1, 0.905882, 0.686275, 1)
+light_energy = 2.2
+omni_range = 13
+
+[node name="Cord" type="CSGBox3D" parent="Annex/ShootingRange/Lamp4"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.85, 0)
+size = Vector3(0.04, 0.45, 0.04)
+material = SubResource("Mat_black")
+
+[node name="Shade" type="CSGCylinder3D" parent="Annex/ShootingRange/Lamp4"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.5, 0)
+radius = 0.5
+height = 0.32
+sides = 16
+cone = true
+material = SubResource("Mat_green_dark")
+
+[node name="Bulb" type="CSGCylinder3D" parent="Annex/ShootingRange/Lamp4"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.36, 0)
+radius = 0.12
+height = 0.1
+sides = 10
+material = SubResource("Mat_bulb")

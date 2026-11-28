@@ -54,7 +54,8 @@ func build(art: TomatinaVillageArt) -> void:
 		world._walls.push_back(body)
 		bodies.push_back(body)
 		positions.push_back(at)
-		var mesh: Mesh = art.victim_mesh_for(placement.model) if art != null else null
+		# 시체마다 피부와 머리색이 다르다. 번호로 정하므로 모든 화면에서 같은 사람이다.
+		var mesh: Mesh = art.victim_mesh_for(placement.model, look_of(index)) if art != null else null
 		if mesh == null:
 			continue
 		var view := MeshInstance3D.new()
@@ -66,6 +67,12 @@ func build(art: TomatinaVillageArt) -> void:
 		view.global_transform = art.placement_transform(placement.model, at, facing,
 			Vector3.ZERO if String(placement.model).begins_with("Fallen") else size)
 		body.attach_view(view)
+
+
+## Which of `TomatinaVillageArt.VICTIM_LOOKS` body `index` wears. Neighbours in
+## the build order never match, and the whole list comes round before repeating.
+static func look_of(index: int) -> int:
+	return posmod(index * 7 + 3, TomatinaVillageArt.VICTIM_LOOKS.size())
 
 
 ## The nearest body within reach of `at` that has not been searched, or -1.
