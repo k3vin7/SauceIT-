@@ -29,6 +29,7 @@ func configure(owner_shooter, owner_world) -> void:
 	var skeleton := get_skeleton()
 	for label in ["Hips", "Spine", "Spine1", "Head", "LeftArm", "LeftForeArm", "LeftHand", "RightArm", "RightForeArm", "RightHand", "LeftUpLeg", "LeftLeg", "LeftFoot", "RightUpLeg", "RightLeg", "RightFoot", "SauceTubeSocket"]:
 		bones[label] = skeleton.find_bone("SauceTubeSocket" if label == "SauceTubeSocket" else "mixamorig_" + label)
+	bones["SauceTubeMuzzle"] = skeleton.find_bone("SauceTubeMuzzle")
 	last_position = shooter.player.global_position
 	initialized = true
 
@@ -70,6 +71,15 @@ func _process_modification() -> void:
 	_rotate("Spine", Vector3(clampf(-local_velocity.z * 0.012, -0.12, 0.12), 0.0, clampf(-local_velocity.x * 0.012, -0.12, 0.12)))
 	_rotate("Spine1", Vector3(sin(clock * 2.1) * 0.012, 0.0, sin(clock * 3.4) * moving * 0.018))
 	_rotate("Head", Vector3(clampf(shooter.aim_pitch, -0.65, 0.65) * 0.45, 0.0, 0.0))
+	var hose_grips: Array[Transform3D] = world.hose_grip_poses(shooter)
+	if shooter.hose_brace > 0.001:
+		var spine: int = bones["Spine"]
+		if spine >= 0:
+			var pose := skeleton.get_bone_global_pose(spine)
+			var shoulder_axis: Vector3 = (skeleton.global_basis.inverse() * body.global_basis.x).normalized()
+			var lean: float = deg_to_rad(-13.0) * shooter.hose_brace + shooter.hose_kick_pitch * 1.12
+			pose.basis = Basis(shoulder_axis, lean) * pose.basis
+			skeleton.set_bone_global_pose(spine, pose)
 	# Move the tube socket and BOTH palm targets together so recoil never breaks grip.
 	var socket: int = bones["SauceTubeSocket"]
 	var displacement: Vector3 = body.global_basis * Vector3(0.0, kick * 0.08 + pressure * 0.035, kick * 0.09 + pressure * 0.025)
@@ -80,6 +90,8 @@ func _process_modification() -> void:
 		displacement += body.global_basis * (Vector3(0.0, 0.22, 0.0) * upright \
 			+ Vector3(0.0, sin(clock * 42.0) * 0.16, 0.0) * shooter.bottle_shake_show)
 	var slot: int = world.selected_item_slot(shooter.peer_id)
+	if slot == 0 and hose_grips.is_empty():
+		displacement += Vector3.UP * 0.14 * (1.0 - upright)
 	if slot != previous_slot:
 		equip_left = 0.3
 		previous_slot = slot
@@ -92,7 +104,30 @@ func _process_modification() -> void:
 			hand_targets[side] = skeleton.global_transform * skeleton.get_bone_global_pose(hand).origin + displacement
 	if socket >= 0:
 		var pose := skeleton.get_bone_global_pose(socket)
+		var muzzle: int = bones["SauceTubeMuzzle"]
+		var grip_local := pose.origin
 		pose.origin += skeleton.global_basis.inverse() * displacement
+		if muzzle >= 0 and slot == 0 and hose_grips.is_empty() and upright < 0.999:
+			var grip := skeleton.global_transform * pose.origin
+			var target: Vector3 = shooter.stream_target
+			if not target.is_finite():
+				target = shooter.aim_pivot.global_position + shooter.attack_direction * world.aim_convergence_distance
+			# A long bottle can be pressed into a nearby player. Pull the grip
+			# and the palms back together before lining up the barrel.
+			var forward: Vector3 = shooter.attack_direction
+			var clearance := (target - grip).dot(forward)
+			var retreat := -forward * clampf(0.25 - clearance, 0.0, 0.65) * (1.0 - upright)
+			pose.origin += skeleton.global_basis.inverse() * retreat
+			grip += retreat
+			var current := skeleton.global_basis * (skeleton.get_bone_global_pose(muzzle).origin - grip_local)
+			var desired := (target - grip).normalized()
+			var turn := Basis.IDENTITY
+			if not current.is_zero_approx() and desired.dot(forward) > 0.05:
+				turn = Basis(Quaternion.IDENTITY.slerp(Quaternion(current.normalized(), desired), 1.0 - upright))
+			var axes := skeleton.global_basis.orthonormalized()
+			for hand_side in hand_targets:
+				hand_targets[hand_side] = grip + turn * ((hand_targets[hand_side] as Vector3) + retreat - grip)
+			pose.basis = axes.transposed() * turn * axes * pose.basis
 		if upright > 0.001:
 			# Tipped about the body's own side-to-side axis, so the nozzle that
 			# pointed ahead points up.
@@ -123,6 +158,8 @@ func _process_modification() -> void:
 		if side == "Right" and reach_left > 0.0:
 			var weight := sin((1.0 - reach_left / 0.48) * PI)
 			target = target.lerp(reach_world, weight)
+		if not hose_grips.is_empty():
+			target = hose_grips[0 if side == "Left" else 1].origin
 		_solve(side + "Arm", side + "ForeArm", side + "Hand", target, body.global_basis * Vector3(-1.0 if side == "Left" else 1.0, -0.3, 0.2))
 	# Preserve the authored stride and adapt its foot endpoints to nearby ground.
 	for side in ["Left", "Right"]:

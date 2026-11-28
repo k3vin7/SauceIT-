@@ -146,10 +146,8 @@ var confusion_left := 0.0
 ## The top speed the ground allowed on the last frame the feet were on it: the
 ## most a jump may carry through the air. See `_physics_process`.
 var _air_carry := 0.0
-## A steady shove on the body, in m/s, added to where the feet want to go
-## rather than to the velocity: the fire hose's thrust is a drift the player
-## can walk against, not a knock. Authority only; set each tick by whatever
-## is pushing, zero when nothing is.
+## Horizontal pressure on the body in m/s, added to the movement target.
+## The host sends it with velocity so the guest predicts the same shove.
 var external_drift := Vector3.ZERO
 ## The jump is taken on the press, not while the key is down, and the press is
 ## found here rather than with Input.is_action_just_pressed: a client's jump
@@ -328,15 +326,16 @@ func apply_charge_impact(direction: Vector3, push_speed: float, lift_speed: floa
 
 
 func paint_mayo(world_position: Vector3, world_normal: Vector3,
-		kind := ContaminationGrid.KIND_MAYO) -> Vector2i:
+		kind := ContaminationGrid.KIND_MAYO, brush := ContaminationGrid.BRUSH_POOL) -> Vector2i:
 	if contamination == null:
 		return Vector2i(-1, -1)
-	return contamination.paint_mayo(world_position, world_normal, kind)
+	return contamination.paint_mayo(world_position, world_normal, kind, brush)
 
 
-func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
+func paint_mayo_cell(cell: Vector2i, kind := ContaminationGrid.KIND_MAYO,
+		brush := ContaminationGrid.BRUSH_POOL) -> void:
 	if contamination != null:
-		contamination.paint_mayo_cell(cell, kind)
+		contamination.paint_mayo_cell(cell, kind, brush)
 
 
 
@@ -634,15 +633,16 @@ func _advance_wipe(delta: float) -> void:
 func apply_network_state(new_position: Vector3, yaw: float, new_velocity: Vector3,
 		new_state: int, timer: float, direction: float, wipe: float,
 		new_health: float, acknowledged := -1, slow := 0.0, snag := 0.0, field_slow := false,
-		charge_effect := 0.0) -> void:
+		charge_effect := 0.0, new_drift := Vector3.ZERO) -> void:
 	# move_and_slide uses the engine's current step. Replaying inside an RPC
 	# callback would use a variable render delta instead of the fixed physics tick.
 	if predict_local and acknowledged >= 0 and not _reconciling:
 		_pending_reconciliation = [new_position, yaw, new_velocity, new_state, timer,
-			direction, wipe, new_health, acknowledged, slow, snag, field_slow, charge_effect]
+			direction, wipe, new_health, acknowledged, slow, snag, field_slow, charge_effect, new_drift]
 		return
 	if predict_local and acknowledged >= 0 and acknowledged < _last_ack:
 		return
+	external_drift = new_drift
 	_charge_confusion_seconds = maxf(-charge_effect, 0.0)
 	confusion_left = maxf(charge_effect, 0.0)
 	if predict_local and acknowledged >= 0:

@@ -36,6 +36,8 @@ uniform float mayo_roughness = 0.34;
 // blend at a stain's edge would cross it an eighth of a cell in rather than
 // half of one, and every boundary on this surface would creep outwards.
 uniform float paint_threshold = 0.00784;
+uniform bool fine_contours = false;
+uniform sampler2D contour_texture : filter_linear, repeat_disable, hint_default_black;
 
 varying vec3 surface_position;
 
@@ -43,8 +45,8 @@ void vertex() {
 	surface_position = VERTEX;
 }
 
-uniform vec4 mustard_tint : source_color = vec4(1.00, 0.86, 0.26, 1.0);
 
+#include "res://scripts/sauce_finish.gdshaderinc"
 #include "res://scripts/sauce_toon.gdshaderinc"
 #include "res://scripts/body_sauce_mask.gdshaderinc"
 #include "res://scripts/ketchup_surface.gdshaderinc"
@@ -58,24 +60,27 @@ void fragment() {
 	float around = atan(surface_position.x, surface_position.z) * (cone_radius / slant);
 	vec2 flat_position = vec2(from_apex * cos(around), from_apex * sin(around));
 	vec2 uv = flat_position / grid_extent + 0.5;
+	vec2 grains = sauce_grain_position(surface_position);
+	vec2 grain_footprint = fwidth(grains);
 	float coverage = texture(mask_texture, uv).r;
-	float painted = step(paint_threshold, coverage);
+	float contour = fine_contours ? stain_contour(contour_texture, uv) : step(paint_threshold, coverage);
 	ALBEDO = clean_color.rgb;
 	ROUGHNESS = clean_roughness;
-	if (painted > 0.5) {
+	if (contour > 0.0) {
 		ivec2 size = textureSize(mask_texture, 0);
-		float kind = mod(sauce_mask_sample(mask_texture, uv, size, false), 4.0);
-		if (kind == 2.0) {
-			vec2 surface = ketchup_surface(mask_texture, uv, size, surface_position, false);
+		int kind = int(sauce_mask_sample(mask_texture, uv, size, false));
+		if (kind == 2) {
+			vec2 surface = fine_contours ? vec2(contour, 0.0) : ketchup_surface(mask_texture, uv, size, surface_position, false);
 			vec3 paste = ketchup_albedo(surface_position, surface, coverage) * KETCHUP_COATING_GAIN;
 			ALBEDO = mix(clean_color.rgb, paste, surface.x);
 			EMISSION = paste * (surface.x * KETCHUP_COATING_EMISSION);
 			ROUGHNESS = mix(clean_roughness, ketchup_roughness(surface.x), surface.x);
 			SPECULAR = mix(0.5, KETCHUP_COATING_SPECULAR, surface.x);
 		} else {
-			vec3 tint = kind == 1.0 ? mustard_tint.rgb : vec3(1.0);
-			ALBEDO = sauce_toon_finish(mayo_color.rgb * tint, coverage, paint_threshold, uv * vec2(size));
-			ROUGHNESS = mayo_roughness;
+			vec3 pigment = sauce_coating_detail(sauce_coating_pigment(kind, mayo_color.rgb), kind, grains, grain_footprint);
+			vec3 coat = (fine_contours ? pigment : sauce_toon_finish(pigment, coverage, paint_threshold, uv * vec2(size)));
+			ALBEDO = mix(clean_color.rgb, coat, contour);
+			ROUGHNESS = mix(clean_roughness, sauce_coating_roughness(kind, mayo_roughness), contour);
 		}
 	}
 	METALLIC = 0.0;

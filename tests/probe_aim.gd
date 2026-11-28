@@ -229,19 +229,21 @@ func _run() -> void:
 				"muzzle is not held right of centre at yaw %.0f pitch %.0f" % [yaw, pitch])
 			_check(muzzle_offset.dot(scene._aim_basis().y) < 0.0,
 				"muzzle is not held below the view axis at yaw %.0f pitch %.0f" % [yaw, pitch])
-			# Launched strand must cross the crosshair point, not run parallel.
+			# The emitted arc crosses the same point the sight ray selects.
 			scene._points.clear()
 			for _i in 60:
 				scene._emit_point()
-			var crosshair_point: Vector3 = pivot + axis * scene.aim_convergence_distance
+			var crosshair_point: Vector3 = scene._stream_aim_target(scene._local)
+			var gravity: float = scene.gravity_acceleration * (scene.extend_speed / scene.emission_speed) ** 2
 			var worst := 0.0
 			for point in scene._points:
-				var to_target: Vector3 = crosshair_point - point.position
-				var along: float = to_target.dot(point.launch_direction)
-				var miss: float = (to_target - point.launch_direction * along).length()
-				worst = maxf(worst, miss)
+				if point.aimed_until <= 0.0:
+					continue
+				var time: float = point.aimed_until - 1.0 / float(Engine.physics_ticks_per_second)
+				var impact: Vector3 = point.position + point.velocity * time + Vector3.DOWN * (gravity * time * time * 0.5)
+				worst = maxf(worst, impact.distance_to(crosshair_point))
 			_check(worst < 0.06,
-				"strand misses the crosshair by %.3f m at yaw %.0f pitch %.0f" % [worst, yaw, pitch])
+				"ballistic sight misses by %.3f m at yaw %.0f pitch %.0f" % [worst, yaw, pitch])
 	scene._points.clear()
 
 	if failures.is_empty():

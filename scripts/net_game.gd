@@ -115,7 +115,7 @@ const AUTH_FULL_PREFIX := "mayo1-full:"
 ## stands there, its keys arriving at a method that throws them away. The tag
 ## rides in the handshake payload so the mismatch is turned away with a reason
 ## before it can become a player.
-const PROTOCOL_VERSION := 29
+const PROTOCOL_VERSION := 36
 const STAGE_INPUT_TIMEOUT := 0.25
 const MOTION_REFRESH_SECONDS := 0.25
 const ENEMY_SNAPSHOT_BATCH_SIZE := 36
@@ -129,6 +129,8 @@ var _inventory_peers := PackedInt32Array()
 var _motion_sent := PackedFloat64Array()
 var _motion_refresh_at := 0.0
 var _enemy_snapshots_by_peer := {}
+var _enemy_snapshot_batches: Dictionary[int, PackedFloat32Array] = {}
+var _enemy_snapshot_scratch := PackedFloat32Array()
 const AUTH_VERSION_PREFIX := "mayo-version:"
 ## How often one address is worth answering. A blocked address can reconnect as
 ## fast as its machine allows, and an answer to each would be a packet out for
@@ -150,7 +152,7 @@ const MAX_CLIENTS := 3
 ## a different fight. The host tosses it and sends the answer; the level rides
 ## along rather than being derived, so nobody has to guess which band a bottle
 ## is in either.
-const STATE_STRIDE := 26
+const STATE_STRIDE := 29
 const STATE_CHARACTER_INDEX := 17
 ## Where one occupant is standing in the truck: x, y, z and the yaw they are
 ## facing. The truck carries no bottle, no health and no aim pitch, so it needs
@@ -338,6 +340,7 @@ var _late_syncing := {}
 func bind(new_world: Node) -> void:
 	if world != new_world:
 		_enemy_snapshots_by_peer.clear()
+		_enemy_snapshot_batches.clear()
 		_tomatina_snapshot_number = 0
 		_tomatina_snapshot_phase = 0
 		_clear_stage_input()
@@ -2146,7 +2149,13 @@ func _send_tomatina_enemy_snapshots(peer_ids: PackedInt32Array) -> void:
 		var staggered := _tomatina_snapshot_number + batch_number
 		var refresh := staggered % ENEMY_SNAPSHOT_REFRESH_PERIOD == 0
 		var far_turn := staggered % ENEMY_SNAPSHOT_FAR_PERIOD == 0
-		var state: PackedFloat32Array = world.enemy_state(start, ENEMY_SNAPSHOT_BATCH_SIZE)
+		world.fill_enemy_state(_enemy_snapshot_scratch, start, ENEMY_SNAPSHOT_BATCH_SIZE)
+		# Most batches hold idle enemies. Keep their last encoded payload for
+		# refreshes, and allocate a new immutable payload only when it differs.
+		var state: PackedFloat32Array = _enemy_snapshot_batches.get(start, PackedFloat32Array())
+		if state != _enemy_snapshot_scratch:
+			state = _enemy_snapshot_scratch.duplicate()
+			_enemy_snapshot_batches[start] = state
 		var recipients := PackedInt32Array()
 		for id in positions:
 			var previous: PackedFloat32Array = _enemy_snapshots_by_peer[id].get(start, PackedFloat32Array())
@@ -2545,7 +2554,8 @@ func _collect_state(ids: PackedInt32Array) -> PackedFloat32Array:
 			float(shooter.player.server_input_sequence), velocity.y,
 			shooter.player.mustard_slow, shooter.player.cheese_snag_left,
 			1.0 if shooter.player.in_mustard else 0.0, shooter.player.charge_effect_state(),
-			shooter.stream_recoil_pitch, shooter.stream_recoil_yaw]))
+			shooter.stream_recoil_pitch, shooter.stream_recoil_yaw, shooter.hose_flow_age,
+			shooter.player.external_drift.x, shooter.player.external_drift.z]))
 	return data
 
 
@@ -2592,7 +2602,8 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 			Vector3(data[index + 4], data[index + 19], data[index + 5]),
 			int(data[index + 8]), data[index + 9], data[index + 10],
 			data[index + 11], data[index + 12], int(data[index + 18]),
-			data[index + 20], data[index + 21], data[index + 22] > 0.5, data[index + 23])
+			data[index + 20], data[index + 21], data[index + 22] > 0.5, data[index + 23],
+			Vector3(data[index + 27], 0.0, data[index + 28]))
 		# The bottle and what its nozzle is doing are the host's, for everyone
 		# including the peer holding it: a client that decided its own would
 		# catch at different moments from the screen next to it.
@@ -2601,6 +2612,7 @@ func _apply_state(ids: PackedInt32Array, data: PackedFloat32Array) -> void:
 		world.apply_bottle_state_code(shooter, clampf(data[index + 15], 0.0, 3.0))
 		shooter.stream_recoil_pitch = data[index + 24]
 		shooter.stream_recoil_yaw = data[index + 25]
+		shooter.hose_flow_age = data[index + 26]
 		# Lobby characters arrive through the reliable roster.
 		if not shooter.is_local:
 			if not lobby_flow:

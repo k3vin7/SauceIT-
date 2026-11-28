@@ -173,8 +173,9 @@ var _rolled_deaths := {}
 var _coins := {}
 var _coin_serial := 0
 var _projectiles: Array[Dictionary] = []
+var _projectile_ray := PhysicsRayQueryParameters3D.new()
+var _close_impact_ribbons: Array[Dictionary] = []
 var _coin_mesh: CylinderMesh
-var _projectile_materials: Array[StandardMaterial3D] = []
 var _free_projectile_ribbons: Array[StreamVisual] = []
 var _projectile_segments: Array = [[]]
 
@@ -184,6 +185,8 @@ const BURST_WIDTH_SCALE := 1.7 * BURST_SIZE_SCALE
 const BURST_WIDTHS := [0.68, 1.0, 0.83, 0.91, 0.62, 0.43, 0.16]
 const PROJECTILE_RIBBON_POOL_LIMIT := 24
 const PROJECTILE_RIBBON_POINTS := 7
+const CLOSE_IMPACT_FLIGHT_TIME := 0.07
+const CLOSE_IMPACT_DRAW_TIME := 0.085
 ## Cross-sections start at the leading edge and taper along the flight path.
 const PROJECTILE_RIBBONS := {
 	Part.BURST: {"length": BURST_DRAW_LENGTH, "width": BURST_WIDTH_SCALE, "bend": 0.30, "sections": BURST_WIDTHS},
@@ -272,12 +275,7 @@ func _ready() -> void:
 	gold.emission = Color("b7761e")
 	gold.emission_energy_multiplier = 0.38
 	_coin_mesh.material = gold
-	for color: Color in world.SAUCE_TINTS:
-		var material := StandardMaterial3D.new()
-		material.albedo_color = color
-		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		material.cull_mode = BaseMaterial3D.CULL_DISABLED
-		_projectile_materials.append(material)
+
 	for i in PROJECTILE_RIBBON_POINTS:
 		_projectile_segments[0].append({"position": Vector3.ZERO, "width_scale": 0.0})
 
@@ -403,6 +401,9 @@ func reset() -> void:
 	for shot in _projectiles:
 		_release_projectile(shot.node)
 	_projectiles.clear()
+	for trace in _close_impact_ribbons:
+		_release_projectile(trace.node)
+	_close_impact_ribbons.clear()
 	_rolled_deaths.clear()
 	var victims = world.get("_victims")
 	if victims != null:
@@ -420,14 +421,15 @@ func show_volley(peer: int, part: int, sauce: int, origin: Vector3, forward: Vec
 		draw_from := Vector3.INF, sweep_from := Vector3.INF) -> void:
 	var profile: Dictionary = PROJECTILES[part]
 	var draw_offset := draw_from - origin if draw_from.is_finite() else Vector3.ZERO
+	var material: ShaderMaterial = world.SAUCE_STREAM_MATERIALS[sauce]
 	var ribbon: StreamVisual
 	if _free_projectile_ribbons.is_empty():
 		ribbon = StreamVisual.new()
-		ribbon.setup(_projectile_materials[sauce], PROJECTILE_RIBBON_POINTS)
+		ribbon.setup(material, PROJECTILE_RIBBON_POINTS)
 		add_child(ribbon)
 	else:
 		ribbon = _free_projectile_ribbons.pop_back()
-		ribbon.set_ribbon_material(_projectile_materials[sauce])
+		ribbon.set_ribbon_material(material)
 	# `head` is the simulated tip. The ribbon follows behind it for display.
 	# The mortar carries real speed in the direction vector. Cannon and sniper
 	# carry a small shake marker instead, so their launch speeds stay constant.
@@ -481,7 +483,58 @@ func _draw_projectile(shot: Dictionary, gravity: float) -> void:
 	ribbon.update_ribbon(_projectile_segments, camera.global_position, -camera.global_basis.z, strand_width)
 
 
+## The first physics sweep can land a shot before an in-flight ribbon is drawn.
+## Retain its render buffer briefly, using the visible mouth and confirmed impact.
+func _hold_close_impact(shot: Dictionary, at: Vector3, normal: Vector3) -> bool:
+	if float(shot.age) >= CLOSE_IMPACT_FLIGHT_TIME:
+		return false
+	var muzzle: Vector3 = shot.origin + shot.draw_offset
+	var touch := at + normal * 0.012
+	if muzzle.distance_squared_to(touch) <= 0.0001:
+		return false
+	var trace := {
+		"node": shot.node, "part": shot.part, "muzzle": muzzle, "contact": touch,
+		"remaining": CLOSE_IMPACT_DRAW_TIME,
+	}
+	_close_impact_ribbons.append(trace)
+	_draw_close_impact(trace)
+	return true
+
+
+func _draw_close_impact(trace: Dictionary) -> void:
+	var profile: Dictionary = PROJECTILE_RIBBONS[trace.part]
+	var sections: Array = profile.sections
+	var segment: Array = _projectile_segments[0]
+	var contact: Vector3 = trace.contact
+	var muzzle: Vector3 = trace.muzzle
+	var fade := smoothstep(0.0, 0.65, float(trace.remaining) / CLOSE_IMPACT_DRAW_TIME)
+	for index in PROJECTILE_RIBBON_POINTS:
+		var progress := float(index) / float(PROJECTILE_RIBBON_POINTS - 1)
+		segment[index].position = contact.lerp(muzzle, progress)
+		segment[index].width_scale = float(sections[index]) * fade
+	var ribbon: StreamVisual = trace.node
+	var camera: Camera3D = world._camera
+	var width: float = world.strand_thickness * float(profile.width) * 0.62
+	ribbon.update_ribbon(_projectile_segments, camera.global_position, -camera.global_basis.z, width)
+
+
 func advance_projectiles(delta: float, authority: bool) -> void:
+	for i in range(_close_impact_ribbons.size() - 1, -1, -1):
+		var trace: Dictionary = _close_impact_ribbons[i]
+		trace.remaining = float(trace.remaining) - delta
+		if trace.remaining <= 0.0:
+			_release_projectile(trace.node)
+			_close_impact_ribbons.remove_at(i)
+		else:
+			_draw_close_impact(trace)
+	if _projectiles.is_empty():
+		return
+	var space := get_world_3d().direct_space_state
+	var query := _projectile_ray
+	query.collide_with_areas = true
+	var self_exclusions: Dictionary[int, Array] = {}
+	var last_peer := -1
+	var last_had_pierces := false
 	for i in range(_projectiles.size() - 1, -1, -1):
 		var shot: Dictionary = _projectiles[i]
 		var profile: Dictionary = PROJECTILES[shot.part]
@@ -494,13 +547,30 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 			to = ballistic_position(shot.origin, shot.launch_velocity, gravity, float(shot.age) + delta)
 		var sweep: Vector3 = shot.get("sweep_from", from)
 		shot.erase("sweep_from")
-		var query := PhysicsRayQueryParameters3D.create(sweep, to)
-		var shooter = world.shooter_for(shot.peer)
-		var skipped: Array = (shot.get("passed", []) as Array).duplicate()
-		if shooter != null:
-			skipped.push_back(shooter.player.get_rid())
-		query.exclude = skipped
-		var hit := get_world_3d().direct_space_state.intersect_ray(query)
+		query.from = sweep
+		query.to = to
+		var peer: int = shot.peer
+		var shooter = world.shooter_for(peer)
+		var has_pierces := shot.has("passed")
+		if peer != last_peer or has_pierces or last_had_pierces:
+			if not self_exclusions.has(peer):
+				var own_body: Array[RID] = []
+				if shooter != null:
+					own_body = world.sauce_self_exclusions(shooter)
+				self_exclusions[peer] = own_body
+			var skipped: Array[RID] = self_exclusions[peer]
+			if has_pierces:
+				skipped = skipped.duplicate()
+				skipped.append_array(shot.passed)
+			query.exclude = skipped
+		last_peer = peer
+		last_had_pierces = has_pierces
+		query.hit_from_inside = float(shot.age) == 0.0
+		var hit: Dictionary = world.cast_sauce_ray(space, query)
+		if not hit.is_empty():
+			shot.impact_direction = to - sweep
+			if (hit.normal as Vector3).is_zero_approx():
+				hit.normal = (sweep - to).normalized()
 		shot.left -= delta
 		if authority:
 			world._cut_cheese_by_stream(from, to if hit.is_empty() else hit.position)
@@ -523,5 +593,6 @@ func advance_projectiles(delta: float, authority: bool) -> void:
 			shot.age = float(shot.age) + delta
 			_draw_projectile(shot, gravity)
 			continue
-		_release_projectile(ribbon)
+		if hit.is_empty() or not _hold_close_impact(shot, hit.position, hit.normal):
+			_release_projectile(ribbon)
 		_projectiles.remove_at(i)

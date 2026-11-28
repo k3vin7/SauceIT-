@@ -16,6 +16,7 @@ const ATTACK_AFTERMATH := ["FallenFront", "FallenBack", "FallenSide", "Collapsed
 const CARDINAL := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
 const CHUNK_SIZE := 42.0
 const HOUSE_CHUNK_WIDTH := 56.0
+const MERGED_FRONTAGE_MODELS := ["UrbanArcade", "UrbanArcadePier", "UrbanUpperShutters", "UrbanUpperCasements"]
 const DISTANT_DETAILS := ["FacadeWindow", "FacadeLantern", "FacadePots",
 	"CrushedTomatoes", "BrokenBoards", "TornBuntingHeap"]
 const WALL_DEPTH := 0.54
@@ -187,10 +188,18 @@ func emit_batches(parent: Node3D) -> void:
 	root.name = "TomatinaVillageArt"
 	parent.add_child(root)
 	var finishes := {}
+	var frontage_surfaces := _frontage_surfaces()
 	for name: String in _batches:
 		var finish := finish_for(name, finishes)
 		for chunk: Vector2i in _batches[name]:
 			var transforms: Array = _batches[name][chunk]
+			if name in MERGED_FRONTAGE_MODELS and frontage_surfaces.has(chunk):
+				var surface := frontage_surfaces[chunk]
+				var origin := Vector3(chunk.x * CHUNK_SIZE, 0.0, chunk.y * CHUNK_SIZE)
+				for placement: Transform3D in transforms:
+					placement.origin -= origin
+					surface.append_from(_meshes[name], 0, placement)
+				continue
 			var multimesh := MultiMesh.new()
 			multimesh.transform_format = MultiMesh.TRANSFORM_3D
 			multimesh.mesh = _meshes[name]
@@ -209,7 +218,16 @@ func emit_batches(parent: Node3D) -> void:
 			root.add_child(batch)
 			if name in ATTACK_AFTERMATH:
 				_aftermath.append(batch)
-	_add_boundary_occluder(parent)
+	for chunk in frontage_surfaces:
+		var surface := frontage_surfaces[chunk]
+		surface.index()
+		var batch := MeshInstance3D.new()
+		batch.name = "StreetFrontage_%d_%d" % [chunk.x, chunk.y]
+		batch.position = Vector3(chunk.x * CHUNK_SIZE, 0.0, chunk.y * CHUNK_SIZE)
+		batch.mesh = surface.commit()
+		batch.material_override = finish_for(MERGED_FRONTAGE_MODELS[0], finishes)
+		root.add_child(batch)
+	_add_village_occluder(parent)
 	# 습격 전/후를 바꿔 칠하는 벽 재질(집·교회, 길가 담장).
 	_stained_materials.clear()
 	for key in ["stained", "street"]:
@@ -218,26 +236,56 @@ func emit_batches(parent: Node3D) -> void:
 	_batches.clear()
 	_facades.clear()
 
-func _add_boundary_occluder(parent: Node3D) -> void:
-	var walls: Dictionary = _batches.get("BoundaryWall", {})
-	if walls.is_empty():
-		return
-	# Shrink each quad inside the actual opaque wall panel, ignoring props,
-	# doors and collision-only gap fillers.
+
+func _frontage_surfaces() -> Dictionary[Vector2i, SurfaceTool]:
+	var surfaces: Dictionary[Vector2i, SurfaceTool] = {}
+	var counts: Dictionary[Vector2i, int] = {}
+	# The Press King entrance removes individual frontage pieces west of the plaza.
+	var breach_area := TomatinaMap.plaza_rect().grow(2.0 * StreetMap.CELL)
+	for name: String in MERGED_FRONTAGE_MODELS:
+		for chunk: Vector2i in _batches.get(name, {}):
+			var bounds := Rect2(Vector2(chunk) * CHUNK_SIZE, Vector2.ONE * CHUNK_SIZE)
+			if not bounds.intersects(breach_area):
+				counts[chunk] = counts.get(chunk, 0) + 1
+	for chunk in counts:
+		if counts[chunk] >= 2:
+			var surface := SurfaceTool.new()
+			surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+			surfaces[chunk] = surface
+	return surfaces
+
+
+func _add_village_occluder(parent: Node3D) -> void:
 	var vertices := PackedVector3Array()
 	var indices := PackedInt32Array()
-	for placements: Array in walls.values():
-		for placement: Transform3D in placements:
-			var start := vertices.size()
-			for corner in [Vector3(-0.48, 0.03, 0), Vector3(0.48, 0.03, 0),
-					Vector3(0.48, 0.94, 0), Vector3(-0.48, 0.94, 0)]:
-				vertices.append(placement * corner)
-			for offset in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2]:
-				indices.append(start + offset)
+	# Keep the proxy inside each solid panel. The houses have solid cores
+	# behind their modeled trim, but roofs, arcade openings and props are omitted.
+	for model: String in ["BoundaryWall"] + HOUSES:
+		var chunks: Dictionary = _batches.get(model, {})
+		if chunks.is_empty():
+			continue
+		var bounds: AABB = _meshes[model].get_aabb()
+		var centre := bounds.get_center()
+		var half_width := bounds.size.x * (0.48 if model == "BoundaryWall" else 0.32)
+		var low := bounds.position.y + bounds.size.y * 0.03
+		var high := bounds.position.y + bounds.size.y * (0.94 if model == "BoundaryWall" else 0.57)
+		var left := centre.x - half_width
+		var right := centre.x + half_width
+		var corners := [Vector3(left, low, centre.z), Vector3(right, low, centre.z),
+			Vector3(right, high, centre.z), Vector3(left, high, centre.z)]
+		for placements: Array in chunks.values():
+			for placement: Transform3D in placements:
+				var start := vertices.size()
+				for corner: Vector3 in corners:
+					vertices.append(placement * corner)
+				for offset in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2]:
+					indices.append(start + offset)
+	if vertices.is_empty():
+		return
 	var shape := ArrayOccluder3D.new()
 	shape.set_arrays(vertices, indices)
 	var occluder := OccluderInstance3D.new()
-	occluder.name = "TomatinaBoundaryOccluder"
+	occluder.name = "TomatinaVillageOccluder"
 	occluder.occluder = shape
 	parent.add_child(occluder)
 
@@ -285,7 +333,7 @@ func film_arcade(parent: Node3D, frontage: Transform3D) -> void:
 
 
 const NO_SHADOW := ["BrokenBoards", "CrushedTomatoes", "FestivalTrashPile",
-	"TomatoBasketSpill", "TornBuntingHeap"]
+	"TomatoBasketSpill", "TornBuntingHeap", "FacadeWindow", "FacadeLantern", "FacadePots"]
 
 
 ## 모델 이름에 맞는 재질. 같은 `cache`를 쓰는 조각끼리 재질을 나눈다.

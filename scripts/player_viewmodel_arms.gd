@@ -4,6 +4,7 @@ var shooter
 var world
 var limbs: Array[MeshInstance3D] = []
 var palms: Array[Node3D] = []
+var hose_palms: Array[MeshInstance3D] = []
 func configure(owner_shooter, owner_world) -> void:
 	shooter = owner_shooter
 	world = owner_world
@@ -33,6 +34,19 @@ func configure(owner_shooter, owner_world) -> void:
 		var palm := Node3D.new()
 		add_child(palm)
 		palms.append(palm)
+		var palm_mesh := CapsuleMesh.new()
+		palm_mesh.radius = 0.043
+		palm_mesh.height = 0.122
+		palm_mesh.radial_segments = 8
+		var palm_surface := MeshInstance3D.new()
+		palm_surface.mesh = palm_mesh
+		palm_surface.material_override = skin
+		palm_surface.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		palm_surface.position = Vector3(0.0, -0.011, 0.002)
+		palm_surface.rotation.x = PI * 0.5
+		palm_surface.hide()
+		palm.add_child(palm_surface)
+		hose_palms.append(palm_surface)
 		for finger in 5:
 			var mesh := MeshInstance3D.new()
 			var capsule := CapsuleMesh.new()
@@ -51,6 +65,21 @@ func _process(_dt: float) -> void:
 	visible = shooter.is_local and world._first_person and shooter.player.state == MayoPlayer.State.NORMAL \
 		and not world.is_cinematic_active()
 	if not visible:
+		return
+	var grips: Array[Transform3D] = world.hose_grip_poses(shooter)
+	for palm_surface in hose_palms:
+		palm_surface.visible = not grips.is_empty()
+	if not grips.is_empty():
+		transform = Transform3D.IDENTITY
+		var camera_space := global_transform.affine_inverse()
+		for side in 2:
+			var sign_x := -1.0 if side == 0 else 1.0
+			var shoulder := Vector3(sign_x * 0.30, -0.49, 0.23)
+			var grip := camera_space * grips[side]
+			var elbow := shoulder.lerp(grip.origin, 0.48) + Vector3(sign_x * 0.12, -0.13, 0.04)
+			_segment(limbs[side * 2], shoulder, elbow)
+			_segment(limbs[side * 2 + 1], elbow, grip.origin)
+			palms[side].transform = grip
 		return
 	transform = world.first_person_visual_transform(shooter)
 	var sway: Transform3D = shooter.weapon_sway.transform

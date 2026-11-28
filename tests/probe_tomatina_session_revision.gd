@@ -38,8 +38,20 @@ func _probe_stage_input(peer: int) -> void:
 	guest.request_context_action("hose", 0)
 	_check(await _until(func(): return host_world._hose_slot_of(peer) == 0, 120),
 		"host menu blocked the guest hose")
-	for index in 3:
+	var before_push := player.global_position
+	var back: Vector3 = host_world._aim_basis(shooter).z
+	for index in 12:
 		await physics_frame
+	_check((player.global_position - before_push).dot(back) > 0.18,
+		"the hose did not push the guest's body backwards")
+	var guest_received := false
+	for tick in 24:
+		guest_received = late_world._local.player.external_drift.length() > 0.8 and late_world._local.hose_flow_age > 0.0
+		if guest_received:
+			break
+		await physics_frame
+	_check(guest_received, "guest hose data missing (packets %d, age %.2f, drift %s)" % [
+		guest.debug_state_packets, late_world._local.hose_flow_age, late_world._local.player.external_drift])
 	_check(host_world._hose_slot_of(peer) == 0, "host menu detached the guest hose")
 	_check(host_world.play_support.elapsed > started, "host menu froze the mission timer")
 	host_world._toggle_fire_hose(shooter)

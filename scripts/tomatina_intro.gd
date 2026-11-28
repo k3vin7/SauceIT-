@@ -311,8 +311,7 @@ func _hide_temporarily(item: Node3D) -> void:
 
 
 func _set_pavement_phase(before_attack: bool) -> void:
-	for tile in world._floor.grid.tile_count():
-		world._floor.grid.tile_material(tile).set_shader_parameter("festival_before_attack", before_attack)
+	world._floor.set_festival_before_attack(before_attack)
 
 
 func _prepare_arrival() -> void:

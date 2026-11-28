@@ -8,6 +8,21 @@ func run() -> void:
 	root.add_child(scene)
 	await physics_frame
 	scene.set_first_person(true)
+	var body_before_turn: Basis = scene._player.global_basis
+	var camera_before_turn: Basis = scene._camera.global_basis
+	scene.apply_look(Vector2(100.0, 0.0))
+	scene._place_viewmodel()
+	scene._update_camera()
+	if scene._camera.global_basis.is_equal_approx(camera_before_turn):
+		failures.append("first-person aim waited for a physics tick before turning the camera")
+	if not scene._player.global_basis.is_equal_approx(body_before_turn):
+		failures.append("first-person rendering rotated the physics body between ticks")
+	if not scene._local.aim_pivot.global_basis.is_equal_approx(scene._camera.global_basis):
+		failures.append("camera and viewmodel use different aim axes")
+	scene._update_aim()
+	if not is_equal_approx(scene._player.rotation.y, scene._aim_yaw):
+		failures.append("the physics step did not consume the latest aim")
+	scene.debug_set_aim(0.0, 0.0)
 	scene.debug_set_input(Vector2(0, -1), false, false)
 	var last_tick := Engine.get_physics_frames()
 	var last_camera: Vector3 = scene._camera.global_position

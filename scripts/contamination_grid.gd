@@ -1,6 +1,8 @@
 class_name ContaminationGrid
 extends RefCounted
 
+signal tile_paint_changed(index: int, has_paint: bool)
+
 ## One rectangular contamination grid: the cell mask, the texture it uploads to,
 ## and the material that renders it. The floor owns one; a wall owns one per
 ## face. Local coordinates run from -extent/2 to +extent/2 on both axes, so the
@@ -21,6 +23,23 @@ const ShaderFile := preload("res://scripts/contamination.gdshader")
 const EDGE_WOBBLE_METRES := 0.042
 const EDGE_FEATURE_METRES := 0.1
 const KETCHUP_DROP_ANGLES := [-0.85, 0.12, 1.04, 2.68, -2.16]
+
+const BRUSH_POOL := 0
+const BRUSH_FLECK := 1
+const BRUSH_BEAD := 2
+const BRUSH_STROKE := 3
+const STROKE_DIRECTIONS := 12
+const BRUSH_KIND_MASK := 31
+const BRUSH_PHASE_SHIFT := 5
+const DETAIL_BRUSH_LIMIT := 1152
+# Reused across grids with the same resolution and brush radius.
+static var _detail_brushes: Dictionary[Vector4i, PackedInt32Array] = {}
+
+
+static func stroke_brush(tangent: Vector2) -> int:
+	if tangent.length_squared() < 0.12 * 0.12:
+		return BRUSH_POOL
+	return BRUSH_STROKE + posmod(roundi(tangent.angle() * float(STROKE_DIRECTIONS) / TAU), STROKE_DIRECTIONS)
 
 var cell_size := 0.1
 var extent := Vector2(1.0, 1.0)
@@ -56,6 +75,10 @@ var height := 1
 ## whoever sets the shader's cut-offs scales them the same way -- which is the
 ## whole of what the five shaders reading this needed to keep working.
 var cells := PackedByteArray()
+## Signed distance from the rounded stain, encoded around 128 at its edge.
+var contour_cells := PackedByteArray()
+var contour_texture: ImageTexture
+var _contour_textures: Array[ImageTexture] = []
 ## How many of the low bits name the sauce, and the mask that reads them.
 const KIND_BITS := 2
 const KIND_MASK := 0b11
@@ -88,8 +111,16 @@ var _tiles_across := 1
 var _tiles_down := 1
 var _tile_textures: Array[ImageTexture] = []
 var _tile_materials: Array[ShaderMaterial] = []
+const UPLOAD_THICKNESS := 1
+const UPLOAD_CONTOUR := 2
+const UPLOAD_BOTH := UPLOAD_THICKNESS | UPLOAD_CONTOUR
 var _tile_dirty := PackedByteArray()
+var track_tile_paint := false
+var _tile_paint_channels := PackedByteArray()
 var _next_upload_tile := 0
+var _tile_margin := 0
+var _tile_samples: Array[Rect2i] = []
+var _wash_spans: Dictionary[float, PackedInt32Array] = {}
 ## Bytes handed to the GPU by the last `upload_if_dirty`, and since the last
 ## reset. What the headless checks can measure of an upload they cannot time.
 var bytes_uploaded := 0
@@ -141,7 +172,7 @@ var texture_uploads := 0
 ## wall face or a body wants -- they are small, and a second texture would cost
 ## more in draw calls than it ever saved in upload. The floor passes a real size.
 func configure(new_extent: Vector2, new_cell_size: float, clean_color: Color,
-		mayo_color: Color, new_tile_cells := 0) -> void:
+		mayo_color: Color, new_tile_cells := 0, tile_margin := 0) -> void:
 	extent = new_extent
 	cell_size = maxf(new_cell_size, 0.01)
 	metres_per_cell = cell_size
@@ -149,19 +180,31 @@ func configure(new_extent: Vector2, new_cell_size: float, clean_color: Color,
 	height = maxi(1, roundi(extent.y / cell_size))
 	cells.resize(width * height)
 	cells.fill(0)
+	contour_cells.resize(cells.size() if cell_size <= 0.05 else 0)
+	contour_cells.fill(0)
 	painted_count = 0
 	deep_count = 0
+	_coats.clear()
+	_wash_spans.clear()
 
 	tile_cells = maxi(width, height) if new_tile_cells <= 0 else new_tile_cells
 	_tiles_across = ceili(float(width) / float(tile_cells))
 	_tiles_down = ceili(float(height) / float(tile_cells))
 	_tile_dirty.resize(_tiles_across * _tiles_down)
 	_tile_dirty.fill(0)
+	_tile_paint_channels.resize(_tile_dirty.size() if track_tile_paint else 0)
+	_tile_paint_channels.fill(0)
 	_next_upload_tile = 0
 	_tile_textures.clear()
+	_contour_textures.clear()
 	_tile_materials.clear()
+	_tile_samples.clear()
+	_tile_margin = clampi(tile_margin if contour_cells.is_empty() else maxi(tile_margin, 2), 0, tile_cells - 1)
 	for index in _tiles_across * _tiles_down:
-		var size := tile_size(index)
+		var interior := Rect2i(tile_origin(index), tile_size(index))
+		var sample_rect := interior.grow(_tile_margin).intersection(Rect2i(0, 0, width, height))
+		_tile_samples.append(sample_rect)
+		var size := sample_rect.size
 		# One byte per cell. No mipmaps: they would soften the boundary at
 		# distance, and the boundary is the whole look.
 		var tile_image := Image.create(size.x, size.y, false, Image.FORMAT_R8)
@@ -171,6 +214,16 @@ func configure(new_extent: Vector2, new_cell_size: float, clean_color: Color,
 		var tile_material := ShaderMaterial.new()
 		tile_material.shader = ShaderFile
 		tile_material.set_shader_parameter("mask_texture", tile_texture)
+		tile_material.set_shader_parameter("fine_contours", not contour_cells.is_empty())
+		if not contour_cells.is_empty():
+			var field := ImageTexture.create_from_image(tile_image)
+			_contour_textures.push_back(field)
+			tile_material.set_shader_parameter("contour_texture", field)
+		if _tile_margin > 0:
+			tile_material.set_shader_parameter("mask_cell_origin", Vector2(sample_rect.position))
+		if sample_rect != interior:
+			tile_material.set_shader_parameter("mask_uv_offset", Vector2(interior.position - sample_rect.position) / Vector2(size))
+			tile_material.set_shader_parameter("mask_uv_scale", Vector2(interior.size) / Vector2(size))
 		tile_material.set_shader_parameter("clean_color", clean_color)
 		tile_material.set_shader_parameter("mayo_color", mayo_color)
 		_tile_materials.push_back(tile_material)
@@ -180,6 +233,7 @@ func configure(new_extent: Vector2, new_cell_size: float, clean_color: Color,
 	# The single-tile case keeps the old names, so every surface that only ever
 	# had one texture carries on addressing it the way it always did.
 	texture = _tile_textures[0]
+	contour_texture = null if _contour_textures.is_empty() else _contour_textures[0]
 	material = _tile_materials[0]
 	image = Image.create(tile_size(0).x, tile_size(0).y, false, Image.FORMAT_R8)
 
@@ -214,11 +268,34 @@ func tile_region(index: int) -> Rect2:
 
 
 func _touch_tile(column: int, row: int) -> void:
-	_tile_dirty[(row / tile_cells) * _tiles_across + (column / tile_cells)] = 1
+	var tile_x := column / tile_cells
+	var tile_y := row / tile_cells
+	_tile_dirty[tile_y * _tiles_across + tile_x] |= UPLOAD_BOTH
+	# The border texels belong to the neighbouring tile's filter too.
+	if _tile_margin > 0 and _tile_dirty.size() > 1:
+		var x := column % tile_cells
+		var y := row % tile_cells
+		if x < _tile_margin or x >= tile_cells - _tile_margin \
+				or y < _tile_margin or y >= tile_cells - _tile_margin:
+			_touch_tile_span(column, row, column, row)
+
+
+func _touch_tile_span(left: int, top: int, right: int, bottom: int, channels := UPLOAD_BOTH) -> void:
+	if _tile_dirty.size() == 1:
+		_tile_dirty[0] |= channels
+		return
+	var first_x := maxi(0, left - _tile_margin) / tile_cells
+	var last_x := mini(width - 1, right + _tile_margin) / tile_cells
+	var first_y := maxi(0, top - _tile_margin) / tile_cells
+	var last_y := mini(height - 1, bottom + _tile_margin) / tile_cells
+	for tile_y in range(first_y, last_y + 1):
+		var base := tile_y * _tiles_across
+		for tile_x in range(first_x, last_x + 1):
+			_tile_dirty[base + tile_x] |= channels
 
 
 func _touch_all_tiles() -> void:
-	_tile_dirty.fill(1)
+	_tile_dirty.fill(UPLOAD_BOTH)
 
 
 ## Cell containing a local position, without clamping.
@@ -248,20 +325,28 @@ func is_painted(local: Vector2) -> bool:
 	return cells[cell.y * width + wrapped_x(cell.x)] >> KIND_BITS > 0
 
 
+## Four subcell positions preserve where the incoming point touched the cell.
+## The same phase is included in the replicated brush without extra packet words.
+func position_brush(local: Vector2, brush: int) -> int:
+	if cell_size > 0.05:
+		return brush
+	var at := (local + extent * 0.5) / cell_size
+	var quadrant := int(at.x - floorf(at.x) >= 0.5) + 2 * int(at.y - floorf(at.y) >= 0.5)
+	return (brush & BRUSH_KIND_MASK) | ((quadrant + 1) << BRUSH_PHASE_SHIFT)
+
+
 ## Marks the surface around a local position, and returns the
 ## centre cell it painted around, or (-1, -1) if the position was off the grid.
 ## The radius is given in metres and converted here, so changing cell_size does
 ## not change how big a splat is.
 func paint(local: Vector2, radius_meters: float, deposit := 1, coat := -1,
-		kind := KIND_MAYO) -> Vector2i:
-	return paint_cell(cell_of(local), radius_meters, deposit, coat, kind)
+		kind := KIND_MAYO, brush := BRUSH_POOL) -> Vector2i:
+	return paint_cell(cell_of(local), radius_meters, deposit, coat, kind, brush)
 
 
 ## The splat itself, addressed by cell rather than by position. Everything below
-## depends only on the centre cell and the radius -- `_cell_noise` is a pure
-## function of the cell coordinates -- so two machines given the same centre
-## cell paint byte-identical grids. That is what lets the network send two ints
-## per splat instead of the cell list, and it is checked by probe_determinism.
+## depends on the centre, brush and radius. The host and peer replay the same
+## packed stamp and maintain byte-identical masks without sending a cell list.
 ## `coat` identifies the trigger pull this splat belongs to. A cell rises at most
 ## once for a given coat, so a burst lays down one layer rather than one per
 ## splat. -1 means no coat: every splat counts, which is what the surfaces
@@ -270,34 +355,42 @@ func paint(local: Vector2, radius_meters: float, deposit := 1, coat := -1,
 ## cell that holds a different one takes it over at one layer rather than adding
 ## to the pile that is there.
 func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
-		coat := -1, kind := KIND_MAYO) -> Vector2i:
+		coat := -1, kind := KIND_MAYO, brush := BRUSH_POOL) -> Vector2i:
 	paint_calls += 1
 	if not has_cell(centre):
 		return Vector2i(-1, -1)
 	var coated := {}
-	if coat >= 0:
-		if not _coats.has(coat):
-			if _coats.size() >= MAX_LIVE_COATS:
-				var ids := _coats.keys()
-				ids.sort()
-				_coats.erase(ids[0])
-			_coats[coat] = {}
+	var new_coat := coat >= 0 and not _coats.has(coat)
+	if coat >= 0 and not new_coat:
 		coated = _coats[coat]
 	centre.x = wrapped_x(centre.x)
+	if cell_size <= 0.05:
+		if not _paint_detail(centre, radius_meters, deposit, kind, brush, coat >= 0, coated):
+			return Vector2i(-1, -1)
+		# No-change stamps send no packet, so they must not evict a live coat.
+		if new_coat:
+			_remember_coat(coat, coated)
+		return centre
+	if new_coat:
+		_remember_coat(coat, coated)
 	if scatter_ketchup and kind == KIND_KETCHUP:
 		var radius_in_cells := maxf(1.0, radius_meters * 1.20 / cell_size)
 		_paint_ketchup_scatter(centre, radius_in_cells, deposit, coat >= 0, coated)
 		return centre
 
-	var radius := maxi(1, roundi(radius_meters / cell_size))
+	var radius := maxf(1.0, radius_meters / cell_size)
 	var scale := maxf(metres_per_cell, 0.0001)
 	# The wobble and its features, converted from metres into this grid's cells.
 	var wobble := EDGE_WOBBLE_METRES / scale
 	var feature := maxi(1, roundi(EDGE_FEATURE_METRES / scale))
 	# Enough margin for the edge to wander outwards without being clipped.
 	var margin := maxi(1, ceili(wobble))
-	var low := -radius - margin
-	var high := radius + margin
+	var high := ceili(radius) + margin
+	var low := -high
+	var safe_radius := maxf(radius - wobble, 0.0)
+	var inner_squared := safe_radius * safe_radius
+	var outer_radius := radius + wobble
+	var outer_squared := outer_radius * outer_radius
 
 	# The noise lattice for this splat, worked out once. Read per cell it was
 	# four calls and four sines for every cell tested, which on a big brush is
@@ -329,7 +422,15 @@ func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
 		if row < 0 or row >= height:
 			continue
 		var row_base := row * width
+		var place_y := float(row) / float(feature)
+		var base_y := floori(place_y)
+		var down := smoothstep(0.0, 1.0, place_y - float(base_y))
+		var lattice_row := (base_y - lattice_y0) * lattice_w
+		var distance_y := offset_y * offset_y
 		for offset_x in range(low, high + 1):
+			var distance_squared := float(offset_x * offset_x + distance_y)
+			if distance_squared > outer_squared:
+				continue
 			var column := centre.x + offset_x
 			if wrap_x:
 				# The noise is read at the wrapped column, so a cell gets the
@@ -346,27 +447,184 @@ func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
 			if here >> KIND_BITS >= MAX_THICKNESS and (here & KIND_MASK) == kind:
 				continue
 			var cell := Vector2i(column, row)
-			var distance_squared := float(offset_x * offset_x + offset_y * offset_y)
+			if distance_squared <= inner_squared:
+				_deposit_cell(cell, index, here, deposit, kind, coat >= 0, coated)
+				continue
 			# Value noise off the lattice above, inlined: the four points around
 			# this cell, eased and blended, so the edge wanders continuously
 			# rather than stepping from one lattice square to the next.
 			var place_x := float(cell.x) / float(feature)
-			var place_y := float(cell.y) / float(feature)
 			var base_x := floori(place_x)
-			var base_y := floori(place_y)
 			var across := smoothstep(0.0, 1.0, place_x - float(base_x))
-			var down := smoothstep(0.0, 1.0, place_y - float(base_y))
-			var corner := (base_y - lattice_y0) * lattice_w + (base_x - lattice_x0)
+			var corner := lattice_row + base_x - lattice_x0
 			var top: float = lerpf(lattice[corner], lattice[corner + 1], across)
 			var bottom: float = lerpf(lattice[corner + lattice_w],
 				lattice[corner + lattice_w + 1], across)
 			# Deterministic cell noise roughens only the hard boundary. No blur/alpha.
 			var edge_jitter: float = lerpf(top, bottom, down) * wobble
-			var reach := float(radius) + edge_jitter
+			var reach := radius + edge_jitter
 			# Squared on both sides, to keep the square root out of the loop.
 			if reach > 0.0 and distance_squared <= reach * reach:
 				_deposit_cell(cell, index, here, deposit, kind, coat >= 0, coated)
 	return centre
+
+
+func _remember_coat(coat: int, covered: Dictionary) -> void:
+	if _coats.size() >= MAX_LIVE_COATS:
+		var oldest: int = _coats.keys().min()
+		_coats.erase(oldest)
+	_coats[coat] = covered
+
+
+## Stamp rows are relative to the impact cell, so the cache is shared by the
+## authority and its peers without carrying a mask or a random seed in packets.
+func _paint_detail(centre: Vector2i, radius_meters: float, deposit: int, kind: int,
+		brush: int, track_coat: bool, coated: Dictionary) -> bool:
+	var seed := (centre.x * 31) ^ (centre.y * 73)
+	var variant := seed & 3
+	var style := brush & BRUSH_KIND_MASK
+	var phase := mini(brush >> BRUSH_PHASE_SHIFT, 4)
+	var sector := (style - BRUSH_STROKE) if style >= BRUSH_STROKE else posmod(seed, STROKE_DIRECTIONS)
+	var stamp := (phase * STROKE_DIRECTIONS + sector) * 32 + style
+	var key := Vector4i(roundi(cell_size * 100000.0), roundi(radius_meters * 10000.0), kind, stamp * 4 + variant)
+	var rows: PackedInt32Array
+	if _detail_brushes.has(key):
+		rows = _detail_brushes[key]
+	else:
+		if _detail_brushes.size() >= DETAIL_BRUSH_LIMIT:
+			var oldest := Vector4i.ZERO
+			for cached_key in _detail_brushes:
+				oldest = cached_key
+				break
+			_detail_brushes.erase(oldest)
+		rows = _build_detail_brush(key, style, variant)
+		_detail_brushes[key] = rows
+	var changed := false
+	var deduplicate := track_coat or (wrap_x and radius_meters * 4.0 >= extent.x)
+	var start := 0
+	while start < rows.size():
+		var row := centre.y + rows[start]
+		var left := centre.x + rows[start + 1]
+		var length := rows[start + 2]
+		var data := start + 3
+		start = data + length
+		if row < 0 or row >= height:
+			continue
+		var base := row * width
+		var first := width
+		var last := -1
+		var channels := 0
+		# Clip the scanline once. The kept samples still read the same stamp
+		# indices, including when a brush crosses the edge of the floor.
+		var first_offset := 0 if wrap_x else maxi(0, -left)
+		var end_offset := length if wrap_x else mini(length, width - left)
+		for offset in range(first_offset, end_offset):
+			var ink := rows[data + offset]
+			if ink == 0:
+				continue
+			var column := left + offset
+			if wrap_x:
+				column = posmod(column, width)
+			var index := base + column
+			var pixel_channels := 0
+			if ink > contour_cells[index]:
+				contour_cells[index] = ink
+				pixel_channels = UPLOAD_CONTOUR
+			if ink >= 128 and (not deduplicate or not coated.has(index)):
+				var here := int(cells[index])
+				if (here & KIND_MASK) != kind or here >> KIND_BITS < MAX_THICKNESS:
+					if deduplicate:
+						coated[index] = true
+					_write_deposit(index, here, deposit, kind)
+					pixel_channels |= UPLOAD_THICKNESS
+			if pixel_channels != 0:
+				first = mini(first, column)
+				last = maxi(last, column)
+				channels |= pixel_channels
+		if last >= 0:
+			_touch_tile_span(first, row, last, row, channels)
+			changed = true
+	dirty = dirty or changed
+	return changed
+
+
+static func _build_detail_brush(key: Vector4i, brush: int, variant: int) -> PackedInt32Array:
+	var cell := float(key.x) / 100000.0
+	var radius := float(key.y) / 10000.0 / cell
+	var pixels: Dictionary[Vector2i, int] = {}
+	var oriented := key.w / (4 * 32)
+	var sector := oriented % STROKE_DIRECTIONS
+	var phase := oriented / STROKE_DIRECTIONS
+	var origin := Vector2.ZERO
+	if phase > 0:
+		var quadrant := phase - 1
+		origin = Vector2(float(quadrant & 1), float(quadrant >> 1)) * 0.5 - Vector2.ONE * 0.25
+	var axis := Vector2.from_angle(float(sector) * TAU / STROKE_DIRECTIONS)
+	var side := axis.orthogonal()
+	var skew := -1.0 if (variant & 1) == 0 else 1.0
+	if brush == BRUSH_FLECK or brush == BRUSH_BEAD:
+		var metres := 0.038 if brush == BRUSH_FLECK else 0.072
+		var dot_size := maxf(0.95, minf(radius * 0.56, metres / cell) * (0.91 + 0.08 * variant))
+		_add_detail_ellipse(pixels, origin, axis, Vector2(dot_size, dot_size * 0.86))
+	else:
+		var dragged := brush >= BRUSH_STROKE
+		match key.z:
+			KIND_KETCHUP:
+				_add_detail_ellipse(pixels, origin - axis * 0.10 * radius, axis, Vector2(1.03, 0.87) * radius)
+				_add_detail_ellipse(pixels, origin + (axis * (0.69 if dragged else 0.48) + side * skew * 0.19) * radius,
+					axis.rotated(skew * 0.24), Vector2(0.74, 0.43) * radius)
+			KIND_MUSTARD:
+				var wide := 0.69 if dragged else 0.89
+				_add_detail_ellipse(pixels, origin, axis, Vector2(1.06, wide) * radius)
+				_add_detail_ellipse(pixels, origin + (axis * 0.73 + side * skew * 0.14) * radius,
+					axis, Vector2(0.60, 0.29) * radius)
+			_:
+				_add_detail_ellipse(pixels, origin, axis, Vector2(0.99, 0.93) * radius)
+				_add_detail_ellipse(pixels, origin + (axis * 0.61 + side * skew * 0.35) * radius,
+					axis, Vector2(0.57, 0.39) * radius)
+		# Smaller detached dots keep the direction of the main splash and vary
+		# around its sides. They share the physical coat and wash with the pool.
+		var scatter := 0.15 if key.z == KIND_MAYO else 0.20
+		for dot in 2 + (variant & 1):
+			var spread_axis := axis.rotated(skew * (0.68 + 1.15 * float(dot)))
+			var reach := 1.37 + 0.13 * float((variant + dot) % 3)
+			var at := origin + spread_axis * radius * reach
+			var size := maxf(0.98, radius * scatter * (1.0 - 0.20 * float(dot)))
+			_add_detail_ellipse(pixels, at, spread_axis, Vector2(size, size * 0.86))
+	var spans: Dictionary[int, Vector2i] = {}
+	for pixel in pixels:
+		var span: Vector2i = spans.get(pixel.y, Vector2i(pixel.x, pixel.x))
+		spans[pixel.y] = Vector2i(mini(span.x, pixel.x), maxi(span.y, pixel.x))
+	var row_indices := spans.keys()
+	row_indices.sort()
+	var rows := PackedInt32Array()
+	for row in row_indices:
+		var span: Vector2i = spans[row]
+		rows.append(row)
+		rows.append(span.x)
+		rows.append(span.y - span.x + 1)
+		for column in range(span.x, span.y + 1):
+			rows.append(pixels.get(Vector2i(column, row), 0))
+	return rows
+
+
+static func _add_detail_ellipse(pixels: Dictionary[Vector2i, int], centre: Vector2,
+		axis: Vector2, radii: Vector2) -> void:
+	var side := axis.orthogonal()
+	var span := (axis * radii.x).abs() + (side * radii.y).abs() + Vector2.ONE * 2.0
+	var first := Vector2i((centre - span).ceil())
+	var last := Vector2i((centre + span).floor())
+	var along := axis / maxf(radii.x, 0.45)
+	var across := side / maxf(radii.y, 0.45)
+	var minor := maxf(0.45, minf(radii.x, radii.y))
+	for row in range(first.y, last.y + 1):
+		for column in range(first.x, last.x + 1):
+			var pixel := Vector2i(column, row)
+			var offset := Vector2(pixel) - centre
+			var distance := (1.0 - Vector2(offset.dot(along), offset.dot(across)).length()) * minor
+			var field := clampi(roundi(127.5 + 63.75 * distance), 0, 255)
+			if field > int(pixels.get(pixel, 0)):
+				pixels[pixel] = field
 
 
 ## A round, asymmetric blot with a short smear and scattered droplets.
@@ -421,6 +679,12 @@ func _deposit_cell(cell: Vector2i, index: int, packed: int, deposit: int, kind: 
 		if coated.has(index):
 			return
 		coated[index] = true
+	_write_deposit(index, packed, deposit, kind)
+	_touch_tile(cell.x, cell.y)
+	dirty = true
+
+
+func _write_deposit(index: int, packed: int, deposit: int, kind: int) -> void:
 	var was := packed >> KIND_BITS
 	var stacked := was if (packed & KIND_MASK) == kind else 0
 	var now := mini(stacked + deposit, MAX_THICKNESS)
@@ -431,8 +695,6 @@ func _deposit_cell(cell: Vector2i, index: int, packed: int, deposit: int, kind: 
 		deep_count += 1
 	elif was >= deep_threshold and now < deep_threshold:
 		deep_count -= 1
-	_touch_tile(cell.x, cell.y)
-	dirty = true
 
 
 ## Wipes the grid. Both halves of the mask go together -- clearing one and not
@@ -441,7 +703,7 @@ func _deposit_cell(cell: Vector2i, index: int, packed: int, deposit: int, kind: 
 ## clipped to the grid. Returns whether any cell changed.
 func fill_rect(first: Vector2i, last: Vector2i, thickness: int, kind: int) -> bool:
 	var level := clampi(thickness, 0, MAX_THICKNESS)
-	var packed := (level << KIND_BITS) | (kind & KIND_MASK)
+	var packed := (level << KIND_BITS) | (kind & KIND_MASK) if level > 0 else 0
 	var top := maxi(first.y, 0)
 	var bottom := mini(last.y, height - 1)
 	var left := maxi(first.x, 0)
@@ -454,6 +716,11 @@ func fill_rect(first: Vector2i, last: Vector2i, thickness: int, kind: int) -> bo
 		for column in range(left, right + 1):
 			var index := row_base + column
 			var previous := int(cells[index])
+			if not contour_cells.is_empty():
+				var field := 255 if level > 0 else 0
+				if contour_cells[index] != field:
+					contour_cells[index] = field
+					changed = true
 			if previous == packed:
 				continue
 			var was := previous >> KIND_BITS
@@ -469,17 +736,136 @@ func fill_rect(first: Vector2i, last: Vector2i, thickness: int, kind: int) -> bo
 				deep_count -= 1
 	if not changed:
 		return false
-	var first_tile_x := left - posmod(left, tile_cells)
-	var first_tile_y := top - posmod(top, tile_cells)
-	for row in range(first_tile_y, bottom + 1, tile_cells):
-		for column in range(first_tile_x, right + 1, tile_cells):
-			_touch_tile(column, row)
+	_touch_tile_span(left, top, right, bottom)
+	dirty = true
+	return true
+
+
+## Clear the cells under a round brush. Radius stays in metres on every surface.
+## A splat packet only needs the centre cell and both peers replay the same rows.
+func erase_disc(centre: Vector2i, radius_meters: float) -> bool:
+	if painted_count == 0 or not has_cell(centre):
+		return false
+	if not contour_cells.is_empty():
+		return _erase_fine_disc(centre, radius_meters)
+	var spans: PackedInt32Array = _wash_spans.get(radius_meters, PackedInt32Array())
+	if spans.is_empty():
+		var radius := maxf(0.0, radius_meters / cell_size)
+		var radius_squared := radius * radius
+		spans.resize(floori(radius) + 1)
+		for row in spans.size():
+			spans[row] = floori(sqrt(maxf(0.0, radius_squared - float(row * row))))
+		if _wash_spans.size() >= 8:
+			_wash_spans.clear()
+		_wash_spans[radius_meters] = spans
+	var extent_y := spans.size() - 1
+	var first_row := maxi(0, centre.y - extent_y)
+	var last_row := mini(height - 1, centre.y + extent_y)
+	var changed := false
+	for row in range(first_row, last_row + 1):
+		var reach := spans[absi(row - centre.y)]
+		var left := centre.x - reach
+		var right := centre.x + reach
+		if wrap_x:
+			# A span can cross the body's seam, or cover a narrow chart entirely.
+			var start := posmod(left, width)
+			var length := mini(2 * reach + 1, width)
+			var end := start + length - 1
+			changed = _erase_row(row, start, mini(end, width - 1)) or changed
+			if end >= width:
+				changed = _erase_row(row, 0, end - width) or changed
+		else:
+			changed = _erase_row(row, maxi(0, left), mini(width - 1, right)) or changed
+	return changed
+
+
+# Cache the values along the curved edge. The centre uses zero and the
+# boundary uses signed distance, so washing away a patch leaves a smooth cut.
+func _erase_fine_disc(centre: Vector2i, radius_meters: float) -> bool:
+	var rows: PackedInt32Array = _wash_spans.get(radius_meters, PackedInt32Array())
+	if rows.is_empty():
+		var radius := maxf(0.0, radius_meters / cell_size)
+		var edge := radius + 2.0
+		for y in floori(edge) + 1:
+			var reach := floori(sqrt(maxf(0.0, edge * edge - float(y * y))))
+			rows.append(reach)
+			for x in reach + 1:
+				var distance := Vector2(x, y).length() - radius
+				rows.append(clampi(ceili(127.5 + 63.75 * distance), 0, 255))
+		if _wash_spans.size() >= 8:
+			_wash_spans.clear()
+		_wash_spans[radius_meters] = rows
+	var removed := 0
+	var deep_removed := 0
+	var changed := false
+	var start := 0
+	var y := 0
+	while start < rows.size():
+		var reach := rows[start]
+		start += 1
+		for row in range(centre.y - y, centre.y + y + 1, maxi(2 * y, 1)):
+			if row < 0 or row >= height:
+				continue
+			var left := maxi(-reach, -(width / 2) if wrap_x else -centre.x)
+			var right := mini(reach, (width - 1) / 2 if wrap_x else width - 1 - centre.x)
+			var first := width
+			var last := -1
+			for offset in range(left, right + 1):
+				var column := centre.x + offset
+				if wrap_x:
+					column = posmod(column, width)
+				var index := row * width + column
+				var edge := rows[start + absi(offset)]
+				var thickness := cells[index] >> KIND_BITS
+				var erase_cell := edge <= 128 and thickness > 0
+				if contour_cells[index] <= edge and not erase_cell:
+					continue
+				contour_cells[index] = mini(contour_cells[index], edge)
+				if erase_cell:
+					cells[index] = 0
+					removed += 1
+					deep_removed += int(thickness >= deep_threshold)
+				first = mini(first, column)
+				last = maxi(last, column)
+			if last >= 0:
+				_touch_tile_span(first, row, last, row)
+				changed = true
+		y += 1
+		start += reach + 1
+	painted_count -= removed
+	deep_count -= deep_removed
+	dirty = dirty or changed
+	return changed
+
+
+func _erase_row(row: int, left: int, right: int) -> bool:
+	var base := row * width
+	var first := -1
+	var last := -1
+	var removed := 0
+	var deep_removed := 0
+	for index in range(base + left, base + right + 1):
+		var thickness := cells[index] >> KIND_BITS
+		if thickness == 0:
+			continue
+		cells[index] = 0
+		if first < 0:
+			first = index
+		last = index
+		removed += int(thickness > 0)
+		deep_removed += int(thickness >= deep_threshold)
+	if first < 0:
+		return false
+	painted_count -= removed
+	deep_count -= deep_removed
+	_touch_tile_span(first - base, row, last - base, row)
 	dirty = true
 	return true
 
 
 func clear() -> void:
 	cells.fill(0)
+	contour_cells.fill(0)
 	_coats.clear()
 	painted_count = 0
 	deep_count = 0
@@ -493,11 +879,25 @@ func cells_md5() -> String:
 	return Marshalls.raw_to_base64(cells).md5_text()
 
 
-## Replaces the whole mask, for handing a joining peer the state it missed.
+func snapshot() -> PackedByteArray:
+	var result := cells.duplicate()
+	result.append_array(contour_cells)
+	return result
+
+
+## A full snapshot includes the contour; an older mask can derive it from occupancy.
 func restore_cells(new_cells: PackedByteArray) -> bool:
-	if new_cells.size() != cells.size():
+	var size := cells.size()
+	if new_cells.size() == size + contour_cells.size() and not contour_cells.is_empty():
+		cells = new_cells.slice(0, size)
+		contour_cells = new_cells.slice(size)
+	elif new_cells.size() == size:
+		cells = new_cells
+		if not contour_cells.is_empty():
+			for index in size:
+				contour_cells[index] = 255 if cells[index] >= 4 else 0
+	else:
 		return false
-	cells = new_cells
 	# Recounted rather than tracked: a restore replaces everything at once and
 	# happens when a peer joins, not in a frame that matters.
 	_recount()
@@ -526,7 +926,9 @@ func upload_if_dirty(tile_budget := 0, focus := Vector2.INF) -> void:
 		for index in tile_total:
 			if _tile_dirty[index] == 0:
 				continue
-			var distance := tile_region(index).get_center().distance_squared_to(focus)
+			var sample := _tile_samples[index]
+			var center := Vector2(sample.get_center()) * cell_size - extent * 0.5
+			var distance := center.distance_squared_to(focus)
 			if distance < best:
 				best = distance
 				preferred = index
@@ -536,30 +938,37 @@ func upload_if_dirty(tile_budget := 0, focus := Vector2.INF) -> void:
 		var index := preferred if offset < 0 else (first + offset) % tile_total
 		if index < 0:
 			continue
-		if _tile_dirty[index] == 0:
+		var channels := _tile_dirty[index]
+		if channels == 0:
 			continue
 		_tile_dirty[index] = 0
-		var origin := tile_origin(index)
-		var size := tile_size(index)
-		# The tile's bytes are cut out of `cells` a row at a time. A row is one
-		# `slice`, which is a memcpy; going cell by cell would be a quarter of a
-		# million GDScript iterations per tile and would cost far more than the
-		# upload it is feeding.
-		var data := PackedByteArray()
-		if tile_total == 1:
-			data = cells
-		elif size.x == width:
-			var start := origin.y * width
-			data = cells.slice(start, start + size.y * width)
-		else:
-			for row in size.y:
-				var start := (origin.y + row) * width + origin.x
-				data.append_array(cells.slice(start, start + size.x))
-		var tile_image := Image.create_from_data(size.x, size.y, false, Image.FORMAT_R8, data)
-		_tile_textures[index].update(tile_image)
-		if tile_total == 1:
-			image = tile_image
-		bytes_uploaded += data.size()
+		var sample := _tile_samples[index]
+		var size := sample.size
+		var painted := _tile_paint_channels[index] if track_tile_paint else 0
+		var was_painted := painted != 0
+		if channels & UPLOAD_CONTOUR and not contour_cells.is_empty():
+			var field := _tile_bytes(contour_cells, sample)
+			_contour_textures[index].update(Image.create_from_data(size.x, size.y, false, Image.FORMAT_R8, field))
+			if track_tile_paint:
+				painted &= ~UPLOAD_CONTOUR
+				if field.count(0) < field.size():
+					painted |= UPLOAD_CONTOUR
+			bytes_uploaded += field.size()
+		if channels & UPLOAD_THICKNESS:
+			var data := _tile_bytes(cells, sample)
+			var tile_image := Image.create_from_data(size.x, size.y, false, Image.FORMAT_R8, data)
+			_tile_textures[index].update(tile_image)
+			if tile_total == 1:
+				image = tile_image
+			if track_tile_paint:
+				painted &= ~UPLOAD_THICKNESS
+				if data.count(0) < data.size():
+					painted |= UPLOAD_THICKNESS
+			bytes_uploaded += data.size()
+		if track_tile_paint:
+			_tile_paint_channels[index] = painted
+			if was_painted != (painted != 0):
+				tile_paint_changed.emit(index, painted != 0)
 		texture_uploads += 1
 		uploaded += 1
 		if offset >= 0:
@@ -567,9 +976,23 @@ func upload_if_dirty(tile_budget := 0, focus := Vector2.INF) -> void:
 		if tile_budget > 0 and uploaded >= tile_budget:
 			break
 	bytes_uploaded_total += bytes_uploaded
-	dirty = _tile_dirty.has(1)
+	dirty = _tile_dirty.count(0) < tile_total
 	if measure_uploads:
 		upload_time_us += Time.get_ticks_usec() - started
+
+
+func _tile_bytes(source: PackedByteArray, sample: Rect2i) -> PackedByteArray:
+	if _tile_textures.size() == 1:
+		return source
+	var origin := sample.position
+	var size := sample.size
+	if size.x == width:
+		return source.slice(origin.y * width, (origin.y + size.y) * width)
+	var data := PackedByteArray()
+	for row in size.y:
+		var start := (origin.y + row) * width + origin.x
+		data.append_array(source.slice(start, start + size.x))
+	return data
 
 
 func reset_debug_counters() -> void:

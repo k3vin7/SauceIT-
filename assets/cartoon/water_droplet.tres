@@ -1,0 +1,13 @@
+[gd_resource type="SphereMesh" load_steps=3 format=3]
+
+[ext_resource type="Shader" path="res://assets/cartoon/water_effect.gdshader" id="1"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_water"]
+shader = ExtResource("1")
+
+[resource]
+material = SubResource("ShaderMaterial_water")
+radius = 0.013
+height = 0.14
+radial_segments = 8
+rings = 4

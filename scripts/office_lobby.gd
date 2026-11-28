@@ -26,6 +26,9 @@ signal character_requested
 
 const CharacterSelectScript := preload("res://scripts/character_select.gd")
 const ROOM_SCENE := preload("res://maps/command_runtime.scn")
+const OfficeMirror := preload("res://scripts/office_mirror.gd")
+const WaterSpray := preload("res://scripts/water_spray.gd")
+const SHOWER_WATER := preload("res://assets/cartoon/shower_water.tres")
 
 ## 아래 세 값은 방 씬에 해당 노드가 없을 때만 쓰는 기본값이다.
 const SCREEN_POSITION := Vector3(0.0, 2.35, -8.65)
@@ -132,7 +135,7 @@ var viewmodel_scale := 1.0:
 			_range_world.viewmodel_scale = value
 ## 옆으로 긴 물건: Target -> [길이 방향(월드), 절반 길이(m)].
 var _spans: Dictionary = {}
-var _shower_water: CPUParticles3D
+var _shower_water: GPUParticles3D
 var _doctor_label: Label
 var _doctor_tween: Tween
 var _doctor_last := -1
@@ -348,26 +351,12 @@ func _build_shower() -> void:
 	# The prompt is pinned beside the red valve on the pipe, as the stage pins
 	# its own beside the cross on the shower post.
 	_shower_anchor = (head.get_parent() as Node3D).to_global(head.position + Vector3(-0.36, -1.4, 0.0))
-	_shower_water = CPUParticles3D.new()
+	_shower_water = WaterSpray.make(90, 0.75, 0.13, Vector2(2.6, 3.4), Vector2(0.70, 1.07))
 	_shower_water.name = "ShowerWater"
-	_shower_water.emitting = false
-	_shower_water.amount = 90
-	_shower_water.lifetime = 0.75
-	_shower_water.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
-	_shower_water.emission_sphere_radius = 0.13
-	_shower_water.direction = Vector3.DOWN
-	_shower_water.spread = 9.0
-	_shower_water.initial_velocity_min = 2.6
-	_shower_water.initial_velocity_max = 3.4
-	_shower_water.gravity = Vector3(0.0, -7.0, 0.0)
-	var drop := BoxMesh.new()
-	drop.size = Vector3(0.018, 0.16, 0.018)
-	var water := StandardMaterial3D.new()
-	water.albedo_color = Color(0.72, 0.9, 1.0, 0.75)
-	water.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	water.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	drop.material = water
-	_shower_water.mesh = drop
+	_shower_water.material_override = SHOWER_WATER
+	var motion := _shower_water.process_material as ParticleProcessMaterial
+	motion.spread = 9.0
+	motion.gravity = Vector3.DOWN * 7.0
 	_shower_water.position = Vector3(0.0, -0.06, 0.0)
 	head.add_child(_shower_water)
 
@@ -986,6 +975,25 @@ func _busy() -> bool:
 	return input_locked or is_map_open() or is_slot_open() or is_bench_open()
 
 
+func _dress_occupant(peer_id: int, body: CharacterBody3D, index: int) -> void:
+	super._dress_occupant(peer_id, body, index)
+	if peer_id != _local_id():
+		return
+	var visual := body.get_node("Character") as Node3D
+	# The mirror renders the existing animated avatar on its own render layer.
+	for child in visual.find_children("*", "GeometryInstance3D", true, false):
+		var geometry := child as GeometryInstance3D
+		geometry.layers = 1 << (OfficeMirror.AVATAR_LAYER - 1)
+		geometry.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	visual.visible = session == null or session.has_character(peer_id)
+
+
+func _adopt_local(body: CharacterBody3D, seat: int) -> void:
+	super._adopt_local(body, seat)
+	_view_camera().set_cull_mask_value(OfficeMirror.AVATAR_LAYER, false)
+	_match_range_view()
+
+
 func _view_camera() -> Camera3D:
 	if _camera_pivot == null or not is_instance_valid(_camera_pivot) \
 			or _camera_pivot.get_child_count() == 0:
@@ -1097,11 +1105,6 @@ func _match_range_view() -> void:
 		var fov = _range_world.get("_rendered_fov")
 		if fov != null and float(fov) > 1.0:
 			camera.fov = float(fov)
-
-
-func _adopt_local(body: CharacterBody3D, seat: int) -> void:
-	super._adopt_local(body, seat)
-	_match_range_view()
 
 
 func _local_move() -> Vector2:
@@ -1340,7 +1343,7 @@ func refresh_control_labels() -> void:
 		var move := "/".join([
 			Controls.key_label("move_forward", "W"), Controls.key_label("move_left", "A"),
 			Controls.key_label("move_backward", "S"), Controls.key_label("move_right", "D")])
-		_hint_label.text = "%s 이동 · %s 점프 · %s 상호작용 · Esc 메뉴\n축제 지도에서 출격 준비\n모두 출발 구역에 올라서면 출발" \
+		_hint_label.text = "%s 이동 · %s 점프 · %s 상호작용 · Esc 메뉴\n축제 지도에서 출격 준비\n모두 트럭에 타면 출발" \
 			% [move, Controls.key_label("jump", "Space"), interact]
 	if _screen_label != null and session != null:
 		_screen_label.text = "축제 지도\n▶ %s\n[%s] 지도 열기" \
@@ -1359,7 +1362,7 @@ func _refresh_panel(assignments: Dictionary) -> void:
 	for peer_id in _occupants:
 		var visual := (_occupants[peer_id] as Node).get_node_or_null("Character") as Node3D
 		if visual != null:
-			visual.visible = int(peer_id) != _local_id() and session.has_character(int(peer_id))
+			visual.visible = session.has_character(int(peer_id))
 	var stage_name := StageRegistry.display_name(session.selected_stage)
 	refresh_control_labels()
 	if _info_label != null:

@@ -25,7 +25,7 @@ var paint_only := false
 var collision_corner_cut := 0.0
 
 @export_group("Contamination Grid")
-@export_range(0.05, 0.5, 0.01, "suffix:m") var cell_size := 0.1
+@export_range(0.05, 0.5, 0.005, "suffix:m") var cell_size := 0.1
 @export_range(0.05, 1.5, 0.01, "suffix:m") var brush_radius := 0.4
 @export var mayo_color := Color("fff0a8")
 
@@ -60,7 +60,7 @@ func configure(new_cell_size: float, new_brush_radius: float) -> void:
 ## The floor's note on why the centre cell alone goes over the wire applies here
 ## too; `paint_mayo_cell` is the replay side.
 func paint_mayo(world_position: Vector3, world_normal: Vector3,
-		kind := ContaminationGrid.KIND_MAYO) -> Vector3i:
+		kind := ContaminationGrid.KIND_MAYO, brush := ContaminationGrid.BRUSH_POOL) -> Vector3i:
 	if grids.is_empty():
 		return Vector3i(-1, -1, -1)
 	var local_normal := (global_transform.basis.inverse() * world_normal).normalized()
@@ -73,22 +73,41 @@ func paint_mayo(world_position: Vector3, world_normal: Vector3,
 	# The brush clips at the face border instead of wrapping around the box
 	# edge; a strand hitting a corner marks only the face it hit.
 	var cell := grids[face].paint(Vector2(local.dot(u_axis), local.dot(v_axis)),
-		brush_radius, 1, -1, kind)
+		brush_radius, 1, -1, kind, brush)
 	if cell.x < 0:
 		return Vector3i(-1, -1, -1)
 	_queue_face_upload(face)
 	return Vector3i(face, cell.x, cell.y)
 
 
-func paint_mayo_cell(face: int, cell: Vector2i, kind := ContaminationGrid.KIND_MAYO) -> void:
+func paint_mayo_cell(face: int, cell: Vector2i, kind := ContaminationGrid.KIND_MAYO,
+		brush := ContaminationGrid.BRUSH_POOL) -> void:
 	if face < 0 or face >= grids.size():
 		return
-	grids[face].paint_cell(cell, brush_radius, 1, -1, kind)
+	grids[face].paint_cell(cell, brush_radius, 1, -1, kind, brush)
 	_queue_face_upload(face)
 
 
-## Strips every sauce off a square patch of the face `world_normal` points out
-## of, `radius_meters` either side of the hit. Returns (face, cell_x, cell_y)
+func position_brush(world_position: Vector3, world_normal: Vector3, brush: int) -> int:
+	var face := _face_for_normal((global_basis.inverse() * world_normal).normalized())
+	if face < 0 or face >= grids.size():
+		return brush
+	var at := to_local(world_position)
+	var local := Vector2(at.dot(FACE_BASIS[face][1]), at.dot(FACE_BASIS[face][2]))
+	return grids[face].position_brush(local, brush)
+
+
+func paint_tangent(world_normal: Vector3, travel: Vector3) -> Vector2:
+	var into_face := global_basis.inverse()
+	var face := _face_for_normal((into_face * world_normal).normalized())
+	if face < 0:
+		return Vector2.ZERO
+	var local := into_face * travel
+	return Vector2(local.dot(FACE_BASIS[face][1]), local.dot(FACE_BASIS[face][2]))
+
+
+## Washes a round patch of the face that points along `world_normal`.
+## Returns (face, cell_x, cell_y)
 ## when there was anything there to wash, so the patch can be replayed on the
 ## peers with `wash_cell`; (-1, -1, -1) when it was already clean or missed.
 func wash_at(world_position: Vector3, world_normal: Vector3, radius_meters: float) -> Vector3i:
@@ -99,19 +118,16 @@ func wash_at(world_position: Vector3, world_normal: Vector3, radius_meters: floa
 		return Vector3i(-1, -1, -1)
 	var local := to_local(world_position)
 	var cell := grids[face].cell_of(Vector2(local.dot(FACE_BASIS[face][1]), local.dot(FACE_BASIS[face][2])))
-	if not grids[face].has_cell(cell) or grids[face].painted_cell_count() == 0:
+	if not wash_cell(face, cell, radius_meters):
 		return Vector3i(-1, -1, -1)
-	wash_cell(face, cell, radius_meters)
 	return Vector3i(face, cell.x, cell.y)
 
 
-func wash_cell(face: int, cell: Vector2i, radius_meters: float) -> void:
-	if face < 0 or face >= grids.size():
-		return
-	var reach := maxi(1, ceili(radius_meters / grids[face].cell_size))
-	grids[face].fill_rect(cell - Vector2i.ONE * reach, cell + Vector2i.ONE * reach, 0,
-		ContaminationGrid.KIND_MAYO)
+func wash_cell(face: int, cell: Vector2i, radius_meters: float) -> bool:
+	if face < 0 or face >= grids.size() or not grids[face].erase_disc(cell, radius_meters):
+		return false
 	_queue_face_upload(face)
+	return true
 
 
 func _queue_face_upload(face: int) -> void:
@@ -128,7 +144,7 @@ func cells_md5() -> String:
 
 
 func snapshot_cells(face: int) -> PackedByteArray:
-	return grids[face].cells.duplicate()
+	return grids[face].snapshot()
 
 
 func restore_cells(face: int, cells: PackedByteArray) -> bool:

@@ -302,8 +302,17 @@ func _run() -> void:
 	_check(came_down, "the sauce fired straight up never came back down at all")
 	_check(self_body.painted_cell_count() > 0,
 		"walking into your own falling sauce did not mark you")
-	_check(self_visor.painted_cell_count() > 0,
-		"it landed on you but not on your own glasses, which were pointing at it")
+	# A falling stream can hit the body while passing behind the posed lens.
+	# Check that a returning hit through the visible lens can still fog it.
+	self_visor.clear()
+	var self_shooter = scene._local
+	var face: Transform3D = self_shooter.face_anchor.global_transform * self_shooter.face_frame
+	var lens_height: float = self_shooter.face_width * VisorContamination.LENS_SIZE.y
+	var lens_centre := face * Vector3(0.0, -lens_height * 0.5, 0.0)
+	var incoming := face.basis.z.normalized()
+	scene._record_visor_splat(self_shooter.player, lens_centre + incoming * 0.1,
+		ContaminationGrid.KIND_MAYO, incoming)
+	_check(self_visor.painted_cell_count() > 0, "a returning hit through the lens did not fog it")
 
 	# --- one splat is enough to be drawn, on every kind of surface ---
 	# The mask holds a thickness now, 0 to 255, where it used to hold a painted

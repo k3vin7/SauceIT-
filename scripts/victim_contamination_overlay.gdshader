@@ -17,8 +17,10 @@ uniform mat4 world_to_box;
 uniform vec3 box_size = vec3(1.65, 0.48, 2.15);
 // Half a single splat's worth, normalised -- see the enemy overlay.
 uniform float paint_threshold = 0.00784;
-uniform vec4 mustard_tint : source_color = vec4(1.00, 0.86, 0.26, 1.0);
+uniform bool fine_contours = false;
+uniform sampler2D contour_texture : filter_linear, repeat_disable, hint_default_black;
 
+#include "res://scripts/sauce_finish.gdshaderinc"
 #include "res://scripts/sauce_toon.gdshaderinc"
 #include "res://scripts/body_sauce_mask.gdshaderinc"
 #include "res://scripts/ketchup_surface.gdshaderinc"
@@ -43,15 +45,18 @@ void fragment() {
 		discard;
 	}
 	vec2 uv = top_uv(box_position);
+	vec2 grains = sauce_grain_position(box_position);
+	vec2 grain_footprint = fwidth(grains);
 	float coverage = texture(mask_texture, uv).r;
-	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || coverage < paint_threshold) {
+	float contour = fine_contours ? stain_contour(contour_texture, uv) : step(paint_threshold, coverage);
+	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || contour < 0.50) {
 		discard;
 	}
 	ivec2 size = textureSize(mask_texture, 0);
-	float kind = mod(sauce_mask_sample(mask_texture, uv, size, false), 4.0);
+	int kind = int(sauce_mask_sample(mask_texture, uv, size, false));
 	ketchup_gloss = 0.0;
-	if (kind == 2.0) {
-		vec2 surface = ketchup_surface(mask_texture, uv, size, box_position, false);
+	if (kind == 2) {
+		vec2 surface = fine_contours ? vec2(contour, 0.0) : ketchup_surface(mask_texture, uv, size, box_position, false);
 		if (surface.x < 0.5) {
 			discard;
 		}
@@ -61,10 +66,10 @@ void fragment() {
 		SPECULAR = KETCHUP_COATING_SPECULAR;
 		ketchup_gloss = surface.x;
 	} else {
-		vec3 tint = kind == 1.0 ? mustard_tint.rgb : vec3(1.0);
-		ALBEDO = sauce_toon_finish(mayo_color.rgb * tint, coverage, paint_threshold, uv * vec2(size));
+		vec3 pigment = sauce_coating_detail(sauce_coating_pigment(kind, mayo_color.rgb), kind, grains, grain_footprint);
+		ALBEDO = fine_contours ? pigment : sauce_toon_finish(pigment, coverage, paint_threshold, uv * vec2(size));
 		EMISSION = ALBEDO * 0.28;
-		ROUGHNESS = 1.0;
+		ROUGHNESS = sauce_coating_roughness(kind, 0.79);
 	}
 	METALLIC = 0.0;
 }

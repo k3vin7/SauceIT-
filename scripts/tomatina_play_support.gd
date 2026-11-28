@@ -473,9 +473,12 @@ func context_candidates(shooter) -> Array:
 		var shop := TomatinaMap.refuge_shop_at(room)
 		_candidate(out, shooter, "shop", room, shop, "장비 개조", 0.0, TomatinaMap.refuge_tent_at(room))
 	var station: int = world.station_in_reach(player)
-	if station >= 0 and (shooter.sauce < 0.999 or world.station_sauce_for(player) != shooter.sauce_kind):
+	if station >= 0:
 		var stall: Vector3 = world._refill_stations[station]["position"]
-		_candidate(out, shooter, "refill", station, at, "케첩 보충", 0.5, stall + Vector3.UP * 1.4)
+		if world.practice_range:
+			_candidate(out, shooter, "range_supply", station, at, "소스 충전·교체", 0.5, stall + Vector3.UP * 0.80)
+		elif shooter.sauce < 0.999 or world.station_sauce_for(player) != shooter.sauce_kind:
+			_candidate(out, shooter, "refill", station, at, "케첩 보충", 0.5, stall + Vector3.UP * 1.4)
 	if world.item_slots(shooter.peer_id).find(0, 1) >= 0:
 		for id in world._healing_tomatoes:
 			if int(id) < 0 or int(id) >= 1000000:
@@ -509,7 +512,7 @@ func _add_loot_candidate(out: Array, shooter, body: int) -> void:
 
 func _candidate(out: Array, shooter, kind: String, id: int, at: Vector3, text: String, priority: float,
 		anchor := Vector3.INF) -> void:
-	var eye: Vector3 = shooter.player.global_position + Vector3.UP * world.eye_height
+	var eye: Vector3 = world.player_eye_position(shooter)
 	var offset := at - eye
 	var distance := offset.length()
 	var facing: Vector3 = -world._aim_basis(shooter).z

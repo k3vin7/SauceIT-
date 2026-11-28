@@ -23,6 +23,8 @@ const MARGIN := 16.0
 ## about 41 m: far enough to see the next junction and the stalls on the way to
 ## it, close enough that a single stall is still a distinct mark.
 const VIEW_CELLS := 18.0
+const MARK_SIZE := SIZE * 0.9 / (VIEW_CELLS * 2.0)
+const MAP_REFRESH_INTERVAL := 1.0 / 30.0
 
 const BACKING := Color(0.04, 0.05, 0.06, 0.82)
 const EDGE := UI.EDGE
@@ -42,6 +44,18 @@ var _image_origin := Vector2i.ZERO
 var _stall_cells := PackedVector2Array()
 var _landmark_cells := PackedVector2Array()
 var _plate := UI.box(Color(0.07, 0.11, 0.14, 0.93), UI.EDGE, 10)
+var _player_marker: PlayerMarker
+var _map_refresh_left := 0.0
+
+
+class PlayerMarker extends Node2D:
+	func _draw() -> void:
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(MARK_SIZE * 3.4, 0.0),
+			Vector2(0.0, MARK_SIZE * 1.5),
+			Vector2(0.0, -MARK_SIZE * 1.5),
+		]), Color(PLAYER.r, PLAYER.g, PLAYER.b, 0.45))
+		draw_circle(Vector2.ZERO, MARK_SIZE * 1.3, PLAYER)
 
 
 func _ready() -> void:
@@ -51,6 +65,9 @@ func _ready() -> void:
 	# Cells, not a smear: the streets are a pixel each and the window is drawn
 	# at about five pixels to the cell, so anything but nearest is mush.
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_player_marker = PlayerMarker.new()
+	_player_marker.hide()
+	add_child(_player_marker)
 
 
 ## Bakes the street picture and the marker positions. Called once, after the
@@ -96,8 +113,19 @@ func set_frame(new_frame: Rect2) -> void:
 	queue_redraw()
 
 
-func _process(_delta: float) -> void:
-	queue_redraw()
+func _process(delta: float) -> void:
+	if not is_visible_in_tree() or not is_instance_valid(world) or world._local == null:
+		return
+	# The look arrow follows every drawn frame. The map and its actor markers
+	# can refresh separately without rebuilding them for every mouse movement.
+	var heading := wrapf(-PI * 0.5 - float(world._aim_yaw), -PI, PI)
+	if not is_equal_approx(_player_marker.rotation, heading):
+		_player_marker.rotation = heading
+	_map_refresh_left -= delta
+	if _map_refresh_left <= 0.0:
+		_map_refresh_left += MAP_REFRESH_INTERVAL
+		_map_refresh_left = maxf(_map_refresh_left, 0.0)
+		queue_redraw()
 
 
 func _draw() -> void:
@@ -129,7 +157,7 @@ func _draw() -> void:
 
 	# Stalls, which are also where the sauce comes from, so they are the thing
 	# most worth finding on it.
-	var mark := maxf(per_cell * 0.9, 2.0)
+	var mark := MARK_SIZE
 	for cell in _stall_cells:
 		_draw_mark(box, centre, per_cell, cell, mark, STALL)
 	for cell in _landmark_cells:
@@ -146,19 +174,8 @@ func _draw() -> void:
 		if ally != player and ally.state != MayoPlayer.State.DEAD:
 			_draw_mark(box, centre, per_cell, _cell_of(ally.global_position), mark * 1.6, UI.MINT)
 
-	# The player, always dead centre -- the map moves, they do not.
-	var middle := box.get_center()
-	# A wedge for where they are looking, since the map itself does not turn.
-	var facing := -player.global_transform.basis.z
-	var heading := Vector2(facing.x, facing.z).normalized()
-	if heading.length_squared() > 0.001:
-		var side := Vector2(-heading.y, heading.x)
-		draw_colored_polygon(PackedVector2Array([
-			middle + heading * (mark * 3.4),
-			middle + side * (mark * 1.5),
-			middle - side * (mark * 1.5),
-		]), Color(PLAYER.r, PLAYER.g, PLAYER.b, 0.45))
-	draw_circle(middle, maxf(mark * 1.3, 3.0), PLAYER)
+	_player_marker.position = box.get_center()
+	_player_marker.show()
 
 	draw_rect(box, EDGE, false, 2.0)
 

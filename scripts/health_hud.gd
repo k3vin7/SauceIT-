@@ -505,6 +505,8 @@ func _draw_enemies() -> void:
 	# Asked of the world rather than of the tree: groups are tree-wide, and the
 	# harness runs several worlds in one tree, so a group lookup would hang
 	# every world's enemies over every screen.
+	var camera_pose := camera.global_transform
+	var tomatina: bool = world.map_kind == world.MapKind.TOMATINA
 	var count: int = world.enemy_count()
 	for index in count:
 		var enemy := world.enemy_at(index) as MayoEnemy
@@ -513,7 +515,7 @@ func _draw_enemies() -> void:
 		# A bowled ball cannot be hurt, so a bar over it would never move.
 		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
 			continue
-		if world.map_kind == world.MapKind.TOMATINA:
+		if tomatina:
 			if enemy.kind == MayoEnemy.EnemyKind.PRESS_KING:
 				var boss := enemy as PressKingScript
 				var card := Rect2(frame.get_center().x - 158.0, frame.position.y + 18.0, 316.0, 52.0)
@@ -525,8 +527,12 @@ func _draw_enemies() -> void:
 				_draw_bar(meter, boss.health_fraction(), phase, ENEMY_LOW, 1.0)
 				continue
 			if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT:
-				var to_enemy := enemy.global_position - camera.global_position
-				if to_enemy.length_squared() > 30.0 ** 2 or to_enemy.normalized().dot(-camera.global_basis.z) < 0.997:
+				var to_enemy := enemy.global_position - camera_pose.origin
+				var distance_squared := to_enemy.length_squared()
+				if distance_squared > 30.0 ** 2:
+					continue
+				var facing := to_enemy.dot(-camera_pose.basis.z)
+				if facing <= 0.0 or facing * facing < distance_squared * 0.997 ** 2:
 					continue
 		var bar := enemy_bar_rect(enemy, camera)
 		if bar.size.x <= 0.0:

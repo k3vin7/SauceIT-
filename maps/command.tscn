@@ -3,6 +3,10 @@
 [ext_resource type="Script" path="res://scripts/command_walk_test.gd" id="1_walk"]
 [ext_resource type="Shader" path="res://assets/cartoon/office_toon.gdshader" id="2_toon"]
 [ext_resource type="Shader" path="res://assets/cartoon/office_hologram.gdshader" id="3_hologram"]
+[ext_resource type="Script" path="res://scripts/office_mirror.gd" id="4_mirror"]
+
+[sub_resource type="QuadMesh" id="Mesh_mirror"]
+size = Vector2(1.8, 1.1)
 
 [sub_resource type="Environment" id="Env_office"]
 background_mode = 1
@@ -2896,10 +2900,12 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6.6, 1.05, 19.68)
 size = Vector3(0.08, 0.28, 0.08)
 material = SubResource("Mat_metal")
 
-[node name="Mirror" type="CSGBox3D" parent="Annex/ShowerRoom"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6.6, 2, 19.74)
-size = Vector3(1.8, 1.1, 0.04)
-material = SubResource("Mat_glass")
+[node name="Mirror" type="MeshInstance3D" parent="Annex/ShowerRoom"]
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, -6.6, 2, 19.719)
+cast_shadow = 0
+mesh = SubResource("Mesh_mirror")
+material_override = SubResource("Mat_glass")
+script = ExtResource("4_mirror")
 
 [node name="MirrorFrame" type="CSGBox3D" parent="Annex/ShowerRoom"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6.6, 2, 19.76)
