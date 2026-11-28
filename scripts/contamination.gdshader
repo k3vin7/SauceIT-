@@ -15,7 +15,7 @@ render_mode cull_disabled;
 // outermost cells of a stain are exactly the one-deposit case, so the
 // silhouette keeps it.
 //
-// THE BANDS, unfiltered. `texelFetch` reads the cell's own thickness with no
+// THE MAYO BANDS, unfiltered on coarse grids. `texelFetch` reads the cell's own thickness with no
 // interpolation, so a band is drawn on exactly the cells whose stored value is
 // over its threshold -- and for the deep band that is exactly the test the
 // floor runs when it asks whether someone slips. Filtering would put the drawn
@@ -151,30 +151,42 @@ void fragment() {
 	ALBEDO = clean;
 	ROUGHNESS = clean_roughness;
 	if (painted && !ketchup) {
-		float thickness = fine_contours ? coverage : own / 255.0;
-		float mid = fine_contours ? smoothstep(mid_threshold - 0.008, mid_threshold + 0.008, thickness) : step(mid_threshold, thickness);
-		float thick = fine_contours ? smoothstep(thick_threshold - 0.008, thick_threshold + 0.008, thickness) : step(thick_threshold, thickness);
-		float deep = fine_contours ? smoothstep(slip_threshold - 0.008, slip_threshold + 0.008, thickness) : step(slip_threshold, thickness);
+		bool near_detail = dot(VERTEX, VERTEX) < 2304.0;
+		float base_roughness = sauce_coating_roughness(kind, mayo_roughness);
+		float rough;
 		if (kind == 1) {
-			ALBEDO = sauce_pigment(kind) * (1.0 - 0.05 * mid - 0.09 * thick - 0.11 * deep);
+			// Filter over neighbouring mask texels, then shade at the grain scale.
+			// The packed thickness and the stain contour still drive gameplay and coverage.
+			float coats = max(0.0, coverage * 63.75 - 0.25);
+			float buildup = coats / (coats + 3.0);
+			ALBEDO = sauce_pigment(kind) * (1.0 - 0.065 * buildup);
+			if (near_detail) {
+				float grain = sauce_mustard_grain(grains * 1.35, grain_footprint * 1.35);
+				ALBEDO *= 1.0 - mix(0.34, 0.41, buildup) * grain;
+				if (!fine_contours) {
+					ALBEDO *= 1.0 - 0.32 * sauce_ink(coverage, paint_threshold);
+				}
+			}
+			rough = mix(base_roughness, 0.42, buildup);
 		} else {
+			float thickness = fine_contours ? coverage : own / 255.0;
+			float mid = fine_contours ? smoothstep(mid_threshold - 0.008, mid_threshold + 0.008, thickness) : step(mid_threshold, thickness);
+			float thick = fine_contours ? smoothstep(thick_threshold - 0.008, thick_threshold + 0.008, thickness) : step(thick_threshold, thickness);
+			float deep = fine_contours ? smoothstep(slip_threshold - 0.008, slip_threshold + 0.008, thickness) : step(slip_threshold, thickness);
 			vec3 pigment = sauce_coating_pigment(kind, mayo_color.rgb);
 			pigment = mix(pigment, mayo_color_mid.rgb, mid);
 			pigment = mix(pigment, mayo_color_thick.rgb, thick);
 			ALBEDO = mix(pigment, deep_color.rgb, deep);
-		}
-		if (dot(VERTEX, VERTEX) < 2304.0) {
-			ALBEDO = sauce_coating_detail(ALBEDO, kind, grains, grain_footprint);
-			if (!fine_contours) {
+			rough = mix(base_roughness, deep_roughness, 0.3 * mid);
+			rough = mix(rough, mix(base_roughness, deep_roughness, 0.6), thick);
+			rough = mix(rough, deep_roughness, deep);
+			if (near_detail && !fine_contours) {
 				ALBEDO = sauce_toon_finish(ALBEDO, coverage, paint_threshold, mask_position + mask_cell_origin);
 			}
 		}
-		float base_roughness = sauce_coating_roughness(kind, mayo_roughness);
-		float rough = mix(base_roughness, deep_roughness, 0.3 * mid);
-		rough = mix(rough, mix(base_roughness, deep_roughness, 0.6), thick);
 		float visible_fill = paint_only ? 1.0 : fill;
 		ALBEDO = mix(clean, ALBEDO, visible_fill);
-		ROUGHNESS = mix(clean_roughness, mix(rough, deep_roughness, deep), visible_fill);
+		ROUGHNESS = mix(clean_roughness, rough, visible_fill);
 	}
 	if (ketchup) {
 		vec3 position = paved ? vec3(pavement_position.x, 0.0, pavement_position.y) : surface_position;
@@ -195,9 +207,8 @@ void fragment() {
 		ROUGHNESS = mix(clean_roughness, ketchup_roughness(ketchup_fill), ketchup_fill);
 		SPECULAR = mix(0.5, paved ? 0.29 : KETCHUP_COATING_SPECULAR, ketchup_fill);
 	}
-	if (paved && painted && kind < 2) {
-		float threshold = kind == 1 ? 2.0 : 3.0;
-		float wetness = fine_contours ? smoothstep(threshold - 0.5, threshold + 0.5, coverage * 63.75) : step(threshold, floor(own / 4.0));
+	if (paved && painted && kind == 0) {
+		float wetness = fine_contours ? smoothstep(2.5, 3.5, coverage * 63.75) : step(3.0, floor(own / 4.0));
 		if (wetness > 0.0) {
 			float stripe = smoothstep(0.55, 0.72, sin((pavement_position.x + pavement_position.y) * 9.0));
 			ALBEDO = mix(ALBEDO, vec3(0.95, 0.72, 0.15), stripe * wetness * 0.16);
