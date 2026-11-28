@@ -1208,7 +1208,8 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 	var launch_position := player.global_position
 	player.global_position += Vector3.UP * 30.0
 	scene.debug_set_aim(37.0, -45.0)
-	var aim: Vector3 = shooter.attack_direction
+	# The shell leaves the cap's mouth towards the point the crosshair is on.
+	var aim: Vector3 = scene.mortar_aim_direction(shooter)
 	var weak := parts.mortar_launch_velocity(aim, 0.0)
 	shooter.firing = true
 	scene._advance_strand(shooter, 0.01)
@@ -1217,7 +1218,7 @@ func _probe_sauce_parts(scene, player: MayoPlayer) -> void:
 		var shot: Dictionary = system._projectiles[0]
 		var lob: Vector3 = shot.velocity
 		_check(lob.is_equal_approx(weak) and lob.normalized().is_equal_approx(aim) and lob.y < 0.0,
-			"the mortar did not launch in the downward aim direction: %s" % lob)
+			"the mortar did not launch towards the crosshair's point: %s" % lob)
 		scene.play_support._update_arc(Vector3.ZERO, aim)
 		var segments: PackedVector2Array = scene._crosshair.trajectory_segments
 		var origin: Vector3 = shot.origin

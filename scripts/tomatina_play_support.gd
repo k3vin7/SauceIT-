@@ -289,7 +289,8 @@ func _update_arc(origin: Vector3, direction: Vector3) -> void:
 		var profile: Dictionary = world.SauceParts.PROJECTILES[world.SauceParts.Part.ARC]
 		# Drawn from where the lob really leaves, the cap's mouth.
 		origin = world.part_launch_origin(world._local, world.SauceParts.Part.ARC)
-		velocity = world.SauceParts.mortar_launch_velocity(direction, world._local.bottle_charge)
+		velocity = world.SauceParts.mortar_launch_velocity(world.mortar_aim_direction(world._local),
+			world._local.bottle_charge)
 		gravity = profile.gravity
 		life = profile.life
 		step_seconds = world.get_physics_process_delta_time()

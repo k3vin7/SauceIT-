@@ -10,6 +10,21 @@ const FESTIVAL_DECOR := preload("res://scripts/tomatina_festival_decor.gd")
 const HOUSES := ["HouseCream", "HousePeach", "HouseLime", "HouseSage", "HouseBlue", "HouseHoney"]
 const BANNERS := ["BannerWater", "BannerMarket", "BannerFestival"]
 const VICTIM_MODELS := ["FallenFront", "FallenBack", "FallenSide"]
+## 쓰러진 손님의 생김새: [피부, 머리카락]. 모델 셋이 전부 같은 피부·머리색으로 만들어져 있어
+## 거리의 시체가 전부 한 사람처럼 보였다(2026-11-28). 시체마다 이 가운데 하나를 입힌다 --
+## 입술과 감은 눈꺼풀은 피부색에서 따라 나온다. 0번이 모델 원래 색이다.
+const VICTIM_LOOKS := [
+	[Color("dc9a70"), Color("482a24")],
+	[Color("f3cfb0"), Color("c9a25a")],
+	[Color("8a5636"), Color("1c1412")],
+	[Color("e9b98f"), Color("23191a")],
+	[Color("5a3423"), Color("110d0c")],
+	[Color("c58c5e"), Color("6e3b22")],
+	[Color("f0c4a2"), Color("a5481f")],
+	[Color("a56f47"), Color("2e1e18")],
+	[Color("d9a37c"), Color("9a9692")],
+	[Color("724529"), Color("3a2a22")],
+]
 const ATTACK_AFTERMATH := ["FallenFront", "FallenBack", "FallenSide", "CollapsedStall",
 	"OverturnedHandcart", "CollapsedStoneWall", "BrokenFestivalBarrier", "Rubble",
 	"OverturnedTomatoTruck", "WreckBody", "BrokenBoards", "TornBuntingHeap"]
@@ -796,11 +811,22 @@ func mesh_for(key: String) -> Mesh:
 
 
 ## Bake the fallen guests' material palette into the vertex colors read by the
-## toon shader, so each body can still use one surface per pass.
-func victim_mesh_for(key: String) -> Mesh:
+## toon shader, so each body can still use one surface per pass. `look` picks the
+## skin and hair (`VICTIM_LOOKS`); each model and look is baked once and shared.
+func victim_mesh_for(key: String, look := 0) -> Mesh:
 	var source := mesh_for(key)
 	if source == null or key not in VICTIM_MODELS:
 		return source
+	look = posmod(look, VICTIM_LOOKS.size())
+	var skin: Color = VICTIM_LOOKS[look][0]
+	var palette := {
+		"Skin": skin,
+		"Hair": VICTIM_LOOKS[look][1],
+		# The model's own lip and lid, as shades of its own skin.
+		"Lip": Color(skin.r * 0.755, skin.g * 0.61, skin.b * 0.643),
+		"ClosedLid": Color(skin.r * 0.61, skin.g * 0.545, skin.b * 0.585),
+	}
+	key = "%s#%d" % [key, look]
 	if not _merged_victim_meshes.has(key):
 		var surface := SurfaceTool.new()
 		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -814,7 +840,10 @@ func victim_mesh_for(key: String) -> Mesh:
 				surface_colors = arrays[Mesh.ARRAY_COLOR]
 			else:
 				surface_colors.resize(arrays[Mesh.ARRAY_VERTEX].size())
-				surface_colors.fill(material.albedo_color if material != null else Color.WHITE)
+				var tint := material.albedo_color if material != null else Color.WHITE
+				if look > 0 and material != null:
+					tint = palette.get(material.resource_name, tint)
+				surface_colors.fill(tint)
 			colors.append_array(surface_colors)
 		var arrays := surface.commit_to_arrays()
 		arrays[Mesh.ARRAY_COLOR] = colors

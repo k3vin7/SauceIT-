@@ -356,6 +356,14 @@ class Shooter:
 	var aim_recoil_rise_speed := 0.0
 	var aim_recoil_hold := 0.0
 	var aim_recoil_return_speed := 0.0
+	## This kick is handed over if the player moves the view (`SauceParts.RECOIL_TAKEOVER_PARTS`).
+	var aim_recoil_takeover := false
+	## The player has moved the view since the shot: the kick stays where it is.
+	var aim_recoil_free := false
+	## Mouse travel since the shot (the player holding the bottle), and the aim
+	## the shot left from (the host, watching somebody else's).
+	var aim_recoil_look := 0.0
+	var aim_recoil_from := Vector2.ZERO
 	var rng := RandomNumberGenerator.new()
 	## The nozzle's own dice, kept apart from `rng` above on purpose.
 	##
@@ -2182,11 +2190,20 @@ func _part_aim_direction(shooter: Shooter, origin: Vector3) -> Vector3:
 	return to_target.normalized()
 
 
+## Which way a mortar shell leaves. The cap's mouth is well below and ahead of
+## the eyes, so a shell sent parallel to the view flew under whatever the
+## crosshair was on for its whole flight. It leaves towards the point the
+## crosshair is on instead, like the straight parts, and gravity takes it from
+## there. The aiming line (`TomatinaPlaySupport`) draws the same launch.
+func mortar_aim_direction(shooter: Shooter) -> Vector3:
+	return _part_aim_direction(shooter, part_launch_origin(shooter, SauceParts.Part.ARC))
+
+
 func _fire_part_volley(shooter: Shooter) -> void:
 	var origin := part_launch_origin(shooter, shooter.sauce_part)
 	var forward: Vector3
 	if shooter.sauce_part == SauceParts.Part.ARC:
-		forward = SauceParts.mortar_launch_velocity(shooter.attack_direction, shooter.bottle_charge) \
+		forward = SauceParts.mortar_launch_velocity(mortar_aim_direction(shooter), shooter.bottle_charge) \
 			/ float(SauceParts.PROJECTILES[SauceParts.Part.ARC].speed)
 	else:
 		forward = _part_aim_direction(shooter, origin)
@@ -2233,6 +2250,10 @@ func show_part_volley(peer: int, part: int, sauce: int, origin: Vector3, forward
 		shooter.aim_recoil_rise_speed = deg_to_rad(float(recoil.rise_speed))
 		shooter.aim_recoil_hold = float(recoil.hold)
 		shooter.aim_recoil_return_speed = deg_to_rad(float(recoil.return_speed))
+		shooter.aim_recoil_takeover = part in SauceParts.RECOIL_TAKEOVER_PARTS
+		shooter.aim_recoil_free = false
+		shooter.aim_recoil_look = 0.0
+		shooter.aim_recoil_from = Vector2(shooter.aim_yaw, shooter.aim_pitch)
 		if shooter.is_local:
 			_start_part_recoil(shooter, part, pitch_scale)
 	if part == SauceParts.Part.CANNON:
@@ -2266,16 +2287,47 @@ func _advance_stream_aim_recoil(shooter: Shooter, delta: float) -> void:
 
 
 ## The host and the player holding the bottle advance confirmed one-shot kicks.
+##
+## A kick that can be taken over (the sniper's) stops coming back down once the
+## player moves the view: from then on it is theirs to bring down. The player
+## holding the bottle folds whatever the kick has lifted into their own aim, so
+## the view stays exactly where it is. The host, simulating somebody else's
+## bottle, just drops its copy of the kick -- that player's aim arrives already
+## folded -- and learns that it happened from the aim itself having moved.
 func _advance_aim_recoil(shooter: Shooter, delta: float) -> void:
+	if shooter.aim_recoil_takeover and not shooter.aim_recoil_free and not shooter.is_local \
+			and (shooter.aim_recoil_pitch > 0.0 or shooter.aim_recoil_pending > 0.0) \
+			and _is_remote_player(shooter):
+		var turned := absf(wrapf(shooter.aim_yaw - shooter.aim_recoil_from.x, -PI, PI))
+		shooter.aim_recoil_free = maxf(turned, absf(shooter.aim_pitch - shooter.aim_recoil_from.y)) \
+			> SauceParts.RECOIL_TAKEOVER_ANGLE
 	if shooter.aim_recoil_pending > 0.0:
 		var lift := minf(shooter.aim_recoil_pending, shooter.aim_recoil_rise_speed * delta)
 		shooter.aim_recoil_pending -= lift
 		shooter.aim_recoil_pitch += lift
+		if shooter.aim_recoil_free:
+			_hand_over_aim_recoil(shooter)
+		return
+	if shooter.aim_recoil_free:
+		_hand_over_aim_recoil(shooter)
 		return
 	if shooter.aim_recoil_hold > 0.0:
 		shooter.aim_recoil_hold = maxf(0.0, shooter.aim_recoil_hold - delta)
 	elif shooter.aim_recoil_pitch > 0.0:
 		shooter.aim_recoil_pitch = move_toward(shooter.aim_recoil_pitch, 0.0, shooter.aim_recoil_return_speed * delta)
+
+
+func _hand_over_aim_recoil(shooter: Shooter) -> void:
+	if shooter.is_local:
+		shooter.aim_pitch = _clamp_aim_pitch(shooter.aim_pitch + shooter.aim_recoil_pitch)
+	shooter.aim_recoil_pitch = 0.0
+	shooter.aim_recoil_hold = 0.0
+
+
+## A shooter whose aim arrives from another machine (not this screen's player, not a bot).
+func _is_remote_player(shooter: Shooter) -> bool:
+	return is_instance_valid(_net) and _net.is_online() \
+		and _net.multiplayer.get_peers().has(shooter.peer_id)
 
 
 ## Raises `air_shot_fired` while the nozzle is blowing air, on every peer --
@@ -3166,6 +3218,13 @@ func apply_look(relative: Vector2) -> void:
 	# 저격 노즐로 당겨 보는 동안에는 그만큼 천천히 돈다.
 	var radians_per_pixel := deg_to_rad(mouse_sensitivity) \
 		* lerpf(1.0, SauceParts.SNIPER_ZOOM, smoothstep(0.0, 1.0, _sniper_zoom))
+	# Moving the view after a sniper shot takes the kick over: see `_advance_aim_recoil`.
+	if _local.aim_recoil_takeover and not _local.aim_recoil_free \
+			and (_local.aim_recoil_pitch > 0.0 or _local.aim_recoil_pending > 0.0):
+		_local.aim_recoil_look += relative.length()
+		if _local.aim_recoil_look >= SauceParts.RECOIL_TAKEOVER_PIXELS:
+			_local.aim_recoil_free = true
+			_hand_over_aim_recoil(_local)
 	_local.aim_yaw = wrapf(_local.aim_yaw - relative.x * radians_per_pixel, -PI, PI)
 	if relative.y != 0.0:
 		var limit := deg_to_rad(pitch_limit_degrees)

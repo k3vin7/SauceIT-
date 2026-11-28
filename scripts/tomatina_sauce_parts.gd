@@ -71,6 +71,14 @@ const SHOT_AIM_RECOIL := {
 	Part.SNIPER: {"lift": 6.0, "limit": 16.0, "rise_speed": 260.0, "hold": 0.13, "return_speed": 4.0},
 }
 
+## 저격 노즐의 반동은 쏜 사람이 시점을 움직이면 그 사람에게 넘어간다: 튀어 오른 자리에서
+## 저절로 내려오지 않고, 거기서부터는 마우스가 움직이는 대로만 간다. 가만히 두면 예전처럼
+## 쏘기 전의 조준으로 돌아온다. 넘어가는 기준은 쏜 뒤 마우스가 움직인 거리(픽셀)이고, 방장은
+## 참가자의 조준이 이 각도 넘게 달라진 것으로 같은 일을 알아챈다.
+const RECOIL_TAKEOVER_PARTS := [Part.SNIPER]
+const RECOIL_TAKEOVER_PIXELS := 6.0
+const RECOIL_TAKEOVER_ANGLE := 1.5 * (PI / 180.0)
+
 ## 3갈래 노즐: 기본 줄기와 똑같은 줄기 세 가닥이 이 각도씩 벌어져 나간다. 가닥마다 굵기와
 ## 피해가 `THREE_WAY_SCALE`배이고, 소스는 기본의 `THREE_WAY_FLOW`배로 나간다.
 ## 저격 노즐: 휠 클릭을 누르는 동안 화면이 `SNIPER_ZOOM`배로 당겨지고, 좌클릭으로 한 발 쏜다.
@@ -111,7 +119,8 @@ static func cannon_blast_damage(shake: float) -> float:
 const THREE_WAY_ANGLE := deg_to_rad(15.0)
 const THREE_WAY_SCALE := 0.8
 const THREE_WAY_FLOW := 2.0
-## 박격포 캡은 시점 그대로 쏘며, 가파르게 올려 쏠 때는 발사 속도를 낮춰 상승 높이를 제한한다.
+## 박격포 캡은 조준점이 가리키는 곳을 향해 쏘며(`MayoPrototype.mortar_aim_direction`), 가파르게
+## 올려 쏠 때는 발사 속도를 낮춰 상승 높이를 제한한다.
 const MORTAR_MAX_RISE := 3.2
 const MORTAR_PREVIEW_ACTOR_LAYER := 31
 const MORTAR_PREVIEW_ACTOR_MASK := 1 << (MORTAR_PREVIEW_ACTOR_LAYER - 1)
