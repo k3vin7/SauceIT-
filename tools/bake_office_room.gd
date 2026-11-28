@@ -6,6 +6,17 @@ const SOURCE := "res://maps/command.tscn"
 const DESTINATION := "res://maps/command_runtime.scn"
 const KEEP_PATHS := ["MapScreen/Screen", "Locker/Body", "SlotMachine/Upper",
 	"ShowerBooth/Curtain", "ShowerBooth/ShowerHead"]
+## The baked room carries a list of its boxes under this metadata key, for the
+## firing range to lay sauce on (`PracticeRange.walls`): [transform, size, solid]
+## per box, `solid` being whether a body is stopped by it.
+const SAUCE_BOXES := "sauce_boxes"
+## Too small to show a splat, or round enough that a box around it would hang
+## paint in the air.
+const SAUCE_MIN_SIDE := 0.15
+const SAUCE_MAX_RADIUS := 0.25
+## Things that move after the bake, or are not things at all.
+const SAUCE_SKIP := ["ShowerBooth/Curtain", "ShowerBooth/ShowerHead", "DoctorHologram", "Locker/Door",
+	"SlotMachine/Symbol", "SlotMachine/Bulb", "SlotMachine/Lever"]
 
 
 func _initialize() -> void:
@@ -16,6 +27,7 @@ func _bake() -> void:
 	var office := (load(SOURCE) as PackedScene).instantiate() as Node3D
 	root.add_child(office)
 	await process_frame
+	office.set_meta(SAUCE_BOXES, _sauce_boxes(office))
 	var groups := {}
 	for node in office.find_children("*", "CSGShape3D", true, false):
 		var shape := node as CSGShape3D
@@ -71,6 +83,47 @@ func _bake() -> void:
 	office.queue_free()
 	await process_frame
 	quit(0 if error == OK else 1)
+
+
+## Every box in the room that sauce can be shown on, in the room's own space.
+## Floors are left out: the range's floor grid already covers them.
+func _sauce_boxes(office: Node3D) -> Array:
+	var boxes: Array = []
+	for node in office.find_children("*", "CSGShape3D", true, false):
+		var shape := node as CSGShape3D
+		var path := str(office.get_path_to(shape))
+		if not shape.is_root_shape() or not shape.is_visible_in_tree() or shape.get_child_count() > 0 \
+				or str(shape.name).begins_with("Floor"):
+			continue
+		var skipped := false
+		for prefix: String in SAUCE_SKIP:
+			if path.begins_with(prefix):
+				skipped = true
+		var material := shape.material_override
+		if material == null and shape is CSGPrimitive3D:
+			material = shape.get("material")
+		if material is BaseMaterial3D and material.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
+			skipped = true
+		if material is ShaderMaterial and material.shader.code.contains("ALPHA"):
+			skipped = true
+		if skipped:
+			continue
+		var size := Vector3.ZERO
+		if shape is CSGBox3D:
+			size = (shape as CSGBox3D).size
+		elif shape is CSGCylinder3D and (shape as CSGCylinder3D).radius <= SAUCE_MAX_RADIUS:
+			var cylinder := shape as CSGCylinder3D
+			size = Vector3(cylinder.radius * 2.0, cylinder.height, cylinder.radius * 2.0)
+		else:
+			continue
+		var place := office.global_transform.affine_inverse() * shape.global_transform
+		size *= place.basis.get_scale()
+		var sides := [size.x, size.y, size.z]
+		sides.sort()
+		if sides[1] < SAUCE_MIN_SIDE:
+			continue
+		boxes.append([Transform3D(place.basis.orthonormalized(), place.origin), size, shape.use_collision])
+	return boxes
 
 
 func _replace_shape(office: Node3D, parent: Node3D, shape: CSGShape3D, mesh: ArrayMesh) -> void:

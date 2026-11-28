@@ -5472,9 +5472,15 @@ func _build_tomatina() -> void:
 	var parked_trucks := TomatinaMap.parked_trucks()
 	var truck := TomatinaMap.fire_truck_box()
 	for box in TomatinaMap.boundary_boxes():
-		# 연습장의 벽은 사무실의 벽이다: 그 위에 자국만 얹는다.
+		# 연습장의 벽은 사무실의 벽과 물건들이다: 그 위에 자국만 얹는다.
 		_create_wall("TomatinaWall%02d" % _walls.size(), box["position"], box["size"],
 			Color("c9ad90"), true, has_art or practice_range)
+		if box.has("basis"):
+			_walls[-1].basis = box["basis"]
+		# 몸이 그냥 지나다니는 소품: 줄기와 물만 맞는다(쓰러진 손님과 같은 층).
+		if not box.get("solid", true):
+			_walls[-1].collision_layer = CORPSE_LAYER
+			_walls[-1].collision_mask = 0
 		if staged_loading and _walls.size() % LOAD_WALL_BATCH == 0:
 			await get_tree().process_frame
 	for box in debris + parked_trucks:
@@ -11085,7 +11091,9 @@ func _hose_path(shooter: Shooter, max_flight_time := HOSE_MAX_FLIGHT_TIME) -> Di
 			and origin == shooter.hose_path.origin and velocity == shooter.hose_path.velocity:
 		return shooter.hose_path
 
-	var query := PhysicsRayQueryParameters3D.create(eye, origin, 1)
+	# The office's props stand on the corpse layer (walked through, but sauce
+	# lands on them): the office's hose has to reach them to wash them.
+	var query := PhysicsRayQueryParameters3D.create(eye, origin, 1 | CORPSE_LAYER if practice_range else 1)
 	query.exclude = [shooter.player.get_rid()]
 	var hit := _static_body_on_ray(get_world_3d().direct_space_state, query)
 	shooter.hose_path_frame = frame

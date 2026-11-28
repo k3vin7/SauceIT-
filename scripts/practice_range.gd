@@ -74,37 +74,9 @@ const PICK_REACH := 2.4
 const SPAWN := Vector3(7.5, 0.0, 15.0)
 ## 물 호스가 감겨 있는 곳(바닥). 중앙 홀의 샤워실 쪽 구석이다.
 const HOSES := [Vector3(-3.9, 0.0, 18.9)]
-## 사무실 씬의 벽: [가운데, 크기]. 씬의 벽 상자 그대로이고, 소스는 그 면 위에 묻는다.
-const OFFICE_WALLS := [
-	# 사무실(Room)
-	[Vector3(-13.0, 2.5, 0.0), Vector3(0.35, 5.0, 20.0)],
-	[Vector3(13.0, 2.5, 0.0), Vector3(0.35, 5.0, 20.0)],
-	[Vector3(0.0, 2.5, -10.0), Vector3(26.0, 5.0, 0.35)],
-	[Vector3(-8.2375, 2.5, 10.0), Vector3(9.875, 5.0, 0.35)],
-	[Vector3(8.2375, 2.5, 10.0), Vector3(9.875, 5.0, 0.35)],
-	[Vector3(0.0, 4.5625, 10.0), Vector3(6.6, 0.875, 0.35)],
-	# 중앙 홀(Annex/Hub)
-	[Vector3(-5.0, 2.5, 11.75), Vector3(0.35, 5.0, 3.5)],
-	[Vector3(-5.0, 2.5, 18.25), Vector3(0.35, 5.0, 3.5)],
-	[Vector3(-5.0, 4.0, 15.0), Vector3(0.35, 2.0, 3.0)],
-	[Vector3(5.0, 2.5, 11.75), Vector3(0.35, 5.0, 3.5)],
-	[Vector3(5.0, 2.5, 18.25), Vector3(0.35, 5.0, 3.5)],
-	[Vector3(5.0, 4.0, 15.0), Vector3(0.35, 2.0, 3.0)],
-	[Vector3(-8.0875, 2.5, 20.0), Vector3(10.175, 5.0, 0.35)],
-	[Vector3(20.0875, 2.5, 20.0), Vector3(34.175, 5.0, 0.35)],
-	[Vector3(0.0, 4.5, 20.0), Vector3(6.0, 1.0, 0.35)],
-	# 샤워실(Annex/ShowerRoom)과 샤워 부스
-	[Vector3(-13.0, 2.5, 15.0), Vector3(0.35, 5.0, 10.35)],
-	[Vector3(-11.3, 1.3, 17.0), Vector3(3.0, 2.6, 0.15)],
-	[Vector3(-9.8, 1.3, 19.1), Vector3(0.15, 2.6, 1.4)],
-	# 트럭 탑승장(Annex/TruckBay)
-	[Vector3(-7.0, 2.5, 28.175), Vector3(0.35, 5.0, 16.0)],
-	[Vector3(7.0, 2.5, 28.175), Vector3(0.35, 5.0, 16.0)],
-	[Vector3(0.0, 2.5, 36.0), Vector3(14.35, 5.0, 0.35)],
-	# 사격 연습장(Annex/ShootingRange)
-	[Vector3(25.0875, 2.5, 10.0), Vector3(24.175, 5.0, 0.35)],
-	[Vector3(37.0, 2.5, 15.0), Vector3(0.35, 5.0, 10.35)],
-]
+## 구운 사무실 씬. 소스가 묻는 상자들의 목록을 품고 있다(`tools/bake_office_room.gd`).
+const OFFICE_SCENE := "res://maps/command_runtime.scn"
+const SAUCE_BOXES := "sauce_boxes"
 
 
 static func part_spot(part: int) -> Vector3:
@@ -125,14 +97,31 @@ static func floor_plane() -> Dictionary:
 	return {"centre": Vector3(centre.x, FLOOR_LIFT, centre.y), "size": BUILDING.size}
 
 
-## 소스가 묻는 벽: 사무실 씬의 벽 상자를 사방으로 `WALL_SKIN`만큼 키운 것. 그 면 위에
-## 자국만 그린다. 키우는 까닭: 면이 사무실의 벽과 똑같은 자리에 있으면 줄기가 어느 쪽에
-## 닿았는지가 그때그때 달라져, 소스가 묻지 않는 사무실 벽에 닿은 것으로 끝나기도 한다.
+## 소스가 묻는 것: 사무실 씬의 상자 전부 -- 벽과 천장, 가구와 소품, 트럭. 씬을 구울 때
+## 뽑아 둔 목록 그대로이고(`tools/bake_office_room.gd`), 그 면 위에 자국만 그린다. 상자마다
+## 사방으로 `WALL_SKIN`만큼 키운다: 면이 사무실의 것과 똑같은 자리에 있으면 줄기가 어느 쪽에
+## 닿았는지가 그때그때 달라져, 소스가 묻지 않는 사무실 쪽에 닿은 것으로 끝나기도 한다.
+## `solid`가 아닌 것(몸이 그냥 지나다니는 소품)은 줄기와 물만 맞고 몸은 막지 않는다.
 static func walls() -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
-	for wall in OFFICE_WALLS:
-		out.append({"position": wall[0], "size": wall[1] + Vector3.ONE * WALL_SKIN * 2.0})
+	for box in _office_boxes():
+		var place: Transform3D = box[0]
+		out.append({"position": place.origin, "size": (box[1] as Vector3) + Vector3.ONE * WALL_SKIN * 2.0,
+			"basis": place.basis, "solid": bool(box[2])})
 	return out
+
+
+## 구운 씬의 뿌리에 적혀 있는 상자 목록. 씬을 세우지 않고 읽는다.
+static func _office_boxes() -> Array:
+	var scene := load(OFFICE_SCENE) as PackedScene
+	if scene == null:
+		return []
+	var state := scene.get_state()
+	for index in state.get_node_property_count(0):
+		if state.get_node_property_name(0, index) == &"metadata/" + SAUCE_BOXES:
+			return state.get_node_property_value(0, index)
+	push_warning("The baked office has no sauce boxes: bake it again (tools/bake_office_room.gd).")
+	return []
 
 
 static func map_data() -> TomatinaAuthoredMap:
