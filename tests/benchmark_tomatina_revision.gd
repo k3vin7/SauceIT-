@@ -29,6 +29,7 @@ var viewport_rid: RID
 var resolution := Vector2i(1280, 720)
 var cache_logger := ShaderCacheLogger.new()
 var frame_budget_ms := 0.0
+var warmup_ms := 0.0
 
 
 func _initialize() -> void:
@@ -41,7 +42,7 @@ func _initialize() -> void:
 	call_deferred("run")
 
 
-func sample(label: String, seconds: float, begin := Callable()) -> void:
+func sample(label: String, seconds: float, begin := Callable(), sweep := false) -> void:
 	await RenderingServer.frame_post_draw
 	var times: Array[float] = []
 	var render_cpu: Array[float] = []
@@ -60,6 +61,8 @@ func sample(label: String, seconds: float, begin := Callable()) -> void:
 	if begin.is_valid():
 		begin.call()
 	while Time.get_ticks_usec() - start < seconds * 1000000.0:
+		if sweep:
+			scene.apply_look(Vector2(3.0 / scene.mouse_sensitivity, 0.0))
 		await RenderingServer.frame_post_draw
 		var now := Time.get_ticks_usec()
 		var frame_ms := float(now - last) / 1000.0
@@ -148,7 +151,9 @@ func run() -> void:
 	root.add_child(scene)
 	while not scene.load_complete:
 		await process_frame
+	var warmup_started := Time.get_ticks_usec()
 	await scene.warm_stage_materials()
+	warmup_ms = (Time.get_ticks_usec() - warmup_started) / 1000.0
 	scene.set_gameplay_input_enabled(true)
 	scene._healing_rng.seed = 20261117
 	scene._sauce_parts._rng.seed = 20261117
@@ -157,6 +162,12 @@ func run() -> void:
 	await create_timer(3.0).timeout
 	scene.play_support.diagnostics_enabled = true
 	await sample("start_idle", 8.0)
+	var cold_look := OS.get_cmdline_user_args().has("--cold-look")
+	if cold_look:
+		var start_yaw: float = scene._local.aim_yaw
+		await sample("first_look_sweep", 4.0, Callable(), true)
+		scene._local.aim_yaw = start_yaw
+		await process_frame
 	await sample_spray_pair()
 	var enemy: MayoEnemy
 	for candidate in scene._enemies:
@@ -193,8 +204,9 @@ func run() -> void:
 	for hitch in wall_hitches:
 		hitch["shader_cache_error_count"] = cache_errors.filter(func(error):
 			return error.timestamp_us >= hitch.start_us and error.timestamp_us < hitch.end_us).size()
-	file.store_string(JSON.stringify({"scope": "single rendered world, 32 sampled seconds",
+	file.store_string(JSON.stringify({"scope": "single rendered world, %d sampled seconds" % (36 if cold_look else 32),
 		"render_timings": "latest completed viewport draw, GPU timestamps can lag the wall frame",
+		"stage_material_warmup_ms": warmup_ms,
 		"shader_cache_errors": cache_errors,
 		"adapter": RenderingServer.get_video_adapter_name(), "renderer": RenderingServer.get_current_rendering_method(),
 		"resolution": [resolution.x, resolution.y], "fps_cap": Engine.max_fps, "frame_budget_ms": frame_budget_ms,

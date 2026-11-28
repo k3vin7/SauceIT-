@@ -207,6 +207,12 @@ class RibbonPoint:
 	var opacity := 1.0
 	var width_scale := 1.0
 
+class NozzleRibbonEnd:
+	var anchor: MayoPoint
+	var path: Array = []
+	var floor_contact := false
+	var release_tick := -1
+
 ## Everything that belongs to one player rather than to the world: their body,
 ## their aim, and their own strand. Offline there is exactly one, the local
 ## player; in a session there is one per peer, and every peer simulates all of
@@ -215,6 +221,7 @@ class Shooter:
 	var peer_id := 1
 	var is_local := false
 	var player: MayoPlayer
+	var nozzle_ribbon_ends: Array[NozzleRibbonEnd] = []
 	var player_collision: CollisionShape3D
 	var body_mesh: MeshInstance3D
 	var player_visual: Node3D
@@ -1588,11 +1595,13 @@ var debug_points_trimmed := 0
 var staged_loading := false
 var load_complete := false
 var _enabled_stage_occlusion := false
-var _enemy_visual_lod_left := 0.0
+var _enemy_visual_lod_cursor := 0
+var _enemy_visual_lod_credit := 0.0
 var _ribbons_dirty := false
 var _ribbon_point_pool: Array[RibbonPoint] = []
 var _ribbon_points_used := 0
 var _stream_ray := PhysicsRayQueryParameters3D.new()
+var _fall_camera_ground_ray := PhysicsRayQueryParameters3D.new()
 const LOAD_WALL_BATCH := 36
 const LOAD_ENEMY_BATCH := 24
 var debug_timings_us := {
@@ -2772,16 +2781,7 @@ func _process(_delta: float) -> void:
 		_apply_nozzle_sway(_local)
 	_update_camera()
 	if map_kind == MapKind.TOMATINA:
-		_enemy_visual_lod_left -= _delta
-		if _enemy_visual_lod_left <= 0.0:
-			_enemy_visual_lod_left = 0.2
-			var camera: Camera3D = get_viewport().get_camera_3d()
-			if camera != null:
-				var at := camera.global_position
-				var light := $KeyLight as DirectionalLight3D
-				var grunt_shadow_distance := minf(light.directional_shadow_max_distance * 0.6, 42.0)
-				for enemy in _enemies:
-					enemy.update_visual_distance(enemy.global_position.distance_squared_to(at), grunt_shadow_distance)
+		_refresh_enemy_visual_distances(_delta)
 	if not is_instance_valid(_viewmodel_animation):
 		_viewmodel_animation = preload("res://scripts/viewmodel_animation.gd").new()
 		_viewmodel_animation.name = "FirstPersonAnimation"
@@ -2817,6 +2817,26 @@ func _process(_delta: float) -> void:
 		debug_timings_us.render_script += Time.get_ticks_usec() - render_started
 		debug_timings_us.floor_upload = _floor.grid.upload_time_us
 	_floor.grid.measure_uploads = debug_profile_enabled
+
+
+func _refresh_enemy_visual_distances(delta: float) -> void:
+	var camera := get_viewport().get_camera_3d()
+	var roster_size := _enemies.size()
+	if camera == null or roster_size == 0:
+		return
+	# Refresh over several draws instead of changing every shadow on one draw.
+	var max_batch := ceili(float(roster_size) / 6.0)
+	_enemy_visual_lod_credit = minf(float(max_batch), _enemy_visual_lod_credit + delta * roster_size / 0.2)
+	var count := int(_enemy_visual_lod_credit)
+	_enemy_visual_lod_credit -= count
+	var at := camera.global_position
+	var light := $KeyLight as DirectionalLight3D
+	var shadow_distance := minf(light.directional_shadow_max_distance * 0.6, 42.0)
+	for update in count:
+		_enemy_visual_lod_cursor %= roster_size
+		var enemy := _enemies[_enemy_visual_lod_cursor]
+		enemy.update_visual_distance(enemy.global_position.distance_squared_to(at), shadow_distance)
+		_enemy_visual_lod_cursor += 1
 
 
 ## The capsule lies on its side while the player is down. A capsule is all the
@@ -5227,9 +5247,14 @@ func prepare_stage_intro() -> void:
 func warm_stage_materials() -> void:
 	if DisplayServer.get_name() == "headless":
 		return
+	if map_kind == MapKind.TOMATINA and not practice_range:
+		await _warm_opening_views()
+	for ribbon: StreamVisual in [_local.air_visual, _local.landing_visual, _local.shadow_visual]:
+		ribbon.prepare_buffers(768)
 	var warmup := SubViewport.new()
 	warmup.size = Vector2i(128, 128)
 	warmup.own_world_3d = true
+	warmup.msaa_3d = get_viewport().msaa_3d
 	warmup.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	add_child(warmup)
 	var camera := Camera3D.new()
@@ -5278,8 +5303,44 @@ func warm_stage_materials() -> void:
 			boss.position = Vector3(-0.88, -0.92, 0.0)
 			warmup.add_child(boss)
 	warmup.render_target_update_mode = SubViewport.UPDATE_ONCE
-	await get_tree().process_frame
-	await get_tree().process_frame
+	await RenderingServer.frame_post_draw
+	warmup.queue_free()
+
+
+func _warm_opening_views() -> void:
+	# Draw the actual level from the starting directions under the loading
+	# overlay. The separate material samples do not cover the world's mesh,
+	# lighting and shadow variants that are first seen when turning around.
+	var viewport := get_viewport()
+	var size := viewport.get_visible_rect().size
+	var warmup := SubViewport.new()
+	warmup.size = Vector2i(320, maxi(2, roundi(320.0 * size.y / maxf(size.x, 1.0))))
+	warmup.world_3d = get_world_3d()
+	warmup.msaa_3d = viewport.msaa_3d
+	warmup.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	add_child(warmup)
+	var camera := Camera3D.new()
+	camera.fov = _camera.fov
+	camera.near = _camera.near
+	camera.far = _camera.far
+	camera.cull_mask = _camera.cull_mask
+	camera.current = true
+	warmup.add_child(camera)
+	var start := _camera.global_position
+	var direction := -_camera.global_basis.z
+	for quarter_turn in range(1, 5):
+		var forward := direction.rotated(Vector3.UP, float(quarter_turn) * TAU / 4.0)
+		camera.look_at_from_position(start, start + forward)
+		warmup.render_target_update_mode = SubViewport.UPDATE_ONCE
+		await RenderingServer.frame_post_draw
+		await get_tree().process_frame
+	for enemy in _enemies:
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_GRUNT:
+			var at := enemy.global_position + Vector3(0.0, 2.0, 5.0)
+			camera.look_at_from_position(at, enemy.global_position)
+			warmup.render_target_update_mode = SubViewport.UPDATE_ONCE
+			await RenderingServer.frame_post_draw
+			break
 	warmup.queue_free()
 
 
@@ -8199,7 +8260,8 @@ func _update_camera() -> void:
 	if _crosshair is Crosshair:
 		(_crosshair as Crosshair).scope = smoothstep(0.0, 1.0, _sniper_zoom)
 	var aim_basis := _aim_basis()
-	var eye := _player.render_position() + Vector3.UP * player_eye_offset(_local)
+	var body_position := _player.render_position()
+	var eye := body_position + Vector3.UP * player_eye_offset(_local)
 	var tilt := _player.fall_tilt()
 	# The stumble shakes the view in both camera modes; it is small enough that
 	# the shoulder camera keeps the capsule in frame.
@@ -8232,13 +8294,32 @@ func _update_camera() -> void:
 			var fall_sign := _player.fall_direction
 			aim_basis = aim_basis.rotated(aim_basis.z, deg_to_rad(fall_camera_roll_degrees) * tilt * fall_sign * camera_motion_scale)
 			aim_basis = aim_basis.rotated(aim_basis.x, deg_to_rad(fall_camera_pitch_degrees) * tilt * fall_sign * camera_motion_scale)
-			eye.y = lerpf(eye.y, fall_camera_height, tilt)
+			eye.y = _falling_eye_height(body_position, eye, tilt)
 	else:
 		# The shoulder camera keeps the capsule in frame from behind and to the side.
 		eye += aim_basis.x * shoulder_offset_right \
 			+ aim_basis.y * shoulder_offset_up \
 			+ aim_basis.z * shoulder_distance
 	_camera.global_transform = Transform3D(aim_basis, eye)
+
+
+func _falling_eye_height(body_position: Vector3, eye: Vector3, tilt: float) -> float:
+	# The capsule stays upright through the fall. Use its feet as the reference
+	# in midair, and the higher pavement or platform beneath the rendered eye
+	# when the player is sliding across a slope, kerb, or prop.
+	var floor_y := body_position.y - MayoPlayer.CAPSULE_HEIGHT * 0.5
+	var query := _fall_camera_ground_ray
+	query.collision_mask = 1
+	query.exclude = [_player.get_rid()]
+	query.from = Vector3(eye.x, body_position.y + 0.12, eye.z)
+	query.to = Vector3(eye.x, floor_y - 0.18, eye.z)
+	var ground := get_world_3d().direct_space_state.intersect_ray(query)
+	if ground.get("normal", Vector3.ZERO).y > 0.55:
+		floor_y = maxf(floor_y, ground.position.y)
+	if map_kind == MapKind.TOMATINA and not practice_range:
+		floor_y = maxf(floor_y, TomatinaMap.ground_height(eye))
+	var clearance := maxf(fall_camera_height, _camera.near * 2.0)
+	return maxf(lerpf(eye.y, floor_y + clearance, tilt), floor_y + _camera.near * 2.0)
 
 
 ## Eye height is measured from the feet so a shorter capsule lowers the view.
@@ -9422,6 +9503,7 @@ func _update_visuals(shooter: Shooter = null) -> void:
 				has_points = true
 				break
 	if not has_points:
+		shooter.nozzle_ribbon_ends.clear()
 		shooter.air_visual.hide()
 		shooter.landing_visual.hide()
 		shooter.shadow_visual.hide()
@@ -9441,17 +9523,54 @@ func _update_visuals(shooter: Shooter = null) -> void:
 	var shadow_segments: Array = []
 	var local_view := shooter == _local and _first_person
 	_ribbon_points_used = 0
-	_for_each_lane(shooter, func():
+	var centre := shooter.points
+	for lane_index in shooter.side_points.size() + 1:
+		shooter.points = centre if lane_index == 0 else shooter.side_points[lane_index - 1]
+		if shooter.points.is_empty():
+			if lane_index < shooter.nozzle_ribbon_ends.size():
+				shooter.nozzle_ribbon_ends[lane_index].anchor = null
+			continue
+		var end: NozzleRibbonEnd = null
+		if local_view:
+			while shooter.nozzle_ribbon_ends.size() <= lane_index:
+				shooter.nozzle_ribbon_ends.append(NozzleRibbonEnd.new())
+			end = shooter.nozzle_ribbon_ends[lane_index]
+			if shooter.was_firing or (end.anchor != null and not _has_releasing_nozzle_end(end, tick)):
+				end.anchor = null
+				end.path.clear()
 		var near_contact := _near_floor_stream_contact(shooter, camera_position, camera_forward) if local_view else null
-		var lane := _lane_ribbons(shooter, camera_position, near_contact != null, true)
+		var cover_close_root := near_contact != null or (end != null and end.anchor != null and end.floor_contact)
+		var lane := _lane_ribbons(shooter, camera_position, cover_close_root, true)
 		var airborne: Array = lane[PointPhase.AIR]
 		if near_contact != null:
-			airborne.push_back(_floor_nozzle_strip(shooter, near_contact))
+			var strip := _floor_nozzle_strip(shooter, near_contact)
+			airborne.push_back(strip)
+			end.anchor = near_contact
+			end.path = strip.duplicate()
+			end.path.reverse()
+			end.floor_contact = true
+			end.release_tick = -1
 		elif local_view:
-			_join_first_person_nozzle(shooter, camera_position, airborne)
+			if end.anchor != null:
+				var released := _released_nozzle_path(end, tick)
+				if end.floor_contact:
+					released.reverse()
+					airborne.push_back(released)
+				elif not _join_nozzle_path(released, airborne):
+					airborne.push_back(released)
+			elif shooter.was_firing:
+				var bridge := _nozzle_segments(shooter, camera_position)
+				if not bridge.is_empty() and _join_nozzle_path(bridge[0], airborne):
+					end.anchor = shooter.points.back()
+					end.path = bridge[0]
+					end.floor_contact = false
+					end.release_tick = -1
 		air_segments.append_array(airborne)
 		landing_segments.append_array(lane[PointPhase.LANDING])
-		shadow_segments.append_array(lane[RIBBON_SHADOW]))
+		shadow_segments.append_array(lane[RIBBON_SHADOW])
+	shooter.points = centre
+	if not local_view:
+		shooter.nozzle_ribbon_ends.clear()
 	var thickness := strand_thickness * (SauceParts.THREE_WAY_SCALE if _is_three_way(shooter) else 1.0)
 	shooter.air_visual.update_ribbon(air_segments, camera_position, camera_forward, thickness)
 	shooter.landing_visual.update_ribbon(landing_segments, camera_position, camera_forward, thickness, 0.004)
@@ -9463,6 +9582,7 @@ func _update_visuals(shooter: Shooter = null) -> void:
 
 const CLOSE_FLOOR_STREAM_REACH := 0.65
 const CLOSE_FLOOR_STREAM_AGE := 0.06
+const NOZZLE_RELEASE_SECONDS := 0.055
 
 
 ## With a steep shot, the character's tube is almost touching the floor.
@@ -9507,17 +9627,43 @@ func _floor_nozzle_strip(shooter: Shooter, contact: MayoPoint) -> Array:
 	return [tip, middle, impact]
 
 
-func _join_first_person_nozzle(shooter: Shooter, camera_position: Vector3, air_segments: Array) -> void:
-	var bridge := _nozzle_segments(shooter, camera_position)
-	if bridge.is_empty():
-		return
-	var path: Array = bridge[0]
+func _join_nozzle_path(path: Array, air_segments: Array) -> bool:
 	var tail: Vector3 = path[0].position
 	for segment: Array in air_segments:
 		if tail.is_equal_approx(segment[-1].position):
-			# A single tapered strip avoids two crossing meshes at the tip.
-			segment.push_back(path[-1])
-			return
+			for index in range(1, path.size()):
+				segment.push_back(path[index])
+			return true
+	return false
+
+
+
+func _has_releasing_nozzle_end(end: NozzleRibbonEnd, tick: int) -> bool:
+	if end.release_tick < 0:
+		end.release_tick = tick
+	return float(tick - end.release_tick) < NOZZLE_RELEASE_SECONDS * Engine.physics_ticks_per_second
+
+
+
+func _released_nozzle_path(end: NozzleRibbonEnd, tick: int) -> Array:
+	var progress := clampf(float(tick - end.release_tick)
+		/ (NOZZLE_RELEASE_SECONDS * Engine.physics_ticks_per_second), 0.0, 1.0)
+	var remaining := 1.0 - smoothstep(0.0, 1.0, progress)
+	var offset: Vector3 = _ribbon_point_position(end.anchor, true) - end.path[0].position
+	var last := end.path.size() - 1
+	var shortened: Array = []
+	# The detached end keeps the curve it had at release. Slide the tip along
+	# that curve while the entire piece follows the real leading sample.
+	for index in end.path.size():
+		var along := float(index) * remaining
+		var first := floori(along)
+		var a: RibbonPoint = end.path[first]
+		var b: RibbonPoint = end.path[mini(first + 1, last)]
+		var blend := along - float(first)
+		var width := lerpf(a.width_scale, b.width_scale, blend)
+		width *= lerpf(1.0, remaining, float(index) / float(last))
+		shortened.append(_ribbon_sample(a.position.lerp(b.position, blend) + offset, width, 1.0, true))
+	return shortened
 
 
 ## A tapered visual connection from the recoiling nozzle to the newest sauce.

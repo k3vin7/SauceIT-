@@ -11,6 +11,7 @@ static var _cap_ring := PackedVector2Array()
 var ribbon_material: Material
 var _dynamic_mesh: ArrayMesh
 var _mesh_buffers: Dictionary[int, ArrayMesh] = {}
+var _written_vertices: Dictionary[int, int] = {}
 var _buffer_capacity := 0
 var _has_uv := false
 var _vertex_cache := PackedVector3Array()
@@ -57,12 +58,25 @@ func _select_mesh_buffer() -> void:
 		return
 	_buffer_capacity = capacity
 	_dynamic_mesh = _mesh_buffers.get(capacity)
-	if _dynamic_mesh != null:
-		_previous_used_vertices = capacity
+	if _dynamic_mesh == null:
+		_dynamic_mesh = _create_mesh_buffer(capacity)
+		_mesh_buffers[capacity] = _dynamic_mesh
+	if _dynamic_mesh.surface_get_material(0) != ribbon_material:
 		_dynamic_mesh.surface_set_material(0, ribbon_material)
-		mesh = _dynamic_mesh
-		return
+	_previous_used_vertices = _written_vertices.get(capacity, 0)
+	mesh = _dynamic_mesh
 
+
+func prepare_buffers(through_vertices: int) -> void:
+	var capacity := MIN_BUFFER_VERTICES
+	var limit := mini(through_vertices, _max_vertices)
+	while capacity <= limit:
+		if not _mesh_buffers.has(capacity):
+			_mesh_buffers[capacity] = _create_mesh_buffer(capacity)
+		capacity *= 2
+
+
+func _create_mesh_buffer(capacity: int) -> ArrayMesh:
 	var vertices := PackedVector3Array()
 	vertices.resize(capacity)
 	var arrays := []
@@ -72,18 +86,16 @@ func _select_mesh_buffer() -> void:
 		var uvs := PackedVector2Array()
 		uvs.resize(capacity)
 		arrays[Mesh.ARRAY_TEX_UV] = uvs
-	_dynamic_mesh = ArrayMesh.new()
-	_dynamic_mesh.add_surface_from_arrays(
+	var buffer := ArrayMesh.new()
+	buffer.add_surface_from_arrays(
 		Mesh.PRIMITIVE_TRIANGLES,
 		arrays,
 		[],
 		{},
 		Mesh.ARRAY_FLAG_USE_DYNAMIC_UPDATE
 	)
-	_dynamic_mesh.surface_set_material(0, ribbon_material)
-	_mesh_buffers[capacity] = _dynamic_mesh
-	_previous_used_vertices = 0
-	mesh = _dynamic_mesh
+	buffer.surface_set_material(0, ribbon_material)
+	return buffer
 
 
 func set_ribbon_material(material: Material) -> void:
@@ -125,6 +137,7 @@ func update_ribbon(
 	if _has_uv:
 		_dynamic_mesh.surface_update_attribute_region(0, 0, _uv_cache.slice(0, _used_vertices).to_byte_array())
 	_previous_used_vertices = _used_vertices
+	_written_vertices[_buffer_capacity] = _used_vertices
 	# Vertices are written in world space and this node carries no transform of
 	# its own, so its local space is the world's and the bounds go straight in.
 	# Padded by half a strand width because the collapsed tail vertices sit on

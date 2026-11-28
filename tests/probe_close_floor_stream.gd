@@ -26,6 +26,7 @@ func _run() -> void:
 			await _check_stream(world, shooter, part, pitch)
 	await _check_projectiles(world, shooter)
 	_check_ribbon_buffer(world)
+	_check_release_curve(world)
 	_check_landing_droplet_pool(world)
 
 	for failure in failures:
@@ -159,6 +160,32 @@ func _check_ribbon_buffer(world) -> void:
 	if not ribbon.visible or not ribbon.custom_aabb.has_point(position):
 		failures.append("almost coincident ribbon samples lost their shared cap")
 	ribbon.queue_free()
+
+
+func _check_release_curve(world) -> void:
+	var end = world.NozzleRibbonEnd.new()
+	var anchor = world.MayoPoint.new()
+	anchor.position = Vector3(3.0, 2.0, -4.0)
+	end.anchor = anchor
+	var original := [Vector3.ZERO, Vector3(0.25, 0.4, 0.05), Vector3(0.55, 0.1, 0.2)]
+	for position: Vector3 in original:
+		var point = world.RibbonPoint.new()
+		point.position = anchor.position + position
+		end.path.append(point)
+	var tick := Engine.get_physics_frames()
+	if not world._has_releasing_nozzle_end(end, tick):
+		failures.append("the nozzle strip vanished on its release tick")
+		return
+	var initial: Array = world._released_nozzle_path(end, tick)
+	for index in original.size():
+		if not initial[index].position.is_equal_approx(anchor.position + original[index]):
+			failures.append("the nozzle strip lost its last curve on release")
+			break
+	anchor.position.z -= 0.3
+	var next: Array = world._released_nozzle_path(end, tick + 1)
+	if not next[0].position.is_equal_approx(anchor.position) \
+			or next[-1].position.distance_to(next[0].position) >= original[-1].length():
+		failures.append("the detached strip did not follow the stream while shortening")
 
 
 func _check_landing_droplet_pool(world) -> void:

@@ -38,6 +38,7 @@ func _run() -> void:
 	var uphill := _ray(rise + Vector3.UP, rise - Vector3.UP)
 	_check(uphill.get("collider") == runtime._floor and uphill.normal.y < cos(deg_to_rad(12.0)),
 		"the market ramp still has a shallow physical grade")
+	_check_fall_camera_on_hill(player, rise)
 	_check(TomatinaMap.at_cell(Vector2(33.2, 74.5)).y < -0.65,
 		"rescue street lost its downhill section")
 	_check(is_zero_approx(TomatinaMap.at_cell(Vector2(30, 36.0)).y),
@@ -206,6 +207,21 @@ func _run() -> void:
 	if failures.is_empty():
 		print("TOMATINA_STREET_OK")
 	quit(0 if failures.is_empty() else 1)
+
+
+func _check_fall_camera_on_hill(player: MayoPlayer, ground: Vector3) -> void:
+	var saved := player.global_position
+	runtime.set_first_person(true)
+	player.finish_respawn(ground + Vector3.UP * MayoPlayer.CAPSULE_HEIGHT * 0.5)
+	for direction in [-1.0, 1.0]:
+		player.state = MayoPlayer.State.DOWN
+		player.fall_direction = direction
+		runtime.debug_set_aim(0.0, -40.0)
+		var eye := runtime._camera.global_position
+		var pavement := _ray(eye + Vector3.UP * 4.0, eye - Vector3.UP * 4.0)
+		_check(pavement.get("collider") == runtime._floor and eye.y >= pavement.position.y + 0.50,
+			"the first-person eye entered the market ramp with fall direction %.0f" % direction)
+	player.finish_respawn(saved)
 
 
 func _ray(from: Vector3, to: Vector3) -> Dictionary:
