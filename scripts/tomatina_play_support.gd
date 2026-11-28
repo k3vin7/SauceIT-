@@ -461,9 +461,16 @@ func context_candidates(shooter) -> Array:
 	var hose: int = world._hose_slot_of(shooter.peer_id)
 	if hose < 0:
 		hose = world._hose_slot(at)
-	if world._horde_spawned and hose >= 0:
-		_candidate(out, shooter, "hose", 0, at, "소방 호스 잡기 / 놓기", -1.0,
-			TomatinaMap.at_cell(world.TOMATINA_HOSES[hose]) + Vector3.UP * 1.2)
+	if world.hose_ready() and hose >= 0:
+		# 들고 멀리 간 호스는 감긴 자리가 아니라 내 손에 있다: 안내를 거기에 붙이지 않는다.
+		var held: bool = world._hose_slot_of(shooter.peer_id) >= 0
+		var reel: Vector3 = world.hose_reel(hose)
+		var mark: Vector3 = reel + Vector3.UP * 1.2
+		if held and reel.distance_to(at) > 4.0:
+			mark = Vector3.INF
+		_candidate(out, shooter, "hose", 0, at,
+			"물 호스 놓기" if held else ("물 호스 잡기" if world.practice_range else "소방 호스 잡기 / 놓기"),
+			-1.0, mark)
 	var room: int = world._refuge_shower_in_reach(at)
 	if room >= 0:
 		_candidate(out, shooter, "shower", room, TomatinaMap.refuge_shower_at(room), "샤워로 소스 씻기", 0.0,

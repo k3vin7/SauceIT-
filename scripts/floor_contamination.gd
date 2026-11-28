@@ -10,6 +10,9 @@ extends StaticBody3D
 @export_range(0.05, 1.5, 0.01, "suffix:m") var brush_radius := 0.4
 @export var floor_size := Vector2(12.0, 12.0)
 @export var clean_color := Color("53616d")
+## Draw the sauce and nothing else: the clean floor is left to whatever is
+## underneath (the office firing range lays its marks over the office's floors).
+var paint_only := false
 var pavement_mask: Texture2D
 var pavement_bounds := Rect2()
 var terrain_height: Callable
@@ -384,6 +387,7 @@ func _build_clean_batches(tiles: Array[MeshInstance3D]) -> void:
 		batch.clean.mesh = mesh
 		batch.clean.material_override = clean_material
 		batch.clean.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		batch.clean.visible = not paint_only
 		add_child(batch.clean)
 
 
@@ -393,7 +397,7 @@ func _on_tile_paint_changed(index: int, has_paint: bool) -> void:
 	var bit := 1 << slot
 	batch.painted_mask = batch.painted_mask | bit if has_paint else batch.painted_mask & ~bit
 	batch.tiles[slot].visible = has_paint
-	batch.clean.visible = batch.painted_mask != (1 << batch.tiles.size()) - 1
+	batch.clean.visible = not paint_only and batch.painted_mask != (1 << batch.tiles.size()) - 1
 	if not batch.clean.visible:
 		return
 	# Every batch with this mask shares a material. Per-instance shader
@@ -479,6 +483,7 @@ func _push_shader_values() -> void:
 			tile.set_shader_parameter("pavement_mask", pavement_mask)
 			tile.set_shader_parameter("pavement_origin", pavement_bounds.position)
 			tile.set_shader_parameter("pavement_size", pavement_bounds.size)
+		tile.set_shader_parameter("paint_only", paint_only)
 		tile.set_shader_parameter("deep_color", deep_color)
 		tile.set_shader_parameter("mayo_color_mid", mayo_color_mid)
 		tile.set_shader_parameter("mayo_color_thick", mayo_color_thick)

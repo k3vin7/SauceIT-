@@ -3319,6 +3319,8 @@ func _build_world() -> void:
 		plane = PracticeRange.floor_plane()
 	_floor = FloorScript.new()
 	_floor.name = "FloorContamination"
+	# 연습장의 바닥은 사무실 바닥 위에 소스 자국만 얹는다.
+	_floor.paint_only = practice_range
 	_floor.floor_size = plane["size"]
 	_floor.position = plane["centre"]
 	_floor.cell_size = grid_cell_size
@@ -5382,8 +5384,9 @@ func _build_tomatina() -> void:
 	var parked_trucks := TomatinaMap.parked_trucks()
 	var truck := TomatinaMap.fire_truck_box()
 	for box in TomatinaMap.boundary_boxes():
+		# 연습장의 벽은 사무실의 벽이다: 그 위에 자국만 얹는다.
 		_create_wall("TomatinaWall%02d" % _walls.size(), box["position"], box["size"],
-			Color("c9ad90"), true, has_art)
+			Color("c9ad90"), true, has_art or practice_range)
 		if staged_loading and _walls.size() % LOAD_WALL_BATCH == 0:
 			await get_tree().process_frame
 	for box in debris + parked_trucks:
@@ -5465,8 +5468,8 @@ func _build_tomatina() -> void:
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	label.pixel_size = 0.013
 	add_child(label)
-	for slot in TOMATINA_HOSES.size():
-		_build_hose_stand(slot, TomatinaMap.at_cell(TOMATINA_HOSES[slot]))
+	for slot in hose_count():
+		_build_hose_stand(slot, hose_reel(slot))
 	TomatinaMap.seed_floor(_floor)
 	if practice_range:
 		_build_range_props()
@@ -7288,7 +7291,7 @@ func _tomatina_action_hint() -> String:
 	if _hose_slot_of(_local.peer_id) >= 0:
 		return "[E] 호스 끄기"
 	var slot := _hose_slot(at)
-	if slot >= 0 and _horde_spawned and not _hose_users.has(slot):
+	if slot >= 0 and hose_ready() and not _hose_users.has(slot):
 		return "[E] 물 호스 사용"
 	if _refuge_shower_in_reach(at) >= 0:
 		return "[E] 몸에 묻은 토마토 자국 씻기"
@@ -7301,7 +7304,7 @@ func _update_stage_objective(alive := -1) -> void:
 	if _stage_objective == null:
 		return
 	if practice_range:
-		_stage_objective.text = "사격 연습장\n앞벽 진열대에서 소스, 뒷벽 선택대에서 파츠 [E]"
+		_stage_objective.text = "사격 연습장\n앞벽 진열대에서 소스, 뒷벽 선택대에서 파츠 [E]\n소스는 들고 나갈 수 있어요 · 중앙 홀의 물 호스로 청소 [E]"
 		_refuge_status_label.hide()
 		return
 	if map_kind == MapKind.TOMATINA:
@@ -10878,9 +10881,32 @@ func _advance_tomatina_loot(delta: float) -> void:
 			_victims.loot(int(attempt.body))
 
 
+## How many hose reels this map has, and where each one stands. Tomatina's ring
+## the plaza; the office firing range has its own (`PracticeRange.HOSES`).
+func hose_count() -> int:
+	return PracticeRange.HOSES.size() if practice_range else TOMATINA_HOSES.size()
+
+
+func hose_reel(slot: int) -> Vector3:
+	if practice_range:
+		return PracticeRange.HOSES[slot]
+	return TomatinaMap.at_cell(TOMATINA_HOSES[slot])
+
+
+## Tomatina's mains open once the truck is in. The office's hose is always on.
+func hose_ready() -> bool:
+	return _horde_spawned or practice_range
+
+
+## How far the line pays out. The office's hose is for cleaning the whole
+## building, so its line never runs out.
+func _hose_tether() -> float:
+	return INF if practice_range else HOSE_TETHER
+
+
 func _hose_slot(at: Vector3) -> int:
-	for index in TOMATINA_HOSES.size():
-		if TomatinaMap.at_cell(TOMATINA_HOSES[index]).distance_squared_to(at) <= 8.0:
+	for index in hose_count():
+		if hose_reel(index).distance_squared_to(at) <= 8.0:
 			return index
 	return -1
 
@@ -10901,7 +10927,7 @@ func _hose_slot_of(peer: int) -> int:
 ## they fire on every peer off the open/close edge in `_update_hose_visuals`,
 ## since this runs on the authority alone.
 func _toggle_fire_hose(shooter: Shooter) -> void:
-	if not _stage_input_enabled or map_kind != MapKind.TOMATINA or not _horde_spawned:
+	if not _stage_input_enabled or map_kind != MapKind.TOMATINA or not hose_ready():
 		return
 	var held := _hose_slot_of(shooter.peer_id)
 	if held >= 0:
@@ -10914,7 +10940,9 @@ func _toggle_fire_hose(shooter: Shooter) -> void:
 	if slot < 0 or _hose_users.has(slot):
 		return
 	_hose_users[slot] = shooter.peer_id
-	_queue_hose_wave()
+	# The office's hose is for cleaning up: nothing comes running when it opens.
+	if not practice_range:
+		_queue_hose_wave()
 	_update_stage_objective()
 
 
@@ -11039,9 +11067,9 @@ func _advance_fire_hoses(delta: float) -> void:
 		return
 	for slot in _hose_users.keys():
 		var shooter: Shooter = _shooters.get(int(_hose_users[slot]))
-		var reel := TomatinaMap.at_cell(TOMATINA_HOSES[slot])
+		var reel := hose_reel(slot)
 		if shooter == null or shooter.player.is_incapacitated() or not _stage_input_enabled \
-				or reel.distance_squared_to(shooter.player.global_position) > HOSE_TETHER * HOSE_TETHER:
+				or reel.distance_to(shooter.player.global_position) > _hose_tether():
 			_hose_users.erase(slot)
 			if shooter != null:
 				shooter.player.external_drift = Vector3.ZERO
@@ -11695,15 +11723,15 @@ func _update_hose_visuals() -> void:
 		if open:
 			var aim := _hose_nozzle_aim(shooter)
 			nozzle.global_transform = Transform3D(aim, _hose_eye(shooter) + aim * HOSE_HOLD)
-	for slot in TOMATINA_HOSES.size():
+	for slot in hose_count():
 		var visual: Dictionary = _hose_visuals.get(slot, {})
 		var shooter: Shooter = _shooters.get(int(_hose_users.get(slot, -1)))
 		var stand: Dictionary = _hose_stands.get(slot, {})
 		if not stand.is_empty() and is_instance_valid(stand["nozzle"]):
 			stand["nozzle"].visible = shooter == null
 			var label: Label3D = stand["label"]
-			label.text = "발전기를 켜세요" if not _horde_spawned else ("사용 중" if shooter != null else "호스 사용 가능")
-			label.modulate = Color("8bdff4") if _horde_spawned else Color("ddd6ba")
+			label.text = "발전기를 켜세요" if not hose_ready() else ("사용 중" if shooter != null else "호스 사용 가능")
+			label.modulate = Color("8bdff4") if hose_ready() else Color("ddd6ba")
 		if shooter == null or not is_instance_valid(shooter.player):
 			if not visual.is_empty():
 				if visual.erase("flow_origin"):
@@ -11751,6 +11779,13 @@ func _update_hose_visuals() -> void:
 			continue
 		visual["line_start"] = start
 		visual["line_finish"] = finish
+		# The office's hose is carried through doorways and around corners, where
+		# a line drawn straight back to the reel would cut through the walls: it
+		# is only drawn while the reel is close enough to be in the same room.
+		if practice_range and start.distance_to(finish) > HOSE_TETHER * 2.0:
+			for segment in visual["line"]:
+				segment.hide()
+			continue
 		var slack := clampf(HOSE_TETHER - start.distance_to(finish), 0.4, 3.0)
 		var control := (start + finish) * 0.5 - Vector3.UP * slack * 0.7
 		control.y = maxf(control.y, HOSE_GROUND_Y - 0.6)
@@ -12327,7 +12362,7 @@ func tomato_action(peer: int, action: int) -> void:
 		if not _horde_spawned and TomatinaMap.in_rect(_siren_zone, player.global_position):
 			_start_finale(player)
 			return
-		if _horde_spawned \
+		if hose_ready() \
 				and (_hose_slot_of(peer) >= 0 or _hose_slot(player.global_position) >= 0):
 			_toggle_fire_hose(shooter)
 			return

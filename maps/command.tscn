@@ -3369,7 +3369,7 @@ material = SubResource("Mat_metal")
 [node name="ShootingRange" type="Node3D" parent="Annex"]
 
 [node name="Floor" type="CSGBox3D" parent="Annex/ShootingRange"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 21, -0.25, 15)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 21, -0.2, 15)
 use_collision = true
 size = Vector3(32, 0.4, 10)
 material = SubResource("Mat_floor")

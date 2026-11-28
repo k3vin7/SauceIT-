@@ -102,6 +102,25 @@ func _stand(world, at: Vector3, look: Vector3) -> void:
 	await physics_frame
 
 
+## `from`(바닥)에 서서 `at`을 향해 `frames`만큼 눌렀다 떼며 쏜다.
+func _spray(world, from: Vector3, at: Vector3, frames: int) -> void:
+	await _stand(world, from, at)
+	for index in frames:
+		world.debug_aim_at(at)
+		world.debug_set_input(Vector2.ZERO, false, index % 60 < 20)
+		await physics_frame
+	world.debug_set_input(Vector2.ZERO, false, false)
+	for _index in 90:
+		await physics_frame
+
+
+func _wall_paint(world) -> int:
+	var total := 0
+	for wall in world._walls:
+		total += wall.painted_cell_count()
+	return total
+
+
 func _run() -> void:
 	await _solo()
 	await _party()
@@ -176,17 +195,71 @@ func _solo() -> void:
 	_check(await _until(func(): return world._enemies.size() > count, 900), "the target did not come back")
 	_check(world._local.player.health >= world._local.player.max_health - 0.01, "the range hurt the player")
 
-	# 문으로 걸어 나온다.
+	# 문으로 걸어 나온다: 병은 그대로 들고 있다.
 	await _stand(world, Vector3(6.6, 0.0, 15.0), Vector3(0.0, 2.3, 15.0))
 	world.debug_set_input(Vector2(0.0, -1.0), false, false)
-	_check(await _until(func(): return not office.in_range(), 600), "walking out of the door did not leave the range")
-	world.debug_clear_input_override()
 	var body := office._occupants[1] as CharacterBody3D
-	_check(not world.is_embedded_active() and body.collision_layer == 1 \
-		and body.position.x < PracticeRange.ENTER_X and absf(body.position.z - 15.0) < 1.6,
-		"the office body is not standing in the doorway after leaving")
+	_check(await _until(func(): return body.position.x < 3.0, 600), "the range body could not walk out of the door")
+	world.debug_set_input(Vector2.ZERO, false, false)
+	_check(office.in_range() and world.is_embedded_active() and world.gameplay_input_enabled(),
+		"walking out of the door took the bottle away")
 	_check(app.flow == SauceApp.Flow.OFFICE, "leaving the range left the office")
-	print("solo: walk in -> rack, table, targets -> walk out OK")
+
+	# 홀의 바닥과 벽에 쏜다: 사무실의 바닥과 벽에도 소스가 묻는다.
+	world.perform_context_action(1, "range_part", 0)
+	world._local.sauce = 1.0
+	var floor_before: int = world._floor.grid.painted_count
+	await _spray(world, Vector3(0.0, 0.0, 15.0), Vector3(-1.5, 0.0, 12.5), 240)
+	_check(world._floor.grid.painted_count > floor_before, "sauce left no mark on the hall floor")
+	var wall_before := _wall_paint(world)
+	world._local.sauce = 1.0
+	await _spray(world, Vector3(-2.0, 0.0, 12.5), Vector3(-4.8, 1.3, 12.0), 240)
+	_check(_wall_paint(world) > wall_before, "sauce left no mark on the hall wall")
+
+	# 물 호스: 홀의 구석에서 잡고, 멀리 들고 가서도 바닥을 씻는다.
+	var reel: Vector3 = PracticeRange.HOSES[0]
+	await _stand(world, reel + Vector3(1.3, 0.0, -0.6), reel + Vector3.UP * 1.0)
+	var grab: Dictionary = world.play_support.context_target(world._local)
+	_check(not grab.is_empty() and grab.kind == "hose", "the hose reel is not something to take")
+	world.perform_context_action(1, "hose", 0)
+	_check(world._hose_slot_of(1) == 0, "the hose did not open")
+	# 릴에서 먼 사무실 한가운데 바닥을 한 평 더럽히고, 거기까지 호스를 들고 가서 쓴다.
+	var clean: int = world._floor.grid.painted_count
+	world._floor.fill_rect(Vector3(-0.5, 0.0, 1.5), Vector3(0.5, 0.0, 2.5), 3, ContaminationGrid.KIND_KETCHUP)
+	var dirty: int = world._floor.grid.painted_count
+	_check(dirty > clean + 50, "the office floor took no sauce")
+	world._local.player.global_position = Vector3(0.0, MayoPlayer.CAPSULE_HEIGHT * 0.5, 5.0)
+	world._local.player.velocity = Vector3.ZERO
+	var goal: int = clean + (dirty - clean) / 4
+	var washed := false
+	for index in 600:
+		world.debug_aim_at(Vector3(0.4 * sin(float(index) * 0.07), 0.0, 2.0 + 0.4 * cos(float(index) * 0.05)))
+		world.debug_set_input(Vector2.ZERO, false, false)
+		await physics_frame
+		if world._floor.grid.painted_count <= goal:
+			washed = true
+			break
+	_check(world._hose_slot_of(1) == 0, "the hose shut itself off away from its reel")
+	_check(washed, "the hose did not wash the office floor (%d clean, %d dirty, %d after)" 		% [clean, dirty, world._floor.grid.painted_count])
+	world.perform_context_action(1, "hose", 0)
+	_check(world._hose_slot_of(1) < 0, "the hose did not close")
+	world.debug_set_input(Vector2.ZERO, false, false)
+
+	# 병을 든 채로 사무실의 지도를 쓴다.
+	await _stand(world, Vector3(0.0, 0.0, -7.0), Vector3(0.0, 2.35, -8.65))
+	for _index in 6:
+		await physics_frame
+	_check(office.interact_target() == OfficeLobby.Target.MAP, "the map is not something to use with a bottle in hand")
+	office.open_map()
+	for _index in 4:
+		await physics_frame
+	_check(office.is_map_open() and not world.gameplay_input_enabled(), "the range body kept moving behind the map")
+	office.close_map()
+	for _index in 4:
+		await physics_frame
+	_check(world.gameplay_input_enabled(), "closing the map did not give the bottle back")
+	world.debug_clear_input_override()
+	print("solo: walk in -> rack, table, targets -> walk out with the bottle -> hose -> map OK")
 
 
 func _party() -> void:
@@ -228,12 +301,10 @@ func _party() -> void:
 	guest_world.perform_context_action(1, "range_part", 5)
 	_check(guest_world._local.sauce_part == 0, "a part was fitted from across the room")
 
-	# 참가자가 나온다.
-	await _stand(guest_world, Vector3(6.6, 0.0, 15.0), Vector3(0.0, 2.3, 15.0))
-	guest_world.debug_set_input(Vector2(0.0, -1.0), false, false)
-	_check(await _until(func(): return not guest_office.in_range(), 600), "the guest could not walk out")
-	guest_world.debug_clear_input_override()
-	_check(await _until(func(): return not host_office.is_occupant_pinned(guest_id) \
-		and seen.position.x < PracticeRange.ENTER_X, 600), "the host still holds the guest in the range")
+	# 참가자가 병을 든 채 홀로 나온다: 방장은 홀을 걷는 모습을 본다.
+	await _stand(guest_world, Vector3(0.0, 0.0, 15.0), Vector3(0.0, 1.0, 0.0))
+	_check(await _until(func(): return absf(seen.position.x) < 0.3 and absf(seen.position.z - 15.0) < 0.3, 600),
+		"the host does not see the guest carrying the bottle out into the hall")
+	_check(guest_office.in_range() and guest_world.is_embedded_active(), "the guest lost the bottle in the hall")
 	_check(host.session.can_start_stage(), "the office is not ready to set out after the range")
-	print("party: guest walks in -> host sees it -> guest walks out OK")
+	print("party: guest walks in -> host sees it -> guest walks out with the bottle OK")
