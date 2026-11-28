@@ -17,6 +17,7 @@ var pavement_mask: Texture2D
 var pavement_bounds := Rect2()
 var terrain_height: Callable
 var terrain_regions: Array[Rect2] = []
+var shared_splat_shape := false
 @export var mayo_color := Color("fff0a8")
 ## How much thicker a cell gets per **pass** -- one trigger pull -- rather than
 ## per splat that lands on it. A burst lays one layer down over everything it
@@ -478,6 +479,7 @@ func _terrain_tile(region: Rect2, has_relief: bool) -> ArrayMesh:
 func _push_shader_values() -> void:
 	for index in grid.tile_count():
 		var tile := grid.tile_material(index)
+		tile.set_shader_parameter("shared_splat_finish", shared_splat_shape)
 		if pavement_mask != null:
 			tile.set_shader_parameter("paved", true)
 			tile.set_shader_parameter("pavement_mask", pavement_mask)
@@ -506,6 +508,7 @@ func _rebuild_grid() -> void:
 	grid.track_tile_paint = batch_clean_tiles
 	grid.configure(floor_size, cell_size, clean_color, mayo_color, tile_cells, tile_sample_margin)
 	grid.scatter_ketchup = pavement_mask != null
+	grid.shared_splat_shape = shared_splat_shape
 	# The grid keeps the count of cells past it, so it has to know where it is.
 	grid.deep_threshold = slip_thickness
 	_push_shader_values()

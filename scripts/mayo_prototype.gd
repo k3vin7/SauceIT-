@@ -3407,6 +3407,7 @@ func _build_world() -> void:
 	_floor.brush_radius = contamination_brush_radius
 	if map_kind == MapKind.TOMATINA:
 		_floor.clean_color = Color("5c5c5c")
+		_floor.shared_splat_shape = true
 		# Cap each paint upload at one roughly 11 m tile. The cell grid stays
 		# shared with collision, so the contour and network positions line up.
 		_floor.tile_cells = 224
@@ -5008,6 +5009,7 @@ func _create_wall(wall_name: String, wall_position: Vector3, wall_size: Vector3,
 	wall.body_color = color
 	wall.visible_surface = visible_surface
 	wall.paint_only = paint_only
+	wall.shared_splat_shape = map_kind == MapKind.TOMATINA
 	wall.collision_corner_cut = corner_cut
 	wall.cell_size = grid_cell_size
 	wall.brush_radius = contamination_brush_radius
@@ -5922,6 +5924,7 @@ func _make_contaminable(holder: Node3D, part_name: String, at: Vector3,
 	part.body_color = color
 	part.cell_size = grid_cell_size
 	part.brush_radius = contamination_brush_radius
+	part.shared_splat_shape = map_kind == MapKind.TOMATINA
 	part.visible_surface = visible_surface
 	part.collision_corner_cut = 0.10
 	holder.add_child(part)

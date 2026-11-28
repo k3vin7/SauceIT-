@@ -1,6 +1,10 @@
 uniform vec4 ketchup_thin_color : source_color = vec4(0.79, 0.31, 0.20, 1.0);
 uniform vec4 ketchup_pooled_color : source_color = vec4(0.52, 0.105, 0.075, 1.0);
 uniform vec4 ketchup_sheen_color : source_color = vec4(0.94, 0.56, 0.41, 1.0);
+uniform vec4 mayo_splat_color : source_color = vec4(0.99, 0.968, 0.902, 1.0);
+uniform vec4 mayo_splat_pooled : source_color = vec4(0.90, 0.865, 0.788, 1.0);
+uniform vec4 mustard_splat_color : source_color = vec4(0.95, 0.69, 0.20, 1.0);
+uniform vec4 mustard_splat_pooled : source_color = vec4(0.85, 0.59, 0.16, 1.0);
 
 // Vertical and curved surfaces get less direct light than a paved floor.
 const float KETCHUP_COATING_GAIN = 0.74;
@@ -154,4 +158,25 @@ vec3 ketchup_albedo(vec3 position, vec2 surface, float packed_coverage) {
 	vec3 color = mix(paste, ketchup_thin_color.rgb, max(thin, (1.0 - surface.x) * 0.55));
 	color *= 1.0 - max(-surface.y, 0.0) * 0.20;
 	return mix(color, ketchup_sheen_color.rgb, max(surface.y, 0.0) * 0.32);
+}
+
+vec3 sauce_splat_albedo(vec3 position, vec2 surface, float coverage, vec3 sauces,
+		float ketchup_gain, float coat_gain) {
+	vec3 color = vec3(0.0);
+	if (sauces.z > 0.0) {
+		color += sauces.z * ketchup_albedo(position, surface, coverage) * ketchup_gain;
+	}
+	if (sauces.x + sauces.y > 0.0) {
+		vec2 field = position.xz + position.y * vec2(0.47, -0.86);
+		float texture_grain = ketchup_noise(field * 7.0);
+		float layers = coverage * 63.75;
+		float buildup = layers / (layers + 3.0);
+		float depth = mix(texture_grain * 0.30, 0.72, buildup);
+		vec3 light = sauces.x * mayo_splat_color.rgb + sauces.y * mustard_splat_color.rgb;
+		vec3 thick = sauces.x * mayo_splat_pooled.rgb + sauces.y * mustard_splat_pooled.rgb;
+		vec3 paste = mix(light, thick, depth);
+		float rim = clamp((1.0 - surface.x) * 0.48 + max(surface.y, 0.0) * 0.30, 0.0, 1.0);
+		color += mix(paste * (1.0 - max(-surface.y, 0.0) * 0.13), light, rim) * coat_gain;
+	}
+	return color;
 }

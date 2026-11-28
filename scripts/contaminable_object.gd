@@ -21,6 +21,7 @@ const FACE_BASIS := [
 ## the visible surface.  Ordinary walls keep rendering their generated quads.
 @export var visible_surface := true
 var paint_only := false
+var shared_splat_shape := false
 ## Prop-only footprint bevel; ordinary walls retain exact box collision.
 var collision_corner_cut := 0.0
 
@@ -216,7 +217,9 @@ func _rebuild() -> void:
 		var grid := ContaminationGrid.new()
 		grid.configure(face_extent, cell_size, body_color, mayo_color)
 		grid.scatter_ketchup = true
+		grid.shared_splat_shape = shared_splat_shape
 		grid.material.set_shader_parameter("paint_only", paint_only)
+		grid.material.set_shader_parameter("shared_splat_finish", shared_splat_shape)
 		grid.material.set_shader_parameter("wall_face", true)
 		grids.push_back(grid)
 

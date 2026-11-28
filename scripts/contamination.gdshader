@@ -61,6 +61,7 @@ uniform float thick_threshold = 0.04706;
 uniform float slip_threshold = 0.04706;
 uniform bool paint_only = false;
 uniform bool fine_contours = false;
+uniform bool shared_splat_finish = false;
 uniform sampler2D contour_texture : filter_linear, repeat_disable, hint_default_black;
 uniform bool paved = false;
 uniform bool wall_face = false;
@@ -96,6 +97,12 @@ void fragment() {
 	vec2 mask_uv = UV * mask_uv_scale + mask_uv_offset;
 	float coverage = festival_before_attack ? 0.0 : texture(mask_texture, mask_uv).r;
 	float fill = fine_contours && !festival_before_attack ? stain_contour(contour_texture, mask_uv) : step(paint_threshold, coverage);
+	vec3 stain_position = paved ? vec3(pavement_position.x, 0.0, pavement_position.y) : surface_position;
+	vec2 stain_surface = vec2(fill, 0.0);
+	if (shared_splat_finish && !fine_contours && coverage > 0.0) {
+		stain_surface = sauce_outline(mask_texture, mask_uv, textureSize(mask_texture, 0), stain_position, false, -1);
+		fill = stain_surface.x;
+	}
 	bool painted = fill > 0.0;
 	if (paint_only && fill < 0.50) {
 		discard;
@@ -105,7 +112,7 @@ void fragment() {
 	ivec2 mask_size = ivec2(1);
 	float own = 0.0;
 	int kind = 0;
-	if (painted) {
+	if (painted && !shared_splat_finish) {
 		mask_size = textureSize(mask_texture, 0);
 		mask_position = mask_uv * vec2(mask_size);
 		ivec2 cell = sauce_mask_cell(ivec2(floor(mask_position)), mask_size, false);
@@ -115,7 +122,7 @@ void fragment() {
 	bool ketchup = kind == 2;
 
 	vec3 clean = clean_color.rgb;
-	if (paved && (fill < 1.0 || ketchup)) {
+	if (paved && (fill < 1.0 || ketchup || (shared_splat_finish && painted && !paint_only))) {
 		vec2 brick = pavement_position / brick_size;
 		float stagger = mod(floor(brick.y), 2.0) * 0.5;
 		brick.x += stagger;
@@ -150,7 +157,24 @@ void fragment() {
 	}
 	ALBEDO = clean;
 	ROUGHNESS = clean_roughness;
-	if (painted && !ketchup) {
+	if (painted && shared_splat_finish) {
+		ivec2 size = textureSize(mask_texture, 0);
+		vec3 sauces = sauce_mask_blend(mask_texture, mask_uv * vec2(size), size);
+		vec3 paste = sauce_splat_albedo(stain_position, stain_surface, coverage, sauces,
+			paved ? 0.57 : KETCHUP_COATING_GAIN, paved ? 0.76 : 1.0);
+		if (sauces.y > 0.0 && dot(VERTEX, VERTEX) < 2304.0) {
+			float grain = sauce_mustard_grain(grains * 0.52, grain_footprint * 0.52);
+			float seeds = smoothstep(0.52, 0.89, grain);
+			paste *= 1.0 - 0.26 * seeds * sauces.y;
+		}
+		ALBEDO = paint_only ? paste : mix(clean, paste, fill * 0.96);
+		if (wall_face) {
+			EMISSION = paste * (fill * mix(0.045, KETCHUP_COATING_EMISSION, sauces.z));
+		}
+		ROUGHNESS = mix(clean_roughness, ketchup_roughness(fill), fill);
+		SPECULAR = mix(0.5, paved ? 0.29 : KETCHUP_COATING_SPECULAR, fill);
+	}
+	if (painted && !shared_splat_finish && !ketchup) {
 		bool near_detail = dot(VERTEX, VERTEX) < 2304.0;
 		float base_roughness = sauce_coating_roughness(kind, mayo_roughness);
 		float rough;
@@ -207,7 +231,7 @@ void fragment() {
 		ROUGHNESS = mix(clean_roughness, ketchup_roughness(ketchup_fill), ketchup_fill);
 		SPECULAR = mix(0.5, paved ? 0.29 : KETCHUP_COATING_SPECULAR, ketchup_fill);
 	}
-	if (paved && painted && kind == 0) {
+	if (paved && painted && !shared_splat_finish && kind == 0) {
 		float wetness = fine_contours ? smoothstep(2.5, 3.5, coverage * 63.75) : step(3.0, floor(own / 4.0));
 		if (wetness > 0.0) {
 			float stripe = smoothstep(0.55, 0.72, sin((pavement_position.x + pavement_position.y) * 9.0));

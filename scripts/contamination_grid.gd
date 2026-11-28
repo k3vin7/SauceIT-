@@ -48,6 +48,7 @@ var extent := Vector2(1.0, 1.0)
 ## round the other side instead of being clipped off.
 var wrap_x := false
 var scatter_ketchup := false
+var shared_splat_shape := false
 var width := 1
 var height := 1
 ## One byte per cell, holding **which sauce is on it and how thick that sauce
@@ -373,9 +374,9 @@ func paint_cell(centre: Vector2i, radius_meters: float, deposit := 1,
 		return centre
 	if new_coat:
 		_remember_coat(coat, coated)
-	if scatter_ketchup and kind == KIND_KETCHUP:
+	if shared_splat_shape or (scatter_ketchup and kind == KIND_KETCHUP):
 		var radius_in_cells := maxf(1.0, radius_meters * 1.20 / cell_size)
-		_paint_ketchup_scatter(centre, radius_in_cells, deposit, coat >= 0, coated)
+		_paint_splatter(centre, radius_in_cells, deposit, kind, coat >= 0, coated)
 		return centre
 
 	var radius := maxf(1.0, radius_meters / cell_size)
@@ -486,7 +487,8 @@ func _paint_detail(centre: Vector2i, radius_meters: float, deposit: int, kind: i
 	var phase := mini(brush >> BRUSH_PHASE_SHIFT, 4)
 	var sector := (style - BRUSH_STROKE) if style >= BRUSH_STROKE else posmod(seed, STROKE_DIRECTIONS)
 	var stamp := (phase * STROKE_DIRECTIONS + sector) * 32 + style
-	var key := Vector4i(roundi(cell_size * 100000.0), roundi(radius_meters * 10000.0), kind, stamp * 4 + variant)
+	var shape := KIND_KETCHUP if shared_splat_shape else kind
+	var key := Vector4i(roundi(cell_size * 100000.0), roundi(radius_meters * 10000.0), shape, stamp * 4 + variant)
 	var rows: PackedInt32Array
 	if _detail_brushes.has(key):
 		rows = _detail_brushes[key]
@@ -630,7 +632,7 @@ static func _add_detail_ellipse(pixels: Dictionary[Vector2i, int], centre: Vecto
 ## A round, asymmetric blot with a short smear and scattered droplets.
 ## Seed the silhouette from the impact cell so the host and every peer can
 ## reconstruct it from the same splat packet.
-func _paint_ketchup_scatter(centre: Vector2i, radius: float, deposit: int,
+func _paint_splatter(centre: Vector2i, radius: float, deposit: int, kind: int,
 		track_coat: bool, coated: Dictionary) -> void:
 	var covered: Dictionary[Vector2i, bool] = {}
 	var origin := Vector2(centre)
@@ -652,8 +654,8 @@ func _paint_ketchup_scatter(centre: Vector2i, radius: float, deposit: int,
 	for cell: Vector2i in covered:
 		var index := cell.y * width + cell.x
 		var here := int(cells[index])
-		if here >> KIND_BITS < MAX_THICKNESS or (here & KIND_MASK) != KIND_KETCHUP:
-			_deposit_cell(cell, index, here, deposit, KIND_KETCHUP, track_coat, coated)
+		if here >> KIND_BITS < MAX_THICKNESS or (here & KIND_MASK) != kind:
+			_deposit_cell(cell, index, here, deposit, kind, track_coat, coated)
 
 
 func _stamp_ellipse(covered: Dictionary[Vector2i, bool], centre: Vector2,

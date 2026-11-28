@@ -145,6 +145,7 @@ func _run() -> void:
 
 	_probe_detailed_stamps()
 	_probe_clean_floor_batches()
+	_probe_shared_sauce_splats()
 
 	# The reference hash. Run this probe twice, in two processes, and compare:
 	# a mismatch means paint() depends on something outside the centre cell.
@@ -156,6 +157,30 @@ func _run() -> void:
 	for failure in failures:
 		push_error(failure)
 	quit(1)
+
+
+func _probe_shared_sauce_splats() -> void:
+	for cell_size: float in [0.1, 0.05]:
+		var ketchup := ContaminationGrid.new()
+		ketchup.scatter_ketchup = true
+		ketchup.configure(Vector2(4.0, 4.0), cell_size, Color.GRAY, Color.WHITE)
+		var centre := ketchup.cell_of(Vector2(0.2, -0.1))
+		var brush := ketchup.position_brush(Vector2(0.2, -0.1), ContaminationGrid.stroke_brush(Vector2.RIGHT))
+		ketchup.paint_cell(centre, 0.27, 1, -1, ContaminationGrid.KIND_KETCHUP, brush)
+		for kind in [ContaminationGrid.KIND_MAYO, ContaminationGrid.KIND_MUSTARD]:
+			var sauce := ContaminationGrid.new()
+			sauce.shared_splat_shape = true
+			sauce.configure(Vector2(4.0, 4.0), cell_size, Color.GRAY, Color.WHITE)
+			sauce.paint_cell(centre, 0.27, 1, -1, kind, brush)
+			var same_footprint := true
+			for index in ketchup.cells.size():
+				if (sauce.cells[index] >> ContaminationGrid.KIND_BITS) \
+						!= (ketchup.cells[index] >> ContaminationGrid.KIND_BITS) \
+						or (sauce.cells[index] > 0 and (sauce.cells[index] & ContaminationGrid.KIND_MASK) != kind):
+					same_footprint = false
+					break
+			_check(same_footprint and sauce.contour_cells == ketchup.contour_cells,
+				"sauce %d had a different splat footprint from ketchup at %s m" % [kind, cell_size])
 
 
 func _probe_detailed_stamps() -> void:

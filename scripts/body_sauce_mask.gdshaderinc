@@ -34,3 +34,24 @@ float sauce_mask_sample(sampler2D mask, vec2 uv, ivec2 size, bool wrap_x) {
 	float own = sauce_mask_byte(mask, sauce_mask_cell(ivec2(floor(at)), size, wrap_x));
 	return sauce_mask_kind(mask, at, size, wrap_x, own);
 }
+
+// Blend the sauce colours between texel centres instead of switching colour
+// at the square edge of a gameplay cell. Empty neighbours contribute no hue.
+vec3 sauce_mask_blend(sampler2D mask, vec2 at, ivec2 size) {
+	vec2 sample_pos = at - 0.5;
+	ivec2 base = ivec2(floor(sample_pos));
+	vec2 blend = fract(sample_pos);
+	vec4 packed = vec4(
+		sauce_mask_byte(mask, sauce_mask_cell(base, size, false)),
+		sauce_mask_byte(mask, sauce_mask_cell(base + ivec2(1, 0), size, false)),
+		sauce_mask_byte(mask, sauce_mask_cell(base + ivec2(0, 1), size, false)),
+		sauce_mask_byte(mask, sauce_mask_cell(base + ivec2(1, 1), size, false)));
+	vec4 weight = vec4((1.0 - blend.x) * (1.0 - blend.y), blend.x * (1.0 - blend.y),
+		(1.0 - blend.x) * blend.y, blend.x * blend.y) * step(vec4(4.0), packed);
+	vec4 kinds = mod(packed, 4.0);
+	float mustard = dot(weight, 1.0 - step(vec4(0.5), abs(kinds - 1.0)));
+	float ketchup = dot(weight, 1.0 - step(vec4(0.5), abs(kinds - 2.0)));
+	float total = dot(weight, vec4(1.0));
+	return total > 0.0 ? vec3(max(0.0, total - mustard - ketchup), mustard, ketchup) / total
+		: vec3(1.0, 0.0, 0.0);
+}
