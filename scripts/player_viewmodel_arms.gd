@@ -5,6 +5,8 @@ var world
 var limbs: Array[MeshInstance3D] = []
 var palms: Array[Node3D] = []
 var hose_palms: Array[MeshInstance3D] = []
+var _hose_pose: Transform3D
+var _hose_pose_ready := false
 func configure(owner_shooter, owner_world) -> void:
 	shooter = owner_shooter
 	world = owner_world
@@ -59,28 +61,36 @@ func configure(owner_shooter, owner_world) -> void:
 			palm.add_child(mesh)
 			mesh.position = Vector3((finger - 1.5) * 0.029, -0.015, -0.025)
 			mesh.rotation = Vector3(0.95, 0.0, 0.12 * (finger - 2))
-func _process(_dt: float) -> void:
+
+func refresh_pose(hose_nozzle: Node3D) -> void:
 	if shooter == null or not is_instance_valid(shooter.player):
 		return
 	visible = shooter.is_local and world._first_person and shooter.player.state == MayoPlayer.State.NORMAL \
 		and not world.is_cinematic_active()
 	if not visible:
 		return
-	var grips: Array[Transform3D] = world.hose_grip_poses(shooter)
+	var holding_hose := is_instance_valid(hose_nozzle)
 	for palm_surface in hose_palms:
-		palm_surface.visible = not grips.is_empty()
-	if not grips.is_empty():
+		palm_surface.visible = holding_hose
+	if holding_hose:
+		var pose := hose_nozzle.transform * (hose_nozzle.get_child(0) as Node3D).transform
+		if _hose_pose_ready and pose.is_equal_approx(_hose_pose):
+			return
+		_hose_pose_ready = true
+		_hose_pose = pose
 		transform = Transform3D.IDENTITY
-		var camera_space := global_transform.affine_inverse()
 		for side in 2:
 			var sign_x := -1.0 if side == 0 else 1.0
 			var shoulder := Vector3(sign_x * 0.30, -0.49, 0.23)
-			var grip := camera_space * grips[side]
+			var marker_name := "LeftGrip" if side == 0 else "RightGrip"
+			var marker: Node3D = world._hose_nozzle_marker(hose_nozzle, marker_name)
+			var grip := pose * marker.transform
 			var elbow := shoulder.lerp(grip.origin, 0.48) + Vector3(sign_x * 0.12, -0.13, 0.04)
 			_segment(limbs[side * 2], shoulder, elbow)
 			_segment(limbs[side * 2 + 1], elbow, grip.origin)
 			palms[side].transform = grip
 		return
+	_hose_pose_ready = false
 	transform = world.first_person_visual_transform(shooter)
 	var sway: Transform3D = shooter.weapon_sway.transform
 	for side in 2:

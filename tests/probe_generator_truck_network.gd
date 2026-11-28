@@ -34,18 +34,35 @@ func _run() -> void:
 	var remote_peer: int = client_world._local.peer_id
 	server_world._shooters[remote_peer].player.global_position = TomatinaMap.at_cell(server_world.TOMATINA_HOSES[0])+Vector3.UP*1.28
 	client_world._net.request_tomato_action(0)
+	for frame in 8:
+		await physics_frame
+	_check(server_world._hose_slot_of(remote_peer) < 0 and not client_world._hose_ready(),
+		"remote player bypassed the hose countdown")
+	server_world._finale_elapsed = server_world.FINALE_DURATION
+	await _until(func(): return client_world._hose_ready(),120)
+	_check(client_world._hose_ready(), "hose readiness did not replicate")
+	server_world._shooters[remote_peer].player.global_position = TomatinaMap.at_cell(server_world.TOMATINA_HOSES[0])+Vector3.UP*1.28
+	client_world.debug_set_aim(180.0, 24.0)
+	client_world._net.request_tomato_action(0)
 	await _until(func(): return server_world._hose_slot_of(remote_peer)==0,120)
-	_check(server_world._hose_slot_of(remote_peer)==0 and server_world._finale_elapsed < server_world.FINALE_DURATION,"remote hose did not unlock immediately")
+	_check(server_world._hose_slot_of(remote_peer)==0,"remote hose stayed locked after 30 seconds")
+	_check(await _until(func():
+		var visual: Dictionary = client_world._hose_visuals.get(0, {})
+		return visual.has("flow_path") and visual.flow_path.duration > 0.1, 60),
+		"guest did not see the open hose stream")
+	client_world._net.request_tomato_action(0)
+	_check(await _until(func(): return server_world._hose_slot_of(remote_peer) < 0, 120),
+		"remote player could not close the hose")
+	_check(await _until(func(): return not client_world._released_hose_streams.is_empty(), 60),
+		"guest water vanished when the host closed the stream")
 	var at: Vector3 = server_world._truck_arrival.final_at
 	server_world.show_combat_warning(at,Vector3.ZERO,6.2,server_world.TRUCK_ARRIVAL_CUE)
 	server_world._net.broadcast_combat_warning(at,Vector3.ZERO,6.2,server_world.TRUCK_ARRIVAL_CUE)
 	await _until(func(): return client_world._truck_arrival.active,120)
 	_check(client_world._truck_arrival.active and server_world._truck_arrival.active,"arrival did not start on both peers")
 	_check(not client_world._input_enabled and not server_world._input_enabled,"arrival controls were not locked")
-	var start := Time.get_ticks_msec()
-	while Time.get_ticks_msec()-start < 7000:
-		await process_frame
-	_check(client_world._truck_arrival.arrived and server_world._truck_arrival.arrived,"truck did not arrive on both peers")
+	_check(await _until(func(): return client_world._truck_arrival.arrived and server_world._truck_arrival.arrived, 720),
+		"truck did not arrive on both peers")
 	_check(client_world._input_enabled and server_world._input_enabled,"arrival controls did not return")
 	_check(client_world._truck_arrival.barrier.collision_layer==0,"client barrier collision remained")
 	server_world._truck_arrival.reset_intro()

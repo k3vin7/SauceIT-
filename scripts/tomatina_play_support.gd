@@ -460,9 +460,11 @@ func context_candidates(shooter) -> Array:
 			else TomatinaMap.at_cell(TomatinaMap.siren_cell())
 		_candidate(out, shooter, "generator", 0, at, "발전기 켜기", -2.0, generator + Vector3.UP * 1.3)
 	var hose: int = world._hose_slot_of(shooter.peer_id)
-	if hose < 0:
-		hose = world._hose_slot(at)
-	if world.hose_ready() and hose >= 0:
+	if hose < 0 and world._hose_ready():
+		var nearby_hose: int = world._hose_slot(at)
+		if not world._hose_users.has(nearby_hose):
+			hose = nearby_hose
+	if hose >= 0:
 		# 들고 멀리 간 호스는 감긴 자리가 아니라 내 손에 있다: 안내를 거기에 붙이지 않는다.
 		var held: bool = world._hose_slot_of(shooter.peer_id) >= 0
 		var reel: Vector3 = world.hose_reel(hose)

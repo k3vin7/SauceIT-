@@ -414,6 +414,7 @@ class Shooter:
 	## by `_update_hose_visuals`. `hose_was_open` is the edge it fires on.
 	var hose_kick_pitch := 0.0
 	var hose_kick_pending := 0.0
+	var hose_rumble_time := 0.0
 	var hose_was_open := false
 	var hose_flow_age := 0.0
 	var hose_impact_anchor := Vector2i(-1, -1)
@@ -1355,8 +1356,11 @@ const HOSE_AIR_DRAG := 1.0
 const HOSE_GRAVITY := 9.8
 const HOSE_TRACE_STEP := 1.0 / 15.0
 const HOSE_MAX_FLIGHT_TIME := 6.0
+const HOSE_RELEASE_SPLASH_TIME := 0.35
+const MAX_RELEASED_HOSE_STREAMS := 24
 const HOSE_SPRAY_RADIUS := 2.2
 const HOSE_JET_RADIUS := 0.45
+const HOSE_DEBRIS_SPLASH_RADIUS := 0.9
 ## How far the hose line pays out from its reel before the hose is dropped.
 ## Opening needs the player at the stand (`_hose_slot`); keeping it open only
 ## needs the hose to reach -- see `_advance_fire_hoses`.
@@ -1386,10 +1390,12 @@ const HOSE_TIP := Vector3(0.0, 0.0, -0.57)
 ## The lurch when the main opens: the nozzle and the view are thrown up
 ## together over the attack, and settle while the hose runs. The rumble is
 ## what the view does for as long as it is open.
-const HOSE_KICK_DEGREES := 10.0
-const HOSE_KICK_ATTACK := 0.07
-const HOSE_KICK_SETTLE := 0.45
+const HOSE_KICK_DEGREES := 5.0
+const HOSE_KICK_ATTACK := 0.12
+const HOSE_KICK_SETTLE := 0.36
 const HOSE_RUMBLE_DEGREES := 0.35
+const HOSE_LINE_UPDATE_DISTANCE := 0.012
+const HOSE_TIP_CULL_MARGIN := 2.0
 ## The first use of water draws one counterattack before the boss arrives.
 const HOSE_WAVE_COUNT := 14
 ## And how many of them are built in one physics tick. A body is a mesh, its
@@ -1447,6 +1453,17 @@ var _local_loot_hold := {}
 var _hose_users := {}
 ## Hose stand index -> {"jet": [segment meshes], "splash": mesh, "line": [segment meshes]}.
 var _hose_visuals := {}
+class ReleasedHoseStream:
+	var peer_id := -1
+	var path: Dictionary
+	var emitted_age := 0.0
+	var elapsed := 0.0
+	var previous_elapsed := 0.0
+	var tip_offset := Vector3.ZERO
+	var visual: Dictionary = {}
+
+var _released_hose_streams: Array[ReleasedHoseStream] = []
+var _released_hose_visual_pool: Array[Dictionary] = []
 ## Hose stand index -> {"anchor": where the line leaves the reel, "nozzle": the
 ## nozzle resting on the stand while nobody holds it}.
 var _hose_stands := {}
@@ -1770,6 +1787,7 @@ func _physics_process(delta: float) -> void:
 			debug_timings_us.enemy_ai += Time.get_ticks_usec() - step_started
 			step_started = Time.get_ticks_usec()
 		_advance_horde_spawn(delta)
+		_advance_released_hoses(delta, true)
 		_advance_fire_hoses(delta)
 		_advance_hose_wave(delta)
 		if practice_range:
@@ -1780,6 +1798,8 @@ func _physics_process(delta: float) -> void:
 		if debug_profile_enabled:
 			debug_timings_us.spawn_and_hose += Time.get_ticks_usec() - step_started
 			step_started = Time.get_ticks_usec()
+	elif not _released_hose_streams.is_empty():
+		_advance_released_hoses(delta, false)
 	for shooter in _shooters.values():
 		_advance_strand(shooter, delta)
 		if _is_authority():
@@ -2816,7 +2836,7 @@ func _process(_delta: float) -> void:
 	if map_kind == MapKind.TOMATINA:
 		for thread: CheeseThread in _cheese_threads.values():
 			thread.update_visual()
-		_update_hose_visuals()
+		_advance_hose_presentation(_delta)
 	if _local == null:
 		return
 	# The bottle is put where the camera is *before* the camera is placed, and
@@ -2838,6 +2858,7 @@ func _process(_delta: float) -> void:
 		_apply_nozzle_sway(_local)
 	_update_camera()
 	if map_kind == MapKind.TOMATINA:
+		_update_hose_visuals(_delta)
 		_refresh_enemy_visual_distances(_delta)
 	if not is_instance_valid(_viewmodel_animation):
 		_viewmodel_animation = preload("res://scripts/viewmodel_animation.gd").new()
@@ -3722,6 +3743,14 @@ func set_avatar_authority(peer_id: int, authority: bool) -> void:
 
 
 func _free_shooter(shooter: Shooter) -> void:
+	if _is_authority():
+		var hose_slot := _hose_slot_of(shooter.peer_id)
+		if hose_slot >= 0:
+			_close_fire_hose(hose_slot, shooter)
+	var held_nozzle: Node3D = _hose_nozzles.get(shooter.peer_id)
+	if is_instance_valid(held_nozzle):
+		held_nozzle.queue_free()
+	_hose_nozzles.erase(shooter.peer_id)
 	if is_instance_valid(shooter.camera_viewmodel):
 		shooter.camera_viewmodel.queue_free()
 	if is_instance_valid(shooter.first_person_arms) and shooter.first_person_arms.get_parent() == _camera:
@@ -7350,7 +7379,7 @@ func _tomatina_action_hint() -> String:
 	if _hose_slot_of(_local.peer_id) >= 0:
 		return "[E] 호스 끄기"
 	var slot := _hose_slot(at)
-	if slot >= 0 and hose_ready() and not _hose_users.has(slot):
+	if slot >= 0 and _hose_ready() and not _hose_users.has(slot):
 		return "[E] 물 호스 사용"
 	if _refuge_shower_in_reach(at) >= 0:
 		return "[E] 몸에 묻은 토마토 자국 씻기"
@@ -10952,11 +10981,6 @@ func hose_reel(slot: int) -> Vector3:
 	return TomatinaMap.at_cell(TOMATINA_HOSES[slot])
 
 
-## Tomatina's mains open once the truck is in. The office's hose is always on.
-func hose_ready() -> bool:
-	return _horde_spawned or practice_range
-
-
 ## How far the line pays out. The office's hose is for cleaning the whole
 ## building, so its line never runs out.
 func _hose_tether() -> float:
@@ -10978,6 +11002,15 @@ func _hose_slot_of(peer: int) -> int:
 	return -1
 
 
+## Tomatina's mains open once the truck is in. The office's hose is always on.
+func _hose_ready() -> bool:
+	return practice_range or (_horde_spawned and _finale_elapsed >= FINALE_DURATION)
+
+
+func _hose_wait_seconds() -> int:
+	return ceili(maxf(0.0, FINALE_DURATION - _finale_elapsed))
+
+
 ## [E] at a hose stand. A toggle: the hose opens and stays open until the same
 ## key closes it. It also closes by itself when the hose line runs out, or the
 ## player goes down -- see `_advance_fire_hoses`. One player per stand. Opening
@@ -10986,22 +11019,35 @@ func _hose_slot_of(peer: int) -> int:
 ## they fire on every peer off the open/close edge in `_update_hose_visuals`,
 ## since this runs on the authority alone.
 func _toggle_fire_hose(shooter: Shooter) -> void:
-	if not _stage_input_enabled or map_kind != MapKind.TOMATINA or not hose_ready():
+	if not _stage_input_enabled or map_kind != MapKind.TOMATINA:
 		return
 	var held := _hose_slot_of(shooter.peer_id)
 	if held >= 0:
-		_hose_users.erase(held)
-		shooter.hose_flow_age = 0.0
-		shooter.player.external_drift = Vector3.ZERO
-		_update_stage_objective()
+		_close_fire_hose(held, shooter)
 		return
 	var slot := _hose_slot(shooter.player.global_position)
-	if slot < 0 or _hose_users.has(slot):
+	if not _hose_ready() or slot < 0 or _hose_users.has(slot):
 		return
 	_hose_users[slot] = shooter.peer_id
+	shooter.hose_path_frame = -1
+	shooter.hose_path = {}
 	# The office's hose is for cleaning up: nothing comes running when it opens.
 	if not practice_range:
 		_queue_hose_wave()
+	_update_stage_objective()
+
+
+func _close_fire_hose(slot: int, shooter: Shooter) -> void:
+	_hose_users.erase(slot)
+	if shooter != null:
+		if shooter.hose_flow_age > 0.0 and not shooter.hose_path.is_empty():
+			var visual: Dictionary = _hose_visuals.get(slot, {})
+			_begin_hose_release(shooter.peer_id, shooter.hose_path,
+				visual.get("flow_tip", shooter.hose_path.origin) if visual.get("flow_peer") == shooter.peer_id
+				else shooter.hose_path.origin)
+		shooter.hose_flow_age = 0.0
+		if is_instance_valid(shooter.player):
+			shooter.player.external_drift = Vector3.ZERO
 	_update_stage_objective()
 
 
@@ -11039,31 +11085,92 @@ func _hose_path(shooter: Shooter, max_flight_time := HOSE_MAX_FLIGHT_TIME) -> Di
 			and origin == shooter.hose_path.origin and velocity == shooter.hose_path.velocity:
 		return shooter.hose_path
 
-	var points := PackedVector3Array([origin])
-	var space := get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.create(eye, origin, 1)
 	query.exclude = [shooter.player.get_rid()]
-	var hit := _static_body_on_ray(space, query)
-	var duration := 0.0
-	if hit.is_empty():
-		while duration < max_flight_time:
-			var next_time := minf(duration + HOSE_TRACE_STEP, max_flight_time)
-			query.from = points[-1]
-			query.to = _hose_water_position(origin, velocity, next_time)
-			hit = _static_body_on_ray(space, query)
-			if not hit.is_empty():
-				var fraction := query.from.distance_to(hit.position) / maxf(query.from.distance_to(query.to), 0.001)
-				duration = lerpf(duration, next_time, clampf(fraction, 0.0, 1.0))
-				points.append(hit.position)
-				break
-			points.append(query.to)
-			duration = next_time
-
+	var hit := _static_body_on_ray(get_world_3d().direct_space_state, query)
 	shooter.hose_path_frame = frame
 	shooter.hose_path_limit = max_flight_time
-	shooter.hose_path = {"origin": origin, "velocity": velocity, "points": points,
-		"hit": hit, "duration": duration}
+	shooter.hose_path = _trace_hose_water(origin, velocity, max_flight_time, query, hit)
 	return shooter.hose_path
+
+
+func _trace_hose_water(origin: Vector3, velocity: Vector3, limit: float,
+		query: PhysicsRayQueryParameters3D, hit: Dictionary) -> Dictionary:
+	var points := PackedVector3Array([origin])
+	var space := get_world_3d().direct_space_state
+	var duration := 0.0
+	while hit.is_empty() and duration < limit:
+		var next_time := minf(duration + HOSE_TRACE_STEP, limit)
+		query.from = points[-1]
+		query.to = _hose_water_position(origin, velocity, next_time)
+		hit = _static_body_on_ray(space, query)
+		if not hit.is_empty():
+			var fraction := query.from.distance_to(hit.position) / maxf(query.from.distance_to(query.to), 0.001)
+			duration = lerpf(duration, next_time, clampf(fraction, 0.0, 1.0))
+			points.append(hit.position)
+			break
+		points.append(query.to)
+		duration = next_time
+	return {"origin": origin, "velocity": velocity, "points": points, "hit": hit, "duration": duration}
+
+
+func _begin_hose_release(peer: int, active_path: Dictionary, shown_tip: Vector3) -> void:
+	var emitted: float = active_path.duration
+	if emitted <= 0.01:
+		return
+	var path := active_path
+	if active_path.hit.is_empty() and emitted < HOSE_MAX_FLIGHT_TIME:
+		# A short shot was only traced as far as its front had travelled.
+		# Continue this same parabola once to find where it will land.
+		var query := PhysicsRayQueryParameters3D.new()
+		query.collision_mask = 1
+		path = _trace_hose_water(active_path.origin, active_path.velocity, HOSE_MAX_FLIGHT_TIME, query, {})
+	if path.duration <= 0.01:
+		return
+	if _released_hose_streams.size() >= MAX_RELEASED_HOSE_STREAMS:
+		_recycle_released_hose_visual(_released_hose_streams.pop_front())
+	var released := ReleasedHoseStream.new()
+	released.peer_id = peer
+	released.path = path
+	released.emitted_age = emitted
+	released.tip_offset = shown_tip - active_path.origin
+	_released_hose_streams.append(released)
+
+
+func _released_hose_path(released: ReleasedHoseStream) -> Dictionary:
+	var trajectory := released.path
+	var first := released.elapsed if released.elapsed < trajectory.duration else released.previous_elapsed
+	var last := minf(released.elapsed + released.emitted_age, trajectory.duration)
+	var tail := _hose_water_position(trajectory.origin, trajectory.velocity, first)
+	var points := PackedVector3Array([tail])
+	var traced: PackedVector3Array = trajectory.points
+	var reaches_surface: bool = last == trajectory.duration
+	for index in range(floori(first / HOSE_TRACE_STEP) + 1,
+			mini(traced.size() - 1, ceili(last / HOSE_TRACE_STEP))):
+		points.append(traced[index])
+	points.append(traced[-1] if reaches_surface else _hose_water_position(trajectory.origin, trajectory.velocity, last))
+	return {"origin": tail, "velocity": trajectory.velocity, "points": points,
+		"hit": trajectory.hit if reaches_surface else {}, "duration": last - first}
+
+
+func _advance_released_hoses(delta: float, authority: bool) -> void:
+	for index in range(_released_hose_streams.size() - 1, -1, -1):
+		var released := _released_hose_streams[index]
+		released.previous_elapsed = released.elapsed
+		released.elapsed += delta
+		if released.previous_elapsed < released.path.duration:
+			var path := _released_hose_path(released)
+			if authority:
+				var shooter: Shooter = _shooters.get(released.peer_id)
+				var forward := Vector3(path.velocity.x, 0.0, path.velocity.z).normalized()
+				var impact_age := clampf(released.elapsed + released.emitted_age - float(released.path.duration),
+					0.0, released.emitted_age)
+				_apply_hose_water(shooter, path, forward, delta, impact_age)
+			else:
+				_wash_hose_debris(path)
+		if released.elapsed >= float(released.path.duration) + HOSE_RELEASE_SPLASH_TIME:
+			_recycle_released_hose_visual(released)
+			_released_hose_streams.remove_at(index)
 
 
 func _wash_hose_floor(points: PackedVector3Array, side: Vector3, washed: Dictionary[Vector2i, bool]) -> void:
@@ -11101,6 +11208,26 @@ func _wash_floor_cell(cell: Vector2i, size: int) -> void:
 		_pending_splats.append_array(PackedInt32Array([SPLAT_FLOOR_CLEAR, size, cell.x, cell.y]))
 
 
+func _hose_hits_floor(hit: Dictionary) -> bool:
+	return not hit.is_empty() and (hit.collider == _floor \
+		or ((hit.normal as Vector3).y > 0.6 and hit.position.y <= TomatinaMap.ground_height(hit.position) + 0.22))
+
+
+func _wash_hose_debris(path: Dictionary) -> void:
+	var points: PackedVector3Array = path.points
+	if _debris.is_empty() or points.size() < 2:
+		return
+	var bounds := AABB(points[0], Vector3.ZERO)
+	for at in points:
+		bounds = bounds.expand(at)
+	var floor_hit := _hose_hits_floor(path.hit)
+	var impact: Vector3 = path.hit.position if floor_hit else Vector3.INF
+	bounds = bounds.grow(HOSE_DEBRIS_SPLASH_RADIUS if floor_hit else HOSE_JET_RADIUS)
+	for debris in _debris:
+		debris.wash_in_jet(points, bounds, HOSE_JET_RADIUS, impact, HOSE_DEBRIS_SPLASH_RADIUS,
+			_tomatina_static_hit)
+
+
 ## Authority, once a tick. Every open hose shoves whoever holds it, washes the
 ## floor under its jet and bursts every body in it, for as long as it is open.
 ##
@@ -11129,16 +11256,10 @@ func _advance_fire_hoses(delta: float) -> void:
 		var reel := hose_reel(slot)
 		if shooter == null or shooter.player.is_incapacitated() or not _stage_input_enabled \
 				or reel.distance_to(shooter.player.global_position) > _hose_tether():
-			_hose_users.erase(slot)
-			if shooter != null:
-				shooter.player.external_drift = Vector3.ZERO
-				shooter.hose_flow_age = 0.0
-			_update_stage_objective()
+			_close_fire_hose(slot, shooter)
 			continue
 		shooter.hose_flow_age = minf(shooter.hose_flow_age + delta, HOSE_MAX_FLIGHT_TIME)
 		var path := _hose_path(shooter, shooter.hose_flow_age)
-		var points: PackedVector3Array = path.points
-		var from: Vector3 = path.origin
 		var flat: Vector3 = path.velocity / HOSE_EXIT_SPEED
 		flat.y = 0.0
 		var forward := flat.normalized()
@@ -11151,59 +11272,68 @@ func _advance_fire_hoses(delta: float) -> void:
 		if shooter.player.is_on_floor():
 			push *= 1.0 - 0.24 * maxf(0.0, step.dot(forward))
 		shooter.player.external_drift = -flat * push
-		var hit: Dictionary = path.hit
-		var washed_ground := false
-		if not hit.is_empty():
-			var end: Vector3 = hit.position
-			washed_ground = hit.collider == _floor \
-				or ((hit.normal as Vector3).y > 0.6 and end.y <= TomatinaMap.ground_height(end) + 0.22)
-			if washed_ground:
-				_wash_floor_impact(shooter, end, delta)
-			else:
-				_wash_hose_surface(hit)
-		if not washed_ground:
-			shooter.hose_impact_age = 0.0
-		if _floor.grid.painted_count > 0:
-			var washed: Dictionary[Vector2i, bool] = {}
-			_wash_hose_floor(points, forward.cross(Vector3.UP), washed)
-		if points.size() < 2:
+		_apply_hose_water(shooter, path, forward, delta)
+
+
+func _apply_hose_water(shooter: Shooter, path: Dictionary, forward: Vector3, delta: float,
+		released_impact_age := -1.0) -> void:
+	var points: PackedVector3Array = path.points
+	var hit: Dictionary = path.hit
+	var washed_ground := _hose_hits_floor(hit)
+	if washed_ground:
+		if released_impact_age < 0.0:
+			_wash_floor_impact(shooter, hit.position, delta)
+		else:
+			var size := mini(int(released_impact_age / HOSE_IMPACT_WASH_STEP), HOSE_FLOOR_WASH_RADII.size() - 1)
+			_wash_floor_cell(_floor.wash_cell_at(hit.position), size)
+	elif not hit.is_empty():
+		_wash_hose_surface(hit)
+	if not washed_ground and released_impact_age < 0.0:
+		shooter.hose_impact_age = 0.0
+	if _floor.grid.painted_count > 0:
+		var washed: Dictionary[Vector2i, bool] = {}
+		_wash_hose_floor(points, forward.cross(Vector3.UP), washed)
+	if points.size() < 2:
+		return
+	_wash_players_in_jet(shooter, points)
+	var from := points[0]
+	var span := points[-1] - from
+	var flat_reach := Vector2(span.x, span.z).length()
+	var midpoint := from + span * 0.5
+	var extent := flat_reach * 0.5 + HOSE_SPRAY_RADIUS + _largest_enemy_radius
+	# A single hose can reject distant bodies without building a new index.
+	var candidates := _enemies
+	if _blast_grid_built or _hose_users.size() + _released_hose_streams.size() > 1:
+		candidates = _blast_candidates(midpoint, extent)
+	for enemy in candidates:
+		if not is_instance_valid(enemy) or not enemy.is_alive():
 			continue
-		_wash_players_in_jet(shooter, points)
-		var span := points[-1] - from
-		var flat_reach := Vector2(span.x, span.z).length()
-		var midpoint := from + span * 0.5
-		var extent := flat_reach * 0.5 + HOSE_SPRAY_RADIUS + _largest_enemy_radius
-		# A single hose can reject distant bodies without building a new index.
-		var candidates := _enemies
-		if _blast_grid_built or _hose_users.size() > 1:
-			candidates = _blast_candidates(midpoint, extent)
-		for enemy in candidates:
-			if not is_instance_valid(enemy) or not enemy.is_alive():
-				continue
-			var at := enemy.global_position
-			if absf(at.x - midpoint.x) > extent or absf(at.z - midpoint.z) > extent:
-				continue
-			var contact := _hose_contact(points, at, enemy.radius, enemy.height)
-			if contact == HoseContact.NONE:
-				continue
-			if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
-				if contact == HoseContact.CORE:
-					enemy.stop_ball_in_water()
-				continue
-			if contact == HoseContact.MIST:
-				if not enemy is PressKing:
-					enemy.take_shove(from, 0.65)
-				continue
-			if enemy is PressKing:
-				(enemy as PressKing).wash_armor(delta)
-				continue
+		var at := enemy.global_position
+		if absf(at.x - midpoint.x) > extent or absf(at.z - midpoint.z) > extent:
+			continue
+		var contact := _hose_contact(points, at, enemy.radius, enemy.height)
+		if contact == HoseContact.NONE:
+			continue
+		if enemy.kind == MayoEnemy.EnemyKind.TOMATO_BALL:
+			if contact == HoseContact.CORE:
+				enemy.stop_ball_in_water()
+			continue
+		if contact == HoseContact.MIST:
+			if not enemy is PressKing:
+				enemy.take_shove(from, 0.65)
+			continue
+		if enemy is PressKing:
+			(enemy as PressKing).wash_armor(delta)
+			continue
+		if shooter != null:
 			_credit_hit(enemy, shooter)
-			enemy.health = minf(enemy.health, enemy.sauce_damage_per_hit)
-			enemy.take_sauce_hit(from)
-			if enemy.is_alive():
-				continue
-			_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
-			_finish_tomato_kill(enemy, shooter)
+		enemy.health = minf(enemy.health, enemy.sauce_damage_per_hit)
+		enemy.take_sauce_hit(from)
+		if enemy.is_alive():
+			continue
+		_broadcast_enemy_shake(enemy, kill_shake_degrees, kill_shake_seconds, 2)
+		_finish_tomato_kill(enemy, shooter)
+	_wash_hose_debris(path)
 
 
 ## Measure against the curved path and the body's upright capsule.
@@ -11361,16 +11491,6 @@ func _advance_press_king_wave(delta: float) -> void:
 		_press_king_wave_side = (_press_king_wave_side + 1) % TomatinaMap.HORDE_EDGES.size()
 
 
-## The view's shudder while this player holds an open hose, as a pitch in
-## radians. Two sines rather than noise so it is the same every frame it is
-## asked for, and zero the frame the hose closes.
-func _hose_rumble(shooter: Shooter) -> float:
-	if shooter == null or _hose_slot_of(shooter.peer_id) < 0:
-		return 0.0
-	var t := Time.get_ticks_msec() * 0.001
-	return deg_to_rad(HOSE_RUMBLE_DEGREES) * (sin(t * 47.0) * 0.6 + sin(t * 31.0 + 1.7) * 0.4)
-
-
 func _hose_material(color: Color, metallic := 0.0, roughness := 0.6) -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
 	material.albedo_color = color
@@ -11494,21 +11614,21 @@ func _build_hose_stand(slot: int, at: Vector3) -> void:
 	_hose_stands[slot] = {"anchor": anchor, "nozzle": resting, "label": hose_label}
 
 
-## The nozzle a player holds, under their aim pivot so it yaws and pitches with
-## the aim the jet is fired along, held to the lower right like the bottle and
-## pointed at the crosshair. The `Kick` node between is what the opening lurch
-## and the rumble turn. Built on first use, hidden the rest of the time.
-func _hose_nozzle_for(shooter: Shooter) -> Node3D:
+## First-person hands and nozzle share the same render-rate camera transform.
+## In third person the nozzle follows the world-space aim pivot.
+func _hose_nozzle_for(shooter: Shooter, camera_view: bool) -> Node3D:
 	var nozzle: Node3D = _hose_nozzles.get(shooter.peer_id)
-	if is_instance_valid(nozzle) and nozzle.get_parent() == shooter.aim_pivot:
-		return nozzle
-	nozzle = Node3D.new()
-	nozzle.name = "HoseHold"
-	nozzle.position = HOSE_HOLD
-	shooter.aim_pivot.add_child(nozzle)
-	nozzle.add_child(_build_hose_nozzle("HoseNozzle"))
-	nozzle.hide()
-	_hose_nozzles[shooter.peer_id] = nozzle
+	var parent := _camera if camera_view else shooter.aim_pivot
+	if not is_instance_valid(nozzle):
+		nozzle = Node3D.new()
+		nozzle.name = "HoseHold"
+		nozzle.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
+		parent.add_child(nozzle)
+		nozzle.add_child(_build_hose_nozzle("HoseNozzle"))
+		nozzle.hide()
+		_hose_nozzles[shooter.peer_id] = nozzle
+	elif nozzle.get_parent() != parent:
+		nozzle.reparent(parent, false)
 	return nozzle
 
 
@@ -11564,7 +11684,7 @@ func _lay_segments(pool: Array, points: PackedVector3Array, material: Material,
 
 
 func _make_hose_flow(effect_name: String, start_radius: float, end_radius: float,
-		spread_distance: float, mist := false) -> MeshInstance3D:
+		spread_distance: float, fan_widening: float, mist := false) -> MeshInstance3D:
 	var tube := CylinderMesh.new()
 	tube.height = 1.0
 	tube.top_radius = 1.0
@@ -11579,6 +11699,7 @@ func _make_hose_flow(effect_name: String, start_radius: float, end_radius: float
 	water.set_shader_parameter("start_radius", start_radius)
 	water.set_shader_parameter("end_radius", end_radius)
 	water.set_shader_parameter("spread_distance", spread_distance)
+	water.set_shader_parameter("fan_widening", fan_widening)
 	water.set_shader_parameter("flow_gravity", HOSE_GRAVITY)
 	water.set_shader_parameter("flow_drag", HOSE_AIR_DRAG)
 	water.render_priority = -1 if mist else 0
@@ -11605,6 +11726,7 @@ func _make_hose_droplets() -> MultiMeshInstance3D:
 	water.set_shader_parameter("start_radius", 0.22)
 	water.set_shader_parameter("end_radius", 1.23)
 	water.set_shader_parameter("spread_distance", 12.0)
+	water.set_shader_parameter("fan_widening", 0.15)
 	water.set_shader_parameter("flow_gravity", HOSE_GRAVITY)
 	water.set_shader_parameter("flow_drag", HOSE_AIR_DRAG)
 	water.render_priority = 1
@@ -11618,7 +11740,7 @@ func _make_hose_droplets() -> MultiMeshInstance3D:
 	return spray
 
 
-func _place_hose_flow(flow: GeometryInstance3D, path: Dictionary, start_time: float) -> void:
+func _place_hose_flow(flow: GeometryInstance3D, path: Dictionary, start_time: float, tip_offset: Vector3) -> void:
 	var duration: float = path.duration - start_time
 	if duration <= 0.01:
 		flow.hide()
@@ -11637,18 +11759,26 @@ func _place_hose_flow(flow: GeometryInstance3D, path: Dictionary, start_time: fl
 	var water := flow.material_override as ShaderMaterial
 	water.set_shader_parameter("flow_velocity", to_local * velocity)
 	water.set_shader_parameter("flow_duration", duration)
+	_update_hose_flow_tip(flow, tip_offset, 1.0 - start_time / float(path.duration))
 	# The ray hits a short chord of the trajectory. Match its endpoint exactly.
 	var correction := span - _hose_water_position(Vector3.ZERO, velocity, duration)
 	water.set_shader_parameter("flow_correction", to_local * correction)
-	var pad := float(water.get_shader_parameter("end_radius")) * 1.1
+	var radius := float(water.get_shader_parameter("end_radius")) * 1.2
+	var pad := radius + HOSE_TIP_CULL_MARGIN
+	var side_pad := radius * (1.0 + float(water.get_shader_parameter("fan_widening"))) + HOSE_TIP_CULL_MARGIN
 	var apex_time := clampf(log(1.0 + maxf(velocity.y, 0.0) * HOSE_AIR_DRAG / HOSE_GRAVITY)
 		/ HOSE_AIR_DRAG, 0.0, duration)
 	var top := maxf(span.y, _hose_water_position(Vector3.ZERO, velocity, apex_time).y)
 	var bottom := minf(0.0, span.y)
-	var rear := Vector3(-pad, bottom - pad, -pad)
-	flow.custom_aabb = AABB(rear, Vector3(2.0 * pad, top - bottom + 2.0 * pad,
+	var rear := Vector3(-side_pad, bottom - pad, -pad)
+	flow.custom_aabb = AABB(rear, Vector3(2.0 * side_pad, top - bottom + 2.0 * pad,
 		Vector2(span.x, span.z).length() + 2.0 * pad))
 	flow.show()
+
+
+func _update_hose_flow_tip(flow: GeometryInstance3D, offset: Vector3, weight: float) -> void:
+	var water := flow.material_override as ShaderMaterial
+	water.set_shader_parameter("flow_tip_offset", flow.global_basis.transposed() * offset * weight)
 
 
 func _make_hose_splash() -> GPUParticles3D:
@@ -11719,7 +11849,69 @@ func _update_hose_impact(visual: Dictionary, path: Dictionary, delta: float) -> 
 		position + normal * 0.035 + across * 0.14)
 
 
+func _make_hose_water_visual() -> Dictionary:
+	return {
+		"jet": _make_hose_flow("HoseJet", 0.075, 0.39, 10.0, 0.25),
+		"mist": _make_hose_flow("HoseMist", 0.21, 1.36, 13.0, 0.12, true),
+		"droplets": _make_hose_droplets(),
+		"splash": _make_hose_splash(),
+		"foam": _make_hose_impact_foam(),
+		"foam_strength": 0.0,
+	}
+
+
+func _recycle_released_hose_visual(released: ReleasedHoseStream) -> void:
+	var visual := released.visual
+	if visual.is_empty():
+		return
+	for effect in ["jet", "mist", "droplets", "splash", "foam"]:
+		visual[effect].hide()
+	visual.splash.emitting = false
+	visual.foam_strength = 0.0
+	visual.erase("impact_normal")
+	_released_hose_visual_pool.append(visual)
+	released.visual = {}
+
+
+func _update_released_hose_visuals(delta: float) -> void:
+	var interpolation := Engine.get_physics_interpolation_fraction()
+	for released in _released_hose_streams:
+		var path := released.path
+		if released.visual.is_empty():
+			released.visual = _make_hose_water_visual() if _released_hose_visual_pool.is_empty() \
+				else _released_hose_visual_pool.pop_back()
+			var visual := released.visual
+			visual.splash.show()
+			_place_hose_flow(visual.jet, path, 0.0, released.tip_offset)
+			_place_hose_flow(visual.mist, path, _hose_mist_start_time, released.tip_offset)
+			_place_hose_flow(visual.droplets, path, _hose_mist_start_time, released.tip_offset)
+		var visual := released.visual
+		var first := lerpf(released.previous_elapsed, released.elapsed, interpolation)
+		var last := minf(first + released.emitted_age, path.duration)
+		_trim_hose_flow(visual.jet, first, last)
+		_trim_hose_flow(visual.mist, first - _hose_mist_start_time, last - _hose_mist_start_time)
+		_trim_hose_flow(visual.droplets, first - _hose_mist_start_time, last - _hose_mist_start_time)
+		var splashing: bool = first < path.duration + 0.05 and last >= path.duration
+		_update_hose_impact(visual, path if splashing else {}, delta)
+
+
+func _trim_hose_flow(flow: GeometryInstance3D, first: float, last: float) -> void:
+	var start := maxf(0.0, first)
+	flow.visible = last - start > 0.006
+	if flow.visible:
+		var water := flow.material_override as ShaderMaterial
+		water.set_shader_parameter("flow_first_age", start)
+		water.set_shader_parameter("flow_last_age", last)
+
+
 func _free_hose_visuals() -> void:
+	for released in _released_hose_streams:
+		_recycle_released_hose_visual(released)
+	_released_hose_streams.clear()
+	for visual in _released_hose_visual_pool:
+		for effect in ["jet", "mist", "droplets", "splash", "foam"]:
+			visual[effect].queue_free()
+	_released_hose_visual_pool.clear()
 	for visual in _hose_visuals.values():
 		visual["jet"].queue_free()
 		visual["mist"].queue_free()
@@ -11742,29 +11934,32 @@ func _free_hose_visuals() -> void:
 		shooter.hose_brace = 0.0
 		shooter.hose_kick_pitch = 0.0
 		shooter.hose_kick_pending = 0.0
+		shooter.hose_rumble_time = 0.0
 
 
-## Every peer, once a frame: everything you can see of the hoses.
-##
-## For each player, the nozzle in their hands while they hold one and the kick
-## it takes when the main opens -- the edge is read off `_hose_users`, which
-## the status packet keeps current on clients, so the thump and the lurch
-## happen on every machine, not just the host's. For each open hose, the line
-## from its reel to that nozzle, sagging by however much is not paid out; the
-## water along the aim line, with a wider mist and scattered impact droplets.
-func _update_hose_visuals() -> void:
-	var delta := get_process_delta_time()
+func _hose_rumble(shooter: Shooter) -> float:
+	if not shooter.hose_was_open:
+		return 0.0
+	var time := shooter.hose_rumble_time
+	return deg_to_rad(HOSE_RUMBLE_DEGREES) * (sin(time * 47.0) * 0.6 + sin(time * 31.0 + 1.7) * 0.4)
+
+
+func _advance_hose_presentation(delta: float) -> void:
 	for shooter: Shooter in _shooters.values():
 		if not is_instance_valid(shooter.player) or shooter.aim_pivot == null:
 			continue
 		var open := _hose_slot_of(shooter.peer_id) >= 0
 		if open and not shooter.hose_was_open:
+			if not _is_authority():
+				shooter.hose_path_frame = -1
+				shooter.hose_path = {}
 			shooter.hose_kick_pending = deg_to_rad(HOSE_KICK_DEGREES)
 			_play_combat_warning(shooter.player.global_position, 70.0, 0.4)
 			_play_combat_warning(shooter.player.global_position, 420.0, 0.2)
 		elif not open and shooter.hose_was_open:
 			_play_combat_warning(shooter.player.global_position, 260.0, 0.15)
 		shooter.hose_was_open = open
+		shooter.hose_rumble_time = shooter.hose_rumble_time + delta if open else 0.0
 		shooter.hose_brace = lerpf(shooter.hose_brace, 1.0 if open else 0.0,
 			1.0 - exp(-delta * 6.0))
 		if shooter.hose_kick_pending > 0.0:
@@ -11773,26 +11968,54 @@ func _update_hose_visuals() -> void:
 			shooter.hose_kick_pitch += arriving
 			shooter.hose_kick_pending -= arriving
 		shooter.hose_kick_pitch *= exp(-delta / HOSE_KICK_SETTLE)
+
+
+func _update_hose_visuals(delta: float) -> void:
+	var cinematic := is_cinematic_active()
+	for shooter: Shooter in _shooters.values():
+		if not is_instance_valid(shooter.player) or not is_instance_valid(shooter.aim_pivot):
+			continue
+		var open := _hose_slot_of(shooter.peer_id) >= 0
+		var camera_view := shooter == _local and _first_person and not cinematic
 		var nozzle: Node3D = _hose_nozzles.get(shooter.peer_id)
 		if open:
-			nozzle = _hose_nozzle_for(shooter)
+			nozzle = _hose_nozzle_for(shooter, camera_view)
 		if not is_instance_valid(nozzle):
 			continue
 		nozzle.visible = open and shooter.player.state == MayoPlayer.State.NORMAL
 		if open:
-			var aim := _hose_nozzle_aim(shooter)
-			nozzle.global_transform = Transform3D(aim, _hose_eye(shooter) + aim * HOSE_HOLD)
+			if camera_view:
+				nozzle.transform = Transform3D(Basis(Vector3.RIGHT, shooter.hose_kick_pitch * 0.4), HOSE_HOLD)
+			else:
+				var aim := _hose_nozzle_aim(shooter)
+				var eye := shooter.player.render_position() + Vector3.UP * player_eye_offset(shooter)
+				nozzle.global_transform = Transform3D(aim, eye + aim * HOSE_HOLD)
+	var ready := _hose_ready()
+	var wait := _hose_wait_seconds() if _horde_spawned and not ready else 0
+	var authority := _is_authority()
+	var tick := Engine.get_physics_frames()
 	for slot in hose_count():
 		var visual: Dictionary = _hose_visuals.get(slot, {})
-		var shooter: Shooter = _shooters.get(int(_hose_users.get(slot, -1)))
+		var peer := int(_hose_users.get(slot, -1))
+		var shooter: Shooter = _shooters.get(peer)
+		if not authority and not cinematic and visual.has("flow_path") and visual.get("flow_peer") != peer:
+			_begin_hose_release(visual.flow_peer, visual.flow_path, visual.flow_tip)
+			visual.erase("flow_path")
 		var stand: Dictionary = _hose_stands.get(slot, {})
 		if not stand.is_empty() and is_instance_valid(stand["nozzle"]):
 			stand["nozzle"].visible = shooter == null
 			var label: Label3D = stand["label"]
-			label.text = "발전기를 켜세요" if not hose_ready() else ("사용 중" if shooter != null else "호스 사용 가능")
-			label.modulate = Color("8bdff4") if hose_ready() else Color("ddd6ba")
+			var text := "발전기를 켜세요"
+			if ready:
+				text = "사용 중" if shooter != null else "호스 사용 가능"
+			elif wait > 0:
+				text = "급수 준비 · %d초" % wait
+			if label.text != text:
+				label.text = text
+				label.modulate = Color("8bdff4") if ready else Color("ddd6ba")
 		if shooter == null or not is_instance_valid(shooter.player):
 			if not visual.is_empty():
+				visual.erase("wash_tick")
 				if visual.erase("flow_origin"):
 					visual["jet"].hide()
 					visual["mist"].hide()
@@ -11803,30 +12026,48 @@ func _update_hose_visuals() -> void:
 				_update_hose_impact(visual, {}, delta)
 			continue
 		if visual.is_empty():
-			visual = {
-				"jet": _make_hose_flow("HoseJet", 0.055, 0.30, 10.0),
-				"mist": _make_hose_flow("HoseMist", 0.21, 1.36, 13.0, true),
-				"droplets": _make_hose_droplets(),
-				"line": [],
-				"splash": _make_hose_splash(),
-				"foam": _make_hose_impact_foam(),
-				"foam_strength": 0.0,
-				"rubber": _hose_material(Color(0.16, 0.42, 0.47), 0.0, 0.8),
-			}
+			visual = _make_hose_water_visual()
+			visual["line"] = []
+			visual["rubber"] = _hose_material(Color(0.16, 0.42, 0.47), 0.0, 0.8)
 			_hose_visuals[slot] = visual
-		var nozzle := _hose_nozzle_for(shooter)
-		var path := _hose_path(shooter, shooter.hose_flow_age)
+		var nozzle: Node3D = _hose_nozzles.get(shooter.peer_id)
+		if not is_instance_valid(nozzle):
+			continue
+		var path := shooter.hose_path
+		# Reuse the host's collision sweep. A guest traces each remote jet at
+		# most once per simulation tick, while the hands can update every draw.
+		if path.is_empty() or (not authority and not cinematic and shooter.hose_path_frame != tick):
+			path = _hose_path(shooter, shooter.hose_flow_age)
+		if not authority and not cinematic and visual.get("wash_tick", -1) != tick:
+			visual["wash_tick"] = tick
+			_wash_hose_debris(path)
 		var endpoint: Vector3 = path.points[-1]
+		var tip := _hose_nozzle_marker(nozzle, "Tip").global_position
+		var shown_tip: Vector3 = visual.get("flow_tip", Vector3.INF)
+		visual["flow_peer"] = peer
+		visual["flow_path"] = path
 		# TIME animates each material while the simulated path stays still.
+		var tip_offset: Vector3 = tip - path.origin
 		if path.origin != visual.get("flow_origin") or path.velocity != visual.get("flow_velocity") \
 				or path.duration != visual.get("flow_duration") or endpoint != visual.get("flow_endpoint"):
-			_place_hose_flow(visual["jet"], path, 0.0)
-			_place_hose_flow(visual["mist"], path, _hose_mist_start_time)
-			_place_hose_flow(visual["droplets"], path, _hose_mist_start_time)
+			_place_hose_flow(visual["jet"], path, 0.0, tip_offset)
+			_place_hose_flow(visual["mist"], path, _hose_mist_start_time, tip_offset)
+			_place_hose_flow(visual["droplets"], path, _hose_mist_start_time, tip_offset)
 			visual["flow_origin"] = path.origin
 			visual["flow_velocity"] = path.velocity
 			visual["flow_duration"] = path.duration
 			visual["flow_endpoint"] = endpoint
+			visual["flow_tip"] = tip
+		elif tip.distance_squared_to(shown_tip) > 0.0005 ** 2:
+			# A camera-only recoil update moves the mouth in the shader. Keep the
+			# cached trajectory, mesh transform and bounds from the physics tick.
+			if visual.jet.visible:
+				_update_hose_flow_tip(visual.jet, tip_offset, 1.0)
+			if visual.mist.visible:
+				var mist_weight := 1.0 - _hose_mist_start_time / float(path.duration)
+				_update_hose_flow_tip(visual.mist, tip_offset, mist_weight)
+				_update_hose_flow_tip(visual.droplets, tip_offset, mist_weight)
+			visual["flow_tip"] = tip
 		_update_hose_impact(visual, path, delta)
 		# The line: a quadratic curve from the reel to the back of the nozzle,
 		# hanging by whatever length is not paid out, held off the ground.
@@ -11834,7 +12075,9 @@ func _update_hose_visuals() -> void:
 			continue
 		var start: Vector3 = stand["anchor"].global_position
 		var finish := _hose_nozzle_marker(nozzle, "Rear").global_position
-		if start == visual.get("line_start") and finish == visual.get("line_finish"):
+		var previous_finish: Vector3 = visual.get("line_finish", Vector3.INF)
+		if start == visual.get("line_start") \
+				and finish.distance_squared_to(previous_finish) < HOSE_LINE_UPDATE_DISTANCE ** 2:
 			continue
 		visual["line_start"] = start
 		visual["line_finish"] = finish
@@ -11855,6 +12098,7 @@ func _update_hose_visuals() -> void:
 			at.y = maxf(at.y, HOSE_GROUND_Y + 0.08)
 			line_points.append(at)
 		_lay_segments(visual["line"], line_points, visual["rubber"])
+	_update_released_hose_visuals(delta)
 
 
 func _escape_shove(shooter: Shooter) -> void:
@@ -12421,8 +12665,7 @@ func tomato_action(peer: int, action: int) -> void:
 		if not _horde_spawned and TomatinaMap.in_rect(_siren_zone, player.global_position):
 			_start_finale(player)
 			return
-		if hose_ready() \
-				and (_hose_slot_of(peer) >= 0 or _hose_slot(player.global_position) >= 0):
+		if _hose_slot_of(peer) >= 0 or (_hose_ready() and _hose_slot(player.global_position) >= 0):
 			_toggle_fire_hose(shooter)
 			return
 		var room := _refuge_shower_in_reach(player.global_position)
@@ -12968,16 +13211,24 @@ func _sync_camera_viewmodel() -> void:
 			if shooter.weapon_sway.get_parent() != shooter.camera_viewmodel:
 				shooter.weapon_sway.reparent(shooter.camera_viewmodel, false)
 			shooter.camera_viewmodel.transform = first_person_visual_transform(shooter)
-			shooter.camera_viewmodel.visible = _first_person and shooter.weapon.visible
-			if is_instance_valid(shooter.first_person_arms) and shooter.first_person_arms.get_parent() != _camera:
-				shooter.first_person_arms.reparent(_camera, false)
+			shooter.camera_viewmodel.visible = _first_person and shooter.weapon.visible \
+				and _hose_slot_of(shooter.peer_id) < 0
+			if is_instance_valid(shooter.first_person_arms):
+				if shooter.first_person_arms.get_parent() != _camera:
+					shooter.first_person_arms.reparent(_camera, false)
+				var hose_nozzle: Node3D = _hose_nozzles.get(shooter.peer_id)
+				if not is_instance_valid(hose_nozzle) or not hose_nozzle.visible or hose_nozzle.get_parent() != _camera:
+					hose_nozzle = null
+				shooter.first_person_arms.refresh_pose(hose_nozzle)
 		else:
 			if shooter.weapon_sway.get_parent() != shooter.weapon:
 				shooter.weapon_sway.reparent(shooter.weapon, false)
 			if is_instance_valid(shooter.camera_viewmodel):
 				shooter.camera_viewmodel.hide()
-			if is_instance_valid(shooter.first_person_arms) and shooter.first_person_arms.get_parent() == _camera:
-				shooter.first_person_arms.reparent(shooter.aim_pivot, false)
+			if is_instance_valid(shooter.first_person_arms):
+				if shooter.first_person_arms.get_parent() == _camera:
+					shooter.first_person_arms.reparent(shooter.aim_pivot, false)
+				shooter.first_person_arms.hide()
 
 
 func _try_truck_exit(shooter: Shooter) -> bool:

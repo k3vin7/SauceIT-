@@ -49,7 +49,7 @@ func _probe_offline() -> void:
 		var view_before: Vector3 = -world._camera.global_basis.z
 		var arms = shooter.first_person_arms
 		world._apply_nozzle_sway(shooter)
-		arms._process(STEP)
+		arms.refresh_pose(null)
 		var palm: Node3D = arms.palms[0]
 		var palm_before := palm.position
 		shooter.firing = true
@@ -90,7 +90,7 @@ func _probe_offline() -> void:
 				if side != 0.0 and next_side != side:
 					reversals += 1
 				side = next_side
-			arms._process(STEP)
+			arms.refresh_pose(null)
 			var hand_shift := palm.position - palm_before
 			palm_travel = maxf(palm_travel, absf(hand_shift.x))
 			if not shooter.points.is_empty():
