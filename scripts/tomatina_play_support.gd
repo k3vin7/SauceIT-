@@ -459,9 +459,11 @@ func context_candidates(shooter) -> Array:
 			else TomatinaMap.at_cell(TomatinaMap.siren_cell())
 		_candidate(out, shooter, "generator", 0, at, "발전기 켜기", -2.0, generator + Vector3.UP * 1.3)
 	var hose: int = world._hose_slot_of(shooter.peer_id)
-	if hose < 0:
-		hose = world._hose_slot(at)
-	if world._horde_spawned and hose >= 0:
+	if hose < 0 and world._hose_ready():
+		var nearby_hose: int = world._hose_slot(at)
+		if not world._hose_users.has(nearby_hose):
+			hose = nearby_hose
+	if hose >= 0:
 		_candidate(out, shooter, "hose", 0, at, "소방 호스 잡기 / 놓기", -1.0,
 			TomatinaMap.at_cell(world.TOMATINA_HOSES[hose]) + Vector3.UP * 1.2)
 	var room: int = world._refuge_shower_in_reach(at)

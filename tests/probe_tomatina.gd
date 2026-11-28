@@ -773,6 +773,8 @@ func _run() -> void:
 	var under_high_water := source + along * 2.0
 	var beyond_impact := impact + along * 3.5
 	var drop_position := points[-3] + Vector3.RIGHT * 0.25
+	var target_debris := _settled_debris(scene, impact + Vector3.UP * 0.10)
+	var distant_debris := _settled_debris(scene, beyond_impact + Vector3.UP * 0.10)
 	floor_body.paint_mayo(under_high_water)
 	floor_body.paint_mayo(beyond_impact)
 	floor_body.paint_mayo(impact)
@@ -796,6 +798,7 @@ func _run() -> void:
 	_check(scene._hose_slot_of(peer) == 0, "[E] at the hose stand did not open the hose")
 	scene._advance_fire_hoses(0.016)
 	_check(floor_body.thickness_at(impact) > 0, "opening the hose washed its landing before the water arrived")
+	_check(target_debris.piece_count() > 0, "the hose removed corpse pieces before water reached them")
 	if swept != null:
 		_check(swept.is_alive(), "opening the hose hit a distant enemy instantly")
 	# The first hit can coat the freshly washed path in ketchup again.
@@ -805,6 +808,9 @@ func _run() -> void:
 	_check(floor_body.thickness_at(drop_position) == 0, "descending water missed a detached ketchup drop")
 	_check(floor_body.thickness_at(under_high_water) > 0, "water washed the ground while still high in the air")
 	_check(floor_body.thickness_at(beyond_impact) > 0, "the hose washed past the impact")
+	_check(target_debris.piece_count() == 0 and not target_debris._batch.visible,
+		"water left the rounded tomato corpse pieces at its landing point")
+	_check(distant_debris.piece_count() > 0, "the hose cleared tomato corpse pieces outside the water")
 	if swept != null and bystander != null:
 		_check(not swept.is_alive(), "a grunt in the falling jet survived the water")
 		_check(bystander.is_alive() and bystander._shove.length_squared() > 0.0,
@@ -988,6 +994,18 @@ func _probe_resting_grunt() -> void:
 	_check(wake_requests.size() == 2, "a scripted move did not invalidate the grunt's sleeping cell")
 	fixture.queue_free()
 	await process_frame
+
+
+func _settled_debris(scene, at: Vector3) -> TomatoDebris:
+	scene._leave_debris(at, 0.5, TomatoVisuals.TOMATO)
+	var debris: TomatoDebris = scene._debris.back()
+	debris.set_process(false)
+	for index in debris.piece_count():
+		debris._positions[index] = debris.to_local(at)
+		debris._velocities[index] = Vector3.ZERO
+		debris._write_piece_transform(index)
+	debris._settled = debris.piece_count()
+	return debris
 
 
 func _probe_victim_surfaces(art: TomatinaVillageArt) -> void:

@@ -34,6 +34,7 @@ func _probe_stage_input(peer: int) -> void:
 	guest.request_context_action("generator", 0)
 	_check(await _until(func(): return host_world._horde_spawned, 120),
 		"host menu blocked the guest generator")
+	host_world._finale_elapsed = host_world.FINALE_DURATION
 	player.global_position = TomatinaMap.at_cell(host_world.TOMATINA_HOSES[0]) + Vector3.UP * 1.28
 	guest.request_context_action("hose", 0)
 	_check(await _until(func(): return host_world._hose_slot_of(peer) == 0, 120),

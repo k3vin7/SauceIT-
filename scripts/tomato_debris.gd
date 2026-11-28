@@ -27,6 +27,10 @@ var _scales: Array[Vector3] = []
 var _velocities: Array[Vector3] = []
 var _spins: Array[Vector3] = []
 var _rest_heights: Array[float] = []
+var _washed := PackedByteArray()
+var _washed_count := 0
+var _piece_bounds := AABB()
+var _piece_bounds_dirty := true
 var _settled := 0
 var _active_count := 0
 var terrain_height: Callable
@@ -72,8 +76,12 @@ func setup(centre: Vector3, radius: float, skin: Color) -> void:
 		add_child(_batch)
 	_batch.material_override = piece_material(skin)
 	_batch.multimesh.visible_instance_count = count
+	_batch.show()
 	_active_count = count
 	_settled = 0
+	_washed_count = 0
+	_washed.resize(count)
+	_washed.fill(0)
 	_positions.resize(count)
 	_rotations.resize(count)
 	_scales.resize(count)
@@ -94,6 +102,7 @@ func setup(centre: Vector3, radius: float, skin: Color) -> void:
 		_spins[index] = Vector3(rng.randf_range(-6.0, 6.0), 0.0, rng.randf_range(-6.0, 6.0))
 		_rest_heights[index] = piece_radius * squash * 0.8
 		_write_piece_transform(index)
+	_piece_bounds_dirty = true
 	set_process(true)
 
 
@@ -122,6 +131,7 @@ func _process(delta: float) -> void:
 			_rotations[index] += _spins[index] * delta
 		_velocities[index] = velocity
 		_write_piece_transform(index)
+	_piece_bounds_dirty = true
 	if settled():
 		set_process(false)
 
@@ -132,7 +142,65 @@ func _write_piece_transform(index: int) -> void:
 
 
 func piece_count() -> int:
-	return _active_count
+	return _active_count - _washed_count
+
+
+func _update_piece_bounds() -> void:
+	_piece_bounds_dirty = false
+	var first := true
+	for index in _active_count:
+		if _washed[index] != 0:
+			continue
+		var centre := global_position + _positions[index]
+		var size := _scales[index].abs()
+		var radius := maxf(size.x, maxf(size.y, size.z))
+		var bounds := AABB(centre - Vector3.ONE * radius, Vector3.ONE * radius * 2.0)
+		_piece_bounds = bounds if first else _piece_bounds.merge(bounds)
+		first = false
+
+
+func wash_in_jet(points: PackedVector3Array, jet_bounds: AABB, radius: float,
+		impact: Vector3, splash_radius: float, static_hit: Callable) -> void:
+	if piece_count() == 0:
+		return
+	if _piece_bounds_dirty:
+		_update_piece_bounds()
+	if not _piece_bounds.intersects(jet_bounds):
+		return
+	var before := _washed_count
+	for index in _active_count:
+		if _washed[index] != 0:
+			continue
+		var centre := global_position + _positions[index]
+		var piece_radius := maxf(_scales[index].x, _scales[index].z)
+		if not jet_bounds.grow(piece_radius).has_point(centre):
+			continue
+		var splash := impact.is_finite() and centre.distance_squared_to(impact) <= (splash_radius + piece_radius) ** 2
+		if splash and static_hit.call(impact + Vector3.UP * 0.05, centre).is_empty():
+			_wash_piece(index)
+			continue
+		for step in range(1, points.size()):
+			var start := points[step - 1]
+			var nearest := Geometry3D.get_closest_point_to_segment(centre, start, points[step])
+			if centre.distance_squared_to(nearest) <= (radius + piece_radius) ** 2 \
+					and static_hit.call(nearest.move_toward(start, 0.02), centre).is_empty():
+				_wash_piece(index)
+				break
+	if _washed_count != before:
+		if piece_count() == 0:
+			_batch.hide()
+		_piece_bounds_dirty = true
+		if settled():
+			set_process(false)
+
+
+func _wash_piece(index: int) -> void:
+	_washed[index] = 1
+	_washed_count += 1
+	if not _velocities[index].is_zero_approx():
+		_settled += 1
+	_velocities[index] = Vector3.ZERO
+	_batch.multimesh.set_instance_transform(index, Transform3D(Basis().scaled(Vector3.ZERO), _positions[index]))
 
 
 func settled() -> bool:
