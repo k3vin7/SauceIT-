@@ -11517,7 +11517,10 @@ func hose_grip_poses(shooter: Shooter) -> Array[Transform3D]:
 
 ## A run of cylinders laid end to end through `points`, from a pool that grows
 ## to the longest run asked for and hides what a shorter one leaves over.
-func _lay_segments(pool: Array, points: PackedVector3Array, material: Material) -> void:
+## `radius_at(segment, steps)` gives each new segment its own radius, so a run
+## can taper along its length; without it every segment is the hose's width.
+func _lay_segments(pool: Array, points: PackedVector3Array, material: Material,
+		radius_at := Callable()) -> void:
 	var needed := maxi(points.size() - 1, 0)
 	while pool.size() < needed:
 		var segment := MeshInstance3D.new()
@@ -11525,8 +11528,9 @@ func _lay_segments(pool: Array, points: PackedVector3Array, material: Material) 
 		mesh.height = 1.0
 		mesh.radial_segments = 10
 		mesh.rings = 1
-		mesh.top_radius = 0.075
-		mesh.bottom_radius = 0.075
+		var radius: float = radius_at.call(pool.size(), needed) if radius_at.is_valid() else 0.075
+		mesh.top_radius = radius
+		mesh.bottom_radius = radius
 		segment.mesh = mesh
 		segment.material_override = material
 		segment.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
