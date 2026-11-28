@@ -15,6 +15,7 @@ extends CharacterBody3D
 
 const FryStalkerVisualScript := preload("res://scripts/fry_stalker_visual.gd")
 const TomatoVisualsScript := preload("res://scripts/tomato_visuals.gd")
+const ScarecrowVisualScript := preload("res://scripts/scarecrow_visual.gd")
 const EnemyInk := preload("res://scripts/enemy_ink.gd")
 const TomatoBruteMotion := preload("res://scripts/tomato_brute_motion.gd")
 const HAMBURGER_MONSTER := preload(
@@ -271,8 +272,14 @@ signal simulation_wake_requested
 
 var _simulation_dormant := false
 
+## A practice target (the firing range's scarecrow): it takes every hit and
+## shows it, but its health stops at one, so nothing ever puts it down.
+var undying := false
+
 var health := 240.0:
 	set(value):
+		if undying and value < 1.0:
+			value = 1.0
 		var was_alive := health > 0.0
 		health = value
 		if was_alive and health <= 0.0:
@@ -824,6 +831,34 @@ func build_fry_stalker(cell_size: float, brush_radius: float) -> void:
 	contamination.configure(self, _body_mesh, radius, height, Color("9e0b06"))
 	EnemyInk.apply(_visual_root)
 	contamination.add_visual_overlay(_visual_root)
+
+
+## Turns this body into the firing range's scarecrow: it stands on its post,
+## cannot be pushed or put down, and looks like a scarecrow instead of whatever
+## it was built as. Everything that lands sauce on a body, counts a hit or
+## shows damage still works on it -- it is the same body underneath.
+func become_scarecrow() -> void:
+	undying = true
+	move_speed = 0.0
+	shove_speed = 0.0
+	impact_push_speed = 0.0
+	impact_lift_speed = 0.0
+	if _visual_root != null:
+		_visual_root.visible = false
+	if _grunt_model != null:
+		_grunt_model.visible = false
+	var figure: Node3D = ScarecrowVisualScript.build(radius)
+	add_child(figure)
+	if contamination != null:
+		contamination.add_visual_overlay(figure, true)
+	# The collider follows the figure: a trunk from the ground to the hat.
+	var body := get_node_or_null("Body") as CollisionShape3D
+	if body != null:
+		var trunk := CylinderShape3D.new()
+		trunk.radius = radius * ScarecrowVisualScript.TRUNK
+		trunk.height = radius * (1.0 + ScarecrowVisualScript.TOP)
+		body.shape = trunk
+		body.position = Vector3(0.0, radius * (ScarecrowVisualScript.TOP - 1.0) * 0.5, 0.0)
 
 
 # --- La Tomatina builders ------------------------------------------------------

@@ -22,10 +22,7 @@ var counted := {}
 var special_leases := {}
 var contact_leases := {}
 var _scan_left := 0.0
-var _hint_left := 0.0
 var _duck_left := 0.0
-var _floor_left := 0.0
-var _was_risky := false
 var _last_down := false
 var _context := {}
 var _context_results := {}
@@ -68,7 +65,6 @@ func _on_node_removed(node: Node) -> void:
 func _process(delta: float) -> void:
 	if world._local == null:
 		return
-	_hint_left = maxf(0.0, _hint_left - delta)
 	_duck_left = maxf(0.0, _duck_left - delta)
 	if is_instance_valid(world._stage_music):
 		world._stage_music.set("priority_duck", _duck_left > 0.0)
@@ -102,7 +98,6 @@ func advance(delta: float) -> void:
 	if _aim_left <= 0.0:
 		_aim_left = 0.05
 		_update_aim_feedback()
-	_update_floor_warning(delta)
 	_scan_left -= delta
 	if _scan_left > 0.0 or not world._is_authority():
 		return
@@ -204,10 +199,6 @@ func _update_aim_feedback() -> void:
 			and world.selected_item_slot(shooter.peer_id) == 0 and world._hose_slot_of(shooter.peer_id) < 0 \
 			and _aim_within_range(shooter, origin, direction)
 	_update_arc(origin, direction)
-	if shooter.nozzle == world.Nozzle.CAUGHT and _hint_left <= 0.0 and shooter.sauce > 0.0:
-		world._health_hud.notify_action("박사: 우클릭을 누른 채 마우스를 흔들어서 풀어요!")
-		_hint_left = 9.0
-		prioritize_sound(0.5)
 
 
 func _aim_within_range(shooter, origin: Vector3, direction: Vector3) -> bool:
@@ -423,18 +414,6 @@ func _mark_landing(reticle: Crosshair, camera: Camera3D, at: Vector3, normal: Ve
 		leaf.append(camera.unproject_position(point))
 	reticle.landing_marker = ring
 	reticle.landing_leaf = leaf
-
-func _update_floor_warning(delta: float) -> void:
-	_floor_left -= delta
-	if _floor_left > 0.0 or world._floor == null:
-		return
-	_floor_left = 0.15
-	var player: MayoPlayer = world._local.player
-	var ahead := player.global_position - player.global_basis.z * 1.3
-	var risky: bool = world.floor_is_slippery_at(ahead) or world._floor.is_slowing_at(ahead)
-	if risky and not _was_risky and player.is_running():
-		world._health_hud.notify_action("미끄러운 바닥 · 달리기를 멈춰요")
-	_was_risky = risky
 
 func context_candidates(shooter) -> Array:
 	var out: Array = []

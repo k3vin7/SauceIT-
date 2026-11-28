@@ -177,22 +177,25 @@ func _solo() -> void:
 		world.perform_context_action(1, "range_part", part)
 		_check(world._local.sauce_part == part, "part %d was not fitted" % part)
 
-	# 가까운 표적을 기본 줄기로 쓰러뜨린다. 눌렀다 떼기를 되풀이한다(압력 규칙 그대로).
+	# 가까운 허수아비를 기본 줄기로 쏜다: 체력이 깎이지만 쓰러지지 않고, 밀리지 않고, 다시 찬다.
 	var first = world._enemies[0]
+	var stood: Vector3 = first.global_position
+	_check(first.undying and first.health >= first.max_health, "the target is not a fresh scarecrow")
 	await _stand(world, Vector3(PracticeRange.FIRING_X, 0.0, first.global_position.z), first.global_position)
-	for index in 3000:
+	var lowest: float = first.health
+	for index in 900:
 		world.debug_aim_at(first.global_position)
 		world.debug_set_input(Vector2.ZERO, false, index % 90 < 60)
 		if world._local.sauce < 0.3:
 			world.request_range_sauce(2)
 		await physics_frame
-		if not first.is_alive():
-			break
+		lowest = minf(lowest, first.health)
 	world.debug_set_input(Vector2.ZERO, false, false)
 	world.debug_clear_input_override()
-	_check(not first.is_alive(), "the stream did not put the nearest target down")
-	var count: int = world._enemies.size()
-	_check(await _until(func(): return world._enemies.size() > count, 900), "the target did not come back")
+	_check(lowest < first.max_health * 0.5, "the stream barely hurt the scarecrow (%.1f of %.1f)" % [lowest, first.max_health])
+	_check(first.is_alive() and world._enemies[0] == first, "the scarecrow went down")
+	_check(first.global_position.distance_to(stood) < 0.05, "the scarecrow was pushed off its post")
+	_check(await _until(func(): return first.health >= first.max_health, 900), "the scarecrow's health did not come back")
 	_check(world._local.player.health >= world._local.player.max_health - 0.01, "the range hurt the player")
 
 	# 문으로 걸어 나온다: 병은 그대로 들고 있다.

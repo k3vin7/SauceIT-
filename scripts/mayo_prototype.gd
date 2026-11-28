@@ -1697,6 +1697,9 @@ func _ready() -> void:
 	_update_camera()
 	if embedded:
 		set_embedded_active(false)
+		# Nobody shows a loading screen for an embedded world, so it draws its
+		# combat materials once by itself, off to the side, as soon as it stands.
+		warm_stage_materials()
 	load_complete = true
 	if staged_loading:
 		set_process(true)
@@ -4213,6 +4216,8 @@ func _make_range_dummy(enemy: MayoEnemy) -> void:
 	enemy.contact_permission = _range_denied
 	# 쏘는 쪽(-x)을 보고 선다.
 	enemy.facing_yaw = PI * 0.5
+	# 표적은 허수아비다: 쓰러지지 않고 밀리지도 않는다.
+	enemy.become_scarecrow()
 
 
 ## 처음 서 있는 표적들을 자리에 묶는다. 표적은 `PracticeRange.targets()` 순서대로 만들어졌다.
@@ -4223,7 +4228,7 @@ func _begin_range() -> void:
 		var entry: Array = targets[index]
 		_make_range_dummy(_enemies[index])
 		_range_posts.append({"enemy": _enemies[index], "kind": int(TOMATINA_KINDS[entry[0]]),
-			"at": entry[1], "wait": 0.0})
+			"at": entry[1], "wait": 0.0, "seen": _enemies[index].health})
 	_update_stage_objective()
 
 
@@ -4233,6 +4238,15 @@ func _advance_range(delta: float) -> void:
 	for post in _range_posts:
 		var enemy: MayoEnemy = post["enemy"]
 		if is_instance_valid(enemy) and enemy.is_alive():
+			# 허수아비의 체력: 맞는 동안에는 깎인 채로 보이고, 한동안 맞지 않으면 다시 가득 찬다.
+			if enemy.health < float(post.get("seen", enemy.health)) or enemy.health >= enemy.max_health:
+				post["wait"] = 0.0
+			else:
+				post["wait"] = float(post["wait"]) + delta
+				if float(post["wait"]) >= PracticeRange.RESPAWN_SECONDS:
+					post["wait"] = 0.0
+					enemy.health = enemy.max_health
+			post["seen"] = enemy.health
 			continue
 		post["wait"] = float(post["wait"]) + delta
 		if float(post["wait"]) < PracticeRange.RESPAWN_SECONDS:
@@ -4241,6 +4255,7 @@ func _advance_range(delta: float) -> void:
 		var index := tutorial_spawn_enemy(int(post["kind"]), post["at"])
 		if index >= 0:
 			post["enemy"] = _enemies[index]
+			post["seen"] = _enemies[index].health
 			_make_range_dummy(_enemies[index])
 
 
@@ -5363,14 +5378,29 @@ func warm_stage_materials() -> void:
 	camera.current = true
 	warmup.add_child(camera)
 	var light := DirectionalLight3D.new()
-	var stage_light := $KeyLight as DirectionalLight3D
+	# An embedded world (the office firing range) has no sun of its own: it is
+	# lit by the room it stands in, which is a sun without shadows and lamps.
+	var stage_light := get_node_or_null("KeyLight") as DirectionalLight3D
 	light.rotation_degrees = Vector3(-35.0, -35.0, 0.0)
-	light.shadow_enabled = stage_light.shadow_enabled
-	light.directional_shadow_mode = stage_light.directional_shadow_mode
+	if stage_light != null:
+		light.shadow_enabled = stage_light.shadow_enabled
+		light.directional_shadow_mode = stage_light.directional_shadow_mode
 	warmup.add_child(light)
+	if embedded:
+		# The shader is specialised by the kinds of light on it, so the office's
+		# lamps have to be on the samples too -- or the first squirt in the
+		# office still stops the frame to compile the lamp-lit version.
+		var lamp := OmniLight3D.new()
+		lamp.position = Vector3(0.0, 0.9, 1.2)
+		lamp.omni_range = 6.0
+		warmup.add_child(lamp)
 	var materials: Array[Material] = [_floor.grid.tile_material(0)]
 	if _blast_material != null:
 		materials.append(_blast_material)
+	# A wall's face is the same shader set up differently (`wall_face`, and
+	# paint only in the office): its first splat should not be the first draw.
+	if not _walls.is_empty() and not _walls[0].grids.is_empty():
+		materials.append(_walls[0].grids[0].material)
 	var sample_mesh := SphereMesh.new()
 	sample_mesh.radius = 0.18
 	sample_mesh.height = 0.36
@@ -11243,7 +11273,7 @@ func _begin_hose_release(peer: int, active_path: Dictionary, shown_tip: Vector3)
 		# A short shot was only traced as far as its front had travelled.
 		# Continue this same parabola once to find where it will land.
 		var query := PhysicsRayQueryParameters3D.new()
-		query.collision_mask = 1
+		query.collision_mask = 1 | CORPSE_LAYER if practice_range else 1
 		path = _trace_hose_water(active_path.origin, active_path.velocity, HOSE_MAX_FLIGHT_TIME, query, {})
 	if path.duration <= 0.01:
 		return
@@ -11329,8 +11359,16 @@ func _wash_floor_cell(cell: Vector2i, size: int) -> void:
 
 
 func _hose_hits_floor(hit: Dictionary) -> bool:
-	return not hit.is_empty() and (hit.collider == _floor \
-		or ((hit.normal as Vector3).y > 0.6 and hit.position.y <= TomatinaMap.ground_height(hit.position) + 0.22))
+	if hit.is_empty():
+		return false
+	if hit.collider == _floor:
+		return true
+	# The office's low, flat things -- the rug, a drain, a tray -- carry their own
+	# sauce. Water landing on one has to wash that surface, not the floor under it:
+	# counted as floor, the rug's marks could never be cleaned off.
+	if practice_range and hit.collider is ContaminableObject:
+		return false
+	return (hit.normal as Vector3).y > 0.6 and hit.position.y <= TomatinaMap.ground_height(hit.position) + 0.22
 
 
 func _wash_hose_debris(path: Dictionary) -> void:
@@ -11408,6 +11446,8 @@ func _apply_hose_water(shooter: Shooter, path: Dictionary, forward: Vector3, del
 			_wash_floor_cell(_floor.wash_cell_at(hit.position), size)
 	elif not hit.is_empty():
 		_wash_hose_surface(hit)
+	if practice_range and not hit.is_empty():
+		_wash_office_surfaces_near(hit.position, hit.normal, hit.collider as Node)
 	if not washed_ground and released_impact_age < 0.0:
 		shooter.hose_impact_age = 0.0
 	if _floor.grid.painted_count > 0:
@@ -11503,6 +11543,28 @@ func _hose_contact(points: PackedVector3Array, centre: Vector3,
 
 
 ## Flat faces and the stalls' unrolled roofs share the round wash footprint.
+## The office is built out of small things standing on, in and against each
+## other -- a rug is five thin layers, a shelf is boards and what is on them --
+## and water landing on one of them splashes the rest. Everything with sauce on
+## it within the splash is washed where it is nearest the impact, so a rug comes
+## clean under the hose instead of one layer at a time.
+func _wash_office_surfaces_near(at: Vector3, normal: Vector3, struck: Node) -> void:
+	for index in _walls.size():
+		var wall := _walls[index]
+		if wall == struck or wall.painted_cell_count() == 0:
+			continue
+		var local := wall.to_local(at)
+		var half := wall.size * 0.5
+		var nearest := local.clamp(-half, half)
+		if nearest.distance_to(local) > HOSE_WALL_WASH_RADIUS:
+			continue
+		# Washed on whichever of its faces looks back at the water.
+		var washed := wall.wash_at(wall.to_global(nearest), normal, HOSE_WALL_WASH_RADIUS)
+		if washed.x >= 0:
+			_pending_splats.append_array(PackedInt32Array([SPLAT_WALL_CLEAR,
+				index * FACES_PER_WALL + washed.x, washed.y, washed.z]))
+
+
 func _wash_hose_surface(hit: Dictionary) -> void:
 	var wall := hit.collider as ContaminableObject
 	if wall != null:
