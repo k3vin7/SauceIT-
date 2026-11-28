@@ -12,11 +12,12 @@ extends TruckLobby
 ##   * 출발 구역 -- 트럭 짐칸 안이다. 전원이 타면 잠깐 센 뒤 떠난다. 지도에는 출발 버튼이 없다.
 ##     사무실 앞벽의 문을 지나 중앙 홀을 곧장 가로지르면 나오는 트럭 탑승장에 있다.
 ##     홀의 왼쪽은 사격 연습장, 오른쪽은 샤워실이다.
-##   * 사격 연습장 -- 방 안에서 바로 쏜다. 사무실은 스테이지 2의 사격 코드를 그대로 돌리는
-##     월드를 품고 있고(`PracticeRange`, `MayoPrototype.embedded`), 문을 지나 들어서면 그
-##     월드의 몸으로 바뀐다. 그 뒤로는 방을 나서도 그 몸 그대로다: 병을 들고 사무실 어디든
-##     가서 쏠 수 있고, 지도·사물함·슬롯머신·트럭도 그 몸으로 쓴다(2026-11-28). 연습은
-##     각자의 화면에서 돈다: 팀원에게는 걷는 모습만 간다(`pin_occupant`).
+##   * 사격 연습장 -- 사무실은 스테이지 2의 사격 코드를 그대로 돌리는 월드를 품고 있고
+##     (`PracticeRange`, `MayoPrototype.embedded`), 캐릭터를 고르고 나면 처음부터 그 월드의
+##     몸으로 걷는다: 병을 들고 사무실 어디서나 뛰고 쏘며, 지도·사물함·슬롯머신·트럭도 그
+##     몸으로 쓴다(2026-11-28). 그 월드는 화면마다 따로 돌지만 팀원끼리 서로 보인다: 저마다
+##     자기 상태를 보내고, 받은 쪽은 자기 월드에 그 팀원의 몸을 세워 그대로 움직이게 한다
+##     (`accept_range_state`). 줄기와 자국은 그 몸에서 각자 계산하므로 모두에게 같이 보인다.
 ## 출발 조건은 "전원이 캐릭터를 골랐고(`MayoNet.can_start_stage`) 전원이 구역 위에 있다"이다.
 ## 누가 구역에 있는지는 각자 자기 화면의 몸 위치로 세고(방장이 보내 준 자세), 실제 출발은
 ## 방장만 일으킨다.
@@ -35,6 +36,9 @@ const SHOWER_WATER := preload("res://assets/cartoon/shower_water.tres")
 const SCREEN_POSITION := Vector3(0.0, 2.35, -8.65)
 const LOCKER_POSITION := Vector3(-8.45, 1.5, 2.5)
 const OFFICE_WALK_SPEED := 5.2
+## 달리기 키를 누른 동안의 속도. 스테이지의 달리기와 같다(`MayoPlayer.run_speed`): 병을 들기
+## 전에도 사무실을 뛰어다닐 수 있다(2026-11-28).
+const OFFICE_RUN_SPEED := 10.4
 ## 전원이 트럭에 탄 뒤 떠나기까지. 한 명이라도 내리면 처음부터 다시 센다.
 const DEPART_COUNTDOWN := 3.0
 ## 네 자리. 문 쪽에 나란히 서서 스크린을 본다.
@@ -122,6 +126,10 @@ var _range_world: Node3D
 var _in_range := false
 ## 연습장의 몸이 지금 조작을 받고 있다(지도나 슬롯머신을 띄운 동안에는 받지 않는다).
 var _range_input_free := true
+## 팀원(세션 번호)마다 마지막으로 상태를 받은 때(초). 내 연습장 월드에 그 팀원의 몸이 서 있다.
+var _range_peers: Dictionary = {}
+## 이만큼 소식이 없으면 그 몸을 치운다.
+const RANGE_PEER_TIMEOUT := 1.0
 ## 왼쪽 위의 사무실 안내판. 연습장의 몸으로 걷는 동안에는 그 월드의 HUD가 대신한다.
 var _ui_panel: Control
 ## 옵션 화면이 스테이지에 넣는 값들(`GameOptions.apply_world`). 연습장의 월드로 넘긴다.
@@ -185,6 +193,7 @@ var _map_reason: Label
 
 func _ready() -> void:
 	walk_speed = OFFICE_WALK_SPEED
+	run_speed = OFFICE_RUN_SPEED
 	_ensure_interact_action()
 	super._ready()
 	if session != null and not session.slot_result.is_connected(_on_slot_result):
@@ -1123,6 +1132,10 @@ func _local_jump() -> bool:
 	return false if _in_range else super._local_jump()
 
 
+func _local_run() -> bool:
+	return false if _in_range else super._local_run()
+
+
 func _sends_lobby_input() -> bool:
 	return not _in_range
 
@@ -1146,8 +1159,11 @@ func _update_range(_delta: float) -> void:
 			_range_world.set_embedded_active(false)
 			_show_office_view()
 		return
+	_expire_range_peers()
+	_follow_moving_props()
 	if not _in_range:
-		if not _busy() and PracticeRange.is_inside(body.position):
+		# 캐릭터를 고르고 나면 곧바로 그 월드의 몸이 된다: 어디에 서 있든.
+		if not _busy() and (session == null or session.has_character(_local_id())):
 			_enter_range(body)
 		return
 	# 지도·슬롯머신·작업대나 메뉴를 띄운 동안에는 연습장의 몸이 서 있는다.
@@ -1162,6 +1178,9 @@ func _update_range(_delta: float) -> void:
 	_follow_range(body, feet + Vector3.UP * OCCUPANT_HEIGHT * 0.5)
 	# 사무실의 눈도 같은 곳을 본다: 무엇을 바라보는지는 그 눈으로 잰다(`_target`).
 	_apply_local_look()
+	# 팀원들의 화면에 설 내 몸이 따라 할 것.
+	if session != null and session.is_online():
+		session.send_range_state(_range_world.embedded_state())
 
 
 func _enter_range(body: CharacterBody3D) -> void:
@@ -1184,10 +1203,84 @@ func _enter_range(body: CharacterBody3D) -> void:
 	var eye := _range_world.get("_camera") as Camera3D
 	if eye != null:
 		eye.set_cull_mask_value(OfficeMirror.AVATAR_LAYER, false)
-	# 안내판만 치운다: E 안내와 출발 안내는 방 밖에서 그대로 쓴다.
-	if _ui_panel != null:
-		_ui_panel.visible = false
 	_follow_range(body, body.position)
+	# 내가 들어오기 전에 묻은 소스를 방장에게 받는다.
+	if session != null and session.is_online() and not session.is_server():
+		session.request_range_snapshot()
+
+
+## 움직이는 물건(커튼, 사물함 문, 슬롯머신 릴 등)에 얹힌 소스 면을 그 물건에 붙여 둔다:
+## [면, 방 씬의 노드, 마지막으로 맞춘 자리]. 물건이 움직인 틱에만 옮긴다.
+var _range_followers: Array = []
+var _range_followers_built := false
+
+
+func _follow_moving_props() -> void:
+	if not _range_followers_built:
+		_range_followers_built = true
+		for entry: Array in _range_world.embedded_followers():
+			var prop := _room.get_node_or_null(str(entry[1])) as Node3D
+			if prop != null and is_instance_valid(entry[0]):
+				_range_followers.push_back([entry[0], prop, Transform3D()])
+	for entry: Array in _range_followers:
+		var prop: Node3D = entry[1]
+		if not is_instance_valid(prop) or not is_instance_valid(entry[0]):
+			continue
+		var place := prop.global_transform
+		if place != entry[2]:
+			entry[2] = place
+			(entry[0] as Node3D).global_transform = place
+			(entry[0] as Node3D).visible = prop.is_visible_in_tree()
+
+
+## 방장: 지금 사무실에 묻어 있는 소스. 늦게 들어온 사람에게 보낸다(`MayoNet.request_range_snapshot`).
+func range_snapshot() -> Array:
+	if not is_instance_valid(_range_world) or not _range_world.load_complete:
+		return []
+	return _range_world.painted_grid_snapshot()
+
+
+## 방장이 보내 준, 내가 들어오기 전에 묻은 소스 한 면.
+func accept_range_grid(index: int, cells: PackedByteArray) -> void:
+	if is_instance_valid(_range_world) and _range_world.load_complete:
+		_range_world.apply_grid_snapshot_part(index, cells)
+
+
+## 팀원 `peer_id`가 보낸 연습장 상태. 내 월드에 그 팀원의 몸을 세우고(처음이면) 그대로 움직인다.
+## 그 팀원의 사무실 몸은 그동안 그리지 않는다: 같은 자리에 병을 든 몸이 서 있다.
+func accept_range_state(peer_id: int, data: PackedFloat32Array) -> void:
+	if peer_id == _local_id() or not _occupants.has(peer_id) \
+			or not is_instance_valid(_range_world) or not _range_world.load_complete:
+		return
+	var seat := 0
+	if session != null:
+		seat = int(session.seat_assignments().get(peer_id, 0))
+	_range_world.apply_embedded_peer(peer_id, seat, data)
+	_range_peers[peer_id] = Time.get_ticks_msec() * 0.001
+	_show_office_body(peer_id, false)
+
+
+## 소식이 끊겼거나 사무실을 떠난 팀원의 몸을 치우고, 사무실의 몸을 다시 그린다.
+func _expire_range_peers() -> void:
+	if _range_peers.is_empty():
+		return
+	var now := Time.get_ticks_msec() * 0.001
+	for peer_id in _range_peers.keys():
+		if _occupants.has(peer_id) and now - float(_range_peers[peer_id]) < RANGE_PEER_TIMEOUT:
+			continue
+		_range_peers.erase(peer_id)
+		if is_instance_valid(_range_world):
+			_range_world.remove_embedded_peer(int(peer_id))
+		_show_office_body(int(peer_id), true)
+
+
+func _show_office_body(peer_id: int, shown: bool) -> void:
+	var body := _occupants.get(peer_id) as Node3D
+	if body == null:
+		return
+	var visual := body.get_node_or_null("Character") as Node3D
+	if visual != null:
+		visual.visible = shown and (session == null or session.has_character(peer_id))
 
 
 ## 사무실의 몸을 연습장의 몸이 선 곳에 둔다. 몸을 걷게 하는 쪽(방장, 혼자일 때는 자기)에게
@@ -1344,8 +1437,8 @@ func refresh_control_labels() -> void:
 		var move := "/".join([
 			Controls.key_label("move_forward", "W"), Controls.key_label("move_left", "A"),
 			Controls.key_label("move_backward", "S"), Controls.key_label("move_right", "D")])
-		_hint_label.text = "%s 이동 · %s 점프 · %s 상호작용 · Esc 메뉴\n축제 지도에서 출격 준비\n모두 트럭에 타면 출발" \
-			% [move, Controls.key_label("jump", "Space"), interact]
+		_hint_label.text = "%s 이동 · %s 달리기 · %s 점프 · %s 상호작용 · Esc 메뉴\n축제 지도에서 출격 준비\n모두 트럭에 타면 출발\n연습장에서 소스·파츠 · 홀의 물 호스로 청소" \
+			% [move, Controls.key_label("run", "Shift"), Controls.key_label("jump", "Space"), interact]
 	if _screen_label != null and session != null:
 		_screen_label.text = "축제 지도\n▶ %s\n[%s] 지도 열기" \
 			% [StageRegistry.display_name(session.selected_stage), interact]

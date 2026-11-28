@@ -7,16 +7,20 @@ const DESTINATION := "res://maps/command_runtime.scn"
 const KEEP_PATHS := ["MapScreen/Screen", "Locker/Body", "SlotMachine/Upper",
 	"ShowerBooth/Curtain", "ShowerBooth/ShowerHead"]
 ## The baked room carries a list of its boxes under this metadata key, for the
-## firing range to lay sauce on (`PracticeRange.walls`): [transform, size, solid]
-## per box, `solid` being whether a body is stopped by it.
+## firing range to lay sauce on (`PracticeRange.walls`): [transform, size, solid,
+## follow] per box. `solid` is whether a body is stopped by it. `follow` is the
+## path of the node the sauce rides on when the thing moves after the bake (a
+## curtain drawn, a locker door swung, a reel spun), or "" for what stays put.
 const SAUCE_BOXES := "sauce_boxes"
-## Too small to show a splat, or round enough that a box around it would hang
-## paint in the air.
-const SAUCE_MIN_SIDE := 0.15
-const SAUCE_MAX_RADIUS := 0.25
-## Things that move after the bake, or are not things at all.
-const SAUCE_SKIP := ["ShowerBooth/Curtain", "ShowerBooth/ShowerHead", "DoctorHologram", "Locker/Door",
-	"SlotMachine/Symbol", "SlotMachine/Bulb", "SlotMachine/Lever"]
+## Too small to show a splat. Round things (cylinders, balls) get the box that
+## holds them: the paint on a wheel or a pot sits a little off its curve, which
+## reads better than sauce vanishing into it.
+const SAUCE_MIN_SIDE := 0.06
+## Things that move after the bake. Each keeps a node of its own in the baked
+## room (never merged into the batch), so the sauce on it has something to follow.
+const SAUCE_MOVING := ["ShowerBooth/Curtain", "ShowerBooth/ShowerHead", "DoctorHologram", "Locker/Door",
+	"Locker/Body", "SlotMachine/Symbol", "SlotMachine/Bulb", "SlotMachine/Lever", "SlotMachine/Upper",
+	"MapScreen/Screen"]
 
 
 func _initialize() -> void:
@@ -43,6 +47,7 @@ func _bake() -> void:
 			str(shape.name).begins_with("Symbol") or str(shape.name).begins_with("Bulb")
 			or str(shape.name).begins_with("Lever"))
 		var separate := shape.use_collision or slot_part or not shape.visible \
+			or _moves(str(office.get_path_to(shape))) \
 			or shape.get_child_count() > 0 or str(office.get_path_to(shape)) in KEEP_PATHS
 		for surface in mesh.get_surface_count():
 			var material := mesh.surface_get_material(surface)
@@ -95,35 +100,36 @@ func _sauce_boxes(office: Node3D) -> Array:
 		if not shape.is_root_shape() or not shape.is_visible_in_tree() or shape.get_child_count() > 0 \
 				or str(shape.name).begins_with("Floor"):
 			continue
-		var skipped := false
-		for prefix: String in SAUCE_SKIP:
-			if path.begins_with(prefix):
-				skipped = true
-		var material := shape.material_override
-		if material == null and shape is CSGPrimitive3D:
-			material = shape.get("material")
-		if material is BaseMaterial3D and material.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
-			skipped = true
-		if material is ShaderMaterial and material.shader.code.contains("ALPHA"):
-			skipped = true
-		if skipped:
-			continue
 		var size := Vector3.ZERO
 		if shape is CSGBox3D:
 			size = (shape as CSGBox3D).size
-		elif shape is CSGCylinder3D and (shape as CSGCylinder3D).radius <= SAUCE_MAX_RADIUS:
+		elif shape is CSGCylinder3D:
 			var cylinder := shape as CSGCylinder3D
 			size = Vector3(cylinder.radius * 2.0, cylinder.height, cylinder.radius * 2.0)
+		elif shape is CSGSphere3D:
+			size = Vector3.ONE * (shape as CSGSphere3D).radius * 2.0
 		else:
 			continue
 		var place := office.global_transform.affine_inverse() * shape.global_transform
-		size *= place.basis.get_scale()
-		var sides := [size.x, size.y, size.z]
+		var scaled := size * place.basis.get_scale()
+		var sides := [scaled.x, scaled.y, scaled.z]
 		sides.sort()
 		if sides[1] < SAUCE_MIN_SIDE:
 			continue
-		boxes.append([Transform3D(place.basis.orthonormalized(), place.origin), size, shape.use_collision])
+		if _moves(path):
+			# Laid on the node itself, scale and all, every time it moves.
+			boxes.append([place, size, shape.use_collision, path])
+		else:
+			boxes.append([Transform3D(place.basis.orthonormalized(), place.origin), scaled,
+				shape.use_collision, ""])
 	return boxes
+
+
+func _moves(path: String) -> bool:
+	for prefix: String in SAUCE_MOVING:
+		if path.begins_with(prefix):
+			return true
+	return false
 
 
 func _replace_shape(office: Node3D, parent: Node3D, shape: CSGShape3D, mesh: ArrayMesh) -> void:

@@ -36,10 +36,19 @@ func _until(condition: Callable, frames := 1200) -> bool:
 	return false
 
 
-## 방장 쪽 사무실에서 `peer_id`의 몸을 출발 구역에 세운다(방장이 모든 몸의 위치를 정한다).
-func _stand_on_zone(office: OfficeLobby, peer_id: int) -> void:
-	var body := office._occupants[peer_id] as CharacterBody3D
+## `peer_id`의 몸을 출발 구역에 세운다. 캐릭터를 고른 뒤로는 저마다 자기 화면의 연습장 월드에서
+## 병을 든 몸으로 걷고 사무실의 몸은 그 몸을 따라다니므로, 그 사람의 화면(`own`)에서 그 몸을
+## 옮긴다. 아직 그 몸이 아니면(월드가 덜 섰으면) 방장 쪽 사무실의 몸을 옮긴다.
+func _stand_on_zone(office: OfficeLobby, peer_id: int, own: OfficeLobby = null) -> void:
+	if own == null:
+		own = office
 	var at := office.depart_zone_position() + Vector3(-1.0 if peer_id == 1 else 1.0, 0.0, 0.0)
+	if own.in_range():
+		var player: MayoPlayer = own.range_world()._local.player
+		player.global_position = Vector3(at.x, at.y + MayoPlayer.CAPSULE_HEIGHT * 0.5 + 0.05, at.z)
+		player.velocity = Vector3.ZERO
+		return
+	var body := office._occupants[peer_id] as CharacterBody3D
 	# 구역은 트럭 짐칸 안이다: 그 바닥 위에 세운다.
 	body.position = Vector3(at.x, at.y + TruckLobby.OCCUPANT_HEIGHT * 0.5 + 0.02, at.z)
 	body.velocity = Vector3.ZERO
@@ -258,7 +267,7 @@ func _party() -> void:
 		"the party left with one player off the departure zone")
 	_check(await _until(func(): return guest_office.occupants_in_depart_zone() == 1),
 		"the guest does not see the host on the departure zone")
-	_stand_on_zone(host_office, guest_id)
+	_stand_on_zone(host_office, guest_id, guest_office)
 	_check(await _until(func(): return host_office.depart_countdown < OfficeLobby.DEPART_COUNTDOWN \
 		and guest_office.depart_countdown < OfficeLobby.DEPART_COUNTDOWN),
 		"the countdown did not start on both screens")

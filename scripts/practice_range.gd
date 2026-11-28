@@ -102,12 +102,14 @@ static func floor_plane() -> Dictionary:
 ## 사방으로 `WALL_SKIN`만큼 키운다: 면이 사무실의 것과 똑같은 자리에 있으면 줄기가 어느 쪽에
 ## 닿았는지가 그때그때 달라져, 소스가 묻지 않는 사무실 쪽에 닿은 것으로 끝나기도 한다.
 ## `solid`가 아닌 것(몸이 그냥 지나다니는 소품)은 줄기와 물만 맞고 몸은 막지 않는다.
+## `follow`가 있는 것은 구운 뒤에도 움직이는 물건이다(커튼, 사물함 문, 슬롯머신 릴): 그 이름의
+## 노드를 사무실이 매번 따라가게 해서(`OfficeLobby`), 묻은 소스가 물건과 같이 움직인다.
 static func walls() -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	for box in _office_boxes():
 		var place: Transform3D = box[0]
 		out.append({"position": place.origin, "size": (box[1] as Vector3) + Vector3.ONE * WALL_SKIN * 2.0,
-			"basis": place.basis, "solid": bool(box[2])})
+			"basis": place.basis, "solid": bool(box[2]), "follow": str(box[3]) if box.size() > 3 else ""})
 	return out
 
 

@@ -4066,6 +4066,95 @@ func embedded_pose() -> Array:
 		_local.aim_yaw, _local.aim_pitch]
 
 
+# -- 사무실의 팀원들 --------------------------------------------------------------
+# 품긴 월드는 화면마다 하나씩 따로 돈다(저마다 자기 것의 주인이다). 팀원이 보이게 하는 길은
+# 그 팀원의 몸을 내 월드에 하나 세우고, 그 팀원이 보내 주는 상태 -- 선 자리, 겨눈 곳, 쏘는 중인지,
+# 무엇을 들었는지 -- 대로 움직이게 하는 것이다. 줄기와 자국과 물은 그 몸에서 내 월드가 직접
+# 계산한다: 모든 화면이 같은 것을 같은 식으로 계산하므로 자국을 따로 보낼 필요가 없다.
+# 연습 봇(`PlayerBotTeam`)이 서는 방식과 같고, 머리 대신 팀원의 패킷이 움직인다는 점만 다르다.
+
+## 팀원의 몸에 붙이는 번호의 시작. 이 월드의 내 몸은 언제나 1번이라, 세션의 번호(방장이 1번)를
+## 그대로 쓰면 겹친다.
+const EMBEDDED_PEER_BASE := 100000
+const EMBEDDED_STATE_SIZE := 20
+
+
+## 이 화면의 플레이어가 지금 어떤 상태인가. 사무실이 매 틱 팀원들에게 보낸다.
+func embedded_state() -> PackedFloat32Array:
+	if _local == null or not is_instance_valid(_local.player):
+		return PackedFloat32Array()
+	var body: Array = _local.player.network_state()
+	var at: Vector3 = body[0]
+	var velocity: Vector3 = body[2]
+	return PackedFloat32Array([
+		at.x, at.y, at.z, _local.aim_yaw,
+		velocity.x, velocity.y, velocity.z,
+		float(body[3]), body[4], body[5], body[6],
+		effective_aim_pitch(_local), 1.0 if _local.firing else 0.0,
+		_local.sauce, float(_local.sauce_kind), float(_local.sauce_part),
+		_local.bottle_shake_input, float(_local.character_index),
+		1.0 if _hose_slot_of(_local.peer_id) >= 0 else 0.0, _local.stream_recoil_yaw])
+
+
+## 팀원 `peer`(세션 번호)가 보낸 상태. 처음 받으면 그 팀원의 몸을 세운다.
+func apply_embedded_peer(peer: int, slot: int, data: PackedFloat32Array) -> void:
+	if not load_complete or data.size() < EMBEDDED_STATE_SIZE:
+		return
+	var id := EMBEDDED_PEER_BASE + peer
+	var shooter: Shooter = _shooters.get(id)
+	if shooter == null:
+		shooter = create_avatar(id, slot, false)
+		# 그 몸은 그 팀원의 화면이 걷게 한다: 여기서는 받은 자리에 놓을 뿐이다.
+		shooter.player.authority = false
+		set_first_person(_first_person)
+	var character := clampi(int(round(data[17])), 0, PLAYER_CHARACTERS.size() - 1)
+	if shooter.character_index != character:
+		set_character_variant(id, character)
+	shooter.player.apply_network_state(Vector3(data[0], data[1], data[2]), data[3],
+		Vector3(data[4], data[5], data[6]), clampi(int(round(data[7])), 0, MayoPlayer.State.size() - 1),
+		data[8], data[9], data[10], shooter.player.max_health)
+	var kind := clampi(int(round(data[14])), 0, ContaminationGrid.KIND_KETCHUP)
+	if shooter.sauce_kind != kind and STATION_SAUCES.has(kind):
+		apply_refill(id, STATION_SAUCES.find(kind))
+	var part := clampi(int(round(data[15])), 0, SauceParts.CATALOG.size() - 1)
+	if shooter.sauce_part != part:
+		shooter.owned_parts |= 1 << part
+		_equip_sauce_part(shooter, part)
+	shooter.sauce = clampf(data[13], 0.0, 1.0)
+	shooter.firing = data[12] > 0.5
+	shooter.bottle_shake_input = clampf(data[16], 0.0, 1.0)
+	shooter.stream_recoil_yaw = data[19]
+	shooter.aim_yaw = data[3]
+	# 받은 것은 반동까지 든 조준이다(스테이지의 상태 패킷과 같다).
+	shooter.aim_pitch = data[11] - aim_pitch_offset(shooter)
+	# 물 호스: 그 팀원이 들고 있으면 여기서도 그 팀원의 것이다.
+	var holds_hose := data[18] > 0.5
+	var held := _hose_slot_of(id)
+	if holds_hose and held < 0 and hose_count() > 0 and not _hose_users.has(0):
+		_hose_users[0] = id
+		shooter.hose_path_frame = -1
+		shooter.hose_path = {}
+	elif not holds_hose and held >= 0:
+		_close_fire_hose(held, shooter)
+
+
+## 움직이는 물건에 얹힌 면들: [면, 따라갈 노드의 경로(품은 쪽의 방 씬 기준)].
+var _embedded_followers: Array = []
+
+
+func embedded_followers() -> Array:
+	return _embedded_followers
+
+
+## 팀원 `peer`가 사무실을 떠났다(또는 소식이 끊겼다).
+func remove_embedded_peer(peer: int) -> void:
+	remove_avatar(EMBEDDED_PEER_BASE + peer)
+
+
+func has_embedded_peer(peer: int) -> bool:
+	return _shooters.has(EMBEDDED_PEER_BASE + peer)
+
+
 ## 진열대의 병과 선택대의 파츠 가운데 손이 닿는 것들. `TomatinaPlaySupport`가 E 안내로
 ## 올린다: [kind, id, 자리, 글자].
 func range_picks(shooter: Shooter) -> Array:
@@ -5479,6 +5568,9 @@ func _build_tomatina() -> void:
 			Color("c9ad90"), true, has_art or practice_range)
 		if box.has("basis"):
 			_walls[-1].basis = box["basis"]
+		# 움직이는 물건: 품은 쪽이 이 이름의 노드를 따라가게 한다(`embedded_followers`).
+		if box.get("follow", "") != "":
+			_embedded_followers.push_back([_walls[-1], str(box["follow"])])
 		# 몸이 그냥 지나다니는 소품: 줄기와 물만 맞는다(쓰러진 손님과 같은 층).
 		if not box.get("solid", true):
 			_walls[-1].collision_layer = CORPSE_LAYER
@@ -7401,7 +7493,8 @@ func _update_stage_objective(alive := -1) -> void:
 	if _stage_objective == null:
 		return
 	if practice_range:
-		_stage_objective.text = "사격 연습장\n앞벽 진열대에서 소스, 뒷벽 선택대에서 파츠 [E]\n소스는 들고 나갈 수 있어요 · 중앙 홀의 물 호스로 청소 [E]"
+		# 사무실의 안내판이 같은 자리에 있다(`OfficeLobby`): 이 판은 띄우지 않는다.
+		_objective_card.hide()
 		_refuge_status_label.hide()
 		return
 	if map_kind == MapKind.TOMATINA:
@@ -9427,6 +9520,22 @@ func grid_snapshot() -> Array:
 	for wall in _walls:
 		for face in wall.face_count():
 			snapshot.push_back(wall.snapshot_cells(face))
+	return snapshot
+
+
+## Only the surfaces that have sauce on them, as [index, cells] with the index
+## `apply_grid_snapshot_part` takes. The office has hundreds of surfaces and a
+## newcomer needs the handful that are marked, not a message for each clean one.
+func painted_grid_snapshot() -> Array:
+	var snapshot: Array = []
+	if _floor.grid.painted_count > 0:
+		snapshot.push_back([0, _floor.snapshot_cells()])
+	var index := 1
+	for wall in _walls:
+		for face in wall.face_count():
+			if wall.grids[face].painted_cell_count() > 0:
+				snapshot.push_back([index, wall.snapshot_cells(face)])
+			index += 1
 	return snapshot
 
 
